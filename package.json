@@ -1,0 +1,17 @@
+{
+  "name": "agent-ops",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=@agent-ops/worker",
+    "build": "npm run build --workspace=@agent-ops/worker",
+    "deploy": "npm run deploy --workspace=@agent-ops/worker",
+    "db:migrate": "npm run db:migrate --workspace=@agent-ops/worker",
+    "typecheck": "tsc --build"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}

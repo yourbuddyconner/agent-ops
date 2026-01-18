@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 250 250 250;
+    --foreground: 23 23 23;
+    --card: 255 255 255;
+    --card-foreground: 23 23 23;
+    --border: 229 229 229;
+  }
+
+  .dark {
+    --background: 23 23 23;
+    --foreground: 250 250 250;
+    --card: 38 38 38;
+    --card-foreground: 250 250 250;
+    --border: 64 64 64;
+  }
+
+  body {
+    @apply bg-neutral-50 text-neutral-900;
+  }
+
+  .dark body {
+    @apply bg-neutral-900 text-neutral-50;
+  }
+}

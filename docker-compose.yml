@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  opencode:
+    build: .
+    ports:
+      - "4096:4096"
+    environment:
+      - OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD}
+      # LLM Providers - add keys for providers you want
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+    volumes:
+      - ./workspaces:/workspace
+    restart: unless-stopped
+
+  # Note: Worker runs via wrangler dev locally, not in Docker
+  # This is because wrangler needs local D1/R2 emulation

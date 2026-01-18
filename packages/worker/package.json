@@ -1,0 +1,27 @@
+{
+  "name": "@agent-ops/worker",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "wrangler d1 migrations apply agent-ops-db --local",
+    "db:migrate:prod": "wrangler d1 migrations apply agent-ops-db --remote",
+    "db:seed": "wrangler d1 execute agent-ops-db --local --file=scripts/seed-test-data.sql"
+  },
+  "dependencies": {
+    "@agent-ops/shared": "workspace:*",
+    "@hono/zod-validator": "^0.2.1",
+    "@opencode-ai/sdk": "^1.1.25",
+    "hono": "^4.3.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240117.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^3.28.0"
+  }
+}

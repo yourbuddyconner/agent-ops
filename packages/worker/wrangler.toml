@@ -1,0 +1,45 @@
+name = "agent-ops"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Environment variables (set via wrangler secret)
+# ENCRYPTION_KEY - for encrypting stored credentials
+# GITHUB_CLIENT_ID - GitHub OAuth app client ID
+# GITHUB_CLIENT_SECRET - GitHub OAuth app client secret
+
+[vars]
+ENVIRONMENT = "development"
+
+# Durable Objects
+[[durable_objects.bindings]]
+name = "API_KEYS"
+class_name = "APIKeysDurableObject"
+
+[[durable_objects.bindings]]
+name = "AGENT_SESSIONS"
+class_name = "AgentSessionDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["APIKeysDurableObject", "AgentSessionDurableObject"]
+
+# D1 Database
+[[d1_databases]]
+binding = "DB"
+database_name = "agent-ops-db"
+database_id = "LOCAL" # Replace with actual ID after creation
+
+# R2 Bucket
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "agent-ops-storage"
+
+# Cron Triggers for scheduled syncs
+[triggers]
+crons = ["0 * * * *"] # Hourly sync check
+
+# Development settings
+[dev]
+port = 8787
+local_protocol = "http"
