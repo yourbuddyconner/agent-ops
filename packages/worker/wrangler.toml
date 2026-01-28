@@ -22,6 +22,10 @@ class_name = "APIKeysDurableObject"
 name = "SESSIONS"
 class_name = "SessionAgentDO"
 
+[[durable_objects.bindings]]
+name = "EVENT_BUS"
+class_name = "EventBusDO"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["APIKeysDurableObject", "AgentSessionDurableObject"]
@@ -42,6 +46,10 @@ new_sqlite_classes = ["SessionAgentDO"]
 [[migrations]]
 tag = "v5"
 deleted_classes = ["AgentSessionDurableObject", "OpenCodeContainerDO"]
+
+[[migrations]]
+tag = "v6"
+new_classes = ["EventBusDO"]
 
 # D1 Database
 [[d1_databases]]

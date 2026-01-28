@@ -19,10 +19,12 @@ import { workflowsRouter } from './routes/workflows.js';
 import { triggersRouter } from './routes/triggers.js';
 import { executionsRouter } from './routes/executions.js';
 import { containersRouter } from './routes/containers.js';
+import { eventsRouter } from './routes/events.js';
 
 // Durable Object exports
 export { APIKeysDurableObject } from './durable-objects/api-keys.js';
 export { SessionAgentDO } from './durable-objects/session-agent.js';
+export { EventBusDO } from './durable-objects/event-bus.js';
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -63,6 +65,7 @@ app.route('/api/workflows', workflowsRouter);
 app.route('/api/triggers', triggersRouter);
 app.route('/api/executions', executionsRouter);
 app.route('/api/containers', containersRouter);
+app.route('/api/events', eventsRouter);
 
 // Agent container proxy (protected)
 app.use('/agent/*', authMiddleware);

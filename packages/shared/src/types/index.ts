@@ -42,6 +42,22 @@ export interface SyncError {
   code: string;
 }
 
+// EventBus types
+export type EventBusEventType =
+  | 'session.update'
+  | 'sandbox.status'
+  | 'question.asked'
+  | 'question.answered'
+  | 'notification';
+
+export interface EventBusEvent {
+  type: EventBusEventType;
+  sessionId?: string;
+  userId?: string;
+  data: Record<string, unknown>;
+  timestamp: string;
+}
+
 // Session types
 export type SessionStatus = 'initializing' | 'running' | 'idle' | 'terminated' | 'error';
 

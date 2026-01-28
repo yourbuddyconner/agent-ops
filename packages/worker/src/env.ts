@@ -4,6 +4,7 @@ export interface Env {
   // Durable Objects
   API_KEYS: DurableObjectNamespace;
   SESSIONS: DurableObjectNamespace;
+  EVENT_BUS: DurableObjectNamespace;
 
   // Storage
   DB: D1Database;
