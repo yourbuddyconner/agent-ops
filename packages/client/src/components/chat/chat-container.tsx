@@ -40,6 +40,12 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           <SessionStatusBadge status={sessionStatus} />
         </div>
         <div className="flex items-center gap-2">
+          <Link to="/sessions/$sessionId/editor" params={{ sessionId }}>
+            <Button variant="ghost" size="sm">
+              <EditorIcon className="mr-1 h-4 w-4" />
+              Editor
+            </Button>
+          </Link>
           <Link to="/sessions/$sessionId/files" params={{ sessionId }}>
             <Button variant="ghost" size="sm">
               <FilesIcon className="mr-1 h-4 w-4" />
@@ -140,6 +146,26 @@ function BackIcon({ className }: { className?: string }) {
     >
       <path d="m12 19-7-7 7-7" />
       <path d="M19 12H5" />
+    </svg>
+  );
+}
+
+function EditorIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <path d="M9 3v18" />
     </svg>
   );
 }

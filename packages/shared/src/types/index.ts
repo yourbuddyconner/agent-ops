@@ -51,6 +51,7 @@ export interface AgentSession {
   workspace: string;
   status: SessionStatus;
   containerId?: string;
+  gatewayUrl?: string;
   metadata?: Record<string, unknown>;
   createdAt: Date;
   lastActiveAt: Date;
