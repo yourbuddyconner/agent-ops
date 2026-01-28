@@ -183,6 +183,7 @@ make deploy             # Deploy worker to Cloudflare
 
 ### Git Conventions
 
+- Commit code upon completion of each bean.
 - Do NOT add "Co-Authored-by" trailers mentioning AI models (e.g., Opus, Claude) in commit messages
 
 ## Implementation Phases (from V1.md)

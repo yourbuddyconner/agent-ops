@@ -24,6 +24,7 @@ import { containersRouter } from './routes/containers.js';
 export { APIKeysDurableObject } from './durable-objects/api-keys.js';
 export { AgentSessionDurableObject } from './durable-objects/agent-session.js';
 export { OpenCodeContainerDO } from './durable-objects/opencode-container.js';
+export { SessionAgentDO } from './durable-objects/session-agent.js';
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 

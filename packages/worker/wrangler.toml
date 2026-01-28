@@ -24,6 +24,10 @@ class_name = "AgentSessionDurableObject"
 name = "OPENCODE_CONTAINERS"
 class_name = "OpenCodeContainerDO"
 
+[[durable_objects.bindings]]
+name = "SESSIONS"
+class_name = "SessionAgentDO"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["APIKeysDurableObject", "AgentSessionDurableObject"]
@@ -37,6 +41,10 @@ new_sqlite_classes = ["OpenCodeContainerDO"]
 tag = "v3"
 deleted_classes = ["OpenCodeContainerDO"]
 new_classes = ["OpenCodeContainerDO"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["SessionAgentDO"]
 
 # D1 Database
 [[d1_databases]]

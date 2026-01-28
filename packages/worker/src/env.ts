@@ -5,6 +5,7 @@ export interface Env {
   API_KEYS: DurableObjectNamespace;
   AGENT_SESSIONS: DurableObjectNamespace;
   OPENCODE_CONTAINERS: DurableObjectNamespace;
+  SESSIONS: DurableObjectNamespace;
 
   // Storage
   DB: D1Database;
@@ -33,6 +34,9 @@ export interface Env {
   MODAL_APP_NAME: string;
   OPENCODE_IMAGE: string;
   WORKER_URL: string;
+
+  // Modal Python backend URL
+  MODAL_BACKEND_URL: string;
 }
 
 // Type for Hono context variables
