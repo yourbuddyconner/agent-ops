@@ -1,14 +1,14 @@
 ---
 # agent-ops-2hcv
 title: Build Runner package
-status: todo
+status: completed
 type: task
 priority: critical
 tags:
     - runner
     - phase1
 created_at: 2026-01-28T03:57:15Z
-updated_at: 2026-01-28T03:57:15Z
+updated_at: 2026-01-28T04:29:54Z
 parent: agent-ops-jcbs
 ---
 
