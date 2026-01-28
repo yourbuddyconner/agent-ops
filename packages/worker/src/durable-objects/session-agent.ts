@@ -28,7 +28,7 @@ interface RunnerMessage {
 
 /** Messages sent from DO to clients */
 interface ClientOutbound {
-  type: 'message' | 'stream' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left';
+  type: 'message' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left';
   [key: string]: unknown;
 }
 
@@ -164,23 +164,43 @@ export class SessionAgentDO {
     // Tag with client:{userId} for hibernation identification
     this.ctx.acceptWebSocket(server, [`client:${userId}`]);
 
-    // Send message history to new client
+    // Track connected user
+    this.ctx.storage.sql.exec(
+      'INSERT OR IGNORE INTO connected_users (user_id) VALUES (?)',
+      userId
+    );
+
+    // Send full session state as a single init message (prevents duplicates on reconnect)
     const messages = this.ctx.storage.sql
       .exec('SELECT id, role, content, parts, created_at FROM messages ORDER BY created_at ASC')
       .toArray();
 
-    for (const msg of messages) {
-      server.send(JSON.stringify({
-        type: 'message',
-        data: {
+    const status = this.getStateValue('status') || 'idle';
+    const sandboxId = this.getStateValue('sandboxId');
+    const connectedUsers = this.getConnectedUserIds();
+    const sessionId = this.getStateValue('sessionId');
+    const workspace = this.getStateValue('workspace') || '';
+
+    server.send(JSON.stringify({
+      type: 'init',
+      session: {
+        id: sessionId,
+        status,
+        workspace,
+        messages: messages.map((msg) => ({
           id: msg.id,
           role: msg.role,
           content: msg.content,
           parts: msg.parts ? JSON.parse(msg.parts as string) : undefined,
           createdAt: msg.created_at,
-        },
-      }));
-    }
+        })),
+      },
+      data: {
+        sandboxRunning: !!sandboxId,
+        connectedClients: this.getClientSockets().length + 1,
+        connectedUsers,
+      },
+    }));
 
     // Send any pending questions
     const pendingQuestions = this.ctx.storage.sql
@@ -195,26 +215,6 @@ export class SessionAgentDO {
         options: q.options ? JSON.parse(q.options as string) : undefined,
       }));
     }
-
-    // Track connected user
-    this.ctx.storage.sql.exec(
-      'INSERT OR IGNORE INTO connected_users (user_id) VALUES (?)',
-      userId
-    );
-
-    // Send current status including connected users
-    const status = this.getStateValue('status') || 'idle';
-    const sandboxId = this.getStateValue('sandboxId');
-    const connectedUsers = this.getConnectedUserIds();
-    server.send(JSON.stringify({
-      type: 'status',
-      data: {
-        status,
-        sandboxRunning: !!sandboxId,
-        connectedClients: this.getClientSockets().length + 1,
-        connectedUsers,
-      },
-    }));
 
     // Notify other clients that a user joined
     this.broadcastToClients({
@@ -302,6 +302,8 @@ export class SessionAgentDO {
     const tags = this.ctx.getTags(ws);
     const isRunner = tags.includes('runner');
 
+    console.log(`[SessionAgentDO] WebSocket message: isRunner=${isRunner}, type=${parsed.type}, data=${data.slice(0, 200)}`);
+
     if (isRunner) {
       await this.handleRunnerMessage(parsed as RunnerMessage);
     } else {
@@ -359,7 +361,13 @@ export class SessionAgentDO {
       }
     }
 
-    ws.close(code, reason);
+    // The socket is already closed when webSocketClose fires in hibernation mode.
+    // Only attempt close with valid codes (1000-4999, excluding reserved 1005/1006/1015).
+    try {
+      ws.close(code || 1000, reason || 'Connection closed');
+    } catch {
+      // Socket already closed or invalid close code — ignore
+    }
   }
 
   async webSocketError(ws: WebSocket, error: unknown) {
@@ -537,19 +545,23 @@ export class SessionAgentDO {
   // ─── Runner Message Handling ───────────────────────────────────────────
 
   private async handleRunnerMessage(msg: RunnerMessage) {
+    console.log(`[SessionAgentDO] Runner message: type=${msg.type}`);
+
     switch (msg.type) {
       case 'stream':
         // Forward stream chunks to all clients (don't store)
+        // Client expects 'chunk' type for streaming content
         this.broadcastToClients({
-          type: 'stream',
-          messageId: msg.messageId,
+          type: 'chunk',
           content: msg.content,
         });
         break;
 
       case 'result': {
         // Store final assistant message and broadcast
-        const resultId = msg.messageId || crypto.randomUUID();
+        // Always generate a new ID - msg.messageId is the prompt ID which is already used for the user message
+        const resultId = crypto.randomUUID();
+        console.log(`[SessionAgentDO] Storing assistant result: id=${resultId}, content length=${(msg.content || '').length}`);
         this.ctx.storage.sql.exec(
           'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
           resultId, 'assistant', msg.content || ''
@@ -563,6 +575,7 @@ export class SessionAgentDO {
             createdAt: Math.floor(Date.now() / 1000),
           },
         });
+        console.log(`[SessionAgentDO] Assistant result stored and broadcast`);
         break;
       }
 
@@ -668,6 +681,7 @@ export class SessionAgentDO {
 
       case 'complete':
         // Prompt finished — check queue for next
+        console.log(`[SessionAgentDO] Complete received, processing queue`);
         await this.handlePromptComplete();
         break;
     }

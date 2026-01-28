@@ -17,7 +17,7 @@
         workflow-create workflow-list workflow-run workflow-delete \
         trigger-create trigger-list trigger-run \
         demo demo-pr-review demo-alert-triage \
-        release deploy deploy-worker deploy-client build-client \
+        release deploy deploy-worker deploy-modal deploy-client build-client \
         secrets-set secrets-list \
         container-list container-create container-start container-stop container-delete \
         image-build image-push
@@ -612,13 +612,24 @@ release: ## Full idempotent release: install, build, push image, deploy worker +
 	@echo ""
 	@echo "$(YELLOW)⚠ Create a new API key in the UI and revoke this one!$(NC)"
 
-deploy: deploy-worker deploy-client ## Deploy everything (worker + client)
-	@echo "$(GREEN)Deployment complete!$(NC)"
+deploy: deploy-worker deploy-modal deploy-client ## Deploy everything (worker + modal + client)
+	@echo ""
+	@echo "$(GREEN)========================================$(NC)"
+	@echo "$(GREEN)All deployments complete!$(NC)"
+	@echo "$(GREEN)========================================$(NC)"
+	@echo "Worker:  https://agent-ops.conner-7e8.workers.dev"
+	@echo "Client:  https://agent-ops-client.pages.dev"
+	@echo "Modal:   https://modal.com/apps/yourbuddyconner/main/deployed/agent-ops-backend"
 
 deploy-worker: ## Deploy Cloudflare Worker
 	@echo "$(GREEN)Deploying Worker...$(NC)"
 	cd packages/worker && wrangler deploy
 	@echo "$(GREEN)✓ Worker deployed$(NC)"
+
+deploy-modal: ## Deploy Modal backend (includes runner)
+	@echo "$(GREEN)Deploying Modal backend...$(NC)"
+	cd backend && $(HOME)/anaconda3/envs/agent-ops/bin/modal deploy app.py
+	@echo "$(GREEN)✓ Modal backend deployed$(NC)"
 
 deploy-client: build-client ## Deploy client to Cloudflare Pages
 	@echo "$(GREEN)Deploying client to Cloudflare Pages...$(NC)"
