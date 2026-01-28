@@ -1,11 +1,18 @@
 import { Hono } from 'hono';
-import { z } from 'zod';
-import { zValidator } from '@hono/zod-validator';
 import { NotFoundError, ValidationError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
 
 export const filesRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+/**
+ * Helper to proxy a request to the SessionAgentDO's /proxy/ endpoint.
+ */
+async function proxyToSession(env: Env, sessionId: string, path: string): Promise<Response> {
+  const doId = env.SESSIONS.idFromName(sessionId);
+  const sessionDO = env.SESSIONS.get(doId);
+  return sessionDO.fetch(new Request(`http://do/proxy/${path}`));
+}
 
 /**
  * GET /api/files/search
@@ -23,29 +30,21 @@ filesRouter.get('/search', async (c) => {
     throw new ValidationError('query is required');
   }
 
-  // Verify session ownership
   const session = await db.getSession(c.env.DB, sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
 
-  // Forward to session DO which proxies to OpenCode
-  const doId = c.env.SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.SESSIONS.get(doId);
-
   const params = new URLSearchParams({ query });
   if (limit) params.set('limit', limit);
 
-  const response = await sessionDO.fetch(
-    new Request(`http://internal/proxy?path=/file/search?${params}`)
-  );
+  const response = await proxyToSession(c.env, sessionId, `file/search?${params}`);
 
   if (!response.ok) {
     return c.json({ results: [] });
   }
 
-  const data = await response.json();
-  return c.json(data);
+  return c.json(await response.json());
 });
 
 /**
@@ -64,26 +63,22 @@ filesRouter.get('/read', async (c) => {
     throw new ValidationError('path is required');
   }
 
-  // Verify session ownership
   const session = await db.getSession(c.env.DB, sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
 
-  // Forward to session DO
-  const doId = c.env.SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.SESSIONS.get(doId);
-
-  const response = await sessionDO.fetch(
-    new Request(`http://internal/proxy?path=/file/read?path=${encodeURIComponent(path)}`)
+  const response = await proxyToSession(
+    c.env,
+    sessionId,
+    `file/read?path=${encodeURIComponent(path)}`,
   );
 
   if (!response.ok) {
     throw new NotFoundError('File', path);
   }
 
-  const data = await response.json();
-  return c.json(data);
+  return c.json(await response.json());
 });
 
 /**
@@ -100,26 +95,22 @@ filesRouter.get('/list', async (c) => {
 
   const dirPath = path || '/';
 
-  // Verify session ownership
   const session = await db.getSession(c.env.DB, sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
 
-  // Forward to session DO
-  const doId = c.env.SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.SESSIONS.get(doId);
-
-  const response = await sessionDO.fetch(
-    new Request(`http://internal/proxy?path=/file/list?path=${encodeURIComponent(dirPath)}`)
+  const response = await proxyToSession(
+    c.env,
+    sessionId,
+    `file/list?path=${encodeURIComponent(dirPath)}`,
   );
 
   if (!response.ok) {
     return c.json({ files: [] });
   }
 
-  const data = await response.json();
-  return c.json(data);
+  return c.json(await response.json());
 });
 
 /**
@@ -134,13 +125,11 @@ filesRouter.get('/backup', async (c) => {
     throw new ValidationError('sessionId is required');
   }
 
-  // Verify session ownership
   const session = await db.getSession(c.env.DB, sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
 
-  // List files in R2
   const r2Prefix = `backups/${user.id}/sessions/${sessionId}/artifacts/${prefix || ''}`;
   const objects = await c.env.STORAGE.list({ prefix: r2Prefix, limit: 100 });
 
@@ -166,13 +155,11 @@ filesRouter.get('/backup/:key', async (c) => {
     throw new ValidationError('sessionId is required');
   }
 
-  // Verify session ownership
   const session = await db.getSession(c.env.DB, sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
 
-  // Get file from R2
   const r2Key = `backups/${user.id}/sessions/${sessionId}/artifacts/${key}`;
   const object = await c.env.STORAGE.get(r2Key);
 
@@ -203,13 +190,11 @@ filesRouter.post('/backup', async (c) => {
     throw new ValidationError('sessionId, path, and content are required');
   }
 
-  // Verify session ownership
   const session = await db.getSession(c.env.DB, sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
 
-  // Store in R2
   const timestamp = Date.now();
   const filename = path.split('/').pop() || 'file';
   const r2Key = `backups/${user.id}/sessions/${sessionId}/artifacts/${timestamp}_${filename}`;

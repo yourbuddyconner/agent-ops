@@ -1,14 +1,14 @@
 ---
 # agent-ops-vnkt
 title: Update Worker routes for new session flow
-status: todo
+status: completed
 type: task
 priority: critical
 tags:
     - worker
     - phase1
 created_at: 2026-01-28T04:00:11Z
-updated_at: 2026-01-28T04:00:11Z
+updated_at: 2026-01-28T04:33:17Z
 parent: agent-ops-jcbs
 ---
 

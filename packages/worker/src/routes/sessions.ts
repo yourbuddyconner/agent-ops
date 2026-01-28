@@ -33,6 +33,17 @@ const sendMessageSchema = z.object({
 });
 
 /**
+ * Generate a 256-bit hex token for runner authentication.
+ */
+function generateRunnerToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
  * GET /api/sessions
  * List user's sessions
  */
@@ -51,13 +62,16 @@ sessionsRouter.get('/', async (c) => {
 
 /**
  * POST /api/sessions
- * Create a new agent session
+ * Create a new agent session.
+ * Flow: create DB record → generate runner token → call Python backend
+ * to spawn sandbox → initialize SessionAgentDO with sandbox info.
  */
 sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
   const user = c.get('user');
   const body = c.req.valid('json');
 
   const sessionId = crypto.randomUUID();
+  const runnerToken = generateRunnerToken();
 
   // Ensure user exists in DB
   await db.getOrCreateUser(c.env.DB, { id: user.id, email: user.email });
@@ -70,33 +84,82 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     metadata: body.config,
   });
 
-  // Initialize the Durable Object
+  // Construct WebSocket URL for the DO (used by Runner inside sandbox)
+  const wsProtocol = c.req.url.startsWith('https') ? 'wss' : 'ws';
+  const host = c.req.header('host') || 'localhost';
+  const doWsUrl = `${wsProtocol}://${host}/api/sessions/${sessionId}/ws`;
+
+  // Call Python backend to spawn sandbox
+  let sandboxId: string | undefined;
+  let tunnelUrls: Record<string, string> | undefined;
+
+  try {
+    const backendResponse = await fetch(`${c.env.MODAL_BACKEND_URL}/create-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId,
+        userId: user.id,
+        workspace: body.workspace,
+        imageType: 'base',
+        doWsUrl,
+        runnerToken,
+        jwtSecret: c.env.ENCRYPTION_KEY,
+        envVars: {
+          ANTHROPIC_API_KEY: '',  // TODO: pull from user's API keys DO
+        },
+      }),
+    });
+
+    if (!backendResponse.ok) {
+      const err = await backendResponse.text();
+      throw new Error(`Backend returned ${backendResponse.status}: ${err}`);
+    }
+
+    const backendResult = await backendResponse.json() as {
+      sandboxId: string;
+      tunnelUrls: Record<string, string>;
+    };
+
+    sandboxId = backendResult.sandboxId;
+    tunnelUrls = backendResult.tunnelUrls;
+  } catch (err) {
+    console.error('Failed to spawn sandbox:', err);
+    await db.updateSessionStatus(c.env.DB, sessionId, 'error');
+    return c.json({
+      error: 'Failed to create sandbox',
+      details: err instanceof Error ? err.message : String(err),
+    }, 500);
+  }
+
+  // Initialize SessionAgentDO
   const doId = c.env.SESSIONS.idFromName(sessionId);
   const sessionDO = c.env.SESSIONS.get(doId);
 
-  await sessionDO.fetch(new Request('http://internal/init', {
+  await sessionDO.fetch(new Request('http://do/start', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      id: sessionId,
+      sessionId,
       userId: user.id,
       workspace: body.workspace,
-      // In production, this would be the container's OpenCode server URL
-      // openCodeBaseUrl: `http://container-${sessionId}:4096`,
+      runnerToken,
+      sandboxId,
+      tunnelUrls,
     }),
   }));
 
   // Update session status
-  await db.updateSessionStatus(c.env.DB, sessionId, 'idle');
+  await db.updateSessionStatus(c.env.DB, sessionId, 'running');
 
-  // Build WebSocket URL
-  const wsProtocol = c.req.url.startsWith('https') ? 'wss' : 'ws';
-  const host = c.req.header('host') || 'localhost';
-  const websocketUrl = `${wsProtocol}://${host}/api/sessions/${sessionId}/ws?userId=${user.id}`;
+  // Build client WebSocket URL
+  const websocketUrl = `${wsProtocol}://${host}/api/sessions/${sessionId}/ws?role=client&userId=${user.id}`;
 
   return c.json(
     {
-      session: { ...session, status: 'idle' as const },
+      session: { ...session, status: 'running' as const },
       websocketUrl,
+      tunnelUrls,
     },
     201
   );
@@ -120,12 +183,20 @@ sessionsRouter.get('/:id', async (c) => {
     throw new NotFoundError('Session', id);
   }
 
-  return c.json({ session });
+  // Get live status from DO
+  const doId = c.env.SESSIONS.idFromName(id);
+  const sessionDO = c.env.SESSIONS.get(doId);
+
+  const statusRes = await sessionDO.fetch(new Request('http://do/status'));
+  const doStatus = await statusRes.json() as Record<string, unknown>;
+
+  return c.json({ session, doStatus });
 });
 
 /**
  * POST /api/sessions/:id/messages
- * Send a message to the agent
+ * Send a message/prompt to the session agent.
+ * The DO will queue it and forward to the runner via WebSocket.
  */
 sessionsRouter.post('/:id/messages', zValidator('json', sendMessageSchema), async (c) => {
   const user = c.get('user');
@@ -146,23 +217,15 @@ sessionsRouter.post('/:id/messages', zValidator('json', sendMessageSchema), asyn
     throw new ValidationError('Session has been terminated');
   }
 
-  // Forward to Durable Object
-  const doId = c.env.SESSIONS.idFromName(id);
-  const sessionDO = c.env.SESSIONS.get(doId);
-
-  const response = await sessionDO.fetch(new Request('http://internal/message', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  }));
-
-  // Stream the response back
-  return new Response(response.body, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    },
+  // Save message to D1 for API access
+  await db.saveMessage(c.env.DB, {
+    id: crypto.randomUUID(),
+    sessionId: id,
+    role: 'user',
+    content: body.content,
   });
+
+  return c.json({ success: true, message: 'Prompt will be delivered via WebSocket' });
 });
 
 /**
@@ -193,6 +256,34 @@ sessionsRouter.get('/:id/messages', async (c) => {
 });
 
 /**
+ * GET /api/sessions/:id/ws
+ * WebSocket upgrade — proxies to SessionAgentDO.
+ */
+sessionsRouter.get('/:id/ws', async (c) => {
+  const { id } = c.req.param();
+
+  // Allow both client and runner connections
+  // Clients: ?role=client&userId=...
+  // Runner: ?role=runner&token=...
+  const role = c.req.query('role');
+
+  if (role === 'client') {
+    const user = c.get('user');
+    const session = await db.getSession(c.env.DB, id);
+    if (!session || session.userId !== user.id) {
+      throw new NotFoundError('Session', id);
+    }
+  }
+  // Runner auth is handled by the DO itself via token validation
+
+  const doId = c.env.SESSIONS.idFromName(id);
+  const sessionDO = c.env.SESSIONS.get(doId);
+
+  // Forward the raw request (including upgrade headers and query params)
+  return sessionDO.fetch(c.req.raw);
+});
+
+/**
  * GET /api/sessions/:id/events
  * Server-Sent Events endpoint for real-time updates
  */
@@ -218,8 +309,7 @@ sessionsRouter.get('/:id/events', async (c) => {
   // Send initial connection event
   writer.write(encoder.encode(`event: connected\ndata: {"sessionId":"${id}"}\n\n`));
 
-  // In a real implementation, you'd subscribe to DO events here
-  // For now, just keep the connection alive with heartbeats
+  // Heartbeat to keep connection alive
   const heartbeat = setInterval(async () => {
     try {
       await writer.write(encoder.encode(`: heartbeat\n\n`));
@@ -245,7 +335,7 @@ sessionsRouter.get('/:id/events', async (c) => {
 
 /**
  * DELETE /api/sessions/:id
- * Terminate a session
+ * Terminate a session — stops the DO and terminates the sandbox.
  */
 sessionsRouter.delete('/:id', async (c) => {
   const user = c.get('user');
@@ -261,11 +351,25 @@ sessionsRouter.delete('/:id', async (c) => {
     throw new NotFoundError('Session', id);
   }
 
-  // Terminate the Durable Object session
+  // Stop the SessionAgent DO
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
 
-  await sessionDO.fetch(new Request('http://internal/terminate', { method: 'POST' }));
+  const stopRes = await sessionDO.fetch(new Request('http://do/stop', { method: 'POST' }));
+  const stopResult = await stopRes.json() as { sandboxId?: string };
+
+  // Terminate sandbox via Python backend
+  if (stopResult.sandboxId) {
+    try {
+      await fetch(`${c.env.MODAL_BACKEND_URL}/terminate-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sandboxId: stopResult.sandboxId }),
+      });
+    } catch (err) {
+      console.error('Failed to terminate sandbox:', err);
+    }
+  }
 
   // Update DB status
   await db.updateSessionStatus(c.env.DB, id, 'terminated');

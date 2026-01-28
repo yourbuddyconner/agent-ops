@@ -10,6 +10,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "development"
+MODAL_BACKEND_URL = "https://agent-ops-backend--create-session.modal.run"
 
 # Durable Objects
 [[durable_objects.bindings]]
