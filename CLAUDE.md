@@ -43,6 +43,7 @@ beans update <id> -s in-progress
   ```
 - **If a bean blocks another**: Use `--blocking <other-id>` on create or update
 - **To add notes/context to a bean**: `beans update <id> -d "Updated description with findings"`
+- **Use the frontend-design skill when finishing frontend tasks for final design polish"**
 
 ### Bean Conventions
 

@@ -1,18 +1,19 @@
 """Base sandbox image definition for Agent-Ops.
 
-Includes system tools, Node.js, Bun, and OpenCode CLI.
-Phase 1: no VNC/code-server/TTYD (those come in Phase 2).
+Full dev environment: Node.js, Bun, OpenCode CLI,
+code-server, VNC stack (Xvfb + fluxbox + x11vnc + websockify + noVNC),
+Chromium, TTYD.
 """
 
 import modal
 
-from config import BASE_IMAGE_TAG, NODE_VERSION
+from config import NODE_VERSION
 
 
 def get_base_image() -> modal.Image:
-    """Build the base sandbox image with common development tools."""
+    """Build the full sandbox image with all dev environment services."""
     return (
-        modal.Image.from_registry(BASE_IMAGE_TAG)
+        modal.Image.debian_slim()
         .apt_install(
             "git",
             "curl",
@@ -25,6 +26,8 @@ def get_base_image() -> modal.Image:
             "sudo",
             "unzip",
             "openssh-client",
+            "bash",
+            "procps",
         )
         # Install Node.js
         .run_commands(
@@ -35,17 +38,40 @@ def get_base_image() -> modal.Image:
         # Install Bun
         .run_commands(
             "curl -fsSL https://bun.sh/install | bash",
-            'echo \'export BUN_INSTALL="$HOME/.bun"\' >> /root/.bashrc',
-            'echo \'export PATH="$BUN_INSTALL/bin:$PATH"\' >> /root/.bashrc',
         )
         # Install OpenCode CLI
         .run_commands(
-            "npm install -g @opencode-ai/cli",
+            "npm install -g opencode-ai",
         )
+        # code-server (VS Code in browser)
+        .run_commands(
+            "curl -fsSL https://code-server.dev/install.sh | sh",
+        )
+        # VNC stack: Xvfb + fluxbox + x11vnc + websockify + noVNC + Chromium
+        .apt_install(
+            "xvfb",
+            "fluxbox",
+            "x11vnc",
+            "websockify",
+            "novnc",
+            "chromium",
+        )
+        # TTYD (web terminal)
+        .run_commands(
+            'curl -fsSL -o /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64"',
+            "chmod +x /usr/local/bin/ttyd",
+        )
+        # Copy start.sh
+        .add_local_file("docker/start.sh", "/start.sh", copy=True)
+        .run_commands("chmod +x /start.sh")
+        # Create workspace directory
+        .run_commands("mkdir -p /workspace")
         .env(
             {
                 "BUN_INSTALL": "/root/.bun",
                 "PATH": "/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "DISPLAY": ":99",
+                "HOME": "/root",
             }
         )
     )

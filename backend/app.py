@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import modal
 
-from session import CreateSessionRequest, SessionManager
-
 app = modal.App("agent-ops-backend")
+
+# Image for the web functions — includes our backend Python modules
+fn_image = (
+    modal.Image.debian_slim()
+    .add_local_python_source("session", "sandboxes", "config", "images")
+    .add_local_dir("../docker", remote_path="/root/docker")
+)
+
+from session import CreateSessionRequest, SessionManager
 
 session_manager = SessionManager(app)
 
 
-@app.function()
+@app.function(image=fn_image)
 @modal.fastapi_endpoint(method="POST", label="create-session")
 async def create_session(request: dict) -> dict:
     """Create a new session and spawn a sandbox.
@@ -51,7 +58,7 @@ async def create_session(request: dict) -> dict:
     }
 
 
-@app.function()
+@app.function(image=fn_image)
 @modal.fastapi_endpoint(method="POST", label="terminate-session")
 async def terminate_session(request: dict) -> dict:
     """Terminate a session's sandbox.
@@ -67,7 +74,7 @@ async def terminate_session(request: dict) -> dict:
     return {"success": True}
 
 
-@app.function()
+@app.function(image=fn_image)
 @modal.fastapi_endpoint(method="POST", label="session-status")
 async def session_status(request: dict) -> dict:
     """Get status of a session's sandbox.

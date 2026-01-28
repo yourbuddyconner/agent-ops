@@ -10,7 +10,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "development"
-MODAL_BACKEND_URL = "https://agent-ops-backend--create-session.modal.run"
+MODAL_BACKEND_URL = "https://yourbuddyconner--{label}.modal.run"
 # SANDBOX_JWT_SECRET - set via `wrangler secret put SANDBOX_JWT_SECRET`
 
 # Durable Objects

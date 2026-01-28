@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { Container } from '@/api/containers';
-import { useStartContainer } from '@/api/containers';
+import { useStartContainer, useSandboxToken } from '@/api/containers';
 import { useContainerHeartbeatInterval } from '@/hooks/use-container-heartbeat';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -96,7 +96,46 @@ export function OpenCodeTab({ container }: OpenCodeTabProps) {
     );
   }
 
-  const proxyUrl = `/api/containers/${container.id}/proxy/`;
+  // Fetch sandbox token + tunnel URLs for direct iframe access
+  const sandboxToken = useSandboxToken(container.id, container.status === 'running');
+
+  // Build the iframe URL pointing directly at the Modal tunnel
+  const iframeSrc = (() => {
+    if (!sandboxToken.data) return null;
+    const { token, tunnelUrls } = sandboxToken.data;
+    const opencodeUrl = tunnelUrls.opencode;
+    if (!opencodeUrl) return null;
+    // Append JWT as query param for auth
+    const separator = opencodeUrl.includes('?') ? '&' : '?';
+    return `${opencodeUrl}${separator}token=${token}`;
+  })();
+
+  // Show loading while fetching token
+  if (sandboxToken.isLoading || !iframeSrc) {
+    return (
+      <div className="relative h-[calc(100vh-280px)] min-h-[500px]">
+        <div className="absolute inset-0 flex items-center justify-center bg-white rounded-lg border border-neutral-200">
+          <div className="flex flex-col items-center gap-4">
+            <LoadingSpinner className="size-8 text-neutral-400" />
+            <p className="text-sm text-neutral-500">
+              {sandboxToken.isError
+                ? 'Failed to get sandbox access token'
+                : 'Connecting to sandbox...'}
+            </p>
+            {sandboxToken.isError && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => sandboxToken.refetch()}
+              >
+                Retry
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative h-[calc(100vh-280px)] min-h-[500px]">
@@ -130,9 +169,9 @@ export function OpenCodeTab({ container }: OpenCodeTabProps) {
         </div>
       )}
 
-      {/* OpenCode iframe */}
+      {/* OpenCode iframe — points directly at Modal tunnel URL */}
       <iframe
-        src={proxyUrl}
+        src={iframeSrc}
         title="OpenCode Development Environment"
         className={cn(
           'h-full w-full rounded-lg border border-neutral-200',
@@ -140,7 +179,7 @@ export function OpenCodeTab({ container }: OpenCodeTabProps) {
         )}
         onLoad={handleIframeLoad}
         onError={handleIframeError}
-        sandbox="allow-scripts allow-forms allow-popups allow-modals"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
       />
     </div>
   );

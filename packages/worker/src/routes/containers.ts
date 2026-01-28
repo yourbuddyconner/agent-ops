@@ -6,6 +6,44 @@ import type { Env, Variables } from '../env.js';
 
 export const containersRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
+function generateRunnerToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function signJWT(payload: Record<string, unknown>, secret: string): Promise<string> {
+  const header = { alg: 'HS256', typ: 'JWT' };
+
+  const encode = (obj: Record<string, unknown>) =>
+    btoa(JSON.stringify(obj))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+
+  const headerB64 = encode(header);
+  const payloadB64 = encode(payload);
+  const data = `${headerB64}.${payloadB64}`;
+
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
+  const sigB64 = btoa(String.fromCharCode(...new Uint8Array(signature)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  return `${data}.${sigB64}`;
+}
+
 // Validation schemas
 const createContainerSchema = z.object({
   name: z.string().min(1).max(64),
@@ -293,19 +331,72 @@ containersRouter.post('/:id/start', async (c) => {
     WHERE id = ?
   `).bind(now, id).run();
 
-  // Get the Durable Object to start the container
+  // Generate a runner token for this container session
+  const runnerToken = generateRunnerToken();
+
+  // Construct WebSocket URL for the DO (used by Runner inside sandbox)
+  const wsProtocol = c.req.url.startsWith('https') ? 'wss' : 'ws';
+  const host = c.req.header('host') || 'localhost';
+  const doWsUrl = `${wsProtocol}://${host}/api/sessions/container-${id}/ws`;
+
+  // Call Modal backend to spawn a sandbox
+  let sandboxId: string | undefined;
+  let tunnelUrls: Record<string, string> | undefined;
+
+  try {
+    const backendResponse = await fetch(c.env.MODAL_BACKEND_URL.replace('{label}', 'create-session'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: `container-${id}`,
+        userId: user.id,
+        workspace: existing.name || '/workspace',
+        imageType: 'base',
+        doWsUrl,
+        runnerToken,
+        jwtSecret: c.env.ENCRYPTION_KEY,
+        envVars: {},
+      }),
+    });
+
+    if (!backendResponse.ok) {
+      const err = await backendResponse.text();
+      throw new Error(`Backend returned ${backendResponse.status}: ${err}`);
+    }
+
+    const backendResult = await backendResponse.json() as {
+      sandboxId: string;
+      tunnelUrls: Record<string, string>;
+    };
+
+    sandboxId = backendResult.sandboxId;
+    tunnelUrls = backendResult.tunnelUrls;
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'Failed to create sandbox';
+    await c.env.DB.prepare(`
+      UPDATE containers
+      SET status = 'error', error_message = ?, updated_at = ?
+      WHERE id = ?
+    `).bind(errorMessage, now, id).run();
+
+    return c.json({ error: errorMessage }, 500);
+  }
+
+  // Initialize SessionAgentDO with sandbox info
   const doId = c.env.SESSIONS.idFromName(`container:${id}`);
   const stub = c.env.SESSIONS.get(doId);
 
   try {
-    // Initialize and start the container via Durable Object
     const response = await stub.fetch(new Request('http://internal/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        containerId: id,
+        sessionId: `container-${id}`,
         userId: user.id,
-        name: existing.name,
+        workspace: existing.name || '/workspace',
+        runnerToken,
+        sandboxId,
+        tunnelUrls,
       }),
     }));
 
@@ -314,18 +405,15 @@ containersRouter.post('/:id/start', async (c) => {
       throw new Error(error);
     }
 
-    const result = await response.json() as { ipAddress?: string; region?: string };
-
     // Update with running status
     await c.env.DB.prepare(`
       UPDATE containers
       SET status = 'running', started_at = ?, last_active_at = ?,
-          ip_address = ?, region = ?, updated_at = ?
+          container_id = ?, updated_at = ?
       WHERE id = ?
-    `).bind(now, now, result.ipAddress || null, result.region || null, now, id).run();
+    `).bind(now, now, sandboxId || null, now, id).run();
 
   } catch (err) {
-    // Update with error status
     const errorMessage = err instanceof Error ? err.message : 'Failed to start container';
     await c.env.DB.prepare(`
       UPDATE containers
@@ -568,6 +656,62 @@ containersRouter.get('/:id/ws', async (c) => {
 });
 
 /**
+ * GET /api/containers/:id/sandbox-token
+ * Issue a short-lived JWT for direct iframe access to sandbox tunnel URLs.
+ * The frontend uses this token to point iframes directly at Modal tunnel URLs
+ * with ?token=<jwt> query param, bypassing the worker proxy.
+ */
+containersRouter.get('/:id/sandbox-token', async (c) => {
+  const { id } = c.req.param();
+  const user = c.get('user');
+
+  // Verify container exists, user owns it, and it's running
+  const container = await c.env.DB.prepare(`
+    SELECT id, status FROM containers WHERE id = ? AND user_id = ?
+  `).bind(id, user.id).first();
+
+  if (!container) {
+    throw new NotFoundError('Container', id);
+  }
+
+  if (container.status !== 'running') {
+    return c.json({ error: 'Container is not running' }, 503);
+  }
+
+  // Get tunnel URLs from the Durable Object
+  const doId = c.env.SESSIONS.idFromName(`container:${id}`);
+  const stub = c.env.SESSIONS.get(doId);
+
+  const statusResponse = await stub.fetch(new Request('http://internal/status'));
+  const statusData = await statusResponse.json() as {
+    tunnelUrls: Record<string, string> | null;
+    sessionId: string;
+  };
+
+  if (!statusData.tunnelUrls) {
+    return c.json({ error: 'Sandbox tunnel URLs not available' }, 503);
+  }
+
+  // Sign a short-lived JWT (15 minutes) using HMAC-SHA256
+  const secret = c.env.ENCRYPTION_KEY;
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    sub: user.id,
+    sid: statusData.sessionId || `container-${id}`,
+    iat: now,
+    exp: now + 15 * 60, // 15 minutes
+  };
+
+  const token = await signJWT(payload, secret);
+
+  return c.json({
+    token,
+    tunnelUrls: statusData.tunnelUrls,
+    expiresAt: new Date((now + 15 * 60) * 1000).toISOString(),
+  });
+});
+
+/**
  * ALL /api/containers/:id/proxy/*
  * Proxy authenticated requests to the OpenCode container.
  * This allows the frontend to embed the OpenCode UI in an iframe
@@ -599,9 +743,9 @@ containersRouter.all('/:id/proxy/*', async (c) => {
   const doId = c.env.SESSIONS.idFromName(`container:${id}`);
   const stub = c.env.SESSIONS.get(doId);
 
-  // Build the URL to forward to the container
+  // Build the URL to forward to the DO's proxy handler
   const url = new URL(c.req.url);
-  const proxyUrl = new URL(`http://container/${pathAfterProxy}${url.search}`);
+  const proxyUrl = new URL(`http://do/proxy/${pathAfterProxy}${url.search}`);
 
   // Forward the request to the Durable Object which will proxy to the container
   const proxyRequest = new Request(proxyUrl.toString(), {

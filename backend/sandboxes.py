@@ -57,16 +57,15 @@ class SandboxManager:
             secrets_dict.update(config.env_vars)
 
         sandbox = await modal.Sandbox.create.aio(
+            "/bin/bash", "/start.sh",
             app=self.app,
             image=image,
-            command=["/bin/bash", "/start.sh"],
             encrypted_ports=[OPENCODE_PORT, GATEWAY_PORT],
             timeout=MAX_TIMEOUT_SECONDS,
-            idle_timeout=config.idle_timeout_seconds,
             secrets=[modal.Secret.from_dict(secrets_dict)],
             volumes={
                 "/workspace": modal.Volume.from_name(
-                    f"workspace-{config.session_id}",
+                    f"workspace-{config.session_id.replace(':', '-')}",
                     create_if_missing=True,
                 ),
             },

@@ -52,6 +52,12 @@ export interface UpdateContainerRequest {
   autoSleepMinutes?: number;
 }
 
+export interface SandboxTokenResponse {
+  token: string;
+  tunnelUrls: Record<string, string>;
+  expiresAt: string;
+}
+
 // Query keys
 export const containerKeys = {
   all: ['containers'] as const,
@@ -59,6 +65,7 @@ export const containerKeys = {
   list: (filters?: Record<string, unknown>) => [...containerKeys.lists(), filters] as const,
   details: () => [...containerKeys.all, 'detail'] as const,
   detail: (id: string) => [...containerKeys.details(), id] as const,
+  sandboxToken: (id: string) => [...containerKeys.all, 'sandbox-token', id] as const,
 };
 
 // Hooks
@@ -152,5 +159,15 @@ export function useContainerHeartbeat() {
   return useMutation({
     mutationFn: (containerId: string) =>
       api.post<{ success: boolean }>(`/containers/${containerId}/heartbeat`),
+  });
+}
+
+export function useSandboxToken(containerId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: containerKeys.sandboxToken(containerId),
+    queryFn: () => api.get<SandboxTokenResponse>(`/containers/${containerId}/sandbox-token`),
+    enabled: !!containerId && enabled,
+    staleTime: 10 * 60 * 1000, // 10 minutes (token lasts 15)
+    refetchInterval: 10 * 60 * 1000, // Refresh every 10 minutes
   });
 }

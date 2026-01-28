@@ -627,7 +627,7 @@ deploy-client: build-client ## Deploy client to Cloudflare Pages
 
 build-client: ## Build client for production
 	@echo "$(GREEN)Building client...$(NC)"
-	cd packages/client && $(PNPM) run build
+	cd packages/client && VITE_API_URL=$(WORKER_PROD_URL)/api $(PNPM) run build
 	@echo "$(GREEN)✓ Client built$(NC)"
 
 dev-client: ## Start client dev server

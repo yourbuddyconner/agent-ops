@@ -95,7 +95,7 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
   let tunnelUrls: Record<string, string> | undefined;
 
   try {
-    const backendResponse = await fetch(`${c.env.MODAL_BACKEND_URL}/create-session`, {
+    const backendResponse = await fetch(c.env.MODAL_BACKEND_URL.replace('{label}', 'create-session'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -422,7 +422,7 @@ sessionsRouter.delete('/:id', async (c) => {
   // Terminate sandbox via Python backend
   if (stopResult.sandboxId) {
     try {
-      await fetch(`${c.env.MODAL_BACKEND_URL}/terminate-session`, {
+      await fetch(c.env.MODAL_BACKEND_URL.replace('{label}', 'terminate-session'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sandboxId: stopResult.sandboxId }),
