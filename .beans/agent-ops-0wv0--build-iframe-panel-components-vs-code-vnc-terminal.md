@@ -1,14 +1,14 @@
 ---
 # agent-ops-0wv0
 title: Build iframe panel components (VS Code, VNC, Terminal)
-status: todo
+status: completed
 type: task
 priority: critical
 tags:
     - phase2
     - frontend
 created_at: 2026-01-28T04:05:27Z
-updated_at: 2026-01-28T04:05:53Z
+updated_at: 2026-01-28T04:44:19Z
 parent: agent-ops-742p
 blocking:
     - agent-ops-k4wb

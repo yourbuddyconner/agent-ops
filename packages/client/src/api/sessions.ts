@@ -75,6 +75,16 @@ export function useDeleteSession() {
   });
 }
 
+export function useSessionToken(sessionId: string) {
+  return useQuery({
+    queryKey: [...sessionKeys.detail(sessionId), 'token'] as const,
+    queryFn: () => api.post<{ token: string; expiresIn: number }>(`/sessions/${sessionId}/token`),
+    enabled: !!sessionId,
+    staleTime: 10 * 60 * 1000, // Refetch after 10 min (token lasts 15 min)
+    refetchInterval: 10 * 60 * 1000,
+  });
+}
+
 export function useTerminateSession() {
   const queryClient = useQueryClient();
 
