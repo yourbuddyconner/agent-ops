@@ -1,6 +1,5 @@
 # Agent-Ops Sandbox Image
-# Phase 1: OpenCode server + Runner process only.
-# Phase 2 adds: code-server, VNC (Xvfb + x11vnc + websockify), TTYD.
+# Full dev environment: OpenCode + Runner + code-server + VNC + TTYD
 
 FROM debian:bookworm-slim AS base
 
@@ -23,7 +22,24 @@ ENV PATH="$BUN_INSTALL/bin:$PATH"
 # OpenCode CLI
 RUN npm install -g @opencode-ai/cli
 
-# ─── Runner ─────────────────────────────────────────────────────────────
+# ─── Phase 2: Dev Environment Services ─────────────────────────────────
+
+# code-server (VS Code in browser)
+RUN curl -fsSL https://code-server.dev/install.sh | sh
+
+# VNC stack: Xvfb + fluxbox + x11vnc + websockify + noVNC + Chromium
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb fluxbox x11vnc websockify \
+    novnc \
+    chromium \
+    && rm -rf /var/lib/apt/lists/*
+
+# TTYD (web terminal)
+RUN curl -fsSL -o /usr/local/bin/ttyd \
+    "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64" \
+    && chmod +x /usr/local/bin/ttyd
+
+# ─── Runner Build ──────────────────────────────────────────────────────
 
 FROM base AS runner-build
 
@@ -42,7 +58,6 @@ WORKDIR /runner
 COPY --from=runner-build /build/runner/dist ./dist
 COPY --from=runner-build /build/runner/node_modules ./node_modules
 COPY --from=runner-build /build/runner/package.json ./
-# Also copy source for dev/debug
 COPY --from=runner-build /build/runner/src ./src
 COPY --from=runner-build /build/runner/tsconfig.json ./
 
@@ -54,7 +69,12 @@ RUN chmod +x /start.sh
 RUN mkdir -p /workspace
 WORKDIR /workspace
 
-# Ports: 4096 (OpenCode), 9000 (Auth Gateway)
-EXPOSE 4096 9000
+# Ports:
+#   4096  OpenCode server
+#   8080  code-server (VS Code)
+#   6080  noVNC (websockify → x11vnc)
+#   7681  TTYD (web terminal)
+#   9000  Auth gateway proxy
+EXPOSE 4096 8080 6080 7681 9000
 
 CMD ["/bin/bash", "/start.sh"]

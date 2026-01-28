@@ -1,14 +1,14 @@
 ---
 # agent-ops-aeb8
 title: Add code-server, VNC stack, TTYD to sandbox image
-status: todo
+status: completed
 type: task
 priority: critical
 tags:
     - phase2
     - sandbox
 created_at: 2026-01-28T04:05:13Z
-updated_at: 2026-01-28T04:05:13Z
+updated_at: 2026-01-28T04:35:39Z
 parent: agent-ops-742p
 ---
 
