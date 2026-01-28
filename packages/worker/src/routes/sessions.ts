@@ -263,6 +263,33 @@ sessionsRouter.post('/:id/messages', zValidator('json', sendMessageSchema), asyn
 });
 
 /**
+ * POST /api/sessions/:id/clear-queue
+ * Clear the prompt queue for a session. Only the session owner can do this.
+ */
+sessionsRouter.post('/:id/clear-queue', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  const session = await db.getSession(c.env.DB, id);
+
+  if (!session) {
+    throw new NotFoundError('Session', id);
+  }
+
+  if (session.userId !== user.id) {
+    throw new NotFoundError('Session', id);
+  }
+
+  const doId = c.env.SESSIONS.idFromName(id);
+  const sessionDO = c.env.SESSIONS.get(doId);
+
+  const res = await sessionDO.fetch(new Request('http://do/clear-queue', { method: 'POST' }));
+  const result = await res.json() as { cleared: number };
+
+  return c.json(result);
+});
+
+/**
  * GET /api/sessions/:id/messages
  * Get session message history
  */

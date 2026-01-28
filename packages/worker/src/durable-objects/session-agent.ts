@@ -116,6 +116,8 @@ export class SessionAgentDO {
         return this.handleStop();
       case '/status':
         return this.handleStatus();
+      case '/clear-queue':
+        return this.handleClearQueue();
     }
 
     // Proxy to sandbox
@@ -303,9 +305,20 @@ export class SessionAgentDO {
     const isRunner = tags.includes('runner');
 
     if (isRunner) {
+      // Revert any processing prompt back to queued so it can be retried
+      this.ctx.storage.sql.exec(
+        "UPDATE prompt_queue SET status = 'queued' WHERE status = 'processing'"
+      );
+      this.setStateValue('runnerBusy', 'false');
+
+      const queueLength = this.getQueueLength();
       this.broadcastToClients({
         type: 'status',
-        data: { runnerConnected: false },
+        data: {
+          runnerConnected: false,
+          queuedPrompts: queueLength,
+          runnerDisconnected: true,
+        },
       });
     } else {
       // Extract userId from tag like "client:abc123"
@@ -799,6 +812,18 @@ export class SessionAgentDO {
       connectedClients: clientCount,
       connectedUsers,
     });
+  }
+
+  private async handleClearQueue(): Promise<Response> {
+    const cleared = this.getQueueLength();
+    this.ctx.storage.sql.exec("DELETE FROM prompt_queue WHERE status = 'queued'");
+
+    this.broadcastToClients({
+      type: 'status',
+      data: { queueCleared: true, cleared },
+    });
+
+    return Response.json({ success: true, cleared });
   }
 
   private async handleProxy(request: Request, url: URL): Promise<Response> {
