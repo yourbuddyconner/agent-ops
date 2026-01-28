@@ -1,0 +1,60 @@
+# Agent-Ops Sandbox Image
+# Phase 1: OpenCode server + Runner process only.
+# Phase 2 adds: code-server, VNC (Xvfb + x11vnc + websockify), TTYD.
+
+FROM debian:bookworm-slim AS base
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl wget jq ripgrep build-essential \
+    ca-certificates gnupg sudo unzip openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js 22
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g npm@latest
+
+# Bun
+RUN curl -fsSL https://bun.sh/install | bash
+ENV BUN_INSTALL="/root/.bun"
+ENV PATH="$BUN_INSTALL/bin:$PATH"
+
+# OpenCode CLI
+RUN npm install -g @opencode-ai/cli
+
+# ─── Runner ─────────────────────────────────────────────────────────────
+
+FROM base AS runner-build
+
+WORKDIR /build/runner
+COPY packages/runner/package.json packages/runner/bun.lock* ./
+RUN bun install --frozen-lockfile || bun install
+COPY packages/runner/src ./src
+COPY packages/runner/tsconfig.json ./
+RUN bun build src/bin.ts --outdir dist --target bun
+
+# ─── Final Image ────────────────────────────────────────────────────────
+
+FROM base
+
+WORKDIR /runner
+COPY --from=runner-build /build/runner/dist ./dist
+COPY --from=runner-build /build/runner/node_modules ./node_modules
+COPY --from=runner-build /build/runner/package.json ./
+# Also copy source for dev/debug
+COPY --from=runner-build /build/runner/src ./src
+COPY --from=runner-build /build/runner/tsconfig.json ./
+
+# Startup script
+COPY docker/start.sh /start.sh
+RUN chmod +x /start.sh
+
+# Workspace volume mount point
+RUN mkdir -p /workspace
+WORKDIR /workspace
+
+# Ports: 4096 (OpenCode), 9000 (Auth Gateway)
+EXPOSE 4096 9000
+
+CMD ["/bin/bash", "/start.sh"]

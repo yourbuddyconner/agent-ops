@@ -1,14 +1,14 @@
 ---
 # agent-ops-1afs
 title: Build sandbox Dockerfile and start.sh
-status: todo
+status: completed
 type: task
 priority: critical
 tags:
     - sandbox
     - phase1
 created_at: 2026-01-28T03:59:41Z
-updated_at: 2026-01-28T03:59:41Z
+updated_at: 2026-01-28T04:30:48Z
 parent: agent-ops-jcbs
 ---
 
