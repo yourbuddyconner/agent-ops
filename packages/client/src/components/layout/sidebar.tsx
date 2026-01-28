@@ -5,7 +5,6 @@ import { useUIStore } from '@/stores/ui';
 const navItems = [
   { href: '/', label: 'Dashboard', icon: DashboardIcon },
   { href: '/workflows', label: 'Workflows', icon: WorkflowsIcon },
-  { href: '/containers', label: 'Containers', icon: ContainersIcon },
   { href: '/sessions', label: 'Sessions', icon: SessionsIcon },
   { href: '/integrations', label: 'Integrations', icon: IntegrationsIcon },
   { href: '/settings', label: 'Settings', icon: SettingsIcon },
@@ -157,14 +156,3 @@ function SettingsIcon({ className }: { className?: string }) {
   );
 }
 
-function ContainersIcon({ className }: { className?: string }) {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="M22 12.5V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v12c0 1.1.9 2 2 2h7.5" />
-      <path d="m22 17-5 5" />
-      <path d="m17 17 5 5" />
-      <path d="M6 8h.01" />
-      <path d="M10 8h.01" />
-    </svg>
-  );
-}

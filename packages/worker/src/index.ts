@@ -18,7 +18,6 @@ import { apiKeysRouter } from './routes/api-keys.js';
 import { workflowsRouter } from './routes/workflows.js';
 import { triggersRouter } from './routes/triggers.js';
 import { executionsRouter } from './routes/executions.js';
-import { containersRouter } from './routes/containers.js';
 import { eventsRouter } from './routes/events.js';
 
 // Durable Object exports
@@ -64,7 +63,6 @@ app.route('/api/files', filesRouter);
 app.route('/api/workflows', workflowsRouter);
 app.route('/api/triggers', triggersRouter);
 app.route('/api/executions', executionsRouter);
-app.route('/api/containers', containersRouter);
 app.route('/api/events', eventsRouter);
 
 // Agent container proxy (protected)

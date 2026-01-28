@@ -15,8 +15,6 @@ import { Route as WorkflowsIndexRouteImport } from './routes/workflows/index'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as SessionsIndexRouteImport } from './routes/sessions/index'
 import { Route as IntegrationsIndexRouteImport } from './routes/integrations/index'
-import { Route as ContainersIndexRouteImport } from './routes/containers/index'
-import { Route as ContainersContainerIdRouteImport } from './routes/containers/$containerId'
 import { Route as WorkflowsExecutionsRouteImport } from './routes/workflows/executions'
 import { Route as WorkflowsWorkflowIdRouteImport } from './routes/workflows/$workflowId'
 import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId/index'
@@ -54,16 +52,6 @@ const IntegrationsIndexRoute = IntegrationsIndexRouteImport.update({
   path: '/integrations/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ContainersIndexRoute = ContainersIndexRouteImport.update({
-  id: '/containers/',
-  path: '/containers/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ContainersContainerIdRoute = ContainersContainerIdRouteImport.update({
-  id: '/containers/$containerId',
-  path: '/containers/$containerId',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const WorkflowsExecutionsRoute = WorkflowsExecutionsRouteImport.update({
   id: '/workflows/executions',
   path: '/workflows/executions',
@@ -98,12 +86,10 @@ const SessionsSessionIdFilesRoute = SessionsSessionIdFilesRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
-  '/containers/$containerId': typeof ContainersContainerIdRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
   '/workflows/executions': typeof WorkflowsExecutionsRoute
-  '/containers/': typeof ContainersIndexRoute
   '/integrations/': typeof IntegrationsIndexRoute
   '/sessions/': typeof SessionsIndexRoute
   '/settings/': typeof SettingsIndexRoute
@@ -114,12 +100,10 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
-  '/containers/$containerId': typeof ContainersContainerIdRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
   '/workflows/executions': typeof WorkflowsExecutionsRoute
-  '/containers': typeof ContainersIndexRoute
   '/integrations': typeof IntegrationsIndexRoute
   '/sessions': typeof SessionsIndexRoute
   '/settings': typeof SettingsIndexRoute
@@ -131,12 +115,10 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
-  '/containers/$containerId': typeof ContainersContainerIdRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
   '/workflows/executions': typeof WorkflowsExecutionsRoute
-  '/containers/': typeof ContainersIndexRoute
   '/integrations/': typeof IntegrationsIndexRoute
   '/sessions/': typeof SessionsIndexRoute
   '/settings/': typeof SettingsIndexRoute
@@ -149,12 +131,10 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
-    | '/containers/$containerId'
     | '/integrations/callback'
     | '/sessions/$sessionId'
     | '/workflows/$workflowId'
     | '/workflows/executions'
-    | '/containers/'
     | '/integrations/'
     | '/sessions/'
     | '/settings/'
@@ -165,12 +145,10 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/login'
-    | '/containers/$containerId'
     | '/integrations/callback'
     | '/sessions/$sessionId'
     | '/workflows/$workflowId'
     | '/workflows/executions'
-    | '/containers'
     | '/integrations'
     | '/sessions'
     | '/settings'
@@ -181,12 +159,10 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/login'
-    | '/containers/$containerId'
     | '/integrations/callback'
     | '/sessions/$sessionId'
     | '/workflows/$workflowId'
     | '/workflows/executions'
-    | '/containers/'
     | '/integrations/'
     | '/sessions/'
     | '/settings/'
@@ -198,12 +174,10 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
-  ContainersContainerIdRoute: typeof ContainersContainerIdRoute
   IntegrationsCallbackRoute: typeof IntegrationsCallbackRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRouteWithChildren
   WorkflowsWorkflowIdRoute: typeof WorkflowsWorkflowIdRoute
   WorkflowsExecutionsRoute: typeof WorkflowsExecutionsRoute
-  ContainersIndexRoute: typeof ContainersIndexRoute
   IntegrationsIndexRoute: typeof IntegrationsIndexRoute
   SessionsIndexRoute: typeof SessionsIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
@@ -252,20 +226,6 @@ declare module '@tanstack/react-router' {
       path: '/integrations'
       fullPath: '/integrations/'
       preLoaderRoute: typeof IntegrationsIndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/containers/': {
-      id: '/containers/'
-      path: '/containers'
-      fullPath: '/containers/'
-      preLoaderRoute: typeof ContainersIndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/containers/$containerId': {
-      id: '/containers/$containerId'
-      path: '/containers/$containerId'
-      fullPath: '/containers/$containerId'
-      preLoaderRoute: typeof ContainersContainerIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/workflows/executions': {
@@ -336,12 +296,10 @@ const SessionsSessionIdRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
-  ContainersContainerIdRoute: ContainersContainerIdRoute,
   IntegrationsCallbackRoute: IntegrationsCallbackRoute,
   SessionsSessionIdRoute: SessionsSessionIdRouteWithChildren,
   WorkflowsWorkflowIdRoute: WorkflowsWorkflowIdRoute,
   WorkflowsExecutionsRoute: WorkflowsExecutionsRoute,
-  ContainersIndexRoute: ContainersIndexRoute,
   IntegrationsIndexRoute: IntegrationsIndexRoute,
   SessionsIndexRoute: SessionsIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,
