@@ -58,7 +58,8 @@ const SCHEMA_SQL = `
     options TEXT, -- JSON array of option strings
     status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'answered', 'expired')),
     answer TEXT,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    expires_at INTEGER -- unix timestamp, NULL means no timeout
   );
 
   CREATE TABLE IF NOT EXISTS prompt_queue (
@@ -344,6 +345,52 @@ export class SessionAgentDO {
     ws.close(1011, 'Internal error');
   }
 
+  // ─── Alarm Handler ────────────────────────────────────────────────────
+
+  async alarm() {
+    // Expire pending questions that have timed out
+    const now = Math.floor(Date.now() / 1000);
+    const expired = this.ctx.storage.sql
+      .exec(
+        "SELECT id, text FROM questions WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at <= ?",
+        now
+      )
+      .toArray();
+
+    for (const q of expired) {
+      this.ctx.storage.sql.exec(
+        "UPDATE questions SET status = 'expired' WHERE id = ?",
+        q.id as string
+      );
+
+      this.broadcastToClients({
+        type: 'status',
+        data: { questionExpired: q.id },
+      });
+
+      // Tell runner the question timed out (treated as no answer)
+      this.sendToRunner({
+        type: 'answer',
+        questionId: q.id as string,
+        answer: '__expired__',
+      });
+    }
+
+    // If there are still pending questions with future expiry, schedule next alarm
+    const nextExpiry = this.ctx.storage.sql
+      .exec(
+        "SELECT MIN(expires_at) as next FROM questions WHERE status = 'pending' AND expires_at IS NOT NULL"
+      )
+      .toArray();
+
+    if (nextExpiry.length > 0 && nextExpiry[0].next) {
+      const nextMs = (nextExpiry[0].next as number) * 1000;
+      if (nextMs > Date.now()) {
+        this.ctx.storage.setAlarm(nextMs);
+      }
+    }
+  }
+
   // ─── Client Message Handling ───────────────────────────────────────────
 
   private async handleClientMessage(ws: WebSocket, msg: ClientMessage) {
@@ -429,6 +476,14 @@ export class SessionAgentDO {
   }
 
   private async handleAnswer(questionId: string, answer: string | boolean) {
+    // Only answer if still pending
+    const existing = this.ctx.storage.sql
+      .exec("SELECT status FROM questions WHERE id = ?", questionId)
+      .toArray();
+    if (existing.length === 0 || existing[0].status !== 'pending') {
+      return; // Already answered or expired
+    }
+
     // Update question in DB
     this.ctx.storage.sql.exec(
       "UPDATE questions SET status = 'answered', answer = ? WHERE id = ?",
@@ -445,7 +500,15 @@ export class SessionAgentDO {
     // Broadcast to other clients that question was answered
     this.broadcastToClients({
       type: 'status',
-      data: { questionAnswered: questionId },
+      data: { questionAnswered: questionId, answer: String(answer) },
+    });
+
+    // Notify EventBus
+    this.notifyEventBus({
+      type: 'question.answered',
+      sessionId: this.getStateValue('sessionId'),
+      data: { questionId, answer: String(answer) },
+      timestamp: new Date().toISOString(),
     });
   }
 
@@ -509,15 +572,29 @@ export class SessionAgentDO {
       case 'question': {
         // Store question and broadcast to all clients
         const qId = msg.questionId || crypto.randomUUID();
+        const QUESTION_TIMEOUT_SECS = 5 * 60; // 5 minutes
+        const expiresAt = Math.floor(Date.now() / 1000) + QUESTION_TIMEOUT_SECS;
         this.ctx.storage.sql.exec(
-          "INSERT INTO questions (id, text, options, status) VALUES (?, ?, ?, 'pending')",
-          qId, msg.text || '', msg.options ? JSON.stringify(msg.options) : null
+          "INSERT INTO questions (id, text, options, status, expires_at) VALUES (?, ?, ?, 'pending', ?)",
+          qId, msg.text || '', msg.options ? JSON.stringify(msg.options) : null, expiresAt
         );
         this.broadcastToClients({
           type: 'question',
           questionId: qId,
           text: msg.text,
           options: msg.options,
+          expiresAt,
+        });
+
+        // Schedule an alarm to expire the question if unanswered
+        this.ctx.storage.setAlarm(Date.now() + QUESTION_TIMEOUT_SECS * 1000);
+
+        // Notify EventBus
+        this.notifyEventBus({
+          type: 'question.asked',
+          sessionId: this.getStateValue('sessionId'),
+          data: { questionId: qId, text: msg.text || '' },
+          timestamp: new Date().toISOString(),
         });
         break;
       }

@@ -58,6 +58,21 @@ export interface EventBusEvent {
   timestamp: string;
 }
 
+// Question types
+export type QuestionStatus = 'pending' | 'answered' | 'expired';
+
+export interface AgentQuestion {
+  id: string;
+  sessionId: string;
+  text: string;
+  options?: string[];
+  status: QuestionStatus;
+  answer?: string | boolean;
+  createdAt: Date;
+  answeredAt?: Date;
+  expiresAt?: Date;
+}
+
 // Session types
 export type SessionStatus = 'initializing' | 'running' | 'idle' | 'terminated' | 'error';
 
