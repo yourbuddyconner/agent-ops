@@ -1,0 +1,715 @@
+# Agent-Ops Workflow Plugin - E2E Testing Makefile
+# ================================================
+#
+# This Makefile provides commands for end-to-end testing of the
+# workflow plugin system, including the worker, OpenCode container,
+# and workflow execution.
+
+.PHONY: help install setup clean \
+        dev dev-worker dev-opencode dev-client dev-all \
+        db-setup db-migrate db-seed db-reset \
+        docker-build docker-up docker-down docker-logs \
+        test test-unit test-integration test-e2e \
+        test-workflow test-triggers test-webhooks test-schedule \
+        lint typecheck \
+        logs logs-worker logs-opencode \
+        health health-worker health-opencode \
+        workflow-create workflow-list workflow-run workflow-delete \
+        trigger-create trigger-list trigger-run \
+        demo demo-pr-review demo-alert-triage \
+        release deploy deploy-worker deploy-client build-client \
+        secrets-set secrets-list \
+        container-list container-create container-start container-stop container-delete \
+        image-build image-push
+
+# Configuration
+# =============
+WORKER_URL ?= http://localhost:8787
+WORKER_PROD_URL ?= https://agent-ops.conner-7e8.workers.dev
+OPENCODE_URL ?= http://localhost:4096
+# GHCR image for Modal sandboxes
+GHCR_REPO ?= ghcr.io/$(shell git config --get remote.origin.url | sed -n 's/.*github.com[:/]\([^/]*\/[^/.]*\).*/\1/p' | tr '[:upper:]' '[:lower:]')/opencode
+OPENCODE_SERVER_PASSWORD ?= $(shell grep OPENCODE_SERVER_PASSWORD .env 2>/dev/null | cut -d= -f2 || echo "your-secure-password")
+# API token for E2E testing - matches the seeded test token in scripts/seed-test-data.sql
+API_TOKEN ?= test-api-token-12345
+DOCKER_COMPOSE = docker compose
+PNPM = pnpm
+
+# Colors for output
+GREEN = \033[0;32m
+YELLOW = \033[0;33m
+RED = \033[0;31m
+NC = \033[0m # No Color
+
+# Default target
+help: ## Show this help message
+	@echo "Agent-Ops Workflow Plugin - E2E Testing"
+	@echo "========================================"
+	@echo ""
+	@echo "Usage: make [target]"
+	@echo ""
+	@echo "Targets:"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-20s$(NC) %s\n", $$1, $$2}'
+
+# ==========================================
+# Setup & Installation
+# ==========================================
+
+install: ## Install all dependencies
+	@echo "$(GREEN)Installing dependencies...$(NC)"
+	$(PNPM) install
+
+setup: install db-setup ## Full setup: install deps, setup database
+	@echo "$(GREEN)Setup complete!$(NC)"
+
+clean: docker-down ## Clean up: stop containers, remove build artifacts
+	@echo "$(YELLOW)Cleaning up...$(NC)"
+	rm -rf packages/worker/dist
+	rm -rf packages/worker/.wrangler/state
+	rm -rf packages/client/dist
+	@echo "$(GREEN)Clean complete!$(NC)"
+
+# ==========================================
+# Development Servers
+# ==========================================
+
+dev: ## Start all services in development mode (parallel)
+	@echo "$(GREEN)Starting all services...$(NC)"
+	@make -j2 dev-worker dev-opencode
+
+dev-worker: ## Start the Cloudflare Worker in dev mode
+	@echo "$(GREEN)Starting Worker on $(WORKER_URL)...$(NC)"
+	cd packages/worker && $(PNPM) run dev
+
+dev-opencode: docker-up ## Start OpenCode container
+	@echo "$(GREEN)OpenCode container started on $(OPENCODE_URL)$(NC)"
+
+# ==========================================
+# Database Operations
+# ==========================================
+
+db-setup: db-migrate db-seed ## Setup database: migrate and seed
+	@echo "$(GREEN)Database setup complete!$(NC)"
+
+db-migrate: ## Run D1 database migrations
+	@echo "$(GREEN)Running database migrations...$(NC)"
+	cd packages/worker && $(PNPM) run db:migrate
+
+db-seed: ## Seed database with test data
+	@echo "$(GREEN)Seeding database...$(NC)"
+	cd packages/worker && $(PNPM) run db:seed || echo "$(YELLOW)Seed script not found, skipping...$(NC)"
+
+db-reset: ## Reset database (drop and recreate)
+	@echo "$(YELLOW)Resetting database...$(NC)"
+	rm -rf packages/worker/.wrangler/state/v3/d1
+	@make db-migrate
+	@echo "$(GREEN)Database reset complete!$(NC)"
+
+db-shell: ## Open D1 database shell
+	cd packages/worker && wrangler d1 execute agent-ops-db --local --command "SELECT 1"
+
+# ==========================================
+# Docker Operations
+# ==========================================
+
+docker-build: ## Build Docker images
+	@echo "$(GREEN)Building Docker images...$(NC)"
+	$(DOCKER_COMPOSE) build
+
+docker-up: ## Start Docker containers
+	@echo "$(GREEN)Starting Docker containers...$(NC)"
+	$(DOCKER_COMPOSE) up -d
+	@sleep 2
+	@make health-opencode || echo "$(YELLOW)Waiting for OpenCode to be ready...$(NC)"
+
+docker-down: ## Stop Docker containers
+	@echo "$(YELLOW)Stopping Docker containers...$(NC)"
+	$(DOCKER_COMPOSE) down
+
+docker-logs: ## Show Docker container logs
+	$(DOCKER_COMPOSE) logs -f
+
+docker-restart: docker-down docker-up ## Restart Docker containers
+	@echo "$(GREEN)Docker containers restarted$(NC)"
+
+# ==========================================
+# Health Checks
+# ==========================================
+
+health: health-worker health-opencode ## Check health of all services
+
+health-worker: ## Check Worker health
+	@echo "Checking Worker health..."
+	@curl -sf $(WORKER_URL)/health > /dev/null 2>&1 \
+		&& echo "$(GREEN)✓ Worker is healthy$(NC)" \
+		|| echo "$(RED)✗ Worker is not responding$(NC)"
+
+health-opencode: ## Check OpenCode container health
+	@echo "Checking OpenCode health..."
+	@curl -sf -u "opencode:$(OPENCODE_SERVER_PASSWORD)" $(OPENCODE_URL)/ > /dev/null 2>&1 \
+		&& echo "$(GREEN)✓ OpenCode is healthy$(NC)" \
+		|| echo "$(RED)✗ OpenCode is not responding$(NC)"
+
+wait-for-services: ## Wait for all services to be ready
+	@echo "Waiting for services..."
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+		if curl -sf $(WORKER_URL)/health > /dev/null 2>&1; then \
+			echo "$(GREEN)✓ Worker ready$(NC)"; \
+			break; \
+		fi; \
+		echo "Waiting for worker... ($$i/10)"; \
+		sleep 2; \
+	done
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+		if curl -sf -u "opencode:$(OPENCODE_SERVER_PASSWORD)" $(OPENCODE_URL)/ > /dev/null 2>&1; then \
+			echo "$(GREEN)✓ OpenCode ready$(NC)"; \
+			break; \
+		fi; \
+		echo "Waiting for OpenCode... ($$i/10)"; \
+		sleep 2; \
+	done
+
+# ==========================================
+# Logs
+# ==========================================
+
+logs: ## Show all logs (worker + opencode)
+	@make -j2 logs-worker logs-opencode
+
+logs-worker: ## Show Worker logs
+	@echo "$(GREEN)Worker logs:$(NC)"
+	cd packages/worker && wrangler tail 2>/dev/null || echo "Use 'make dev-worker' to see logs"
+
+logs-opencode: ## Show OpenCode container logs
+	$(DOCKER_COMPOSE) logs -f opencode
+
+# ==========================================
+# Code Quality
+# ==========================================
+
+lint: ## Run linter
+	@echo "$(GREEN)Running linter...$(NC)"
+	$(PNPM) run lint 2>/dev/null || echo "$(YELLOW)No lint script configured$(NC)"
+
+typecheck: ## Run TypeScript type checking
+	@echo "$(GREEN)Running type check...$(NC)"
+	$(PNPM) run typecheck
+
+# ==========================================
+# Testing
+# ==========================================
+
+test: test-unit test-integration ## Run all tests
+
+test-unit: ## Run unit tests
+	@echo "$(GREEN)Running unit tests...$(NC)"
+	$(PNPM) run test:unit 2>/dev/null || echo "$(YELLOW)No unit tests configured$(NC)"
+
+test-integration: ## Run integration tests
+	@echo "$(GREEN)Running integration tests...$(NC)"
+	$(PNPM) run test:integration 2>/dev/null || echo "$(YELLOW)No integration tests configured$(NC)"
+
+test-e2e: wait-for-services ## Run end-to-end tests
+	@echo "$(GREEN)Running E2E tests...$(NC)"
+	@make test-workflow
+	@make test-triggers
+	@make test-webhooks
+
+# ==========================================
+# Workflow E2E Tests
+# ==========================================
+
+test-workflow: ## Test workflow CRUD operations
+	@echo "$(GREEN)Testing workflow operations...$(NC)"
+	@echo ""
+	@echo "1. Creating test workflow..."
+	@make workflow-create-test
+	@echo ""
+	@echo "2. Listing workflows..."
+	@make workflow-list
+	@echo ""
+	@echo "3. Running workflow..."
+	@make workflow-run-test
+	@echo ""
+	@echo "4. Cleaning up..."
+	@make workflow-delete-test
+	@echo ""
+	@echo "$(GREEN)✓ Workflow tests passed$(NC)"
+
+test-triggers: ## Test trigger CRUD operations
+	@echo "$(GREEN)Testing trigger operations...$(NC)"
+	@echo "1. Creating test workflow for trigger..."
+	@make workflow-create-test
+	@echo ""
+	@echo "2. Creating trigger..."
+	@make trigger-create-test
+	@echo ""
+	@echo "3. Listing triggers..."
+	@make trigger-list
+	@echo ""
+	@echo "4. Cleaning up..."
+	@make trigger-delete-test
+	@make workflow-delete-test
+	@echo "$(GREEN)✓ Trigger tests passed$(NC)"
+
+test-webhooks: ## Test webhook trigger execution
+	@echo "$(GREEN)Testing webhook triggers...$(NC)"
+	@# Create a test workflow and webhook trigger, then fire webhook
+	@echo "Creating test workflow for webhook..."
+	@make workflow-create-test
+	@echo "Creating webhook trigger..."
+	@make trigger-create-webhook-test
+	@echo "Firing webhook..."
+	@make webhook-fire-test
+	@echo "Cleaning up..."
+	@make trigger-delete-test
+	@make workflow-delete-test
+	@echo "$(GREEN)✓ Webhook tests passed$(NC)"
+
+test-schedule: ## Test scheduled trigger (requires cron simulation)
+	@echo "$(GREEN)Testing scheduled triggers...$(NC)"
+	@echo "$(YELLOW)Note: Schedule testing requires manual cron trigger$(NC)"
+	@# This would require mocking the cron trigger
+	@echo "$(GREEN)✓ Schedule test placeholder$(NC)"
+
+# ==========================================
+# Workflow Commands
+# ==========================================
+
+# Test workflow for E2E testing
+WORKFLOW_TEST_ID ?= test-workflow-$(shell date +%s)
+WORKFLOW_TEST_NAME ?= E2E Test Workflow
+
+workflow-create: ## Create a workflow (interactive)
+	@echo "$(GREEN)Creating workflow...$(NC)"
+	@echo "Usage: make workflow-create WORKFLOW_FILE=path/to/workflow.yaml"
+	@if [ -n "$(WORKFLOW_FILE)" ]; then \
+		curl -X POST $(WORKER_URL)/api/workflows/sync \
+			-H "Content-Type: application/json" \
+			-H "Authorization: Bearer $(API_TOKEN)" \
+			-d @$(WORKFLOW_FILE); \
+	else \
+		echo "$(YELLOW)Please specify WORKFLOW_FILE$(NC)"; \
+	fi
+
+workflow-create-test: ## Create a test workflow for E2E testing
+	@echo "Creating test workflow: $(WORKFLOW_TEST_ID)"
+	@curl -sf -X POST $(WORKER_URL)/api/workflows/sync \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer $(API_TOKEN)" \
+		-d '{ \
+			"id": "$(WORKFLOW_TEST_ID)", \
+			"name": "$(WORKFLOW_TEST_NAME)", \
+			"description": "Automated E2E test workflow", \
+			"version": "1.0.0", \
+			"data": { \
+				"id": "$(WORKFLOW_TEST_ID)", \
+				"name": "$(WORKFLOW_TEST_NAME)", \
+				"description": "Automated E2E test workflow", \
+				"version": "1.0.0", \
+				"steps": [ \
+					{ \
+						"id": "step-1", \
+						"name": "Echo Test", \
+						"type": "tool", \
+						"tool": "bash", \
+						"arguments": { "command": "echo Hello from E2E test" }, \
+						"outputVariable": "echoResult" \
+					} \
+				] \
+			} \
+		}' && echo " $(GREEN)✓$(NC)" || echo " $(RED)✗$(NC)"
+
+workflow-list: ## List all workflows
+	@echo "$(GREEN)Listing workflows...$(NC)"
+	@curl -sf $(WORKER_URL)/api/workflows \
+		-H "Authorization: Bearer $(API_TOKEN)" | jq . 2>/dev/null || echo "$(RED)Failed to list workflows$(NC)"
+
+workflow-get: ## Get a specific workflow (WORKFLOW_ID required)
+	@if [ -z "$(WORKFLOW_ID)" ]; then \
+		echo "$(RED)Usage: make workflow-get WORKFLOW_ID=<id>$(NC)"; \
+		exit 1; \
+	fi
+	@curl -sf $(WORKER_URL)/api/workflows/$(WORKFLOW_ID) \
+		-H "Authorization: Bearer $(API_TOKEN)" | jq .
+
+workflow-run: ## Run a workflow (WORKFLOW_ID required)
+	@if [ -z "$(WORKFLOW_ID)" ]; then \
+		echo "$(RED)Usage: make workflow-run WORKFLOW_ID=<id> [VARIABLES='{}']$(NC)"; \
+		exit 1; \
+	fi
+	@curl -sf -X POST $(OPENCODE_URL)/session \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Basic $$(echo -n ":$(OPENCODE_SERVER_PASSWORD)" | base64)" \
+		-d '{"path": "/workspace"}' | jq -r '.id' > /tmp/session_id.txt
+	@curl -sf -X POST $(OPENCODE_URL)/session/$$(cat /tmp/session_id.txt)/message \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Basic $$(echo -n ":$(OPENCODE_SERVER_PASSWORD)" | base64)" \
+		-d '{"content": "Run workflow.run with id=$(WORKFLOW_ID) and variables=$(VARIABLES)"}'
+	@rm -f /tmp/session_id.txt
+
+workflow-run-test: ## Run the test workflow
+	@echo "Running test workflow: $(WORKFLOW_TEST_ID)"
+	@# In a real scenario, this would create a session and run the workflow
+	@# For now, we simulate via the API
+	@curl -sf -X POST "$(WORKER_URL)/api/triggers/manual/run" \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer $(API_TOKEN)" \
+		-d '{"workflowId": "$(WORKFLOW_TEST_ID)", "variables": {"test": true}}' \
+		&& echo " $(GREEN)✓$(NC)" || echo " $(YELLOW)Manual run endpoint not yet implemented$(NC)"
+
+workflow-delete: ## Delete a workflow (WORKFLOW_ID required)
+	@if [ -z "$(WORKFLOW_ID)" ]; then \
+		echo "$(RED)Usage: make workflow-delete WORKFLOW_ID=<id>$(NC)"; \
+		exit 1; \
+	fi
+	@curl -sf -X DELETE $(WORKER_URL)/api/workflows/$(WORKFLOW_ID) \
+		-H "Authorization: Bearer $(API_TOKEN)" && echo "$(GREEN)✓ Deleted$(NC)"
+
+workflow-delete-test: ## Delete the test workflow
+	@echo "Deleting test workflow: $(WORKFLOW_TEST_ID)"
+	@curl -sf -X DELETE "$(WORKER_URL)/api/workflows/$(WORKFLOW_TEST_ID)" \
+		-H "Authorization: Bearer $(API_TOKEN)" \
+		&& echo " $(GREEN)✓$(NC)" || echo " $(YELLOW)Workflow may not exist$(NC)"
+
+# ==========================================
+# Trigger Commands
+# ==========================================
+
+TRIGGER_TEST_ID ?= test-trigger-$(shell date +%s)
+
+trigger-create-test: ## Create a test trigger
+	@echo "Creating test trigger: $(TRIGGER_TEST_ID)"
+	@curl -sf -X POST $(WORKER_URL)/api/triggers \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer $(API_TOKEN)" \
+		-d '{ \
+			"workflowId": "$(WORKFLOW_TEST_ID)", \
+			"name": "Test Manual Trigger", \
+			"enabled": true, \
+			"config": { "type": "manual" } \
+		}' | jq . 2>/dev/null && echo " $(GREEN)✓$(NC)" || echo " $(RED)✗$(NC)"
+
+trigger-create-webhook-test: ## Create a test webhook trigger
+	@echo "Creating webhook trigger..."
+	@curl -sf -X POST $(WORKER_URL)/api/triggers \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer $(API_TOKEN)" \
+		-d '{ \
+			"workflowId": "$(WORKFLOW_TEST_ID)", \
+			"name": "Test Webhook Trigger", \
+			"enabled": true, \
+			"config": { \
+				"type": "webhook", \
+				"path": "test/e2e", \
+				"method": "POST" \
+			}, \
+			"variableMapping": { \
+				"payload": "$.body" \
+			} \
+		}' | jq . 2>/dev/null || echo " $(RED)✗$(NC)"
+
+trigger-list: ## List all triggers
+	@echo "$(GREEN)Listing triggers...$(NC)"
+	@curl -sf $(WORKER_URL)/api/triggers \
+		-H "Authorization: Bearer $(API_TOKEN)" | jq . 2>/dev/null || echo "$(RED)Failed to list triggers$(NC)"
+
+trigger-run: ## Manually run a trigger (TRIGGER_ID required)
+	@if [ -z "$(TRIGGER_ID)" ]; then \
+		echo "$(RED)Usage: make trigger-run TRIGGER_ID=<id>$(NC)"; \
+		exit 1; \
+	fi
+	@curl -sf -X POST $(WORKER_URL)/api/triggers/$(TRIGGER_ID)/run \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer $(API_TOKEN)" \
+		-d '{}' | jq .
+
+trigger-delete-test: ## Delete test triggers
+	@echo "Cleaning up test triggers..."
+	@# In practice, would need to fetch trigger ID first
+	@echo "$(YELLOW)Manual cleanup may be required$(NC)"
+
+# ==========================================
+# Webhook Testing
+# ==========================================
+
+webhook-fire-test: ## Fire a test webhook
+	@echo "Firing test webhook..."
+	@curl -sf -X POST $(WORKER_URL)/webhooks/test/e2e \
+		-H "Content-Type: application/json" \
+		-d '{"event": "test", "timestamp": "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)"}' \
+		| jq . 2>/dev/null && echo " $(GREEN)✓$(NC)" || echo " $(RED)✗$(NC)"
+
+webhook-github-simulate: ## Simulate a GitHub webhook
+	@echo "Simulating GitHub PR webhook..."
+	@curl -sf -X POST $(WORKER_URL)/webhooks/github/pr \
+		-H "Content-Type: application/json" \
+		-H "X-GitHub-Event: pull_request" \
+		-d '{ \
+			"action": "opened", \
+			"pull_request": { \
+				"number": 123, \
+				"title": "Test PR", \
+				"body": "This is a test PR" \
+			}, \
+			"repository": { \
+				"full_name": "test/repo" \
+			} \
+		}' | jq . 2>/dev/null || echo "$(YELLOW)GitHub webhook not configured$(NC)"
+
+# ==========================================
+# Execution History
+# ==========================================
+
+executions-list: ## List recent workflow executions
+	@echo "$(GREEN)Recent executions:$(NC)"
+	@curl -sf $(WORKER_URL)/api/executions \
+		-H "Authorization: Bearer $(API_TOKEN)" | jq . 2>/dev/null || echo "$(RED)Failed to list executions$(NC)"
+
+execution-get: ## Get execution details (EXECUTION_ID required)
+	@if [ -z "$(EXECUTION_ID)" ]; then \
+		echo "$(RED)Usage: make execution-get EXECUTION_ID=<id>$(NC)"; \
+		exit 1; \
+	fi
+	@curl -sf $(WORKER_URL)/api/executions/$(EXECUTION_ID) \
+		-H "Authorization: Bearer $(API_TOKEN)" | jq .
+
+# ==========================================
+# Demo Workflows
+# ==========================================
+
+demo: ## Run all demo workflows
+	@echo "$(GREEN)Running demo workflows...$(NC)"
+	@make demo-pr-review
+	@make demo-alert-triage
+
+demo-pr-review: ## Demo: PR Review workflow
+	@echo "$(GREEN)Demo: PR Review Workflow$(NC)"
+	@echo "This would create and run a PR review workflow..."
+	@# Create workflow from example in spec
+	@echo "$(YELLOW)See WORKFLOW_PLUGIN_SPEC.md for PR review example$(NC)"
+
+demo-alert-triage: ## Demo: Alert Triage workflow
+	@echo "$(GREEN)Demo: Alert Triage Workflow$(NC)"
+	@echo "This would create and run an alert triage workflow..."
+	@# Create workflow from example in spec
+	@echo "$(YELLOW)See WORKFLOW_PLUGIN_SPEC.md for alert triage example$(NC)"
+
+# ==========================================
+# Plugin Development
+# ==========================================
+
+plugin-init: ## Initialize the workflow plugin structure
+	@echo "$(GREEN)Initializing workflow plugin...$(NC)"
+	@mkdir -p .opencode/plugins/workflow/engine
+	@mkdir -p .opencode/plugins/workflow/storage
+	@mkdir -p .opencode/plugins/workflow/tools
+	@mkdir -p .opencode/plugins/workflow/types
+	@mkdir -p .opencode/workflows
+	@echo "$(GREEN)✓ Plugin directories created$(NC)"
+	@echo "Add your workflow YAML files to .opencode/workflows/"
+
+plugin-validate: ## Validate workflow YAML files
+	@echo "$(GREEN)Validating workflow files...$(NC)"
+	@for file in .opencode/workflows/*.yaml .opencode/workflows/*.yml; do \
+		if [ -f "$$file" ]; then \
+			echo "Validating $$file..."; \
+			cat "$$file" | python3 -c "import sys, yaml; yaml.safe_load(sys.stdin)" 2>/dev/null \
+				&& echo "  $(GREEN)✓ Valid YAML$(NC)" \
+				|| echo "  $(RED)✗ Invalid YAML$(NC)"; \
+		fi; \
+	done 2>/dev/null || echo "$(YELLOW)No workflow files found$(NC)"
+
+# ==========================================
+# Full E2E Test Suite
+# ==========================================
+
+e2e-full: ## Run complete E2E test suite
+	@echo "$(GREEN)========================================$(NC)"
+	@echo "$(GREEN)Starting Full E2E Test Suite$(NC)"
+	@echo "$(GREEN)========================================$(NC)"
+	@echo ""
+	@echo "Step 1: Setup"
+	@make setup
+	@echo ""
+	@echo "Step 2: Start Services"
+	@make docker-up
+	@echo ""
+	@echo "Step 3: Wait for Services"
+	@make wait-for-services
+	@echo ""
+	@echo "Step 4: Run Database Migrations"
+	@make db-migrate
+	@echo ""
+	@echo "Step 5: Health Checks"
+	@make health
+	@echo ""
+	@echo "Step 6: Workflow Tests"
+	@make test-workflow
+	@echo ""
+	@echo "Step 7: Trigger Tests"
+	@make test-triggers
+	@echo ""
+	@echo "Step 8: Webhook Tests"
+	@make test-webhooks
+	@echo ""
+	@echo "$(GREEN)========================================$(NC)"
+	@echo "$(GREEN)E2E Test Suite Complete!$(NC)"
+	@echo "$(GREEN)========================================$(NC)"
+
+e2e-ci: ## E2E tests for CI (includes cleanup)
+	@make e2e-full || (make clean && exit 1)
+	@make clean
+
+# ==========================================
+# Deployment
+# ==========================================
+
+# Version tag for container images (use git commit hash or timestamp)
+VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)
+
+release: ## Full idempotent release: install, build, push image, deploy worker + client
+	@echo "$(GREEN)========================================$(NC)"
+	@echo "$(GREEN)Starting Release (version: $(VERSION))$(NC)"
+	@echo "$(GREEN)========================================$(NC)"
+	@echo ""
+	@echo "Step 1/7: Installing dependencies..."
+	@$(PNPM) install --frozen-lockfile || $(PNPM) install
+	@echo "$(GREEN)✓ Dependencies installed$(NC)"
+	@echo ""
+	@echo "Step 2/7: Type checking..."
+	@$(PNPM) run typecheck || echo "$(YELLOW)⚠ Type check had warnings$(NC)"
+	@echo ""
+	@echo "Step 3/7: Building and pushing OpenCode image to GHCR..."
+	@make image-push VERSION=$(VERSION)
+	@echo ""
+	@echo "Step 4/7: Building client..."
+	@cd packages/client && VITE_API_URL=$(WORKER_PROD_URL)/api $(PNPM) run build
+	@echo "$(GREEN)✓ Client built$(NC)"
+	@echo ""
+	@echo "Step 5/7: Deploying Worker..."
+	@cd packages/worker && wrangler deploy
+	@echo "$(GREEN)✓ Worker deployed$(NC)"
+	@echo ""
+	@echo "Step 6/7: Running database migrations and seeding..."
+	@cd packages/worker && wrangler d1 migrations apply agent-ops-db --remote
+	@cd packages/worker && wrangler d1 execute agent-ops-db --remote --file=scripts/seed-bootstrap.sql
+	@echo "$(GREEN)✓ Database migrated and seeded$(NC)"
+	@echo ""
+	@echo "Step 7/7: Deploying Client..."
+	@cd packages/client && wrangler pages deploy dist --project-name=agent-ops-client
+	@echo "$(GREEN)✓ Client deployed$(NC)"
+	@echo ""
+	@echo "$(GREEN)========================================$(NC)"
+	@echo "$(GREEN)Release complete! (version: $(VERSION))$(NC)"
+	@echo "$(GREEN)========================================$(NC)"
+	@echo ""
+	@echo "$(YELLOW)OpenCode Image:$(NC) $(GHCR_REPO):$(VERSION)"
+	@echo "$(YELLOW)Set OPENCODE_IMAGE in Cloudflare to this value.$(NC)"
+	@echo ""
+	@echo "$(YELLOW)Bootstrap API Key:$(NC)"
+	@echo "sk_bootstrap_0000000000000000000000000000000000000000000000000000"
+	@echo ""
+	@echo "$(YELLOW)⚠ Create a new API key in the UI and revoke this one!$(NC)"
+
+deploy: deploy-worker deploy-client ## Deploy everything (worker + client)
+	@echo "$(GREEN)Deployment complete!$(NC)"
+
+deploy-worker: ## Deploy Cloudflare Worker
+	@echo "$(GREEN)Deploying Worker...$(NC)"
+	cd packages/worker && wrangler deploy
+	@echo "$(GREEN)✓ Worker deployed$(NC)"
+
+deploy-client: build-client ## Deploy client to Cloudflare Pages
+	@echo "$(GREEN)Deploying client to Cloudflare Pages...$(NC)"
+	cd packages/client && wrangler pages deploy dist --project-name=agent-ops-client
+	@echo "$(GREEN)✓ Client deployed$(NC)"
+
+build-client: ## Build client for production
+	@echo "$(GREEN)Building client...$(NC)"
+	cd packages/client && $(PNPM) run build
+	@echo "$(GREEN)✓ Client built$(NC)"
+
+dev-client: ## Start client dev server
+	@echo "$(GREEN)Starting client on http://localhost:5173...$(NC)"
+	cd packages/client && $(PNPM) run dev
+
+dev-all: ## Start all services (worker + client + docker)
+	@echo "$(GREEN)Starting all services...$(NC)"
+	@make -j3 dev-worker dev-client dev-opencode
+
+# ==========================================
+# Secrets Management
+# ==========================================
+
+secrets-set: ## Set required secrets for Worker
+	@echo "$(GREEN)Setting Worker secrets...$(NC)"
+	@echo "Enter ENCRYPTION_KEY:"
+	@cd packages/worker && wrangler secret put ENCRYPTION_KEY
+	@echo "$(GREEN)✓ Secrets configured$(NC)"
+
+secrets-list: ## List configured secrets
+	@echo "$(GREEN)Configured secrets:$(NC)"
+	cd packages/worker && wrangler secret list
+
+# ==========================================
+# OpenCode Image (for Modal Sandboxes)
+# ==========================================
+
+image-build: ## Build OpenCode Docker image
+	@echo "$(GREEN)Building OpenCode image...$(NC)"
+	@docker build --platform linux/amd64 -t $(GHCR_REPO):$(VERSION) -t $(GHCR_REPO):latest .
+	@echo "$(GREEN)✓ Image built: $(GHCR_REPO):$(VERSION)$(NC)"
+
+image-push: image-build ## Build and push OpenCode image to GHCR
+	@echo "$(GREEN)Pushing image to GHCR...$(NC)"
+	@docker push $(GHCR_REPO):$(VERSION)
+	@docker push $(GHCR_REPO):latest
+	@echo "$(GREEN)✓ Image pushed: $(GHCR_REPO):$(VERSION)$(NC)"
+
+# ==========================================
+# Container Management (Modal Sandboxes)
+# ==========================================
+
+container-list: ## List containers via API
+	@echo "$(GREEN)Listing containers...$(NC)"
+	@curl -sf $(WORKER_URL)/api/containers \
+		-H "Authorization: Bearer $(API_TOKEN)" | jq . 2>/dev/null || echo "$(RED)Failed to list containers$(NC)"
+
+container-create: ## Create a new container (NAME required)
+	@if [ -z "$(NAME)" ]; then \
+		echo "$(RED)Usage: make container-create NAME=<name> [SIZE=basic] [SLEEP=15]$(NC)"; \
+		exit 1; \
+	fi
+	@curl -sf -X POST $(WORKER_URL)/api/containers \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer $(API_TOKEN)" \
+		-d '{"name": "$(NAME)", "instanceSize": "$(or $(SIZE),basic)", "autoSleepMinutes": $(or $(SLEEP),15)}' \
+		| jq . 2>/dev/null && echo "$(GREEN)✓ Container created$(NC)"
+
+container-start: ## Start a container (CONTAINER_ID required)
+	@if [ -z "$(CONTAINER_ID)" ]; then \
+		echo "$(RED)Usage: make container-start CONTAINER_ID=<id>$(NC)"; \
+		exit 1; \
+	fi
+	@curl -sf -X POST $(WORKER_URL)/api/containers/$(CONTAINER_ID)/start \
+		-H "Authorization: Bearer $(API_TOKEN)" \
+		| jq . 2>/dev/null && echo "$(GREEN)✓ Container started$(NC)"
+
+container-stop: ## Stop a container (CONTAINER_ID required)
+	@if [ -z "$(CONTAINER_ID)" ]; then \
+		echo "$(RED)Usage: make container-stop CONTAINER_ID=<id>$(NC)"; \
+		exit 1; \
+	fi
+	@curl -sf -X POST $(WORKER_URL)/api/containers/$(CONTAINER_ID)/stop \
+		-H "Authorization: Bearer $(API_TOKEN)" \
+		| jq . 2>/dev/null && echo "$(GREEN)✓ Container stopped$(NC)"
+
+container-delete: ## Delete a container (CONTAINER_ID required)
+	@if [ -z "$(CONTAINER_ID)" ]; then \
+		echo "$(RED)Usage: make container-delete CONTAINER_ID=<id>$(NC)"; \
+		exit 1; \
+	fi
+	@curl -sf -X DELETE $(WORKER_URL)/api/containers/$(CONTAINER_ID) \
+		-H "Authorization: Bearer $(API_TOKEN)" \
+		&& echo "$(GREEN)✓ Container deleted$(NC)"

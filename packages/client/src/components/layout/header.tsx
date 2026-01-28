@@ -1,3 +1,4 @@
+import { useNavigate } from '@tanstack/react-router';
 import { useAuthStore } from '@/stores/auth';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
@@ -9,7 +10,13 @@ import {
 } from '@/components/ui/dropdown-menu';
 
 export function Header() {
+  const navigate = useNavigate();
   const { user, clearAuth } = useAuthStore();
+
+  const handleSignOut = () => {
+    clearAuth();
+    navigate({ to: '/login' });
+  };
 
   const initials = user?.name
     ? user.name
@@ -41,7 +48,7 @@ export function Header() {
             <p className="text-xs text-neutral-500 truncate dark:text-neutral-400">{user?.email}</p>
           </div>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onSelect={() => clearAuth()}>
+          <DropdownMenuItem onSelect={handleSignOut}>
             Sign out
           </DropdownMenuItem>
         </DropdownMenuContent>

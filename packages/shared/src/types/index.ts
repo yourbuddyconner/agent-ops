@@ -135,6 +135,57 @@ export interface SyncStatusResponse {
   completedAt?: Date;
 }
 
+// Container types
+export type ContainerStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
+export type ContainerInstanceSize = 'dev' | 'basic' | 'standard';
+
+export interface Container {
+  id: string;
+  userId: string;
+  name: string;
+  status: ContainerStatus;
+  instanceSize: ContainerInstanceSize;
+  region?: string;
+  containerId?: string;
+  ipAddress?: string;
+  port: number;
+  workspacePath?: string;
+  autoSleepMinutes: number;
+  lastActiveAt?: Date;
+  startedAt?: Date;
+  stoppedAt?: Date;
+  errorMessage?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CreateContainerRequest {
+  name: string;
+  instanceSize?: ContainerInstanceSize;
+  autoSleepMinutes?: number;
+  workspacePath?: string;
+}
+
+export interface UpdateContainerRequest {
+  name?: string;
+  instanceSize?: ContainerInstanceSize;
+  autoSleepMinutes?: number;
+}
+
+export interface ContainerActionResponse {
+  container: Container;
+  message: string;
+}
+
+export interface ListContainersResponse {
+  containers: Container[];
+}
+
+export interface GetContainerResponse {
+  container: Container;
+}
+
 // API key types
 export interface StoredAPIKey {
   id: string;

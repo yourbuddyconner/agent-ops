@@ -1,6 +1,8 @@
 import { useAuthStore } from '@/stores/auth';
+import { router } from '@/app';
 
-const API_BASE = '/api';
+// In production, use the worker URL. In development, proxy through Vite.
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 export class ApiError extends Error {
   constructor(
@@ -52,6 +54,7 @@ export async function apiClient<T>(
 
     if (response.status === 401) {
       useAuthStore.getState().clearAuth();
+      router.navigate({ to: '/login' });
     }
 
     throw new ApiError(

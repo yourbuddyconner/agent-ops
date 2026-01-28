@@ -4,6 +4,7 @@ export interface Env {
   // Durable Objects
   API_KEYS: DurableObjectNamespace;
   AGENT_SESSIONS: DurableObjectNamespace;
+  OPENCODE_CONTAINERS: DurableObjectNamespace;
 
   // Storage
   DB: D1Database;
@@ -25,6 +26,13 @@ export interface Env {
 
   // OpenCode (for container communication)
   OPENCODE_SERVER_PASSWORD?: string;
+
+  // Modal (for sandbox management)
+  MODAL_TOKEN_ID: string;
+  MODAL_TOKEN_SECRET: string;
+  MODAL_APP_NAME: string;
+  OPENCODE_IMAGE: string;
+  WORKER_URL: string;
 }
 
 // Type for Hono context variables

@@ -20,15 +20,29 @@ class_name = "APIKeysDurableObject"
 name = "AGENT_SESSIONS"
 class_name = "AgentSessionDurableObject"
 
+[[durable_objects.bindings]]
+name = "OPENCODE_CONTAINERS"
+class_name = "OpenCodeContainerDO"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["APIKeysDurableObject", "AgentSessionDurableObject"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["OpenCodeContainerDO"]
+
+# Migration to convert from Container DO to regular DO with Modal sandboxes
+[[migrations]]
+tag = "v3"
+deleted_classes = ["OpenCodeContainerDO"]
+new_classes = ["OpenCodeContainerDO"]
 
 # D1 Database
 [[d1_databases]]
 binding = "DB"
 database_name = "agent-ops-db"
-database_id = "LOCAL" # Replace with actual ID after creation
+database_id = "312aaa6b-3670-4628-b612-2f6c7d30e42e" # Replace with actual ID after creation
 
 # R2 Bucket
 [[r2_buckets]]
@@ -38,6 +52,10 @@ bucket_name = "agent-ops-storage"
 # Cron Triggers for scheduled syncs
 [triggers]
 crons = ["0 * * * *"] # Hourly sync check
+
+# Observability (enables Worker and Container logs)
+[observability]
+enabled = true
 
 # Development settings
 [dev]

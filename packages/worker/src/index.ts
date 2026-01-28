@@ -15,10 +15,15 @@ import { webhooksRouter } from './routes/webhooks.js';
 import { agentRouter } from './routes/agent.js';
 import { authRouter } from './routes/auth.js';
 import { apiKeysRouter } from './routes/api-keys.js';
+import { workflowsRouter } from './routes/workflows.js';
+import { triggersRouter } from './routes/triggers.js';
+import { executionsRouter } from './routes/executions.js';
+import { containersRouter } from './routes/containers.js';
 
 // Durable Object exports
 export { APIKeysDurableObject } from './durable-objects/api-keys.js';
 export { AgentSessionDurableObject } from './durable-objects/agent-session.js';
+export { OpenCodeContainerDO } from './durable-objects/opencode-container.js';
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -55,6 +60,10 @@ app.route('/api/api-keys', apiKeysRouter);
 app.route('/api/sessions', sessionsRouter);
 app.route('/api/integrations', integrationsRouter);
 app.route('/api/files', filesRouter);
+app.route('/api/workflows', workflowsRouter);
+app.route('/api/triggers', triggersRouter);
+app.route('/api/executions', executionsRouter);
+app.route('/api/containers', containersRouter);
 
 // Agent container proxy (protected)
 app.use('/agent/*', authMiddleware);

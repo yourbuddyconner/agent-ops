@@ -11,9 +11,14 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as WorkflowsIndexRouteImport } from './routes/workflows/index'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as SessionsIndexRouteImport } from './routes/sessions/index'
 import { Route as IntegrationsIndexRouteImport } from './routes/integrations/index'
+import { Route as ContainersIndexRouteImport } from './routes/containers/index'
+import { Route as ContainersContainerIdRouteImport } from './routes/containers/$containerId'
+import { Route as WorkflowsExecutionsRouteImport } from './routes/workflows/executions'
+import { Route as WorkflowsWorkflowIdRouteImport } from './routes/workflows/$workflowId'
 import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId'
 import { Route as IntegrationsCallbackRouteImport } from './routes/integrations/callback'
 import { Route as SessionsSessionIdFilesRouteImport } from './routes/sessions/$sessionId/files'
@@ -26,6 +31,11 @@ const LoginRoute = LoginRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const WorkflowsIndexRoute = WorkflowsIndexRouteImport.update({
+  id: '/workflows/',
+  path: '/workflows/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsIndexRoute = SettingsIndexRouteImport.update({
@@ -41,6 +51,26 @@ const SessionsIndexRoute = SessionsIndexRouteImport.update({
 const IntegrationsIndexRoute = IntegrationsIndexRouteImport.update({
   id: '/integrations/',
   path: '/integrations/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ContainersIndexRoute = ContainersIndexRouteImport.update({
+  id: '/containers/',
+  path: '/containers/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ContainersContainerIdRoute = ContainersContainerIdRouteImport.update({
+  id: '/containers/$containerId',
+  path: '/containers/$containerId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const WorkflowsExecutionsRoute = WorkflowsExecutionsRouteImport.update({
+  id: '/workflows/executions',
+  path: '/workflows/executions',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const WorkflowsWorkflowIdRoute = WorkflowsWorkflowIdRouteImport.update({
+  id: '/workflows/$workflowId',
+  path: '/workflows/$workflowId',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SessionsSessionIdRoute = SessionsSessionIdRouteImport.update({
@@ -62,32 +92,47 @@ const SessionsSessionIdFilesRoute = SessionsSessionIdFilesRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/containers/$containerId': typeof ContainersContainerIdRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
+  '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
+  '/workflows/executions': typeof WorkflowsExecutionsRoute
+  '/containers/': typeof ContainersIndexRoute
   '/integrations/': typeof IntegrationsIndexRoute
   '/sessions/': typeof SessionsIndexRoute
   '/settings/': typeof SettingsIndexRoute
+  '/workflows/': typeof WorkflowsIndexRoute
   '/sessions/$sessionId/files': typeof SessionsSessionIdFilesRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/containers/$containerId': typeof ContainersContainerIdRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
+  '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
+  '/workflows/executions': typeof WorkflowsExecutionsRoute
+  '/containers': typeof ContainersIndexRoute
   '/integrations': typeof IntegrationsIndexRoute
   '/sessions': typeof SessionsIndexRoute
   '/settings': typeof SettingsIndexRoute
+  '/workflows': typeof WorkflowsIndexRoute
   '/sessions/$sessionId/files': typeof SessionsSessionIdFilesRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/containers/$containerId': typeof ContainersContainerIdRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
+  '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
+  '/workflows/executions': typeof WorkflowsExecutionsRoute
+  '/containers/': typeof ContainersIndexRoute
   '/integrations/': typeof IntegrationsIndexRoute
   '/sessions/': typeof SessionsIndexRoute
   '/settings/': typeof SettingsIndexRoute
+  '/workflows/': typeof WorkflowsIndexRoute
   '/sessions/$sessionId/files': typeof SessionsSessionIdFilesRoute
 }
 export interface FileRouteTypes {
@@ -95,42 +140,62 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
+    | '/containers/$containerId'
     | '/integrations/callback'
     | '/sessions/$sessionId'
+    | '/workflows/$workflowId'
+    | '/workflows/executions'
+    | '/containers/'
     | '/integrations/'
     | '/sessions/'
     | '/settings/'
+    | '/workflows/'
     | '/sessions/$sessionId/files'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/login'
+    | '/containers/$containerId'
     | '/integrations/callback'
     | '/sessions/$sessionId'
+    | '/workflows/$workflowId'
+    | '/workflows/executions'
+    | '/containers'
     | '/integrations'
     | '/sessions'
     | '/settings'
+    | '/workflows'
     | '/sessions/$sessionId/files'
   id:
     | '__root__'
     | '/'
     | '/login'
+    | '/containers/$containerId'
     | '/integrations/callback'
     | '/sessions/$sessionId'
+    | '/workflows/$workflowId'
+    | '/workflows/executions'
+    | '/containers/'
     | '/integrations/'
     | '/sessions/'
     | '/settings/'
+    | '/workflows/'
     | '/sessions/$sessionId/files'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
+  ContainersContainerIdRoute: typeof ContainersContainerIdRoute
   IntegrationsCallbackRoute: typeof IntegrationsCallbackRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRouteWithChildren
+  WorkflowsWorkflowIdRoute: typeof WorkflowsWorkflowIdRoute
+  WorkflowsExecutionsRoute: typeof WorkflowsExecutionsRoute
+  ContainersIndexRoute: typeof ContainersIndexRoute
   IntegrationsIndexRoute: typeof IntegrationsIndexRoute
   SessionsIndexRoute: typeof SessionsIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
+  WorkflowsIndexRoute: typeof WorkflowsIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -147,6 +212,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/workflows/': {
+      id: '/workflows/'
+      path: '/workflows'
+      fullPath: '/workflows/'
+      preLoaderRoute: typeof WorkflowsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings/': {
@@ -168,6 +240,34 @@ declare module '@tanstack/react-router' {
       path: '/integrations'
       fullPath: '/integrations/'
       preLoaderRoute: typeof IntegrationsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/containers/': {
+      id: '/containers/'
+      path: '/containers'
+      fullPath: '/containers/'
+      preLoaderRoute: typeof ContainersIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/containers/$containerId': {
+      id: '/containers/$containerId'
+      path: '/containers/$containerId'
+      fullPath: '/containers/$containerId'
+      preLoaderRoute: typeof ContainersContainerIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/workflows/executions': {
+      id: '/workflows/executions'
+      path: '/workflows/executions'
+      fullPath: '/workflows/executions'
+      preLoaderRoute: typeof WorkflowsExecutionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/workflows/$workflowId': {
+      id: '/workflows/$workflowId'
+      path: '/workflows/$workflowId'
+      fullPath: '/workflows/$workflowId'
+      preLoaderRoute: typeof WorkflowsWorkflowIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/sessions/$sessionId': {
@@ -208,11 +308,16 @@ const SessionsSessionIdRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
+  ContainersContainerIdRoute: ContainersContainerIdRoute,
   IntegrationsCallbackRoute: IntegrationsCallbackRoute,
   SessionsSessionIdRoute: SessionsSessionIdRouteWithChildren,
+  WorkflowsWorkflowIdRoute: WorkflowsWorkflowIdRoute,
+  WorkflowsExecutionsRoute: WorkflowsExecutionsRoute,
+  ContainersIndexRoute: ContainersIndexRoute,
   IntegrationsIndexRoute: IntegrationsIndexRoute,
   SessionsIndexRoute: SessionsIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,
+  WorkflowsIndexRoute: WorkflowsIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

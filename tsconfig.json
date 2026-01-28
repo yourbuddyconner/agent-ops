@@ -13,9 +13,9 @@
     "composite": true,
     "types": []
   },
+  "files": [],
   "references": [
     { "path": "./packages/shared" },
-    { "path": "./packages/worker" },
-    { "path": "./packages/client" }
+    { "path": "./packages/worker" }
   ]
 }

@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useNavigate } from '@tanstack/react-router';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -8,6 +9,7 @@ import { ApiError } from '@/api/client';
 export function LoginForm() {
   const [token, setToken] = React.useState('');
   const [error, setError] = React.useState<string | null>(null);
+  const navigate = useNavigate();
   const validateToken = useValidateToken();
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -20,6 +22,9 @@ export function LoginForm() {
     }
 
     validateToken.mutate(token.trim(), {
+      onSuccess: () => {
+        navigate({ to: '/' });
+      },
       onError: (err) => {
         if (err instanceof ApiError) {
           if (err.status === 401) {

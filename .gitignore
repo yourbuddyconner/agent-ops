@@ -28,6 +28,15 @@ npm-debug.log*
 # TypeScript
 *.tsbuildinfo
 
+# TypeScript build artifacts (emitted .d.ts/.js in source dirs)
+packages/client/src/**/*.d.ts
+packages/client/src/**/*.d.ts.map
+packages/client/src/**/*.js.map
+packages/client/*.d.ts
+packages/client/*.d.ts.map
+packages/client/*.js
+packages/client/*.js.map
+
 # Workspaces data (container volumes)
 workspaces/*
 !workspaces/.gitkeep
