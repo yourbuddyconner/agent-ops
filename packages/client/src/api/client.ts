@@ -4,6 +4,24 @@ import { router } from '@/app';
 // In production, use the worker URL. In development, proxy through Vite.
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
+/**
+ * Derive the WebSocket base URL from the API base.
+ * In dev: /api → ws://localhost:8787/api (via Vite proxy, resolved from window.location.origin)
+ * In prod: https://worker.dev/api → wss://worker.dev/api
+ */
+export function getWebSocketUrl(path: string): string {
+  if (API_BASE.startsWith('http')) {
+    // Absolute URL — replace protocol and append path
+    const url = new URL(path, API_BASE.replace(/\/api$/, ''));
+    url.protocol = url.protocol.replace('http', 'ws');
+    return url.toString();
+  }
+  // Relative URL (dev) — resolve against current origin
+  const url = new URL(path, window.location.origin);
+  url.protocol = url.protocol.replace('http', 'ws');
+  return url.toString();
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,

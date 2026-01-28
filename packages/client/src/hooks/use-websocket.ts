@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useAuthStore } from '@/stores/auth';
+import { getWebSocketUrl } from '@/api/client';
 
 type WebSocketStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -41,8 +42,8 @@ export function useWebSocket(url: string | null, options: UseWebSocketOptions = 
 
     setStatus('connecting');
 
-    const wsUrl = new URL(url, window.location.origin);
-    wsUrl.protocol = wsUrl.protocol.replace('http', 'ws');
+    const wsUrlStr = getWebSocketUrl(url);
+    const wsUrl = new URL(wsUrlStr);
     wsUrl.searchParams.set('userId', user.id);
 
     const ws = new WebSocket(wsUrl.toString());
