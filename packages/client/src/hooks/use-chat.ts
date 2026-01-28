@@ -14,6 +14,7 @@ interface ChatState {
   status: SessionStatus;
   streamingContent: string;
   pendingQuestions: PendingQuestion[];
+  connectedUsers: string[];
 }
 
 interface WebSocketInitMessage {
@@ -66,6 +67,7 @@ export function useChat(sessionId: string) {
     status: 'initializing',
     streamingContent: '',
     pendingQuestions: [],
+    connectedUsers: [],
   });
 
   const wsUrl = sessionId ? `/api/sessions/${sessionId}/ws` : null;
@@ -80,6 +82,7 @@ export function useChat(sessionId: string) {
           status: message.session.status,
           streamingContent: '',
           pendingQuestions: [],
+          connectedUsers: [],
         });
         break;
 
@@ -95,6 +98,7 @@ export function useChat(sessionId: string) {
         const data = message.data ?? {};
         setState((prev) => {
           let nextQuestions = prev.pendingQuestions;
+          let nextUsers = prev.connectedUsers;
 
           // Remove answered questions
           if (data.questionAnswered) {
@@ -108,11 +112,16 @@ export function useChat(sessionId: string) {
               (q) => q.questionId !== data.questionExpired
             );
           }
+          // Update connected users list if provided
+          if (Array.isArray(data.connectedUsers)) {
+            nextUsers = data.connectedUsers as string[];
+          }
 
           return {
             ...prev,
             status: message.status ?? prev.status,
             pendingQuestions: nextQuestions,
+            connectedUsers: nextUsers,
           };
         });
         break;
@@ -141,10 +150,20 @@ export function useChat(sessionId: string) {
         break;
 
       case 'pong':
-      case 'user.joined':
-      case 'user.left':
-        // Handled elsewhere or no action needed
         break;
+
+      case 'user.joined':
+      case 'user.left': {
+        // These messages include connectedUsers array
+        const userMsg = msg as { connectedUsers?: string[] };
+        if (Array.isArray(userMsg.connectedUsers)) {
+          setState((prev) => ({
+            ...prev,
+            connectedUsers: userMsg.connectedUsers as string[],
+          }));
+        }
+        break;
+      }
     }
   }, []);
 
@@ -194,6 +213,7 @@ export function useChat(sessionId: string) {
     sessionStatus: state.status,
     streamingContent: state.streamingContent,
     pendingQuestions: state.pendingQuestions,
+    connectedUsers: state.connectedUsers,
     connectionStatus: wsStatus,
     isConnected,
     sendMessage,

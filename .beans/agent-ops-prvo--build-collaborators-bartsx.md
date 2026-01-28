@@ -1,14 +1,14 @@
 ---
 # agent-ops-prvo
 title: Build collaborators-bar.tsx
-status: todo
+status: completed
 type: task
 priority: high
 tags:
     - phase3
     - frontend
 created_at: 2026-01-28T04:08:21Z
-updated_at: 2026-01-28T04:08:21Z
+updated_at: 2026-01-28T05:05:09Z
 parent: agent-ops-mr3k
 ---
 

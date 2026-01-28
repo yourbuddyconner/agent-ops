@@ -7,6 +7,7 @@ import { MessageList } from '@/components/chat/message-list';
 import { ChatInput } from '@/components/chat/chat-input';
 import { QuestionPrompt } from '@/components/chat/question-prompt';
 import { VSCodePanel, VNCPanel, TerminalPanel } from '@/components/panels';
+import { CollaboratorsBar } from '@/components/session/collaborators-bar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -49,6 +50,7 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
     sessionStatus,
     streamingContent,
     pendingQuestions,
+    connectedUsers,
     connectionStatus,
     isConnected,
     sendMessage,
@@ -104,7 +106,10 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
           </span>
           <SessionStatusBadge status={sessionStatus} />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <CollaboratorsBar
+            connectedUsers={connectedUsers.map((id) => ({ id }))}
+          />
           <Link to="/sessions/$sessionId/files" params={{ sessionId }}>
             <Button variant="ghost" size="sm">Files</Button>
           </Link>
