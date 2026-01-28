@@ -2,10 +2,18 @@ import { useState, useCallback, useEffect } from 'react';
 import { useWebSocket } from './use-websocket';
 import type { Message, SessionStatus } from '@/api/types';
 
+export interface PendingQuestion {
+  questionId: string;
+  text: string;
+  options?: string[];
+  expiresAt?: number;
+}
+
 interface ChatState {
   messages: Message[];
   status: SessionStatus;
   streamingContent: string;
+  pendingQuestions: PendingQuestion[];
 }
 
 interface WebSocketInitMessage {
@@ -25,7 +33,8 @@ interface WebSocketMessageMessage {
 
 interface WebSocketStatusMessage {
   type: 'status';
-  status: SessionStatus;
+  status?: SessionStatus;
+  data?: Record<string, unknown>;
 }
 
 interface WebSocketChunkMessage {
@@ -33,18 +42,30 @@ interface WebSocketChunkMessage {
   content: string;
 }
 
+interface WebSocketQuestionMessage {
+  type: 'question';
+  questionId: string;
+  text: string;
+  options?: string[];
+  expiresAt?: number;
+}
+
 type WebSocketChatMessage =
   | WebSocketInitMessage
   | WebSocketMessageMessage
   | WebSocketStatusMessage
   | WebSocketChunkMessage
-  | { type: 'pong' };
+  | WebSocketQuestionMessage
+  | { type: 'pong' }
+  | { type: 'user.joined'; userId: string }
+  | { type: 'user.left'; userId: string };
 
 export function useChat(sessionId: string) {
   const [state, setState] = useState<ChatState>({
     messages: [],
     status: 'initializing',
     streamingContent: '',
+    pendingQuestions: [],
   });
 
   const wsUrl = sessionId ? `/api/sessions/${sessionId}/ws` : null;
@@ -58,6 +79,7 @@ export function useChat(sessionId: string) {
           messages: message.session.messages,
           status: message.session.status,
           streamingContent: '',
+          pendingQuestions: [],
         });
         break;
 
@@ -69,12 +91,32 @@ export function useChat(sessionId: string) {
         }));
         break;
 
-      case 'status':
-        setState((prev) => ({
-          ...prev,
-          status: message.status,
-        }));
+      case 'status': {
+        const data = message.data ?? {};
+        setState((prev) => {
+          let nextQuestions = prev.pendingQuestions;
+
+          // Remove answered questions
+          if (data.questionAnswered) {
+            nextQuestions = nextQuestions.filter(
+              (q) => q.questionId !== data.questionAnswered
+            );
+          }
+          // Remove expired questions
+          if (data.questionExpired) {
+            nextQuestions = nextQuestions.filter(
+              (q) => q.questionId !== data.questionExpired
+            );
+          }
+
+          return {
+            ...prev,
+            status: message.status ?? prev.status,
+            pendingQuestions: nextQuestions,
+          };
+        });
         break;
+      }
 
       case 'chunk':
         setState((prev) => ({
@@ -83,8 +125,25 @@ export function useChat(sessionId: string) {
         }));
         break;
 
+      case 'question':
+        setState((prev) => ({
+          ...prev,
+          pendingQuestions: [
+            ...prev.pendingQuestions,
+            {
+              questionId: message.questionId,
+              text: message.text,
+              options: message.options,
+              expiresAt: message.expiresAt,
+            },
+          ],
+        }));
+        break;
+
       case 'pong':
-        // Heartbeat response, no action needed
+      case 'user.joined':
+      case 'user.left':
+        // Handled elsewhere or no action needed
         break;
     }
   }, []);
@@ -98,6 +157,23 @@ export function useChat(sessionId: string) {
       if (!isConnected) return;
 
       send({ type: 'message', content });
+    },
+    [isConnected, send]
+  );
+
+  const answerQuestion = useCallback(
+    (questionId: string, answer: string | boolean) => {
+      if (!isConnected) return;
+
+      send({ type: 'answer', questionId, answer });
+
+      // Optimistically remove from pending
+      setState((prev) => ({
+        ...prev,
+        pendingQuestions: prev.pendingQuestions.filter(
+          (q) => q.questionId !== questionId
+        ),
+      }));
     },
     [isConnected, send]
   );
@@ -117,8 +193,10 @@ export function useChat(sessionId: string) {
     messages: state.messages,
     sessionStatus: state.status,
     streamingContent: state.streamingContent,
+    pendingQuestions: state.pendingQuestions,
     connectionStatus: wsStatus,
     isConnected,
     sendMessage,
+    answerQuestion,
   };
 }

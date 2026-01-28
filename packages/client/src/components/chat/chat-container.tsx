@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router';
 import { useChat } from '@/hooks/use-chat';
 import { MessageList } from './message-list';
 import { ChatInput } from './chat-input';
+import { QuestionPrompt } from './question-prompt';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -15,9 +16,11 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     messages,
     sessionStatus,
     streamingContent,
+    pendingQuestions,
     connectionStatus,
     isConnected,
     sendMessage,
+    answerQuestion,
   } = useChat(sessionId);
 
   const isLoading = connectionStatus === 'connecting';
@@ -64,6 +67,16 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             messages={messages}
             streamingContent={streamingContent}
           />
+          {pendingQuestions.map((q) => (
+            <QuestionPrompt
+              key={q.questionId}
+              questionId={q.questionId}
+              text={q.text}
+              options={q.options}
+              expiresAt={q.expiresAt}
+              onAnswer={answerQuestion}
+            />
+          ))}
           <ChatInput
             onSend={sendMessage}
             disabled={isDisabled}

@@ -1,14 +1,14 @@
 ---
 # agent-ops-9og3
 title: Build question-prompt.tsx UI component
-status: todo
+status: completed
 type: task
 priority: critical
 tags:
     - phase3
     - frontend
 created_at: 2026-01-28T04:08:03Z
-updated_at: 2026-01-28T04:08:03Z
+updated_at: 2026-01-28T05:00:21Z
 parent: agent-ops-mr3k
 ---
 

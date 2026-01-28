@@ -5,6 +5,7 @@ import { useSession, useSessionToken } from '@/api/sessions';
 import { useChat } from '@/hooks/use-chat';
 import { MessageList } from '@/components/chat/message-list';
 import { ChatInput } from '@/components/chat/chat-input';
+import { QuestionPrompt } from '@/components/chat/question-prompt';
 import { VSCodePanel, VNCPanel, TerminalPanel } from '@/components/panels';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -47,9 +48,11 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
     messages,
     sessionStatus,
     streamingContent,
+    pendingQuestions,
     connectionStatus,
     isConnected,
     sendMessage,
+    answerQuestion,
   } = useChat(sessionId);
 
   const [activeTab, setActiveTab] = useState<EditorTab>('vscode');
@@ -130,6 +133,16 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
                   messages={messages}
                   streamingContent={streamingContent}
                 />
+                {pendingQuestions.map((q) => (
+                  <QuestionPrompt
+                    key={q.questionId}
+                    questionId={q.questionId}
+                    text={q.text}
+                    options={q.options}
+                    expiresAt={q.expiresAt}
+                    onAnswer={answerQuestion}
+                  />
+                ))}
                 <ChatInput
                   onSend={sendMessage}
                   disabled={isDisabled}
