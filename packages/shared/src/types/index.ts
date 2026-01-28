@@ -45,6 +45,9 @@ export interface SyncError {
 // EventBus types
 export type EventBusEventType =
   | 'session.update'
+  | 'session.started'
+  | 'session.completed'
+  | 'session.errored'
   | 'sandbox.status'
   | 'question.asked'
   | 'question.answered'
@@ -82,6 +85,8 @@ export interface AgentSession {
   workspace: string;
   status: SessionStatus;
   containerId?: string;
+  sandboxId?: string;
+  tunnelUrls?: Record<string, string>;
   gatewayUrl?: string;
   metadata?: Record<string, unknown>;
   createdAt: Date;
@@ -126,6 +131,7 @@ export interface CreateSessionRequest {
 export interface CreateSessionResponse {
   session: AgentSession;
   websocketUrl: string;
+  tunnelUrls?: Record<string, string>;
 }
 
 export interface SendMessageRequest {

@@ -73,7 +73,7 @@ function jwtSecret(): string {
   return process.env.JWT_SECRET || "";
 }
 
-async function authMiddleware(c: { req: { query: (k: string) => string | undefined; header: (k: string) => string | undefined } }, next: () => Promise<void>) {
+async function authMiddleware(c: any, next: () => Promise<void>) {
   // Extract token from query param or Authorization header
   const tokenParam = c.req.query("token");
   const authHeader = c.req.header("Authorization");

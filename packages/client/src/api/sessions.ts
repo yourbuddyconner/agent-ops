@@ -43,11 +43,17 @@ export function useInfiniteSessions() {
   });
 }
 
+interface SessionDetailResponse {
+  session: AgentSession;
+  doStatus: Record<string, unknown>;
+}
+
 export function useSession(sessionId: string) {
   return useQuery({
     queryKey: sessionKeys.detail(sessionId),
-    queryFn: () => api.get<AgentSession>(`/sessions/${sessionId}`),
+    queryFn: () => api.get<SessionDetailResponse>(`/sessions/${sessionId}`),
     enabled: !!sessionId,
+    select: (data) => data.session,
   });
 }
 
@@ -78,7 +84,10 @@ export function useDeleteSession() {
 export function useSessionToken(sessionId: string) {
   return useQuery({
     queryKey: [...sessionKeys.detail(sessionId), 'token'] as const,
-    queryFn: () => api.post<{ token: string; expiresIn: number }>(`/sessions/${sessionId}/token`),
+    queryFn: () =>
+      api.get<{ token: string; tunnelUrls: Record<string, string>; expiresAt: string }>(
+        `/sessions/${sessionId}/sandbox-token`
+      ),
     enabled: !!sessionId,
     staleTime: 10 * 60 * 1000, // Refetch after 10 min (token lasts 15 min)
     refetchInterval: 10 * 60 * 1000,

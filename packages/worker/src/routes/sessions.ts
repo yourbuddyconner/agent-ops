@@ -137,18 +137,37 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
   const doId = c.env.SESSIONS.idFromName(sessionId);
   const sessionDO = c.env.SESSIONS.get(doId);
 
-  await sessionDO.fetch(new Request('http://do/start', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sessionId,
-      userId: user.id,
-      workspace: body.workspace,
-      runnerToken,
-      sandboxId,
-      tunnelUrls,
-    }),
-  }));
+  try {
+    await sessionDO.fetch(new Request('http://do/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId,
+        userId: user.id,
+        workspace: body.workspace,
+        runnerToken,
+        sandboxId,
+        tunnelUrls,
+      }),
+    }));
+  } catch (err) {
+    // DO initialization failed — clean up the sandbox to prevent leaks
+    console.error('Failed to initialize SessionAgentDO, terminating sandbox:', err);
+    try {
+      await fetch(c.env.MODAL_BACKEND_URL.replace('{label}', 'terminate-session'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sandboxId }),
+      });
+    } catch (cleanupErr) {
+      console.error('Failed to clean up leaked sandbox:', cleanupErr);
+    }
+    await db.updateSessionStatus(c.env.DB, sessionId, 'error');
+    return c.json({
+      error: 'Failed to initialize session',
+      details: err instanceof Error ? err.message : String(err),
+    }, 500);
+  }
 
   // Update session status
   await db.updateSessionStatus(c.env.DB, sessionId, 'running');
@@ -189,9 +208,18 @@ sessionsRouter.get('/:id', async (c) => {
   const sessionDO = c.env.SESSIONS.get(doId);
 
   const statusRes = await sessionDO.fetch(new Request('http://do/status'));
-  const doStatus = await statusRes.json() as Record<string, unknown>;
+  const doStatus = await statusRes.json() as {
+    tunnelUrls?: Record<string, string>;
+    [key: string]: unknown;
+  };
 
-  return c.json({ session, doStatus });
+  // Populate gatewayUrl from DO status for frontend consumption
+  const gatewayUrl = doStatus.tunnelUrls?.gateway;
+
+  return c.json({
+    session: { ...session, gatewayUrl },
+    doStatus,
+  });
 });
 
 /**
