@@ -1,14 +1,14 @@
 ---
 # agent-ops-u82r
 title: Add JWT issuance endpoint to Worker
-status: todo
+status: completed
 type: task
 priority: critical
 tags:
     - phase2
     - worker
 created_at: 2026-01-28T04:05:20Z
-updated_at: 2026-01-28T04:05:20Z
+updated_at: 2026-01-28T04:38:05Z
 parent: agent-ops-742p
 ---
 

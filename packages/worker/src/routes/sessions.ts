@@ -4,6 +4,7 @@ import { zValidator } from '@hono/zod-validator';
 import { NotFoundError, ValidationError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
+import { signJWT } from '../lib/jwt.js';
 
 export const sessionsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -191,6 +192,39 @@ sessionsRouter.get('/:id', async (c) => {
   const doStatus = await statusRes.json() as Record<string, unknown>;
 
   return c.json({ session, doStatus });
+});
+
+/**
+ * POST /api/sessions/:id/token
+ * Issue a short-lived JWT for iframe authentication to sandbox services.
+ * Frontend calls this before loading VS Code, VNC, or Terminal iframes.
+ */
+sessionsRouter.post('/:id/token', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  const session = await db.getSession(c.env.DB, id);
+
+  if (!session) {
+    throw new NotFoundError('Session', id);
+  }
+
+  if (session.userId !== user.id) {
+    throw new NotFoundError('Session', id);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const token = await signJWT(
+    {
+      sub: user.id,
+      sid: id,
+      iat: now,
+      exp: now + 15 * 60, // 15 minutes
+    },
+    c.env.SANDBOX_JWT_SECRET,
+  );
+
+  return c.json({ token, expiresIn: 900 });
 });
 
 /**
