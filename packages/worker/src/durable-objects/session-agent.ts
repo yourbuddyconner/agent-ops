@@ -28,7 +28,7 @@ interface RunnerMessage {
 
 /** Messages sent from DO to clients */
 interface ClientOutbound {
-  type: 'message' | 'stream' | 'question' | 'status' | 'pong' | 'error';
+  type: 'message' | 'stream' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left';
   [key: string]: unknown;
 }
 
@@ -71,6 +71,11 @@ const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS connected_users (
+    user_id TEXT PRIMARY KEY,
+    connected_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
 `;
 
@@ -179,17 +184,41 @@ export class SessionAgentDO {
       }));
     }
 
-    // Send current status
+    // Track connected user
+    this.ctx.storage.sql.exec(
+      'INSERT OR IGNORE INTO connected_users (user_id) VALUES (?)',
+      userId
+    );
+
+    // Send current status including connected users
     const status = this.getStateValue('status') || 'idle';
     const sandboxId = this.getStateValue('sandboxId');
+    const connectedUsers = this.getConnectedUserIds();
     server.send(JSON.stringify({
       type: 'status',
       data: {
         status,
         sandboxRunning: !!sandboxId,
-        connectedClients: this.getClientSockets().length + 1, // +1 for this new one
+        connectedClients: this.getClientSockets().length + 1,
+        connectedUsers,
       },
     }));
+
+    // Notify other clients that a user joined
+    this.broadcastToClients({
+      type: 'user.joined',
+      userId,
+      connectedUsers,
+    });
+
+    // Notify EventBus
+    this.notifyEventBus({
+      type: 'session.update',
+      sessionId: this.getStateValue('sessionId'),
+      userId,
+      data: { event: 'user.joined', connectedUsers },
+      timestamp: new Date().toISOString(),
+    });
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -277,6 +306,34 @@ export class SessionAgentDO {
         type: 'status',
         data: { runnerConnected: false },
       });
+    } else {
+      // Extract userId from tag like "client:abc123"
+      const clientTag = tags.find((t) => t.startsWith('client:'));
+      if (clientTag) {
+        const userId = clientTag.replace('client:', '');
+
+        // Check if user has other connections still open
+        const remaining = this.ctx.getWebSockets(`client:${userId}`).filter((s) => s !== ws);
+        if (remaining.length === 0) {
+          // Last connection for this user — remove from connected_users
+          this.ctx.storage.sql.exec('DELETE FROM connected_users WHERE user_id = ?', userId);
+
+          const connectedUsers = this.getConnectedUserIds();
+          this.broadcastToClients({
+            type: 'user.left',
+            userId,
+            connectedUsers,
+          });
+
+          this.notifyEventBus({
+            type: 'session.update',
+            sessionId: this.getStateValue('sessionId'),
+            userId,
+            data: { event: 'user.left', connectedUsers },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
     }
 
     ws.close(code, reason);
@@ -649,6 +706,7 @@ export class SessionAgentDO {
     const queueLength = this.getQueueLength();
     const clientCount = this.getClientSockets().length;
     const runnerConnected = this.ctx.getWebSockets('runner').length > 0;
+    const connectedUsers = this.getConnectedUserIds();
 
     return Response.json({
       sessionId,
@@ -662,6 +720,7 @@ export class SessionAgentDO {
       messageCount,
       queuedPrompts: queueLength,
       connectedClients: clientCount,
+      connectedUsers,
     });
   }
 
@@ -733,6 +792,39 @@ export class SessionAgentDO {
       } catch {
         // Socket may be closed
       }
+    }
+  }
+
+  private getConnectedUserIds(): string[] {
+    return this.ctx.storage.sql
+      .exec('SELECT user_id FROM connected_users ORDER BY connected_at ASC')
+      .toArray()
+      .map((row) => row.user_id as string);
+  }
+
+  private notifyEventBus(event: {
+    type: string;
+    sessionId?: string;
+    userId?: string;
+    data: Record<string, unknown>;
+    timestamp: string;
+  }): void {
+    // Fire-and-forget notification to EventBusDO
+    try {
+      const id = this.env.EVENT_BUS.idFromName('global');
+      const stub = this.env.EVENT_BUS.get(id);
+      stub.fetch(new Request('https://event-bus/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: event.userId,
+          event,
+        }),
+      })).catch(() => {
+        // Ignore EventBus errors — non-critical
+      });
+    } catch {
+      // EventBus not available
     }
   }
 

@@ -1,14 +1,14 @@
 ---
 # agent-ops-mwlz
 title: Add user-tagged WebSocket connections to SessionAgentDO
-status: todo
+status: completed
 type: task
 priority: critical
 tags:
     - phase3
     - worker
 created_at: 2026-01-28T04:07:27Z
-updated_at: 2026-01-28T04:08:34Z
+updated_at: 2026-01-28T04:56:57Z
 parent: agent-ops-mr3k
 blocking:
     - agent-ops-prvo
