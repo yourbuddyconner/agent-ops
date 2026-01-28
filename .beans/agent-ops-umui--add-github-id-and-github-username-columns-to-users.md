@@ -1,13 +1,13 @@
 ---
 # agent-ops-umui
 title: Add github_id and github_username columns to users table
-status: todo
+status: completed
 type: task
 priority: normal
 tags:
     - worker
 created_at: 2026-01-28T07:09:57Z
-updated_at: 2026-01-28T07:09:57Z
+updated_at: 2026-01-28T07:17:17Z
 parent: agent-ops-mr3k
 ---
 

@@ -1,13 +1,13 @@
 ---
 # agent-ops-d4i5
 title: Start auth gateway and Runner process in start.sh
-status: todo
+status: completed
 type: bug
 priority: critical
 tags:
     - sandbox
 created_at: 2026-01-28T07:08:19Z
-updated_at: 2026-01-28T07:08:19Z
+updated_at: 2026-01-28T07:13:16Z
 parent: agent-ops-jcbs
 ---
 

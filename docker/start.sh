@@ -43,9 +43,9 @@ ttyd -p ${TTYD_PORT} -i 127.0.0.1 -W bash &
 
 # ─── OpenCode Server ──────────────────────────────────────────────────
 
-echo "[start.sh] Starting OpenCode web UI on port ${OPENCODE_PORT}"
+echo "[start.sh] Starting OpenCode server on port ${OPENCODE_PORT}"
 cd /workspace
-opencode web --hostname 0.0.0.0 --port ${OPENCODE_PORT} &
+opencode serve --port ${OPENCODE_PORT} &
 OPENCODE_PID=$!
 
 # Wait for OpenCode to be healthy
@@ -64,13 +64,19 @@ if [ $RETRY -lt $MAX_RETRIES ]; then
   echo "[start.sh] OpenCode is healthy"
 fi
 
-# ─── Keep alive ───────────────────────────────────────────────────────
-# Runner is not yet built, so just keep the sandbox alive.
-# Once the Runner package is ready, replace this with:
-#   exec bun run /runner/src/bin.ts ...
+# ─── Runner Process (main) ────────────────────────────────────────────
+# The Runner connects to the SessionAgent DO via WebSocket, receives
+# prompts, forwards them to OpenCode, and streams results back.
+# It also starts the auth gateway on GATEWAY_PORT (for VS Code/VNC/TTYD
+# iframe JWT validation).
 
-echo "[start.sh] All services started. Sandbox is ready."
-echo "[start.sh] Ports: OpenCode=${OPENCODE_PORT} VSCode=${VSCODE_PORT} VNC=${VNC_PORT} TTYD=${TTYD_PORT}"
+echo "[start.sh] Starting Runner process"
+echo "[start.sh] Ports: OpenCode=${OPENCODE_PORT} VSCode=${VSCODE_PORT} VNC=${VNC_PORT} TTYD=${TTYD_PORT} Gateway=${GATEWAY_PORT}"
 
-# Wait forever (keeps sandbox alive)
-exec sleep infinity
+cd /runner
+exec bun run src/bin.ts \
+  --opencode-url "http://localhost:${OPENCODE_PORT}" \
+  --do-url "${DO_WS_URL}" \
+  --runner-token "${RUNNER_TOKEN}" \
+  --session-id "${SESSION_ID}" \
+  --gateway-port "${GATEWAY_PORT}"

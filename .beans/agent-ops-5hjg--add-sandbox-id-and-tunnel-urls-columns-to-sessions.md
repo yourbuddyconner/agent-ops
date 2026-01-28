@@ -1,13 +1,13 @@
 ---
 # agent-ops-5hjg
 title: Add sandbox_id and tunnel_urls columns to sessions table
-status: todo
+status: completed
 type: task
 priority: high
 tags:
     - worker
 created_at: 2026-01-28T07:09:05Z
-updated_at: 2026-01-28T07:09:05Z
+updated_at: 2026-01-28T07:15:17Z
 parent: agent-ops-742p
 ---
 

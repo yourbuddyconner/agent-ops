@@ -1,13 +1,13 @@
 ---
 # agent-ops-hj2e
 title: Add parts column to messages table
-status: todo
+status: completed
 type: task
 priority: normal
 tags:
     - worker
 created_at: 2026-01-28T07:09:19Z
-updated_at: 2026-01-28T07:09:19Z
+updated_at: 2026-01-28T07:15:17Z
 parent: agent-ops-742p
 ---
 

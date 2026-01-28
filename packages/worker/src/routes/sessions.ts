@@ -195,11 +195,11 @@ sessionsRouter.get('/:id', async (c) => {
 });
 
 /**
- * POST /api/sessions/:id/token
- * Issue a short-lived JWT for iframe authentication to sandbox services.
- * Frontend calls this before loading VS Code, VNC, or Terminal iframes.
+ * GET /api/sessions/:id/sandbox-token
+ * Issue a short-lived JWT for direct iframe access to sandbox tunnel URLs.
+ * Returns the token + tunnel URLs so the frontend can construct iframe src.
  */
-sessionsRouter.post('/:id/token', async (c) => {
+sessionsRouter.get('/:id/sandbox-token', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
@@ -213,18 +213,41 @@ sessionsRouter.post('/:id/token', async (c) => {
     throw new NotFoundError('Session', id);
   }
 
+  if (session.status !== 'running') {
+    return c.json({ error: 'Session is not running' }, 503);
+  }
+
+  // Get tunnel URLs from the SessionAgent DO
+  const doId = c.env.SESSIONS.idFromName(id);
+  const sessionDO = c.env.SESSIONS.get(doId);
+
+  const statusRes = await sessionDO.fetch(new Request('http://do/status'));
+  const statusData = await statusRes.json() as {
+    tunnelUrls: Record<string, string> | null;
+    sessionId: string;
+  };
+
+  if (!statusData.tunnelUrls) {
+    return c.json({ error: 'Sandbox tunnel URLs not available' }, 503);
+  }
+
+  // Sign a short-lived JWT (15 minutes)
   const now = Math.floor(Date.now() / 1000);
   const token = await signJWT(
     {
       sub: user.id,
       sid: id,
       iat: now,
-      exp: now + 15 * 60, // 15 minutes
+      exp: now + 15 * 60,
     },
-    c.env.SANDBOX_JWT_SECRET,
+    c.env.ENCRYPTION_KEY,
   );
 
-  return c.json({ token, expiresIn: 900 });
+  return c.json({
+    token,
+    tunnelUrls: statusData.tunnelUrls,
+    expiresAt: new Date((now + 15 * 60) * 1000).toISOString(),
+  });
 });
 
 /**
@@ -252,14 +275,30 @@ sessionsRouter.post('/:id/messages', zValidator('json', sendMessageSchema), asyn
   }
 
   // Save message to D1 for API access
+  const messageId = crypto.randomUUID();
   await db.saveMessage(c.env.DB, {
-    id: crypto.randomUUID(),
+    id: messageId,
     sessionId: id,
     role: 'user',
     content: body.content,
   });
 
-  return c.json({ success: true, message: 'Prompt will be delivered via WebSocket' });
+  // Forward prompt to SessionAgent DO for queuing and runner delivery
+  const doId = c.env.SESSIONS.idFromName(id);
+  const sessionDO = c.env.SESSIONS.get(doId);
+
+  const doRes = await sessionDO.fetch(new Request('http://do/prompt', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: body.content }),
+  }));
+
+  if (!doRes.ok) {
+    const err = await doRes.text();
+    return c.json({ error: `Failed to deliver prompt: ${err}` }, 500);
+  }
+
+  return c.json({ success: true, messageId });
 });
 
 /**

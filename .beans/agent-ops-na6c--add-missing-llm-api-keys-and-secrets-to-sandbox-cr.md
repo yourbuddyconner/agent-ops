@@ -1,14 +1,14 @@
 ---
 # agent-ops-na6c
 title: Add missing LLM API keys and secrets to sandbox creation
-status: todo
+status: completed
 type: bug
 priority: critical
 tags:
     - backend
     - sandbox
 created_at: 2026-01-28T07:08:07Z
-updated_at: 2026-01-28T07:08:07Z
+updated_at: 2026-01-28T07:12:19Z
 parent: agent-ops-jcbs
 ---
 

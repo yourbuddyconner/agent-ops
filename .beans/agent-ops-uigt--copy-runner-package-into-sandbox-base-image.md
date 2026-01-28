@@ -1,14 +1,14 @@
 ---
 # agent-ops-uigt
 title: Copy Runner package into sandbox base image
-status: todo
+status: completed
 type: bug
 priority: critical
 tags:
     - backend
     - sandbox
 created_at: 2026-01-28T07:08:17Z
-updated_at: 2026-01-28T07:08:17Z
+updated_at: 2026-01-28T07:12:48Z
 parent: agent-ops-jcbs
 ---
 

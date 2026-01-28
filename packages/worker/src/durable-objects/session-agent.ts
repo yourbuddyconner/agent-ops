@@ -118,6 +118,15 @@ export class SessionAgentDO {
         return this.handleStatus();
       case '/clear-queue':
         return this.handleClearQueue();
+      case '/prompt': {
+        // HTTP-based prompt submission (alternative to WebSocket)
+        const body = await request.json() as { content: string };
+        if (!body.content) {
+          return new Response(JSON.stringify({ error: 'Missing content' }), { status: 400 });
+        }
+        await this.handlePrompt(body.content);
+        return Response.json({ success: true });
+      }
     }
 
     // Proxy to sandbox
@@ -636,14 +645,23 @@ export class SessionAgentDO {
       case 'error': {
         // Store error and broadcast
         const errId = msg.messageId || crypto.randomUUID();
+        const errorText = msg.error || msg.content || 'Unknown error';
         this.ctx.storage.sql.exec(
           'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
-          errId, 'system', `Error: ${msg.error || msg.content || 'Unknown error'}`
+          errId, 'system', `Error: ${errorText}`
         );
         this.broadcastToClients({
           type: 'error',
           messageId: errId,
           error: msg.error || msg.content,
+        });
+        // Publish session.errored to EventBus
+        this.notifyEventBus({
+          type: 'session.errored',
+          sessionId: this.getStateValue('sessionId') || undefined,
+          userId: this.getStateValue('userId') || undefined,
+          data: { error: errorText, messageId: errId },
+          timestamp: new Date().toISOString(),
         });
         break;
       }
@@ -737,6 +755,15 @@ export class SessionAgentDO {
       },
     });
 
+    // Publish session.started to EventBus
+    this.notifyEventBus({
+      type: 'session.started',
+      sessionId: body.sessionId,
+      userId: body.userId,
+      data: { workspace: body.workspace, sandboxId: body.sandboxId },
+      timestamp: new Date().toISOString(),
+    });
+
     return Response.json({
       success: true,
       status: 'running',
@@ -770,6 +797,15 @@ export class SessionAgentDO {
     this.broadcastToClients({
       type: 'status',
       data: { status: 'terminated', sandboxRunning: false },
+    });
+
+    // Publish session.completed to EventBus
+    this.notifyEventBus({
+      type: 'session.completed',
+      sessionId: sessionId || undefined,
+      userId: this.getStateValue('userId') || undefined,
+      data: { sandboxId: sandboxId || null, reason: 'user_stopped' },
+      timestamp: new Date().toISOString(),
     });
 
     return Response.json({

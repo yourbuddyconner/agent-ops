@@ -61,6 +61,9 @@ def get_base_image() -> modal.Image:
             'curl -fsSL -o /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64"',
             "chmod +x /usr/local/bin/ttyd",
         )
+        # Runner package (Bun/TS — runs inside sandbox)
+        .add_local_dir("packages/runner", "/runner", copy=True)
+        .run_commands("cd /runner && /root/.bun/bin/bun install")
         # Copy start.sh
         .add_local_file("docker/start.sh", "/start.sh", copy=True)
         .run_commands("chmod +x /start.sh")

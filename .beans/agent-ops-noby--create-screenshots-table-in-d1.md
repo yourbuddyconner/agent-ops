@@ -1,13 +1,13 @@
 ---
 # agent-ops-noby
 title: Create screenshots table in D1
-status: todo
+status: completed
 type: task
 priority: normal
 tags:
     - worker
 created_at: 2026-01-28T07:09:22Z
-updated_at: 2026-01-28T07:09:22Z
+updated_at: 2026-01-28T07:15:17Z
 parent: agent-ops-742p
 ---
 

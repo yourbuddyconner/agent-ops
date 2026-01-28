@@ -1,13 +1,13 @@
 ---
 # agent-ops-paue
 title: Add session lifecycle events to EventBus
-status: todo
+status: completed
 type: bug
 priority: high
 tags:
     - worker
 created_at: 2026-01-28T07:09:54Z
-updated_at: 2026-01-28T07:09:54Z
+updated_at: 2026-01-28T07:16:57Z
 parent: agent-ops-mr3k
 ---
 

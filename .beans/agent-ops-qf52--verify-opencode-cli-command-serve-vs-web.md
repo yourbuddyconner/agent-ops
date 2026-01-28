@@ -1,13 +1,13 @@
 ---
 # agent-ops-qf52
 title: 'Verify OpenCode CLI command: serve vs web'
-status: todo
+status: completed
 type: task
 priority: high
 tags:
     - sandbox
 created_at: 2026-01-28T07:09:25Z
-updated_at: 2026-01-28T07:09:25Z
+updated_at: 2026-01-28T07:15:56Z
 parent: agent-ops-742p
 ---
 

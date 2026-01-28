@@ -11,6 +11,7 @@ from config import (
     GATEWAY_PORT,
     MAX_TIMEOUT_SECONDS,
     OPENCODE_PORT,
+    get_secret,
 )
 from images.base import get_base_image
 
@@ -44,15 +45,22 @@ class SandboxManager:
         """Create a new Modal sandbox for a session."""
         image = self._get_image(config.image_type)
 
-        # Build secrets dict
+        # Build secrets dict — must include all env vars the sandbox needs
         secrets_dict: dict[str, str] = {
             "DO_WS_URL": config.do_ws_url,
             "RUNNER_TOKEN": config.runner_token,
             "SESSION_ID": config.session_id,
             "JWT_SECRET": config.jwt_secret,
+            "OPENCODE_SERVER_PASSWORD": get_secret("OPENCODE_SERVER_PASSWORD"),
+            "ANTHROPIC_API_KEY": get_secret("ANTHROPIC_API_KEY"),
+            "OPENAI_API_KEY": get_secret("OPENAI_API_KEY"),
+            "GOOGLE_API_KEY": get_secret("GOOGLE_API_KEY"),
         }
 
-        # Merge any additional env vars (API keys, etc.)
+        # Strip empty values so Modal doesn't set blank env vars
+        secrets_dict = {k: v for k, v in secrets_dict.items() if v}
+
+        # Merge any additional env vars (caller overrides)
         if config.env_vars:
             secrets_dict.update(config.env_vars)
 
@@ -62,6 +70,7 @@ class SandboxManager:
             image=image,
             encrypted_ports=[OPENCODE_PORT, GATEWAY_PORT],
             timeout=MAX_TIMEOUT_SECONDS,
+            idle_timeout=config.idle_timeout_seconds,
             secrets=[modal.Secret.from_dict(secrets_dict)],
             volumes={
                 "/workspace": modal.Volume.from_name(

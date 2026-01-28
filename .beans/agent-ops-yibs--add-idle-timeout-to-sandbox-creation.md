@@ -1,13 +1,13 @@
 ---
 # agent-ops-yibs
 title: Add idle_timeout to sandbox creation
-status: todo
+status: completed
 type: bug
 priority: critical
 tags:
     - backend
 created_at: 2026-01-28T07:08:16Z
-updated_at: 2026-01-28T07:08:16Z
+updated_at: 2026-01-28T07:12:19Z
 parent: agent-ops-jcbs
 ---
 

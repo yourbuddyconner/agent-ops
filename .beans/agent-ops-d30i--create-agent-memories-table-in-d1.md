@@ -1,13 +1,13 @@
 ---
 # agent-ops-d30i
 title: Create agent_memories table in D1
-status: todo
+status: completed
 type: task
 priority: normal
 tags:
     - worker
 created_at: 2026-01-28T07:10:00Z
-updated_at: 2026-01-28T07:10:00Z
+updated_at: 2026-01-28T07:17:17Z
 parent: agent-ops-mr3k
 ---
 

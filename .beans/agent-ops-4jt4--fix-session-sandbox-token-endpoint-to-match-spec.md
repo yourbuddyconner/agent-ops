@@ -1,13 +1,13 @@
 ---
 # agent-ops-4jt4
 title: Fix session sandbox-token endpoint to match spec
-status: todo
+status: completed
 type: bug
 priority: critical
 tags:
     - worker
 created_at: 2026-01-28T07:09:02Z
-updated_at: 2026-01-28T07:09:02Z
+updated_at: 2026-01-28T07:14:54Z
 parent: agent-ops-742p
 ---
 

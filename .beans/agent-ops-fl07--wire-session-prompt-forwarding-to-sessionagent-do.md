@@ -1,13 +1,13 @@
 ---
 # agent-ops-fl07
 title: Wire session prompt forwarding to SessionAgent DO
-status: todo
+status: completed
 type: bug
 priority: critical
 tags:
     - worker
 created_at: 2026-01-28T07:08:20Z
-updated_at: 2026-01-28T07:08:20Z
+updated_at: 2026-01-28T07:14:12Z
 parent: agent-ops-jcbs
 ---
 
