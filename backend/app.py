@@ -12,7 +12,7 @@ session_manager = SessionManager(app)
 
 
 @app.function()
-@modal.web_endpoint(method="POST", label="create-session")
+@modal.fastapi_endpoint(method="POST", label="create-session")
 async def create_session(request: dict) -> dict:
     """Create a new session and spawn a sandbox.
 
@@ -52,7 +52,7 @@ async def create_session(request: dict) -> dict:
 
 
 @app.function()
-@modal.web_endpoint(method="POST", label="terminate-session")
+@modal.fastapi_endpoint(method="POST", label="terminate-session")
 async def terminate_session(request: dict) -> dict:
     """Terminate a session's sandbox.
 
@@ -68,7 +68,7 @@ async def terminate_session(request: dict) -> dict:
 
 
 @app.function()
-@modal.web_endpoint(method="POST", label="session-status")
+@modal.fastapi_endpoint(method="POST", label="session-status")
 async def session_status(request: dict) -> dict:
     """Get status of a session's sandbox.
 

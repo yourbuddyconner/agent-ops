@@ -28,30 +28,30 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-3 dark:border-neutral-700 dark:bg-neutral-800">
-        <div className="flex items-center gap-3">
+      <header className="flex items-center justify-between border-b border-neutral-200 bg-surface-0 px-3 py-2 dark:border-neutral-800 dark:bg-surface-0">
+        <div className="flex items-center gap-2.5">
           <Link to="/sessions">
             <Button variant="ghost" size="sm">
-              <BackIcon className="mr-1 h-4 w-4" />
+              <BackIcon className="mr-1 h-3.5 w-3.5" />
               Back
             </Button>
           </Link>
-          <div className="h-4 w-px bg-neutral-200 dark:bg-neutral-700" />
-          <span className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-            Session {sessionId.slice(0, 8)}...
+          <div className="h-3.5 w-px bg-neutral-200 dark:bg-neutral-700" />
+          <span className="font-mono text-[12px] font-medium text-neutral-600 dark:text-neutral-400">
+            {sessionId.slice(0, 8)}
           </span>
           <SessionStatusBadge status={sessionStatus} />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <Link to="/sessions/$sessionId/editor" params={{ sessionId }}>
             <Button variant="ghost" size="sm">
-              <EditorIcon className="mr-1 h-4 w-4" />
+              <EditorIcon className="mr-1 h-3.5 w-3.5" />
               Editor
             </Button>
           </Link>
           <Link to="/sessions/$sessionId/files" params={{ sessionId }}>
             <Button variant="ghost" size="sm">
-              <FilesIcon className="mr-1 h-4 w-4" />
+              <FilesIcon className="mr-1 h-3.5 w-3.5" />
               Files
             </Button>
           </Link>
@@ -152,7 +152,7 @@ function BackIcon({ className }: { className?: string }) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth="1.75"
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}
@@ -172,7 +172,7 @@ function EditorIcon({ className }: { className?: string }) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth="1.75"
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}
@@ -192,7 +192,7 @@ function FilesIcon({ className }: { className?: string }) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth="1.75"
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}

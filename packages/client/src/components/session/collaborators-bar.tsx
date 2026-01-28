@@ -12,14 +12,14 @@ export interface ConnectedUser {
 }
 
 const COLORS = [
-  'bg-blue-500',
-  'bg-green-500',
-  'bg-purple-500',
-  'bg-orange-500',
-  'bg-pink-500',
-  'bg-teal-500',
   'bg-indigo-500',
-  'bg-red-500',
+  'bg-emerald-500',
+  'bg-violet-500',
+  'bg-amber-500',
+  'bg-rose-500',
+  'bg-teal-500',
+  'bg-cyan-500',
+  'bg-orange-500',
 ];
 
 function getColorForUser(userId: string): string {
@@ -45,19 +45,19 @@ export function CollaboratorsBar({ connectedUsers, className }: CollaboratorsBar
   if (connectedUsers.length === 0) return null;
 
   return (
-    <div className={cn('flex items-center -space-x-2', className)}>
+    <div className={cn('flex items-center -space-x-1.5', className)}>
       {connectedUsers.map((user) => (
         <div key={user.id} className="group relative">
           {user.avatarUrl ? (
             <img
               src={user.avatarUrl}
               alt={user.name || user.id}
-              className="h-7 w-7 rounded-full border-2 border-white ring-0 dark:border-neutral-800"
+              className="h-6 w-6 rounded-full border-2 border-surface-0 ring-0 dark:border-surface-0"
             />
           ) : (
             <div
               className={cn(
-                'flex h-7 w-7 items-center justify-center rounded-full border-2 border-white text-[10px] font-medium text-white dark:border-neutral-800',
+                'flex h-6 w-6 items-center justify-center rounded-full border-2 border-surface-0 font-mono text-[9px] font-semibold text-white dark:border-surface-0',
                 getColorForUser(user.id)
               )}
             >
@@ -65,13 +65,13 @@ export function CollaboratorsBar({ connectedUsers, className }: CollaboratorsBar
             </div>
           )}
           {/* Tooltip */}
-          <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded bg-neutral-900 px-2 py-1 text-xs text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 dark:bg-neutral-700">
+          <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded bg-neutral-900 px-2 py-1 font-mono text-[10px] text-white opacity-0 shadow-panel transition-opacity group-hover:opacity-100 dark:bg-neutral-700">
             {user.name || `User ${user.id.slice(0, 8)}`}
           </div>
         </div>
       ))}
       {connectedUsers.length > 1 && (
-        <span className="pl-3 text-xs text-neutral-500 dark:text-neutral-400">
+        <span className="pl-2.5 label-mono text-neutral-500 dark:text-neutral-400">
           {connectedUsers.length} online
         </span>
       )}

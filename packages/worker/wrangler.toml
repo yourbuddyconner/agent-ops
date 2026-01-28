@@ -28,28 +28,8 @@ class_name = "EventBusDO"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["APIKeysDurableObject", "AgentSessionDurableObject"]
-
-[[migrations]]
-tag = "v2"
-new_sqlite_classes = ["OpenCodeContainerDO"]
-
-[[migrations]]
-tag = "v3"
-deleted_classes = ["OpenCodeContainerDO"]
-new_classes = ["OpenCodeContainerDO"]
-
-[[migrations]]
-tag = "v4"
+new_classes = ["APIKeysDurableObject", "EventBusDO"]
 new_sqlite_classes = ["SessionAgentDO"]
-
-[[migrations]]
-tag = "v5"
-deleted_classes = ["AgentSessionDurableObject", "OpenCodeContainerDO"]
-
-[[migrations]]
-tag = "v6"
-new_classes = ["EventBusDO"]
 
 # D1 Database
 [[d1_databases]]

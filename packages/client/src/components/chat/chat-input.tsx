@@ -45,7 +45,7 @@ export function ChatInput({
   return (
     <form
       onSubmit={handleSubmit}
-      className="border-t border-neutral-200 bg-white p-4"
+      className="border-t border-neutral-200 bg-surface-0 p-3 dark:border-neutral-800 dark:bg-surface-0"
     >
       <div className="flex gap-2">
         <textarea
@@ -56,14 +56,14 @@ export function ChatInput({
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex-1 resize-none rounded-md border border-neutral-200 bg-surface-0 px-3 py-2 text-[13px] text-neutral-900 placeholder:text-neutral-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface-0 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:bg-surface-1 dark:text-neutral-100 dark:placeholder:text-neutral-500"
         />
-        <Button type="submit" disabled={!value.trim() || disabled}>
+        <Button type="submit" disabled={!value.trim() || disabled} size="sm">
           Send
         </Button>
       </div>
-      <p className="mt-2 text-xs text-neutral-400">
-        Press Enter to send, Shift+Enter for new line
+      <p className="mt-1.5 font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
+        Enter to send · Shift+Enter for new line
       </p>
     </form>
   );

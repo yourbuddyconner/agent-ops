@@ -4,26 +4,82 @@
 
 @layer base {
   :root {
-    --background: 250 250 250;
+    --surface-0: 255 255 255;
+    --surface-1: 250 250 250;
+    --surface-2: 245 245 245;
+    --surface-3: 238 238 238;
+    --accent: 99 102 241;
+    --accent-muted: 99 102 241;
+    --border: 229 229 229;
+    --border-strong: 212 212 212;
     --foreground: 23 23 23;
+    --background: 250 250 250;
     --card: 255 255 255;
     --card-foreground: 23 23 23;
-    --border: 229 229 229;
   }
 
   .dark {
-    --background: 23 23 23;
+    --surface-0: 10 10 10;
+    --surface-1: 18 18 18;
+    --surface-2: 24 24 24;
+    --surface-3: 32 32 32;
+    --accent: 129 140 248;
+    --accent-muted: 67 56 202;
+    --border: 38 38 38;
+    --border-strong: 64 64 64;
     --foreground: 250 250 250;
-    --card: 38 38 38;
+    --background: 10 10 10;
+    --card: 18 18 18;
     --card-foreground: 250 250 250;
-    --border: 64 64 64;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
   body {
-    @apply bg-neutral-50 text-neutral-900;
+    @apply bg-surface-0 text-neutral-900 font-sans;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   }
 
   .dark body {
-    @apply bg-neutral-900 text-neutral-50;
+    @apply bg-surface-0 text-neutral-50;
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-neutral-300 dark:bg-neutral-700;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-neutral-400 dark:bg-neutral-600;
+  }
+
+  /* Selection */
+  ::selection {
+    @apply bg-accent/20 text-inherit;
+  }
+}
+
+@layer components {
+  /* Monospace label used for status indicators and chrome */
+  .label-mono {
+    @apply font-mono text-2xs font-medium uppercase tracking-widest;
   }
 }
