@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { useSession, useSessionToken } from '@/api/sessions';
@@ -53,6 +53,7 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
   } = useChat(sessionId);
 
   const [activeTab, setActiveTab] = useState<EditorTab>('vscode');
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
 
   const isLoading = connectionStatus === 'connecting';
   const isDisabled = !isConnected || sessionStatus === 'terminated';
@@ -60,6 +61,28 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
   const token = tokenData?.token;
 
   const savedLayout = loadSavedLayout();
+
+  // Keyboard shortcuts: Cmd+1 = focus chat, Cmd+2/3/4 = switch tab
+  useEffect(() => {
+    const TABS: EditorTab[] = ['vscode', 'desktop', 'terminal'];
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (!(e.metaKey || e.ctrlKey)) return;
+
+      const num = parseInt(e.key, 10);
+      if (num < 1 || num > 4) return;
+
+      e.preventDefault();
+      if (num === 1) {
+        chatInputRef.current?.focus();
+      } else {
+        setActiveTab(TABS[num - 2]);
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   return (
     <div className="flex h-full flex-col">
@@ -110,6 +133,7 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
                 <ChatInput
                   onSend={sendMessage}
                   disabled={isDisabled}
+                  inputRef={chatInputRef}
                   placeholder={
                     isDisabled
                       ? 'Session is not available'
@@ -135,18 +159,21 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
               <TabButton
                 active={activeTab === 'vscode'}
                 onClick={() => setActiveTab('vscode')}
+                shortcut="2"
               >
                 VS Code
               </TabButton>
               <TabButton
                 active={activeTab === 'desktop'}
                 onClick={() => setActiveTab('desktop')}
+                shortcut="3"
               >
                 Desktop
               </TabButton>
               <TabButton
                 active={activeTab === 'terminal'}
                 onClick={() => setActiveTab('terminal')}
+                shortcut="4"
               >
                 Terminal
               </TabButton>
@@ -190,23 +217,28 @@ function TabButton({
   active,
   onClick,
   children,
+  shortcut,
 }: {
   active: boolean;
   onClick: () => void;
   children: React.ReactNode;
+  shortcut?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        'rounded px-3 py-1 text-xs font-medium transition-colors',
+        'flex items-center gap-1.5 rounded px-3 py-1 text-xs font-medium transition-colors',
         active
           ? 'bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-neutral-100'
           : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200'
       )}
     >
       {children}
+      {shortcut && (
+        <kbd className="hidden text-[10px] opacity-40 sm:inline">{'\u2318'}{shortcut}</kbd>
+      )}
     </button>
   );
 }

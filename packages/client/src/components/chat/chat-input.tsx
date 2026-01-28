@@ -5,15 +5,18 @@ interface ChatInputProps {
   onSend: (content: string) => void;
   disabled?: boolean;
   placeholder?: string;
+  inputRef?: React.RefObject<HTMLTextAreaElement | null>;
 }
 
 export function ChatInput({
   onSend,
   disabled = false,
   placeholder = 'Type a message...',
+  inputRef,
 }: ChatInputProps) {
   const [value, setValue] = useState('');
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const internalRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = inputRef ?? internalRef;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

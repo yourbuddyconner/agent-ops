@@ -1,14 +1,14 @@
 ---
 # agent-ops-82qh
 title: Build session tabs for switching between panels
-status: todo
+status: completed
 type: task
 priority: high
 tags:
     - phase2
     - frontend
 created_at: 2026-01-28T04:05:44Z
-updated_at: 2026-01-28T04:05:44Z
+updated_at: 2026-01-28T04:52:57Z
 parent: agent-ops-742p
 ---
 
