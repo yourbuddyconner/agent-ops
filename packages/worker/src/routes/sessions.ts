@@ -71,8 +71,8 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
   });
 
   // Initialize the Durable Object
-  const doId = c.env.AGENT_SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   await sessionDO.fetch(new Request('http://internal/init', {
     method: 'POST',
@@ -147,8 +147,8 @@ sessionsRouter.post('/:id/messages', zValidator('json', sendMessageSchema), asyn
   }
 
   // Forward to Durable Object
-  const doId = c.env.AGENT_SESSIONS.idFromName(id);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(id);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   const response = await sessionDO.fetch(new Request('http://internal/message', {
     method: 'POST',
@@ -262,8 +262,8 @@ sessionsRouter.delete('/:id', async (c) => {
   }
 
   // Terminate the Durable Object session
-  const doId = c.env.AGENT_SESSIONS.idFromName(id);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(id);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   await sessionDO.fetch(new Request('http://internal/terminate', { method: 'POST' }));
 

@@ -30,8 +30,8 @@ filesRouter.get('/search', async (c) => {
   }
 
   // Forward to session DO which proxies to OpenCode
-  const doId = c.env.AGENT_SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   const params = new URLSearchParams({ query });
   if (limit) params.set('limit', limit);
@@ -71,8 +71,8 @@ filesRouter.get('/read', async (c) => {
   }
 
   // Forward to session DO
-  const doId = c.env.AGENT_SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   const response = await sessionDO.fetch(
     new Request(`http://internal/proxy?path=/file/read?path=${encodeURIComponent(path)}`)
@@ -107,8 +107,8 @@ filesRouter.get('/list', async (c) => {
   }
 
   // Forward to session DO
-  const doId = c.env.AGENT_SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   const response = await sessionDO.fetch(
     new Request(`http://internal/proxy?path=/file/list?path=${encodeURIComponent(dirPath)}`)

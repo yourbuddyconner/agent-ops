@@ -3,8 +3,6 @@ import type { D1Database, R2Bucket, DurableObjectNamespace } from '@cloudflare/w
 export interface Env {
   // Durable Objects
   API_KEYS: DurableObjectNamespace;
-  AGENT_SESSIONS: DurableObjectNamespace;
-  OPENCODE_CONTAINERS: DurableObjectNamespace;
   SESSIONS: DurableObjectNamespace;
 
   // Storage

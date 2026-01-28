@@ -24,8 +24,8 @@ agentRouter.get('/:sessionId/health', async (c) => {
     throw new NotFoundError('Session', sessionId);
   }
 
-  const doId = c.env.AGENT_SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   const response = await sessionDO.fetch(new Request('http://internal/proxy?path=/health'));
 
@@ -50,8 +50,8 @@ agentRouter.get('/:sessionId/project', async (c) => {
     throw new NotFoundError('Session', sessionId);
   }
 
-  const doId = c.env.AGENT_SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   const response = await sessionDO.fetch(new Request('http://internal/proxy?path=/project'));
 
@@ -75,8 +75,8 @@ agentRouter.get('/:sessionId/providers', async (c) => {
     throw new NotFoundError('Session', sessionId);
   }
 
-  const doId = c.env.AGENT_SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   const response = await sessionDO.fetch(new Request('http://internal/proxy?path=/provider'));
 
@@ -100,8 +100,8 @@ agentRouter.get('/:sessionId/models', async (c) => {
     throw new NotFoundError('Session', sessionId);
   }
 
-  const doId = c.env.AGENT_SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   const response = await sessionDO.fetch(new Request('http://internal/proxy?path=/model'));
 
@@ -125,8 +125,8 @@ agentRouter.get('/:sessionId/commands', async (c) => {
     throw new NotFoundError('Session', sessionId);
   }
 
-  const doId = c.env.AGENT_SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   const response = await sessionDO.fetch(new Request('http://internal/proxy?path=/command'));
 
@@ -151,8 +151,8 @@ agentRouter.post('/:sessionId/commands/:name', async (c) => {
     throw new NotFoundError('Session', sessionId);
   }
 
-  const doId = c.env.AGENT_SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   const response = await sessionDO.fetch(
     new Request(`http://internal/proxy?path=/command/${name}`, {
@@ -181,8 +181,8 @@ agentRouter.post('/:sessionId/share', async (c) => {
     throw new NotFoundError('Session', sessionId);
   }
 
-  const doId = c.env.AGENT_SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   // Get OpenCode session ID
   const statusRes = await sessionDO.fetch(new Request('http://internal/status'));
@@ -214,8 +214,8 @@ agentRouter.post('/:sessionId/summarize', async (c) => {
     throw new NotFoundError('Session', sessionId);
   }
 
-  const doId = c.env.AGENT_SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   const response = await sessionDO.fetch(
     new Request('http://internal/proxy?path=/session/summarize', { method: 'POST' })
@@ -242,8 +242,8 @@ agentRouter.all('/:sessionId/proxy/*', async (c) => {
     throw new NotFoundError('Session', sessionId);
   }
 
-  const doId = c.env.AGENT_SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.AGENT_SESSIONS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
 
   const url = new URL(c.req.url);
   const proxyPath = path + url.search;

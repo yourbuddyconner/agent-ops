@@ -17,14 +17,6 @@ name = "API_KEYS"
 class_name = "APIKeysDurableObject"
 
 [[durable_objects.bindings]]
-name = "AGENT_SESSIONS"
-class_name = "AgentSessionDurableObject"
-
-[[durable_objects.bindings]]
-name = "OPENCODE_CONTAINERS"
-class_name = "OpenCodeContainerDO"
-
-[[durable_objects.bindings]]
 name = "SESSIONS"
 class_name = "SessionAgentDO"
 
@@ -36,7 +28,6 @@ new_classes = ["APIKeysDurableObject", "AgentSessionDurableObject"]
 tag = "v2"
 new_sqlite_classes = ["OpenCodeContainerDO"]
 
-# Migration to convert from Container DO to regular DO with Modal sandboxes
 [[migrations]]
 tag = "v3"
 deleted_classes = ["OpenCodeContainerDO"]
@@ -45,6 +36,10 @@ new_classes = ["OpenCodeContainerDO"]
 [[migrations]]
 tag = "v4"
 new_sqlite_classes = ["SessionAgentDO"]
+
+[[migrations]]
+tag = "v5"
+deleted_classes = ["AgentSessionDurableObject", "OpenCodeContainerDO"]
 
 # D1 Database
 [[d1_databases]]

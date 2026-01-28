@@ -294,8 +294,8 @@ containersRouter.post('/:id/start', async (c) => {
   `).bind(now, id).run();
 
   // Get the Durable Object to start the container
-  const doId = c.env.OPENCODE_CONTAINERS.idFromName(`container:${id}`);
-  const stub = c.env.OPENCODE_CONTAINERS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(`container:${id}`);
+  const stub = c.env.SESSIONS.get(doId);
 
   try {
     // Initialize and start the container via Durable Object
@@ -398,8 +398,8 @@ containersRouter.post('/:id/stop', async (c) => {
   `).bind(now, id).run();
 
   // Get the Durable Object to stop the container
-  const doId = c.env.OPENCODE_CONTAINERS.idFromName(`container:${id}`);
-  const stub = c.env.OPENCODE_CONTAINERS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(`container:${id}`);
+  const stub = c.env.SESSIONS.get(doId);
 
   try {
     const response = await stub.fetch(new Request('http://internal/stop', {
@@ -481,8 +481,8 @@ containersRouter.delete('/:id', async (c) => {
 
   // Stop container if running
   if (existing.status === 'running' || existing.status === 'starting') {
-    const doId = c.env.OPENCODE_CONTAINERS.idFromName(`container:${id}`);
-    const stub = c.env.OPENCODE_CONTAINERS.get(doId);
+    const doId = c.env.SESSIONS.idFromName(`container:${id}`);
+    const stub = c.env.SESSIONS.get(doId);
     await stub.fetch(new Request('http://internal/stop', { method: 'POST' })).catch(() => {});
   }
 
@@ -525,8 +525,8 @@ containersRouter.post('/:id/callback', async (c) => {
   const { id } = c.req.param();
 
   // Forward to DO (no auth check - sandbox calls this)
-  const doId = c.env.OPENCODE_CONTAINERS.idFromName(`container:${id}`);
-  const stub = c.env.OPENCODE_CONTAINERS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(`container:${id}`);
+  const stub = c.env.SESSIONS.get(doId);
 
   const response = await stub.fetch(
     new Request('http://internal/callback', {
@@ -561,8 +561,8 @@ containersRouter.get('/:id/ws', async (c) => {
   }
 
   // Upgrade to WebSocket via DO
-  const doId = c.env.OPENCODE_CONTAINERS.idFromName(`container:${id}`);
-  const stub = c.env.OPENCODE_CONTAINERS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(`container:${id}`);
+  const stub = c.env.SESSIONS.get(doId);
 
   return stub.fetch(c.req.raw);
 });
@@ -596,8 +596,8 @@ containersRouter.all('/:id/proxy/*', async (c) => {
   const pathAfterProxy = proxyIndex !== -1 ? fullPath.substring(proxyIndex + 7) : '';
 
   // Get the Durable Object stub
-  const doId = c.env.OPENCODE_CONTAINERS.idFromName(`container:${id}`);
-  const stub = c.env.OPENCODE_CONTAINERS.get(doId);
+  const doId = c.env.SESSIONS.idFromName(`container:${id}`);
+  const stub = c.env.SESSIONS.get(doId);
 
   // Build the URL to forward to the container
   const url = new URL(c.req.url);
