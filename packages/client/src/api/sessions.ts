@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
-import { api } from './client';
+import { api, ApiError } from './client';
 import type {
   AgentSession,
   CreateSessionRequest,
@@ -87,6 +87,9 @@ export function useDeleteSession() {
 }
 
 export function useSessionToken(sessionId: string) {
+  const { data: session } = useSession(sessionId);
+  const isStarting = !session || session.status === 'initializing';
+
   return useQuery({
     queryKey: [...sessionKeys.detail(sessionId), 'token'] as const,
     queryFn: () =>
@@ -94,8 +97,24 @@ export function useSessionToken(sessionId: string) {
         `/sessions/${sessionId}/sandbox-token`
       ),
     enabled: !!sessionId,
-    staleTime: 10 * 60 * 1000, // Refetch after 10 min (token lasts 15 min)
-    refetchInterval: 10 * 60 * 1000,
+    staleTime: 10 * 60 * 1000,
+    refetchInterval: (query) => {
+      // If we already have data, refresh every 10 min (token lasts 15)
+      if (query.state.data) return 10 * 60 * 1000;
+      // During startup or if last fetch failed, poll every 3s
+      if (query.state.status === 'error' || isStarting) return 3_000;
+      // Default steady state
+      return 10 * 60 * 1000;
+    },
+    retry: (failureCount, error) => {
+      // Don't retry 401/403 (auth issues)
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) return false;
+      // Retry 503 (sandbox not ready) up to 20 times
+      if (error instanceof ApiError && error.status === 503) return failureCount < 20;
+      // Default: retry once for other errors
+      return failureCount < 1;
+    },
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10_000),
   });
 }
 

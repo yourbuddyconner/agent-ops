@@ -198,11 +198,12 @@ sessionsRouter.get('/:id/sandbox-token', async (c) => {
     throw new NotFoundError('Session', id);
   }
 
-  if (session.status !== 'running') {
+  // Don't attempt token generation for terminated sessions
+  if (session.status === 'terminated' || session.status === 'error') {
     return c.json({ error: 'Session is not running' }, 503);
   }
 
-  // Get tunnel URLs from the SessionAgent DO
+  // Get tunnel URLs from the SessionAgent DO (source of truth, not stale D1 status)
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
 

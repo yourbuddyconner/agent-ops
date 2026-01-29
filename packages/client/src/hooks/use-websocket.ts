@@ -15,7 +15,6 @@ interface UseWebSocketOptions {
   onDisconnect?: () => void;
   onError?: (error: Event) => void;
   reconnect?: boolean;
-  reconnectInterval?: number;
   maxReconnectAttempts?: number;
 }
 
@@ -26,8 +25,7 @@ export function useWebSocket(url: string | null, options: UseWebSocketOptions = 
     onDisconnect,
     onError,
     reconnect = true,
-    reconnectInterval = 3000,
-    maxReconnectAttempts = 5,
+    maxReconnectAttempts = 10,
   } = options;
 
   const [status, setStatus] = useState<WebSocketStatus>('disconnected');
@@ -93,15 +91,18 @@ export function useWebSocket(url: string | null, options: UseWebSocketOptions = 
       onDisconnectRef.current?.();
 
       if (reconnect && reconnectAttemptsRef.current < maxReconnectAttempts) {
+        const attempt = reconnectAttemptsRef.current;
         reconnectAttemptsRef.current += 1;
+        const baseDelay = Math.min(1000 * Math.pow(2, attempt), 30000);
+        const jitter = baseDelay * 0.2 * Math.random();
         reconnectTimeoutRef.current = window.setTimeout(() => {
           connect();
-        }, reconnectInterval);
+        }, baseDelay + jitter);
       }
     };
 
     wsRef.current = ws;
-  }, [url, userId, token, reconnect, reconnectInterval, maxReconnectAttempts]);
+  }, [url, userId, token, reconnect, maxReconnectAttempts]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {

@@ -185,8 +185,11 @@ export function useChat(sessionId: string) {
           ...prev,
           messages: [...prev.messages, msg],
           streamingContent: '',
-          // Stop thinking when assistant responds
+          // Stop thinking when assistant responds; reset status after tool results
           isAgentThinking: d.role === 'assistant' ? false : prev.isAgentThinking,
+          ...(d.role === 'tool'
+            ? { agentStatus: 'thinking' as const, agentStatusDetail: undefined }
+            : {}),
         }));
         appendLogEntry('message', `${d.role}: ${d.content.slice(0, 80)}${d.content.length > 80 ? '...' : ''}`);
         break;

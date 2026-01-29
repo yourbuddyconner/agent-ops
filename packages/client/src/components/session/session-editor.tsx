@@ -48,7 +48,7 @@ function saveLayout(layout: Layout) {
 
 export function SessionEditor({ sessionId }: SessionEditorProps) {
   const { data: session, isLoading: sessionLoading } = useSession(sessionId);
-  const { data: tokenData, isLoading: tokenLoading } = useSessionToken(sessionId);
+  const { data: tokenData, isLoading: tokenLoading, isError: tokenError } = useSessionToken(sessionId);
   const {
     messages,
     sessionStatus,
@@ -110,6 +110,26 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
           <ConnectionBadge status={connectionStatus} />
         </div>
       </header>
+
+      {/* Connection status banners */}
+      {connectionStatus === 'disconnected' && sessionStatus !== 'terminated' && (
+        <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 font-mono text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+          <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
+          Reconnecting to session...
+        </div>
+      )}
+      {tokenError && session?.status === 'initializing' && (
+        <div className="flex items-center gap-2 border-b border-blue-200 bg-blue-50 px-3 py-1.5 font-mono text-[11px] text-blue-800 dark:border-blue-800 dark:bg-blue-950/50 dark:text-blue-300">
+          <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+          Sandbox starting up...
+        </div>
+      )}
+      {tokenError && session && session.status !== 'initializing' && session.status !== 'terminated' && (
+        <div className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-3 py-1.5 font-mono text-[11px] text-red-800 dark:border-red-800 dark:bg-red-950/50 dark:text-red-300">
+          <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
+          Connection lost. Retrying...
+        </div>
+      )}
 
       {/* Resizable panels */}
       <PanelGroup
