@@ -110,12 +110,16 @@ export interface ToolCall {
   result?: unknown;
 }
 
+// Auth types
+export type AuthProvider = 'github' | 'google';
+
 // User types
 export interface User {
   id: string;
   email: string;
   name?: string;
   avatarUrl?: string;
+  githubUsername?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -123,6 +127,8 @@ export interface User {
 // API Request/Response types
 export interface CreateSessionRequest {
   workspace: string;
+  repoUrl?: string;
+  branch?: string;
   config?: {
     memory?: string;
     timeout?: number;

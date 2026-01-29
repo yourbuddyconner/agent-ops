@@ -19,6 +19,7 @@ import { Route as WorkflowsExecutionsRouteImport } from './routes/workflows/exec
 import { Route as WorkflowsWorkflowIdRouteImport } from './routes/workflows/$workflowId'
 import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId'
 import { Route as IntegrationsCallbackRouteImport } from './routes/integrations/callback'
+import { Route as AuthCallbackRouteImport } from './routes/auth/callback'
 import { Route as SessionsSessionIdIndexRouteImport } from './routes/sessions/$sessionId/index'
 import { Route as SessionsSessionIdFilesRouteImport } from './routes/sessions/$sessionId/files'
 import { Route as SessionsSessionIdEditorRouteImport } from './routes/sessions/$sessionId/editor'
@@ -73,6 +74,11 @@ const IntegrationsCallbackRoute = IntegrationsCallbackRouteImport.update({
   path: '/integrations/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthCallbackRoute = AuthCallbackRouteImport.update({
+  id: '/auth/callback',
+  path: '/auth/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SessionsSessionIdIndexRoute = SessionsSessionIdIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -92,6 +98,7 @@ const SessionsSessionIdEditorRoute = SessionsSessionIdEditorRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
@@ -107,6 +114,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
   '/workflows/executions': typeof WorkflowsExecutionsRoute
@@ -122,6 +130,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
@@ -139,6 +148,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
+    | '/auth/callback'
     | '/integrations/callback'
     | '/sessions/$sessionId'
     | '/workflows/$workflowId'
@@ -154,6 +164,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/login'
+    | '/auth/callback'
     | '/integrations/callback'
     | '/workflows/$workflowId'
     | '/workflows/executions'
@@ -168,6 +179,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/login'
+    | '/auth/callback'
     | '/integrations/callback'
     | '/sessions/$sessionId'
     | '/workflows/$workflowId'
@@ -184,6 +196,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
+  AuthCallbackRoute: typeof AuthCallbackRoute
   IntegrationsCallbackRoute: typeof IntegrationsCallbackRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRouteWithChildren
   WorkflowsWorkflowIdRoute: typeof WorkflowsWorkflowIdRoute
@@ -266,6 +279,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IntegrationsCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/auth/callback': {
+      id: '/auth/callback'
+      path: '/auth/callback'
+      fullPath: '/auth/callback'
+      preLoaderRoute: typeof AuthCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/sessions/$sessionId/': {
       id: '/sessions/$sessionId/'
       path: '/'
@@ -308,6 +328,7 @@ const SessionsSessionIdRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
+  AuthCallbackRoute: AuthCallbackRoute,
   IntegrationsCallbackRoute: IntegrationsCallbackRoute,
   SessionsSessionIdRoute: SessionsSessionIdRouteWithChildren,
   WorkflowsWorkflowIdRoute: WorkflowsWorkflowIdRoute,

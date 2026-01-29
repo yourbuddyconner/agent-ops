@@ -114,6 +114,10 @@ export class AgentClient {
     this.send({ type: "agentStatus", status, detail });
   }
 
+  createPullRequest(params: { branch: string; title: string; body?: string; base?: string }): void {
+    this.send({ type: "create-pr", ...params });
+  }
+
   // ─── Inbound Handlers (DO → Runner) ─────────────────────────────────
 
   onPrompt(handler: (messageId: string, content: string) => void | Promise<void>): void {

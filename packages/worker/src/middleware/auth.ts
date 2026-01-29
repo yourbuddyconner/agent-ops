@@ -4,8 +4,8 @@ import type { Env, Variables } from '../env.js';
 
 /**
  * Authentication middleware supporting:
- * 1. Cloudflare Access JWT (CF-Access-JWT-Assertion header)
- * 2. Bearer token (for API keys)
+ * 1. Server-issued session tokens (from OAuth login)
+ * 2. API key tokens (for programmatic access)
  */
 export const authMiddleware: MiddlewareHandler<{ Bindings: Env; Variables: Variables }> = async (
   c,
@@ -17,27 +17,26 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env; Variables: Varia
     return next();
   }
 
-  // Check for Cloudflare Access JWT
-  const cfAccessJwt = c.req.header('CF-Access-JWT-Assertion');
-  if (cfAccessJwt) {
-    const user = await validateCloudflareAccessJWT(cfAccessJwt, c.env);
-    if (user) {
-      c.set('user', user);
-      return next();
-    }
-  }
-
-  // Check for Bearer token (API key) — from header or query param
-  // Browser WebSocket API cannot send custom headers, so we also accept ?token= query param
+  // Extract bearer token from Authorization header or ?token= query param
   const authHeader = c.req.header('Authorization');
   const bearerToken = authHeader?.startsWith('Bearer ')
     ? authHeader.slice(7)
     : new URL(c.req.url).searchParams.get('token');
 
   if (bearerToken) {
-    const user = await validateAPIKey(bearerToken, c.env);
-    if (user) {
-      c.set('user', user);
+    const tokenHash = await hashToken(bearerToken);
+
+    // Try auth_sessions first (OAuth session tokens)
+    const sessionUser = await validateAuthSession(tokenHash, c.env);
+    if (sessionUser) {
+      c.set('user', sessionUser);
+      return next();
+    }
+
+    // Fall back to api_tokens (programmatic API keys)
+    const apiKeyUser = await validateAPIKey(tokenHash, c.env);
+    if (apiKeyUser) {
+      c.set('user', apiKeyUser);
       return next();
     }
   }
@@ -45,47 +44,40 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env; Variables: Varia
   throw new UnauthorizedError('Missing or invalid authentication');
 };
 
-interface CFAccessPayload {
-  email: string;
-  sub: string;
-  iat: number;
-  exp: number;
-  iss: string;
-  common_name?: string;
-}
-
-async function validateCloudflareAccessJWT(
-  token: string,
+async function validateAuthSession(
+  tokenHash: string,
   env: Env
 ): Promise<{ id: string; email: string } | null> {
   try {
-    // In production, validate JWT signature using Cloudflare Access public keys
-    // For now, decode and trust (Cloudflare Access validates before forwarding)
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
+    const result = await env.DB.prepare(
+      `SELECT u.id, u.email
+       FROM auth_sessions s
+       JOIN users u ON s.user_id = u.id
+       WHERE s.token_hash = ?
+         AND s.expires_at > datetime('now')`
+    )
+      .bind(tokenHash)
+      .first<{ id: string; email: string }>();
 
-    const payload = JSON.parse(atob(parts[1])) as CFAccessPayload;
-
-    // Check expiration
-    if (payload.exp * 1000 < Date.now()) {
-      return null;
+    if (result) {
+      // Update last_used_at (fire-and-forget)
+      env.DB.prepare("UPDATE auth_sessions SET last_used_at = datetime('now') WHERE token_hash = ?")
+        .bind(tokenHash)
+        .run()
+        .catch(() => {});
     }
 
-    return {
-      id: payload.sub,
-      email: payload.email,
-    };
+    return result || null;
   } catch {
     return null;
   }
 }
 
 async function validateAPIKey(
-  token: string,
+  tokenHash: string,
   env: Env
 ): Promise<{ id: string; email: string } | null> {
   try {
-    // Look up API key in D1
     const result = await env.DB.prepare(
       `SELECT u.id, u.email
        FROM api_tokens t
@@ -94,14 +86,14 @@ async function validateAPIKey(
          AND (t.expires_at IS NULL OR t.expires_at > datetime('now'))
          AND t.revoked_at IS NULL`
     )
-      .bind(await hashToken(token))
+      .bind(tokenHash)
       .first<{ id: string; email: string }>();
 
     if (result) {
-      // Update last used timestamp
-      await env.DB.prepare(`UPDATE api_tokens SET last_used_at = datetime('now') WHERE token_hash = ?`)
-        .bind(await hashToken(token))
-        .run();
+      env.DB.prepare("UPDATE api_tokens SET last_used_at = datetime('now') WHERE token_hash = ?")
+        .bind(tokenHash)
+        .run()
+        .catch(() => {});
     }
 
     return result || null;

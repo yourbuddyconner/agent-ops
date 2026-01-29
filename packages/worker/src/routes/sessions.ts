@@ -5,12 +5,15 @@ import { NotFoundError, ValidationError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
 import { signJWT } from '../lib/jwt.js';
+import { decryptString } from '../lib/crypto.js';
 
 export const sessionsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // Validation schemas
 const createSessionSchema = z.object({
   workspace: z.string().min(1).max(100),
+  repoUrl: z.string().url().optional(),
+  branch: z.string().optional(),
   config: z
     .object({
       memory: z.string().optional(),
@@ -90,6 +93,33 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
   const host = c.req.header('host') || 'localhost';
   const doWsUrl = `${wsProtocol}://${host}/api/sessions/${sessionId}/ws`;
 
+  // Build environment variables for the sandbox
+  const envVars: Record<string, string> = {
+    ANTHROPIC_API_KEY: '',  // TODO: pull from user's API keys DO
+  };
+
+  // If repo URL provided, decrypt GitHub token and add repo/git env vars
+  if (body.repoUrl) {
+    const oauthToken = await db.getOAuthToken(c.env.DB, user.id, 'github');
+    if (!oauthToken) {
+      return c.json({ error: 'GitHub account not connected. Sign in with GitHub first.' }, 400);
+    }
+    const githubToken = await decryptString(oauthToken.encryptedAccessToken, c.env.ENCRYPTION_KEY);
+
+    // Fetch git user info from the users table
+    const userRow = await c.env.DB.prepare('SELECT name, email, github_username FROM users WHERE id = ?')
+      .bind(user.id)
+      .first<{ name: string | null; email: string | null; github_username: string | null }>();
+
+    envVars.GITHUB_TOKEN = githubToken;
+    envVars.REPO_URL = body.repoUrl;
+    if (body.branch) {
+      envVars.REPO_BRANCH = body.branch;
+    }
+    envVars.GIT_USER_NAME = userRow?.name || userRow?.github_username || 'Agent Ops User';
+    envVars.GIT_USER_EMAIL = userRow?.email || user.email;
+  }
+
   // Initialize SessionAgentDO — it will spawn the sandbox asynchronously
   // so we can return immediately without waiting for the image build.
   const doId = c.env.SESSIONS.idFromName(sessionId);
@@ -115,9 +145,7 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
           doWsUrl,
           runnerToken,
           jwtSecret: c.env.ENCRYPTION_KEY,
-          envVars: {
-            ANTHROPIC_API_KEY: '',  // TODO: pull from user's API keys DO
-          },
+          envVars,
         },
       }),
     }));

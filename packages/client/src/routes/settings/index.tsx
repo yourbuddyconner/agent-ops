@@ -12,7 +12,7 @@ export const Route = createFileRoute('/settings/')({
 
 function SettingsPage() {
   const user = useAuthStore((s) => s.user);
-  const { logout } = useLogout();
+  const logoutMutation = useLogout();
   const { theme, setTheme } = useTheme();
 
   return (
@@ -34,7 +34,7 @@ function SettingsPage() {
               </div>
             )}
             <div>
-              <Button variant="secondary" onClick={logout}>
+              <Button variant="secondary" onClick={() => logoutMutation.mutate()}>
                 Sign out
               </Button>
             </div>

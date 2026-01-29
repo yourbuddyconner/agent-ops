@@ -21,7 +21,8 @@ export type RunnerToDOMessage =
   | { type: "screenshot"; data: string; description: string }
   | { type: "error"; messageId: string; error: string }
   | { type: "complete" }
-  | { type: "agentStatus"; status: AgentStatus; detail?: string };
+  | { type: "agentStatus"; status: AgentStatus; detail?: string }
+  | { type: "create-pr"; branch: string; title: string; body?: string; base?: string };
 
 // ─── CLI Config ────────────────────────────────────────────────────────────
 

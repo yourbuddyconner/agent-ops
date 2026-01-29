@@ -314,6 +314,140 @@ export async function getSyncedEntities(
   };
 }
 
+// Auth session operations
+export async function createAuthSession(
+  db: D1Database,
+  data: { id: string; userId: string; tokenHash: string; provider: string; expiresAt: string }
+): Promise<void> {
+  await db
+    .prepare(
+      'INSERT INTO auth_sessions (id, user_id, token_hash, provider, expires_at) VALUES (?, ?, ?, ?, ?)'
+    )
+    .bind(data.id, data.userId, data.tokenHash, data.provider, data.expiresAt)
+    .run();
+}
+
+export async function getAuthSessionByTokenHash(
+  db: D1Database,
+  tokenHash: string
+): Promise<{ id: string; email: string } | null> {
+  const result = await db
+    .prepare(
+      `SELECT u.id, u.email
+       FROM auth_sessions s
+       JOIN users u ON s.user_id = u.id
+       WHERE s.token_hash = ?
+         AND s.expires_at > datetime('now')`
+    )
+    .bind(tokenHash)
+    .first<{ id: string; email: string }>();
+
+  if (result) {
+    // Update last_used_at
+    await db
+      .prepare("UPDATE auth_sessions SET last_used_at = datetime('now') WHERE token_hash = ?")
+      .bind(tokenHash)
+      .run();
+  }
+
+  return result || null;
+}
+
+export async function deleteAuthSession(db: D1Database, tokenHash: string): Promise<void> {
+  await db.prepare('DELETE FROM auth_sessions WHERE token_hash = ?').bind(tokenHash).run();
+}
+
+export async function deleteUserAuthSessions(db: D1Database, userId: string): Promise<void> {
+  await db.prepare('DELETE FROM auth_sessions WHERE user_id = ?').bind(userId).run();
+}
+
+// OAuth token operations
+export async function upsertOAuthToken(
+  db: D1Database,
+  data: {
+    id: string;
+    userId: string;
+    provider: string;
+    encryptedAccessToken: string;
+    encryptedRefreshToken?: string;
+    scopes?: string;
+    expiresAt?: string;
+  }
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO oauth_tokens (id, user_id, provider, encrypted_access_token, encrypted_refresh_token, scopes, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, provider)
+       DO UPDATE SET
+         encrypted_access_token = excluded.encrypted_access_token,
+         encrypted_refresh_token = COALESCE(excluded.encrypted_refresh_token, encrypted_refresh_token),
+         scopes = COALESCE(excluded.scopes, scopes),
+         expires_at = excluded.expires_at,
+         updated_at = datetime('now')`
+    )
+    .bind(
+      data.id,
+      data.userId,
+      data.provider,
+      data.encryptedAccessToken,
+      data.encryptedRefreshToken || null,
+      data.scopes || null,
+      data.expiresAt || null
+    )
+    .run();
+}
+
+export async function getOAuthToken(
+  db: D1Database,
+  userId: string,
+  provider: string
+): Promise<{ encryptedAccessToken: string; encryptedRefreshToken: string | null; scopes: string | null } | null> {
+  const result = await db
+    .prepare('SELECT encrypted_access_token, encrypted_refresh_token, scopes FROM oauth_tokens WHERE user_id = ? AND provider = ?')
+    .bind(userId, provider)
+    .first<{ encrypted_access_token: string; encrypted_refresh_token: string | null; scopes: string | null }>();
+
+  if (!result) return null;
+  return {
+    encryptedAccessToken: result.encrypted_access_token,
+    encryptedRefreshToken: result.encrypted_refresh_token,
+    scopes: result.scopes,
+  };
+}
+
+// User lookup operations
+export async function findUserByGitHubId(db: D1Database, githubId: string): Promise<User | null> {
+  const row = await db.prepare('SELECT * FROM users WHERE github_id = ?').bind(githubId).first();
+  return row ? mapUser(row) : null;
+}
+
+export async function findUserByEmail(db: D1Database, email: string): Promise<User | null> {
+  const row = await db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first();
+  return row ? mapUser(row) : null;
+}
+
+export async function updateUserGitHub(
+  db: D1Database,
+  userId: string,
+  data: { githubId: string; githubUsername: string; name?: string; avatarUrl?: string }
+): Promise<void> {
+  await db
+    .prepare(
+      "UPDATE users SET github_id = ?, github_username = ?, name = COALESCE(?, name), avatar_url = COALESCE(?, avatar_url), updated_at = datetime('now') WHERE id = ?"
+    )
+    .bind(data.githubId, data.githubUsername, data.name || null, data.avatarUrl || null, userId)
+    .run();
+}
+
+export async function hasOAuthProvider(db: D1Database, userId: string, provider: string): Promise<boolean> {
+  const result = await db
+    .prepare('SELECT 1 FROM oauth_tokens WHERE user_id = ? AND provider = ?')
+    .bind(userId, provider)
+    .first();
+  return !!result;
+}
+
 // Mapping helpers
 function mapSession(row: any): AgentSession {
   return {
@@ -349,6 +483,17 @@ function mapMessage(row: any): Message {
     content: row.content,
     toolCalls: row.tool_calls ? JSON.parse(row.tool_calls) : undefined,
     createdAt: new Date(row.created_at),
+  };
+}
+
+function mapUser(row: any): User {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name || undefined,
+    avatarUrl: row.avatar_url || undefined,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
   };
 }
 

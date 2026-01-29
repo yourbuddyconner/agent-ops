@@ -1,6 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { useCreateSession } from '@/api/sessions';
+import { useRepos, useValidateRepo, type Repo } from '@/api/repos';
+import { getWebSocketUrl } from '@/api/client';
+import { useAuthStore } from '@/stores/auth';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -12,138 +15,711 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/cn';
+import type { SessionStatus, CreateSessionResponse } from '@/api/types';
 
 interface CreateSessionDialogProps {
   trigger?: React.ReactNode;
 }
 
-const LOADING_MESSAGES = [
-  'Creating session...',
-  'Starting sandbox...',
-  'Building image (this may take a minute)...',
-  'Still working...',
+type DialogView = 'form' | 'progress';
+type RepoMode = 'my-repos' | 'url';
+
+// --- Progress step definitions ---
+
+interface ProgressStep {
+  key: string;
+  label: string;
+}
+
+const PROGRESS_STEPS: ProgressStep[] = [
+  { key: 'creating', label: 'Creating session' },
+  { key: 'spawning', label: 'Spawning sandbox' },
+  { key: 'cloning', label: 'Cloning repository' },
+  { key: 'starting', label: 'Starting agent' },
+  { key: 'ready', label: 'Ready' },
 ];
+
+// --- Session status WebSocket hook ---
+
+function useSessionStatus(sessionId: string | null) {
+  const [status, setStatus] = useState<SessionStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    if (!sessionId) return;
+
+    const { token, user } = useAuthStore.getState();
+    if (!token || !user) return;
+
+    const wsUrlStr = getWebSocketUrl(`/api/sessions/${sessionId}/ws?role=client`);
+    const wsUrl = new URL(wsUrlStr);
+    wsUrl.searchParams.set('userId', user.id);
+    wsUrl.searchParams.set('token', token);
+    const ws = new WebSocket(wsUrl.toString());
+    wsRef.current = ws;
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        // Listen for init message (contains current session status)
+        if (msg.type === 'init' && msg.session?.status) {
+          setStatus(msg.session.status as SessionStatus);
+          if (msg.session.status === 'running' || msg.session.status === 'error') {
+            ws.close();
+          }
+        }
+        // Listen for status update messages
+        if (msg.type === 'status' && msg.data?.status) {
+          setStatus(msg.data.status as SessionStatus);
+          if (msg.data.status === 'running' || msg.data.status === 'error') {
+            ws.close();
+          }
+          if (msg.data.status === 'error' && msg.data.error) {
+            setError(msg.data.error);
+          }
+        }
+      } catch {
+        // ignore parse errors
+      }
+    };
+
+    ws.onerror = () => {
+      // Only set error if we haven't received a terminal status
+      setError((prev) => prev ?? 'Connection lost');
+    };
+
+    return () => {
+      ws.close();
+      wsRef.current = null;
+    };
+  }, [sessionId]);
+
+  return { status, error };
+}
+
+// --- Time-ago helper ---
+
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return `${Math.floor(days / 30)}mo ago`;
+}
+
+// --- Language color map ---
+
+const LANG_COLORS: Record<string, string> = {
+  TypeScript: 'bg-blue-500',
+  JavaScript: 'bg-yellow-400',
+  Python: 'bg-green-500',
+  Rust: 'bg-orange-600',
+  Go: 'bg-cyan-500',
+  Java: 'bg-red-500',
+  Ruby: 'bg-red-600',
+  Swift: 'bg-orange-500',
+  Kotlin: 'bg-purple-500',
+  C: 'bg-gray-500',
+  'C++': 'bg-pink-500',
+  'C#': 'bg-green-600',
+  PHP: 'bg-indigo-400',
+  Scala: 'bg-red-400',
+  Shell: 'bg-emerald-500',
+  HTML: 'bg-orange-400',
+  CSS: 'bg-purple-400',
+  Vue: 'bg-emerald-400',
+  Dart: 'bg-blue-400',
+};
+
+// --- Main component ---
 
 export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
   const [open, setOpen] = useState(false);
-  const [workspace, setWorkspace] = useState('');
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [view, setView] = useState<DialogView>('form');
   const navigate = useNavigate();
   const createSession = useCreateSession();
 
-  // Track elapsed time during creation
+  // Form state
+  const [workspace, setWorkspace] = useState('');
+  const [repoMode, setRepoMode] = useState<RepoMode>('my-repos');
+  const [selectedRepo, setSelectedRepo] = useState<Repo | null>(null);
+  const [repoUrl, setRepoUrl] = useState('');
+  const [branch, setBranch] = useState('');
+  const [repoSearch, setRepoSearch] = useState('');
+  const [workspaceManuallyEdited, setWorkspaceManuallyEdited] = useState(false);
+
+  // Progress state
+  const [sessionResult, setSessionResult] = useState<CreateSessionResponse | null>(null);
+  const [apiDone, setApiDone] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  // Queries
+  const { data: reposData, isLoading: reposLoading } = useRepos();
+  const validateRepo = useValidateRepo(repoMode === 'url' ? repoUrl : '');
+
+  // WebSocket status tracking
+  const { status: wsStatus, error: wsError } = useSessionStatus(
+    view === 'progress' ? sessionResult?.session.id ?? null : null
+  );
+
+  // Filtered repos
+  const filteredRepos = useMemo(() => {
+    if (!reposData?.repos) return [];
+    if (!repoSearch.trim()) return reposData.repos;
+    const q = repoSearch.toLowerCase();
+    return reposData.repos.filter(
+      (r) =>
+        r.fullName.toLowerCase().includes(q) ||
+        (r.description?.toLowerCase().includes(q) ?? false)
+    );
+  }, [reposData?.repos, repoSearch]);
+
+  // Elapsed time tracker for progress view
   useEffect(() => {
-    if (!createSession.isPending) {
+    if (view !== 'progress') {
       setElapsedSeconds(0);
       return;
     }
-
-    const interval = setInterval(() => {
-      setElapsedSeconds((s) => s + 1);
-    }, 1000);
-
+    const interval = setInterval(() => setElapsedSeconds((s) => s + 1), 1000);
     return () => clearInterval(interval);
-  }, [createSession.isPending]);
+  }, [view]);
 
-  // Get loading message based on elapsed time
-  const getLoadingMessage = () => {
-    if (elapsedSeconds < 3) return LOADING_MESSAGES[0];
-    if (elapsedSeconds < 8) return LOADING_MESSAGES[1];
-    if (elapsedSeconds < 30) return LOADING_MESSAGES[2];
-    return LOADING_MESSAGES[3];
+  // Auto-navigate when ready
+  useEffect(() => {
+    if (wsStatus === 'running' && sessionResult) {
+      const timeout = setTimeout(() => {
+        setOpen(false);
+        navigate({ to: '/sessions/$sessionId', params: { sessionId: sessionResult.session.id } });
+      }, 500);
+      return () => clearTimeout(timeout);
+    }
+  }, [wsStatus, sessionResult, navigate]);
+
+  // Advance step index based on elapsed time when initializing
+  const [timeBasedStep, setTimeBasedStep] = useState(1);
+  useEffect(() => {
+    if (view !== 'progress' || !apiDone || wsStatus === 'running' || wsStatus === 'error') return;
+    // Advance steps over time
+    const hasRepo = !!selectedRepo || (repoMode === 'url' && !!repoUrl);
+    if (elapsedSeconds >= 5 && hasRepo) setTimeBasedStep(2);
+    if (elapsedSeconds >= 10) setTimeBasedStep(3);
+  }, [elapsedSeconds, view, apiDone, wsStatus, selectedRepo, repoMode, repoUrl]);
+
+  const resetDialog = useCallback(() => {
+    setView('form');
+    setWorkspace('');
+    setSelectedRepo(null);
+    setRepoUrl('');
+    setBranch('');
+    setRepoSearch('');
+    setWorkspaceManuallyEdited(false);
+    setSessionResult(null);
+    setApiDone(false);
+    setCreateError(null);
+    setElapsedSeconds(0);
+    setTimeBasedStep(1);
+    createSession.reset();
+  }, [createSession]);
+
+  const handleOpenChange = (v: boolean) => {
+    if (!v && view === 'progress' && wsStatus !== 'running' && wsStatus !== 'error') {
+      // Don't allow closing during active progress
+      return;
+    }
+    setOpen(v);
+    if (!v) resetDialog();
+  };
+
+  const handleSelectRepo = (repo: Repo) => {
+    setSelectedRepo(repo);
+    if (!workspaceManuallyEdited) {
+      setWorkspace(repo.name);
+    }
+    setBranch('');
+  };
+
+  const handleClearRepo = () => {
+    setSelectedRepo(null);
+    if (!workspaceManuallyEdited) {
+      setWorkspace('');
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!workspace.trim()) return;
 
+    setView('progress');
+    setCreateError(null);
+    setApiDone(false);
+
+    // Build request
+    const request: { workspace: string; repoUrl?: string; branch?: string } = {
+      workspace: workspace.trim(),
+    };
+
+    if (selectedRepo) {
+      request.repoUrl = selectedRepo.cloneUrl;
+      if (branch.trim()) request.branch = branch.trim();
+    } else if (repoMode === 'url' && repoUrl.trim()) {
+      request.repoUrl = repoUrl.trim();
+      if (branch.trim()) request.branch = branch.trim();
+    }
+
     try {
-      const result = await createSession.mutateAsync({ workspace });
-      setOpen(false);
-      setWorkspace('');
-      navigate({ to: '/sessions/$sessionId', params: { sessionId: result.session.id } });
-    } catch {
-      // Error handling is done by the mutation
+      const result = await createSession.mutateAsync(request);
+      setSessionResult(result);
+      setApiDone(true);
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Failed to create session');
     }
   };
 
+  const handleRetry = () => {
+    setView('form');
+    setCreateError(null);
+    setApiDone(false);
+    setSessionResult(null);
+    setTimeBasedStep(1);
+    createSession.reset();
+  };
+
+  const handleOpenSession = () => {
+    if (!sessionResult) return;
+    setOpen(false);
+    navigate({ to: '/sessions/$sessionId', params: { sessionId: sessionResult.session.id } });
+  };
+
+  // Determine which step is active
+  const hasRepo = !!selectedRepo || (repoMode === 'url' && !!repoUrl);
+  const effectiveSteps = PROGRESS_STEPS.filter(
+    (s) => hasRepo || s.key !== 'cloning'
+  );
+
+  let activeStepKey: string;
+  if (createError || wsError) {
+    activeStepKey = 'error';
+  } else if (!apiDone) {
+    activeStepKey = 'creating';
+  } else if (wsStatus === 'running') {
+    activeStepKey = 'ready';
+  } else {
+    // Time-based progression
+    const keys = effectiveSteps.map((s) => s.key);
+    activeStepKey = keys[Math.min(timeBasedStep, keys.length - 2)] ?? 'spawning';
+  }
+
+  const repoUrlValid = validateRepo.data?.valid;
+  const repoUrlError = validateRepo.data?.error;
+
   return (
-    <Dialog open={open} onOpenChange={(v) => !createSession.isPending && setOpen(v)}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         {trigger ?? <Button>New Session</Button>}
       </DialogTrigger>
-      <DialogContent>
-        <form onSubmit={handleSubmit}>
-          <DialogHeader>
-            <DialogTitle>Create Session</DialogTitle>
-            <DialogDescription>
-              Start a new AI agent session with a workspace.
-            </DialogDescription>
-          </DialogHeader>
+      <DialogContent className={cn('sm:max-w-lg', view === 'form' && 'sm:max-w-xl')}>
+        {view === 'form' ? (
+          <form onSubmit={handleSubmit}>
+            <DialogHeader>
+              <DialogTitle>Create Session</DialogTitle>
+              <DialogDescription>
+                Start a new AI agent session. Optionally select a repository to clone.
+              </DialogDescription>
+            </DialogHeader>
 
-          {createSession.isPending ? (
-            <div className="py-8">
-              <div className="flex flex-col items-center justify-center gap-4">
-                <div className="h-8 w-8 animate-spin rounded-full border-2 border-neutral-200 border-t-accent" />
-                <div className="text-center">
-                  <p className="font-medium text-neutral-900 dark:text-neutral-100">
-                    {getLoadingMessage()}
-                  </p>
-                  <p className="mt-1 font-mono text-xs text-neutral-500">
-                    {elapsedSeconds}s elapsed
-                  </p>
+            <div className="space-y-4 py-4">
+              {/* Repository section */}
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                    Repository
+                    <span className="ml-1 text-xs font-normal text-neutral-400">(optional)</span>
+                  </label>
+                  <div className="flex rounded-md border border-neutral-200 dark:border-neutral-700">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRepoMode('my-repos');
+                        setRepoUrl('');
+                      }}
+                      className={cn(
+                        'px-2.5 py-1 text-xs font-medium transition-colors',
+                        'rounded-l-md border-r border-neutral-200 dark:border-neutral-700',
+                        repoMode === 'my-repos'
+                          ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                          : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'
+                      )}
+                    >
+                      My repos
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRepoMode('url');
+                        setSelectedRepo(null);
+                      }}
+                      className={cn(
+                        'px-2.5 py-1 text-xs font-medium transition-colors',
+                        'rounded-r-md',
+                        repoMode === 'url'
+                          ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                          : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'
+                      )}
+                    >
+                      URL
+                    </button>
+                  </div>
                 </div>
+
+                {repoMode === 'my-repos' ? (
+                  <div>
+                    {selectedRepo ? (
+                      <div className="flex items-center justify-between rounded-md border border-neutral-200 px-3 py-2 dark:border-neutral-700">
+                        <div className="flex items-center gap-2">
+                          {selectedRepo.language && (
+                            <span
+                              className={cn(
+                                'h-2.5 w-2.5 rounded-full',
+                                LANG_COLORS[selectedRepo.language] ?? 'bg-neutral-400'
+                              )}
+                            />
+                          )}
+                          <span className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                            {selectedRepo.fullName}
+                          </span>
+                          {selectedRepo.private && (
+                            <Badge variant="secondary">private</Badge>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleClearRepo}
+                          className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+                        >
+                          Change
+                        </button>
+                      </div>
+                    ) : (
+                      <div>
+                        <Input
+                          value={repoSearch}
+                          onChange={(e) => setRepoSearch(e.target.value)}
+                          placeholder="Search repositories..."
+                          className="mb-2"
+                        />
+                        <div className="max-h-48 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700">
+                          {reposLoading ? (
+                            <div className="flex items-center justify-center py-6">
+                              <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-600" />
+                            </div>
+                          ) : filteredRepos.length === 0 ? (
+                            <p className="py-4 text-center text-sm text-neutral-400">
+                              {repoSearch ? 'No repos match your search' : 'No repositories found'}
+                            </p>
+                          ) : (
+                            filteredRepos.map((repo) => (
+                              <button
+                                key={repo.id}
+                                type="button"
+                                onClick={() => handleSelectRepo(repo)}
+                                className={cn(
+                                  'flex w-full items-center justify-between px-3 py-2 text-left transition-colors',
+                                  'hover:bg-neutral-50 dark:hover:bg-neutral-800/50',
+                                  'border-b border-neutral-100 last:border-b-0 dark:border-neutral-800'
+                                )}
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2">
+                                    {repo.language && (
+                                      <span
+                                        className={cn(
+                                          'h-2 w-2 flex-shrink-0 rounded-full',
+                                          LANG_COLORS[repo.language] ?? 'bg-neutral-400'
+                                        )}
+                                      />
+                                    )}
+                                    <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                                      {repo.fullName}
+                                    </span>
+                                    {repo.private && (
+                                      <Badge variant="secondary" className="flex-shrink-0">
+                                        private
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  {repo.description && (
+                                    <p className="mt-0.5 truncate text-xs text-neutral-500">
+                                      {repo.description}
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="ml-3 flex flex-shrink-0 items-center gap-2">
+                                  {repo.language && (
+                                    <span className="text-xs text-neutral-400">
+                                      {repo.language}
+                                    </span>
+                                  )}
+                                  <span className="text-xs text-neutral-400">
+                                    {timeAgo(repo.updatedAt)}
+                                  </span>
+                                </div>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div>
+                    <div className="relative">
+                      <Input
+                        value={repoUrl}
+                        onChange={(e) => setRepoUrl(e.target.value)}
+                        placeholder="https://github.com/owner/repo"
+                      />
+                      {repoUrl && validateRepo.isFetching && (
+                        <div className="absolute inset-y-0 right-0 flex items-center pr-3">
+                          <div className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-600" />
+                        </div>
+                      )}
+                      {repoUrl && !validateRepo.isFetching && repoUrlValid === true && (
+                        <div className="absolute inset-y-0 right-0 flex items-center pr-3">
+                          <CheckIcon className="h-4 w-4 text-emerald-500" />
+                        </div>
+                      )}
+                      {repoUrl && !validateRepo.isFetching && repoUrlValid === false && (
+                        <div className="absolute inset-y-0 right-0 flex items-center pr-3">
+                          <XIcon className="h-4 w-4 text-red-500" />
+                        </div>
+                      )}
+                    </div>
+                    {repoUrlError && (
+                      <p className="mt-1 text-xs text-red-500">{repoUrlError}</p>
+                    )}
+                    {validateRepo.data?.repo && (
+                      <p className="mt-1 text-xs text-neutral-500">
+                        {validateRepo.data.repo.fullName} &middot; default branch: {validateRepo.data.repo.defaultBranch}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
-            </div>
-          ) : (
-            <div className="py-4">
-              <label
-                htmlFor="workspace"
-                className="mb-2 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-              >
-                Workspace
-              </label>
-              <Input
-                id="workspace"
-                value={workspace}
-                onChange={(e) => setWorkspace(e.target.value)}
-                placeholder="my-project"
-                autoFocus
-              />
+
+              {/* Branch input — shown when repo selected */}
+              {(selectedRepo || (repoMode === 'url' && repoUrlValid)) && (
+                <div>
+                  <label
+                    htmlFor="branch"
+                    className="mb-2 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
+                  >
+                    Branch
+                    <span className="ml-1 text-xs font-normal text-neutral-400">(optional)</span>
+                  </label>
+                  <Input
+                    id="branch"
+                    value={branch}
+                    onChange={(e) => setBranch(e.target.value)}
+                    placeholder={
+                      selectedRepo
+                        ? selectedRepo.defaultBranch
+                        : validateRepo.data?.repo?.defaultBranch ?? 'main'
+                    }
+                  />
+                </div>
+              )}
+
+              {/* Workspace input */}
+              <div>
+                <label
+                  htmlFor="workspace"
+                  className="mb-2 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
+                >
+                  Workspace name
+                </label>
+                <Input
+                  id="workspace"
+                  value={workspace}
+                  onChange={(e) => {
+                    setWorkspace(e.target.value);
+                    setWorkspaceManuallyEdited(true);
+                  }}
+                  placeholder="my-project"
+                  autoFocus={!selectedRepo}
+                />
+              </div>
+
               {createSession.isError && (
-                <p className="mt-2 text-sm text-red-600 dark:text-red-400">
+                <p className="text-sm text-red-600 dark:text-red-400">
                   Failed to create session. Please try again.
                 </p>
               )}
             </div>
-          )}
 
-          <DialogFooter className={cn(createSession.isPending && 'justify-center')}>
-            {createSession.isPending ? (
-              <p className="text-xs text-neutral-500">
-                Please wait, do not close this dialog
-              </p>
-            ) : (
-              <>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => setOpen(false)}
-                >
-                  Cancel
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={!workspace.trim()}>
+                Create
+              </Button>
+            </DialogFooter>
+          </form>
+        ) : (
+          /* Progress view */
+          <div>
+            <DialogHeader>
+              <DialogTitle>
+                {createError || wsError ? 'Session Failed' : wsStatus === 'running' ? 'Session Ready' : 'Starting Session'}
+              </DialogTitle>
+              <DialogDescription>
+                {workspace}
+                {hasRepo && (
+                  <span className="ml-1 text-neutral-400">
+                    &middot; {selectedRepo?.fullName ?? repoUrl}
+                  </span>
+                )}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="py-6">
+              {createError || wsError ? (
+                <div className="flex flex-col items-center gap-4">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500/10">
+                    <XIcon className="h-5 w-5 text-red-500" />
+                  </div>
+                  <p className="text-center text-sm text-red-600 dark:text-red-400">
+                    {createError || wsError}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {effectiveSteps.map((step) => {
+                    const isDone =
+                      step.key === 'ready'
+                        ? wsStatus === 'running'
+                        : effectiveSteps.findIndex((s) => s.key === step.key) <
+                          effectiveSteps.findIndex((s) => s.key === activeStepKey);
+                    const isActive = step.key === activeStepKey;
+
+                    return (
+                      <div
+                        key={step.key}
+                        className={cn(
+                          'flex items-center gap-3 rounded-md px-3 py-2 transition-colors',
+                          isActive && 'bg-neutral-50 dark:bg-neutral-800/50'
+                        )}
+                      >
+                        <div className="flex h-5 w-5 flex-shrink-0 items-center justify-center">
+                          {isDone ? (
+                            <CheckCircleIcon className="h-5 w-5 text-emerald-500" />
+                          ) : isActive ? (
+                            <div className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-600 dark:border-neutral-700 dark:border-t-neutral-300" />
+                          ) : (
+                            <div className="h-2 w-2 rounded-full bg-neutral-200 dark:bg-neutral-700" />
+                          )}
+                        </div>
+                        <span
+                          className={cn(
+                            'text-sm',
+                            isDone && 'text-neutral-500 dark:text-neutral-400',
+                            isActive && 'font-medium text-neutral-900 dark:text-neutral-100',
+                            !isDone && !isActive && 'text-neutral-400 dark:text-neutral-600'
+                          )}
+                        >
+                          {step.label}
+                          {step.key === 'cloning' && selectedRepo && (
+                            <span className="ml-1 font-normal text-neutral-400">
+                              ({selectedRepo.fullName})
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <DialogFooter>
+              {createError || wsError ? (
+                <div className="flex w-full gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      setOpen(false);
+                      resetDialog();
+                    }}
+                  >
+                    Close
+                  </Button>
+                  <Button type="button" onClick={handleRetry}>
+                    Try Again
+                  </Button>
+                </div>
+              ) : wsStatus === 'running' ? (
+                <Button type="button" onClick={handleOpenSession}>
+                  Open Session
                 </Button>
-                <Button
-                  type="submit"
-                  disabled={!workspace.trim()}
-                >
-                  Create
-                </Button>
-              </>
-            )}
-          </DialogFooter>
-        </form>
+              ) : (
+                <div className="flex w-full items-center justify-between">
+                  <p className="font-mono text-xs text-neutral-400">{elapsedSeconds}s</p>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleOpenSession}
+                    disabled={!sessionResult}
+                  >
+                    Open now
+                  </Button>
+                </div>
+              )}
+            </DialogFooter>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+// --- Icons ---
+
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function XIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function CheckCircleIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+      <polyline points="22 4 12 14.01 9 11.01" />
+    </svg>
   );
 }

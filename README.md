@@ -210,73 +210,154 @@ flowchart LR
 ## Prerequisites
 
 - Node.js 18+
-- pnpm
-- Docker (for OpenCode container)
-- Wrangler CLI (`npm install -g wrangler`)
+- [pnpm](https://pnpm.io/)
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (`pnpm add -g wrangler`)
+- A GitHub account (for OAuth)
+- Optionally: a Google Cloud account (for Google OAuth)
 
 ## Quick Start
 
-### 1. Install Dependencies
-
 ```bash
 pnpm install
+make db-migrate
 ```
 
-### 2. Configure Environment
+Then configure OAuth (see below) and run:
 
 ```bash
-# Copy example env file
-cp .env.example .env
-
-# Edit with your values
-# - OPENCODE_SERVER_PASSWORD: Password for OpenCode server auth
-# - ANTHROPIC_API_KEY: (or other LLM provider keys)
+make dev-all
 ```
 
-### 3. Initialize Local Database
+Frontend runs at `http://localhost:5173`, worker at `http://localhost:8787`.
+
+## OAuth Setup
+
+Authentication uses GitHub OAuth (primary) and optionally Google OAuth. You need to create OAuth apps with the provider(s) and configure credentials locally.
+
+### GitHub OAuth App (Required)
+
+GitHub OAuth is the primary login method and also provides repo access for cloning and PR creation.
+
+1. Go to [GitHub > Settings > Developer settings > OAuth Apps](https://github.com/settings/developers)
+2. Click **New OAuth App**
+3. Fill in:
+
+   | Field | Dev Value | Production Value |
+   |-------|-----------|-----------------|
+   | Application name | `Agent Ops (dev)` | `Agent Ops` |
+   | Homepage URL | `http://localhost:5173` | `https://your-frontend-domain.com` |
+   | Authorization callback URL | `http://localhost:8787/auth/github/callback` | `https://agent-ops.conner-7e8.workers.dev/auth/github/callback` |
+
+4. Click **Register application**
+5. Copy the **Client ID**
+6. Click **Generate a new client secret** and copy it immediately
+
+> Create **separate OAuth Apps** for dev and production. GitHub only allows one callback URL per app.
+
+The OAuth scopes requested are `repo read:user user:email` — this grants read/write access to repos the user can access, which is needed for cloning and PR creation inside sandboxes.
+
+### Google OAuth (Optional)
+
+Google OAuth provides an alternative sign-in method. It does not grant repo access — users who only sign in with Google won't be able to clone repos or create PRs.
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a project or select an existing one
+3. Enable the **Google+ API** (or just proceed — the consent screen setup enables what's needed)
+
+**Configure consent screen:**
+
+4. Go to **APIs & Services > OAuth consent screen**
+5. Select **External** user type, click **Create**
+6. Fill in:
+   - **App name**: `Agent Ops`
+   - **User support email**: your email
+   - **Developer contact email**: your email
+7. Click **Save and Continue**
+8. On the **Scopes** page, click **Add or Remove Scopes** and add:
+   - `openid`
+   - `email`
+   - `profile`
+9. Click **Save and Continue**
+10. On the **Test users** page, add your email address (required while app is in "Testing" mode)
+11. Click **Save and Continue**, then **Back to Dashboard**
+
+> While the app is in "Testing" publishing status, only test users you explicitly add can sign in. Click **Publish App** on the consent screen page when ready for production.
+
+**Create credentials:**
+
+12. Go to **APIs & Services > Credentials**
+13. Click **Create Credentials > OAuth client ID**
+14. Select **Web application**
+15. Name it `Agent Ops (dev)` or `Agent Ops`
+16. Under **Authorized redirect URIs**, add:
+
+   | Environment | Redirect URI |
+   |-------------|-------------|
+   | Dev | `http://localhost:8787/auth/google/callback` |
+   | Production | `https://agent-ops.conner-7e8.workers.dev/auth/google/callback` |
+
+17. Click **Create**
+18. Copy the **Client ID** and **Client Secret**
+
+> Like GitHub, use separate credentials for dev and production, or add both redirect URIs to one credential.
+
+### Configure Local Dev Credentials
+
+Edit `packages/worker/.dev.vars`:
+
+```
+ENCRYPTION_KEY=any-string-at-least-32-characters-long
+ENVIRONMENT=development
+
+# GitHub OAuth (required for login)
+GITHUB_CLIENT_ID=your_github_client_id
+GITHUB_CLIENT_SECRET=your_github_client_secret
+
+# Google OAuth (optional)
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+```
+
+`FRONTEND_URL` is already set to `http://localhost:5173` in `wrangler.toml` for dev.
+
+### Configure Production Credentials
+
+Run from `packages/worker/` (where `wrangler.toml` lives):
 
 ```bash
 cd packages/worker
-pnpm run db:migrate
+npx wrangler secret put GITHUB_CLIENT_ID
+npx wrangler secret put GITHUB_CLIENT_SECRET
+npx wrangler secret put ENCRYPTION_KEY
+npx wrangler secret put FRONTEND_URL           # your production frontend URL
+
+# If using Google OAuth:
+npx wrangler secret put GOOGLE_CLIENT_ID
+npx wrangler secret put GOOGLE_CLIENT_SECRET
 ```
 
-### 4. Seed Test Data (Optional)
+### How Auth Works
 
-```bash
-pnpm run db:seed
+```
+Browser                   Worker (:8787)              GitHub/Google
+  |                           |                           |
+  |-- click "Sign in" ------>|                           |
+  |                          |-- 302 to provider ------->|
+  |                          |                           |-- user grants access
+  |                          |<-- callback?code=xxx -----|
+  |                          |-- exchange code for token  |
+  |                          |-- encrypt + store token    |
+  |                          |-- create auth_session      |
+  |<-- 302 to /auth/callback?token=yyy                   |
+  |-- store token in localStorage                        |
+  |-- GET /api/auth/me ----->|                           |
+  |<-- { user, providers } --|                           |
 ```
 
-This creates a test user with API token `test-api-token-12345`.
-
-### 5. Start OpenCode Container
-
-```bash
-# From project root
-docker-compose up -d
-```
-
-Verify it's running:
-```bash
-curl http://localhost:4096/doc
-```
-
-### 6. Start Worker
-
-```bash
-cd packages/worker
-pnpm run dev
-```
-
-Worker runs at `http://localhost:8787`.
-
-### 7. Start Frontend
-
-```bash
-cd packages/client
-pnpm run dev
-```
-
-Frontend runs at `http://localhost:5173`.
+- The worker exchanges the OAuth code server-side (client secret never exposed to browser)
+- Session tokens are random 32-byte hex, hashed with SHA-256 before D1 storage, 7-day expiry
+- GitHub access tokens are encrypted with AES-256-GCM and stored in `oauth_tokens` for repo operations
+- API keys (from Settings page) continue to work as Bearer tokens for programmatic access
 
 ## API Endpoints
 
@@ -421,28 +502,17 @@ Current integrations:
 
 ## Environment Variables
 
-### Worker (`.dev.vars`)
+### Worker (`.dev.vars` for local, `wrangler secret` for production)
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ENCRYPTION_KEY` | Yes | 32-byte key for credential encryption |
-| `ENVIRONMENT` | No | `development` or `production` |
-| `GITHUB_CLIENT_ID` | No | GitHub OAuth app client ID |
-| `GITHUB_CLIENT_SECRET` | No | GitHub OAuth app secret |
-| `GOOGLE_CLIENT_ID` | No | Google OAuth client ID |
+| `ENCRYPTION_KEY` | Yes | Key for AES-256-GCM encryption of OAuth tokens (32+ chars) |
+| `GITHUB_CLIENT_ID` | Yes | GitHub OAuth App client ID |
+| `GITHUB_CLIENT_SECRET` | Yes | GitHub OAuth App client secret |
+| `GOOGLE_CLIENT_ID` | No | Google OAuth client ID (for Google sign-in) |
 | `GOOGLE_CLIENT_SECRET` | No | Google OAuth client secret |
-| `OPENCODE_SERVER_PASSWORD` | Yes | Password for OpenCode server auth |
-
-### OpenCode Container (`.env`)
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `OPENCODE_SERVER_PASSWORD` | Yes | Must match worker config |
-| `ANTHROPIC_API_KEY` | No* | Anthropic API key |
-| `OPENAI_API_KEY` | No* | OpenAI API key |
-| `GOOGLE_API_KEY` | No* | Google AI API key |
-
-*At least one LLM provider key is required.
+| `FRONTEND_URL` | Prod only | Frontend URL for OAuth redirects (defaults to `localhost:5173`) |
+| `ENVIRONMENT` | No | `development` or `production` |
 
 ## Deployment
 

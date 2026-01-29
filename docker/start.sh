@@ -23,16 +23,50 @@ x11vnc -display :99 -forever -shared -rfbport 5900 -nopw -quiet &
 websockify --web /usr/share/novnc ${VNC_PORT} localhost:5900 &
 echo "[start.sh] VNC accessible on port ${VNC_PORT}"
 
-# ─── code-server (VS Code) ────────────────────────────────────────────
+# ─── Git Configuration ─────────────────────────────────────────────────
+if [ -n "${GIT_USER_NAME:-}" ]; then
+  git config --global user.name "${GIT_USER_NAME}"
+fi
+if [ -n "${GIT_USER_EMAIL:-}" ]; then
+  git config --global user.email "${GIT_USER_EMAIL}"
+fi
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  git config --global credential.helper \
+    '!f() { echo "username=oauth2"; echo "password=${GITHUB_TOKEN}"; }; f'
+fi
 
-echo "[start.sh] Starting code-server on port ${VSCODE_PORT}"
+# ─── Clone Repository ─────────────────────────────────────────────────
+# Clone into /workspace/<repo-name> to support multiple repos in the future
+WORK_DIR=/workspace
+if [ -n "${REPO_URL:-}" ]; then
+  # Extract repo name from URL (e.g. https://github.com/owner/repo.git -> repo)
+  REPO_NAME=$(basename "${REPO_URL}" .git)
+  CLONE_DIR="/workspace/${REPO_NAME}"
+
+  if [ ! -d "${CLONE_DIR}" ]; then
+    echo "[start.sh] Cloning ${REPO_URL} into ${CLONE_DIR}"
+    if [ -n "${REPO_BRANCH:-}" ]; then
+      git clone --branch "${REPO_BRANCH}" "${REPO_URL}" "${CLONE_DIR}"
+    else
+      git clone "${REPO_URL}" "${CLONE_DIR}"
+    fi
+  else
+    echo "[start.sh] ${CLONE_DIR} already exists, skipping clone"
+  fi
+  WORK_DIR="${CLONE_DIR}"
+fi
+
+# ─── code-server (VS Code) ────────────────────────────────────────────
+# Started after clone so it opens the correct folder
+
+echo "[start.sh] Starting code-server on port ${VSCODE_PORT} (folder: ${WORK_DIR})"
 code-server \
   --bind-addr "127.0.0.1:${VSCODE_PORT}" \
   --auth none \
   --disable-telemetry \
   --disable-update-check \
   --welcome-text "Agent-Ops Workspace" \
-  /workspace &
+  "${WORK_DIR}" &
 
 # ─── TTYD (web terminal) ──────────────────────────────────────────────
 
@@ -41,7 +75,7 @@ echo "[start.sh] Starting TTYD on port ${TTYD_PORT}"
 # -W: Writable (allow client input)
 # -p: Port
 # The command after -- is what runs in the terminal
-ttyd -W -p ${TTYD_PORT} bash -c 'cd /workspace && exec bash -l' 2>&1 &
+ttyd -W -p ${TTYD_PORT} bash -c "cd ${WORK_DIR} && exec bash -l" 2>&1 &
 TTYD_PID=$!
 sleep 2
 if ! kill -0 $TTYD_PID 2>/dev/null; then
@@ -59,16 +93,16 @@ fi
 # ─── OpenCode Config & Tools ─────────────────────────────────────────
 
 echo "[start.sh] Setting up OpenCode config, custom tools, and skills"
-cp /opencode-config/opencode.json /workspace/opencode.json
-mkdir -p /workspace/.opencode/tools
-cp /opencode-config/tools/* /workspace/.opencode/tools/
-mkdir -p /workspace/.opencode/skills
-cp -r /opencode-config/skills/* /workspace/.opencode/skills/
+cp /opencode-config/opencode.json "${WORK_DIR}/opencode.json"
+mkdir -p "${WORK_DIR}/.opencode/tools"
+cp /opencode-config/tools/* "${WORK_DIR}/.opencode/tools/"
+mkdir -p "${WORK_DIR}/.opencode/skills"
+cp -r /opencode-config/skills/* "${WORK_DIR}/.opencode/skills/"
 
 # ─── OpenCode Server ──────────────────────────────────────────────────
 
 echo "[start.sh] Starting OpenCode server on port ${OPENCODE_PORT}"
-cd /workspace
+cd "${WORK_DIR}"
 opencode serve --port ${OPENCODE_PORT} &
 OPENCODE_PID=$!
 

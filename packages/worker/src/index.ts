@@ -14,11 +14,13 @@ import { filesRouter } from './routes/files.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { agentRouter } from './routes/agent.js';
 import { authRouter } from './routes/auth.js';
+import { oauthRouter } from './routes/oauth.js';
 import { apiKeysRouter } from './routes/api-keys.js';
 import { workflowsRouter } from './routes/workflows.js';
 import { triggersRouter } from './routes/triggers.js';
 import { executionsRouter } from './routes/executions.js';
 import { eventsRouter } from './routes/events.js';
+import { reposRouter } from './routes/repos.js';
 
 // Durable Object exports
 export { APIKeysDurableObject } from './durable-objects/api-keys.js';
@@ -36,7 +38,7 @@ app.use(
   cors({
     origin: (origin) => origin, // Allow all origins in dev, restrict in prod
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization', 'CF-Access-JWT-Assertion'],
+    allowHeaders: ['Content-Type', 'Authorization'],
     exposeHeaders: ['X-Request-Id'],
     credentials: true,
   })
@@ -53,6 +55,9 @@ app.get('/health', (c) => {
 // Webhook routes (authenticated via webhook signatures)
 app.route('/webhooks', webhooksRouter);
 
+// OAuth routes (no auth required — handles login flow)
+app.route('/auth', oauthRouter);
+
 // Protected API routes
 app.use('/api/*', authMiddleware);
 app.route('/api/auth', authRouter);
@@ -64,6 +69,7 @@ app.route('/api/workflows', workflowsRouter);
 app.route('/api/triggers', triggersRouter);
 app.route('/api/executions', executionsRouter);
 app.route('/api/events', eventsRouter);
+app.route('/api/repos', reposRouter);
 
 // Agent container proxy (protected)
 app.use('/agent/*', authMiddleware);

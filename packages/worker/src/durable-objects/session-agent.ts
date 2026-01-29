@@ -18,7 +18,7 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr';
   messageId?: string;
   content?: string;
   questionId?: string;
@@ -33,6 +33,10 @@ interface RunnerMessage {
   error?: string;
   status?: AgentStatus | ToolCallStatus;
   detail?: string;
+  branch?: string;
+  title?: string;
+  body?: string;
+  base?: string;
 }
 
 /** Messages sent from DO to clients */
@@ -735,6 +739,11 @@ export class SessionAgentDO {
           detail: msg.detail,
         });
         break;
+
+      case 'create-pr':
+        // Runner requests PR creation — forward to worker API via EventBus notification
+        await this.handleCreatePR(msg as unknown as { type: 'create-pr'; branch: string; title: string; body?: string; base?: string });
+        break;
     }
   }
 
@@ -1047,6 +1056,51 @@ export class SessionAgentDO {
       console.error('Proxy error:', error);
       return Response.json({ error: 'Failed to reach sandbox' }, { status: 502 });
     }
+  }
+
+  // ─── PR Creation ──────────────────────────────────────────────────────
+
+  private async handleCreatePR(msg: { branch: string; title: string; body?: string; base?: string }) {
+    const sessionId = this.getStateValue('sessionId');
+    const userId = this.getStateValue('userId');
+
+    // Notify clients that PR creation is in progress
+    this.broadcastToClients({
+      type: 'status',
+      data: { prCreating: true, branch: msg.branch },
+    });
+
+    // Notify EventBus so the worker can pick it up
+    this.notifyEventBus({
+      type: 'session.update',
+      sessionId: sessionId || undefined,
+      userId: userId || undefined,
+      data: {
+        event: 'create-pr',
+        branch: msg.branch,
+        title: msg.title,
+        body: msg.body,
+        base: msg.base,
+      },
+      timestamp: new Date().toISOString(),
+    });
+
+    // Store a system message about the PR request
+    const msgId = crypto.randomUUID();
+    this.ctx.storage.sql.exec(
+      'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
+      msgId, 'system', `PR creation requested: "${msg.title}" from branch ${msg.branch}`
+    );
+
+    this.broadcastToClients({
+      type: 'message',
+      data: {
+        id: msgId,
+        role: 'system',
+        content: `PR creation requested: "${msg.title}" from branch ${msg.branch}`,
+        createdAt: Math.floor(Date.now() / 1000),
+      },
+    });
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────

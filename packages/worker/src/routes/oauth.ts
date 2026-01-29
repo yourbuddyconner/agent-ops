@@ -1,0 +1,359 @@
+import { Hono } from 'hono';
+import type { Env, Variables } from '../env.js';
+import { signJWT, verifyJWT } from '../lib/jwt.js';
+import { encryptString } from '../lib/crypto.js';
+import * as db from '../lib/db.js';
+
+export const oauthRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function generateSessionToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function hashToken(token: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(token);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function createStateJWT(env: Env, provider: string): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  return signJWT(
+    { sub: provider, sid: crypto.randomUUID(), iat: now, exp: now + 5 * 60 },
+    env.ENCRYPTION_KEY,
+  );
+}
+
+async function validateStateJWT(state: string, env: Env): Promise<boolean> {
+  const payload = await verifyJWT(state, env.ENCRYPTION_KEY);
+  return payload !== null;
+}
+
+function getFrontendUrl(env: Env): string {
+  return env.FRONTEND_URL || 'http://localhost:5173';
+}
+
+function getWorkerUrl(env: Env, req: Request): string {
+  const url = new URL(req.url);
+  return `${url.protocol}//${url.host}`;
+}
+
+// ─── GitHub OAuth ─────────────────────────────────────────────────────────────
+
+/**
+ * GET /auth/github — Redirect to GitHub OAuth
+ */
+oauthRouter.get('/github', async (c) => {
+  const state = await createStateJWT(c.env, 'github');
+  const workerUrl = getWorkerUrl(c.env, c.req.raw);
+
+  const params = new URLSearchParams({
+    client_id: c.env.GITHUB_CLIENT_ID,
+    redirect_uri: `${workerUrl}/auth/github/callback`,
+    scope: 'repo read:user user:email',
+    state,
+  });
+
+  return c.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
+});
+
+/**
+ * GET /auth/github/callback — Exchange code for token, find/create user, issue session
+ */
+oauthRouter.get('/github/callback', async (c) => {
+  const frontendUrl = getFrontendUrl(c.env);
+  const code = c.req.query('code');
+  const state = c.req.query('state');
+
+  if (!code || !state) {
+    return c.redirect(`${frontendUrl}/login?error=missing_params`);
+  }
+
+  // Validate CSRF state
+  const validState = await validateStateJWT(state, c.env);
+  if (!validState) {
+    return c.redirect(`${frontendUrl}/login?error=invalid_state`);
+  }
+
+  try {
+    const workerUrl = getWorkerUrl(c.env, c.req.raw);
+
+    // Exchange code for access token
+    const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        client_id: c.env.GITHUB_CLIENT_ID,
+        client_secret: c.env.GITHUB_CLIENT_SECRET,
+        code,
+        redirect_uri: `${workerUrl}/auth/github/callback`,
+      }),
+    });
+
+    const tokenData = (await tokenRes.json()) as {
+      access_token?: string;
+      error?: string;
+      error_description?: string;
+      scope?: string;
+    };
+
+    if (!tokenData.access_token) {
+      console.error('GitHub token exchange failed:', tokenData.error);
+      return c.redirect(`${frontendUrl}/login?error=token_exchange_failed`);
+    }
+
+    // Fetch GitHub user profile
+    const profileRes = await fetch('https://api.github.com/user', {
+      headers: {
+        Authorization: `Bearer ${tokenData.access_token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'Agent-Ops',
+      },
+    });
+
+    if (!profileRes.ok) {
+      return c.redirect(`${frontendUrl}/login?error=github_profile_failed`);
+    }
+
+    const profile = (await profileRes.json()) as {
+      id: number;
+      login: string;
+      name: string | null;
+      email: string | null;
+      avatar_url: string;
+    };
+
+    // If email is null (private), fetch from /user/emails
+    let email = profile.email;
+    if (!email) {
+      const emailsRes = await fetch('https://api.github.com/user/emails', {
+        headers: {
+          Authorization: `Bearer ${tokenData.access_token}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'Agent-Ops',
+        },
+      });
+
+      if (emailsRes.ok) {
+        const emails = (await emailsRes.json()) as Array<{
+          email: string;
+          primary: boolean;
+          verified: boolean;
+        }>;
+        const primary = emails.find((e) => e.primary && e.verified);
+        email = primary?.email || emails.find((e) => e.verified)?.email || null;
+      }
+    }
+
+    if (!email) {
+      return c.redirect(`${frontendUrl}/login?error=no_email`);
+    }
+
+    const githubId = String(profile.id);
+
+    // Find user by github_id, then by email, or create new
+    let user = await db.findUserByGitHubId(c.env.DB, githubId);
+
+    if (!user) {
+      user = await db.findUserByEmail(c.env.DB, email);
+    }
+
+    if (!user) {
+      // Create new user
+      user = await db.getOrCreateUser(c.env.DB, {
+        id: crypto.randomUUID(),
+        email,
+        name: profile.name || profile.login,
+        avatarUrl: profile.avatar_url,
+      });
+    }
+
+    // Update GitHub-specific fields
+    await db.updateUserGitHub(c.env.DB, user.id, {
+      githubId,
+      githubUsername: profile.login,
+      name: profile.name || undefined,
+      avatarUrl: profile.avatar_url,
+    });
+
+    // Encrypt and store OAuth token
+    const encryptedToken = await encryptString(tokenData.access_token, c.env.ENCRYPTION_KEY);
+    await db.upsertOAuthToken(c.env.DB, {
+      id: crypto.randomUUID(),
+      userId: user.id,
+      provider: 'github',
+      encryptedAccessToken: encryptedToken,
+      scopes: tokenData.scope || 'repo read:user user:email',
+    });
+
+    // Generate session token
+    const sessionToken = generateSessionToken();
+    const tokenHash = await hashToken(sessionToken);
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    await db.createAuthSession(c.env.DB, {
+      id: crypto.randomUUID(),
+      userId: user.id,
+      tokenHash,
+      provider: 'github',
+      expiresAt,
+    });
+
+    // Redirect to frontend callback with token
+    return c.redirect(
+      `${frontendUrl}/auth/callback?token=${encodeURIComponent(sessionToken)}&provider=github`
+    );
+  } catch (err) {
+    console.error('GitHub OAuth error:', err);
+    return c.redirect(`${frontendUrl}/login?error=oauth_error`);
+  }
+});
+
+// ─── Google OAuth ─────────────────────────────────────────────────────────────
+
+/**
+ * GET /auth/google — Redirect to Google OAuth
+ */
+oauthRouter.get('/google', async (c) => {
+  const state = await createStateJWT(c.env, 'google');
+  const workerUrl = getWorkerUrl(c.env, c.req.raw);
+
+  const params = new URLSearchParams({
+    client_id: c.env.GOOGLE_CLIENT_ID,
+    redirect_uri: `${workerUrl}/auth/google/callback`,
+    response_type: 'code',
+    scope: 'openid email profile',
+    state,
+    access_type: 'offline',
+    prompt: 'consent',
+  });
+
+  return c.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+});
+
+/**
+ * GET /auth/google/callback — Exchange code for token, find/create user, issue session
+ */
+oauthRouter.get('/google/callback', async (c) => {
+  const frontendUrl = getFrontendUrl(c.env);
+  const code = c.req.query('code');
+  const state = c.req.query('state');
+
+  if (!code || !state) {
+    return c.redirect(`${frontendUrl}/login?error=missing_params`);
+  }
+
+  const validState = await validateStateJWT(state, c.env);
+  if (!validState) {
+    return c.redirect(`${frontendUrl}/login?error=invalid_state`);
+  }
+
+  try {
+    const workerUrl = getWorkerUrl(c.env, c.req.raw);
+
+    // Exchange code for tokens
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: c.env.GOOGLE_CLIENT_ID,
+        client_secret: c.env.GOOGLE_CLIENT_SECRET,
+        code,
+        grant_type: 'authorization_code',
+        redirect_uri: `${workerUrl}/auth/google/callback`,
+      }),
+    });
+
+    const tokenData = (await tokenRes.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      id_token?: string;
+      expires_in?: number;
+      error?: string;
+    };
+
+    if (!tokenData.id_token) {
+      console.error('Google token exchange failed:', tokenData.error);
+      return c.redirect(`${frontendUrl}/login?error=token_exchange_failed`);
+    }
+
+    // Decode id_token JWT (we trust Google's signature since we just got it from their endpoint)
+    const idTokenParts = tokenData.id_token.split('.');
+    const payload = JSON.parse(atob(idTokenParts[1])) as {
+      sub: string;
+      email: string;
+      email_verified: boolean;
+      name?: string;
+      picture?: string;
+    };
+
+    if (!payload.email || !payload.email_verified) {
+      return c.redirect(`${frontendUrl}/login?error=email_not_verified`);
+    }
+
+    // Find user by email or create new
+    let user = await db.findUserByEmail(c.env.DB, payload.email);
+
+    if (!user) {
+      user = await db.getOrCreateUser(c.env.DB, {
+        id: crypto.randomUUID(),
+        email: payload.email,
+        name: payload.name,
+        avatarUrl: payload.picture,
+      });
+    }
+
+    // Encrypt and store Google OAuth tokens
+    if (tokenData.access_token) {
+      const encryptedAccessToken = await encryptString(tokenData.access_token, c.env.ENCRYPTION_KEY);
+      const encryptedRefreshToken = tokenData.refresh_token
+        ? await encryptString(tokenData.refresh_token, c.env.ENCRYPTION_KEY)
+        : undefined;
+
+      const expiresAt = tokenData.expires_in
+        ? new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
+        : undefined;
+
+      await db.upsertOAuthToken(c.env.DB, {
+        id: crypto.randomUUID(),
+        userId: user.id,
+        provider: 'google',
+        encryptedAccessToken,
+        encryptedRefreshToken,
+        scopes: 'openid email profile',
+        expiresAt,
+      });
+    }
+
+    // Generate session token
+    const sessionToken = generateSessionToken();
+    const tokenHash = await hashToken(sessionToken);
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    await db.createAuthSession(c.env.DB, {
+      id: crypto.randomUUID(),
+      userId: user.id,
+      tokenHash,
+      provider: 'google',
+      expiresAt,
+    });
+
+    return c.redirect(
+      `${frontendUrl}/auth/callback?token=${encodeURIComponent(sessionToken)}&provider=google`
+    );
+  } catch (err) {
+    console.error('Google OAuth error:', err);
+    return c.redirect(`${frontendUrl}/login?error=oauth_error`);
+  }
+});

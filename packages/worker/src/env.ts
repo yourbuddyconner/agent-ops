@@ -37,6 +37,9 @@ export interface Env {
   // Modal Python backend URL
   MODAL_BACKEND_URL: string;
 
+  // Frontend URL (for OAuth redirects)
+  FRONTEND_URL: string;
+
   // JWT secret for sandbox iframe authentication
   SANDBOX_JWT_SECRET: string;
 }

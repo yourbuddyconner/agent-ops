@@ -10,7 +10,7 @@ interface IframePanelProps {
 }
 
 /**
- * Base iframe panel with JWT token injection, loading state, and error handling.
+ * Base iframe panel with JWT token injection and loading state.
  * Token is appended as a query param so the auth gateway can validate it.
  *
  * The iframe URL is stabilized: once a token is obtained, the iframe keeps using
@@ -27,9 +27,10 @@ export function IframePanel({ src, token, title, isLoading, className }: IframeP
   const stableSrcRef = useRef<string | undefined>(undefined);
 
   if (src !== stableSrcRef.current) {
-    // Base URL changed — accept new token
+    // Base URL changed — accept new token and reset state
     stableSrcRef.current = src;
     stableTokenRef.current = token;
+    setIframeLoaded(false);
   } else if (!stableTokenRef.current && token) {
     // First time getting a token for this src
     stableTokenRef.current = token;
@@ -66,7 +67,9 @@ export function IframePanel({ src, token, title, isLoading, className }: IframeP
       <div className={cn('flex items-center justify-center bg-surface-0 text-neutral-500 dark:bg-surface-0 dark:text-neutral-400', className)}>
         <div className="text-center">
           <div className="mx-auto mb-3 h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-accent dark:border-neutral-600 dark:border-t-accent" />
-          <p className="font-mono text-[11px]">{isLoading ? `Loading ${title}...` : `Waiting for sandbox...`}</p>
+          <p className="font-mono text-[11px]">
+            {isLoading ? `Loading ${title}...` : 'Waiting for sandbox...'}
+          </p>
         </div>
       </div>
     );
@@ -78,7 +81,7 @@ export function IframePanel({ src, token, title, isLoading, className }: IframeP
         <div className="absolute inset-0 flex items-center justify-center bg-surface-0 text-neutral-500 dark:bg-surface-0 dark:text-neutral-400">
           <div className="text-center">
             <div className="mx-auto mb-3 h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-accent dark:border-neutral-600 dark:border-t-accent" />
-            <p className="font-mono text-[11px]">Loading {title}...</p>
+            <p className="font-mono text-[11px]">Connecting to {title}...</p>
           </div>
         </div>
       )}
