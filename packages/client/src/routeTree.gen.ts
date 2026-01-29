@@ -17,10 +17,11 @@ import { Route as SessionsIndexRouteImport } from './routes/sessions/index'
 import { Route as IntegrationsIndexRouteImport } from './routes/integrations/index'
 import { Route as WorkflowsExecutionsRouteImport } from './routes/workflows/executions'
 import { Route as WorkflowsWorkflowIdRouteImport } from './routes/workflows/$workflowId'
-import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId/index'
+import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId'
 import { Route as IntegrationsCallbackRouteImport } from './routes/integrations/callback'
-import { Route as SessionsSessionIdEditorRouteImport } from './routes/sessions/$sessionId/editor'
+import { Route as SessionsSessionIdIndexRouteImport } from './routes/sessions/$sessionId/index'
 import { Route as SessionsSessionIdFilesRouteImport } from './routes/sessions/$sessionId/files'
+import { Route as SessionsSessionIdEditorRouteImport } from './routes/sessions/$sessionId/editor'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
@@ -72,14 +73,19 @@ const IntegrationsCallbackRoute = IntegrationsCallbackRouteImport.update({
   path: '/integrations/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SessionsSessionIdEditorRoute = SessionsSessionIdEditorRouteImport.update({
-  id: '/editor',
-  path: '/editor',
+const SessionsSessionIdIndexRoute = SessionsSessionIdIndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => SessionsSessionIdRoute,
 } as any)
 const SessionsSessionIdFilesRoute = SessionsSessionIdFilesRouteImport.update({
   id: '/files',
   path: '/files',
+  getParentRoute: () => SessionsSessionIdRoute,
+} as any)
+const SessionsSessionIdEditorRoute = SessionsSessionIdEditorRouteImport.update({
+  id: '/editor',
+  path: '/editor',
   getParentRoute: () => SessionsSessionIdRoute,
 } as any)
 
@@ -96,12 +102,12 @@ export interface FileRoutesByFullPath {
   '/workflows/': typeof WorkflowsIndexRoute
   '/sessions/$sessionId/editor': typeof SessionsSessionIdEditorRoute
   '/sessions/$sessionId/files': typeof SessionsSessionIdFilesRoute
+  '/sessions/$sessionId/': typeof SessionsSessionIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
-  '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
   '/workflows/executions': typeof WorkflowsExecutionsRoute
   '/integrations': typeof IntegrationsIndexRoute
@@ -110,6 +116,7 @@ export interface FileRoutesByTo {
   '/workflows': typeof WorkflowsIndexRoute
   '/sessions/$sessionId/editor': typeof SessionsSessionIdEditorRoute
   '/sessions/$sessionId/files': typeof SessionsSessionIdFilesRoute
+  '/sessions/$sessionId': typeof SessionsSessionIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -125,6 +132,7 @@ export interface FileRoutesById {
   '/workflows/': typeof WorkflowsIndexRoute
   '/sessions/$sessionId/editor': typeof SessionsSessionIdEditorRoute
   '/sessions/$sessionId/files': typeof SessionsSessionIdFilesRoute
+  '/sessions/$sessionId/': typeof SessionsSessionIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -141,12 +149,12 @@ export interface FileRouteTypes {
     | '/workflows/'
     | '/sessions/$sessionId/editor'
     | '/sessions/$sessionId/files'
+    | '/sessions/$sessionId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/login'
     | '/integrations/callback'
-    | '/sessions/$sessionId'
     | '/workflows/$workflowId'
     | '/workflows/executions'
     | '/integrations'
@@ -155,6 +163,7 @@ export interface FileRouteTypes {
     | '/workflows'
     | '/sessions/$sessionId/editor'
     | '/sessions/$sessionId/files'
+    | '/sessions/$sessionId'
   id:
     | '__root__'
     | '/'
@@ -169,6 +178,7 @@ export interface FileRouteTypes {
     | '/workflows/'
     | '/sessions/$sessionId/editor'
     | '/sessions/$sessionId/files'
+    | '/sessions/$sessionId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -249,13 +259,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SessionsSessionIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/sessions/$sessionId/': {
-      id: '/sessions/$sessionId/'
-      path: '/sessions/$sessionId'
-      fullPath: '/sessions/$sessionId/'
-      preLoaderRoute: typeof SessionsSessionIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/integrations/callback': {
       id: '/integrations/callback'
       path: '/integrations/callback'
@@ -263,11 +266,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IntegrationsCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/sessions/$sessionId/editor': {
-      id: '/sessions/$sessionId/editor'
-      path: '/editor'
-      fullPath: '/sessions/$sessionId/editor'
-      preLoaderRoute: typeof SessionsSessionIdEditorRouteImport
+    '/sessions/$sessionId/': {
+      id: '/sessions/$sessionId/'
+      path: '/'
+      fullPath: '/sessions/$sessionId/'
+      preLoaderRoute: typeof SessionsSessionIdIndexRouteImport
       parentRoute: typeof SessionsSessionIdRoute
     }
     '/sessions/$sessionId/files': {
@@ -277,17 +280,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SessionsSessionIdFilesRouteImport
       parentRoute: typeof SessionsSessionIdRoute
     }
+    '/sessions/$sessionId/editor': {
+      id: '/sessions/$sessionId/editor'
+      path: '/editor'
+      fullPath: '/sessions/$sessionId/editor'
+      preLoaderRoute: typeof SessionsSessionIdEditorRouteImport
+      parentRoute: typeof SessionsSessionIdRoute
+    }
   }
 }
 
 interface SessionsSessionIdRouteChildren {
   SessionsSessionIdEditorRoute: typeof SessionsSessionIdEditorRoute
   SessionsSessionIdFilesRoute: typeof SessionsSessionIdFilesRoute
+  SessionsSessionIdIndexRoute: typeof SessionsSessionIdIndexRoute
 }
 
 const SessionsSessionIdRouteChildren: SessionsSessionIdRouteChildren = {
   SessionsSessionIdEditorRoute: SessionsSessionIdEditorRoute,
   SessionsSessionIdFilesRoute: SessionsSessionIdFilesRoute,
+  SessionsSessionIdIndexRoute: SessionsSessionIdIndexRoute,
 }
 
 const SessionsSessionIdRouteWithChildren =

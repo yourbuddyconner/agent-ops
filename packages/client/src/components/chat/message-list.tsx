@@ -2,19 +2,25 @@ import { useRef, useEffect } from 'react';
 import type { Message } from '@/api/types';
 import { MessageItem } from './message-item';
 import { StreamingMessage } from './streaming-message';
+import { ThinkingIndicator } from './thinking-indicator';
+
+type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 
 interface MessageListProps {
   messages: Message[];
   streamingContent?: string;
+  isAgentThinking?: boolean;
+  agentStatus?: AgentStatus;
+  agentStatusDetail?: string;
 }
 
-export function MessageList({ messages, streamingContent }: MessageListProps) {
+export function MessageList({ messages, streamingContent, isAgentThinking, agentStatus, agentStatusDetail }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingContent]);
+  }, [messages, streamingContent, isAgentThinking]);
 
   if (messages.length === 0 && !streamingContent) {
     return (
@@ -40,6 +46,7 @@ export function MessageList({ messages, streamingContent }: MessageListProps) {
           <MessageItem key={message.id} message={message} />
         ))}
         {streamingContent && <StreamingMessage content={streamingContent} />}
+        {isAgentThinking && !streamingContent && <ThinkingIndicator status={agentStatus} detail={agentStatusDetail} />}
       </div>
       <div ref={bottomRef} />
     </div>

@@ -628,7 +628,7 @@ deploy-worker: ## Deploy Cloudflare Worker
 
 deploy-modal: ## Deploy Modal backend (includes runner)
 	@echo "$(GREEN)Deploying Modal backend...$(NC)"
-	cd backend && $(HOME)/anaconda3/envs/agent-ops/bin/modal deploy app.py
+	$(HOME)/anaconda3/envs/agent-ops/bin/modal deploy backend/app.py
 	@echo "$(GREEN)✓ Modal backend deployed$(NC)"
 
 deploy-client: build-client ## Deploy client to Cloudflare Pages

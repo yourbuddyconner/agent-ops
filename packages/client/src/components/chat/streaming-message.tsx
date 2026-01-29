@@ -1,3 +1,5 @@
+import { MarkdownContent } from './markdown';
+
 interface StreamingMessageProps {
   content: string;
 }
@@ -15,8 +17,8 @@ export function StreamingMessage({ content }: StreamingMessageProps) {
           <span className="label-mono text-neutral-400 dark:text-neutral-500">typing...</span>
         </div>
 
-        <div className="mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-neutral-700 text-pretty dark:text-neutral-300">
-          {content}
+        <div className="relative">
+          <MarkdownContent content={content} />
           <span className="ml-0.5 inline-block h-3.5 w-[2px] animate-pulse bg-accent/60" />
         </div>
       </div>

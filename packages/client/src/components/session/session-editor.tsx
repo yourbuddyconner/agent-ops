@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
 import { useSession, useSessionToken } from '@/api/sessions';
@@ -7,7 +7,9 @@ import { MessageList } from '@/components/chat/message-list';
 import { ChatInput } from '@/components/chat/chat-input';
 import { QuestionPrompt } from '@/components/chat/question-prompt';
 import { VSCodePanel, VNCPanel, TerminalPanel } from '@/components/panels';
+import { LogsPanel } from '@/components/panels/logs-panel';
 import { CollaboratorsBar } from '@/components/session/collaborators-bar';
+import { SessionActionsMenu } from '@/components/sessions/session-actions-menu';
 import { Badge, StatusDot } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -17,7 +19,7 @@ interface SessionEditorProps {
   sessionId: string;
 }
 
-type EditorTab = 'vscode' | 'desktop' | 'terminal';
+type EditorTab = 'vscode' | 'desktop' | 'terminal' | 'logs';
 
 type Layout = { [id: string]: number };
 
@@ -46,7 +48,7 @@ function saveLayout(layout: Layout) {
 
 export function SessionEditor({ sessionId }: SessionEditorProps) {
   const { data: session, isLoading: sessionLoading } = useSession(sessionId);
-  const { data: tokenData } = useSessionToken(sessionId);
+  const { data: tokenData, isLoading: tokenLoading } = useSessionToken(sessionId);
   const {
     messages,
     sessionStatus,
@@ -55,6 +57,7 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
     connectedUsers,
     connectionStatus,
     isConnected,
+    logEntries,
     sendMessage,
     answerQuestion,
   } = useChat(sessionId);
@@ -64,32 +67,14 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
 
   const isLoading = connectionStatus === 'connecting';
   const isDisabled = !isConnected || sessionStatus === 'terminated';
-  const gatewayUrl = session?.gatewayUrl;
+  // Get gateway URL from session or token response (token response is more reliable)
+  const gatewayUrl = tokenData?.tunnelUrls?.gateway || session?.gatewayUrl;
   const token = tokenData?.token;
+  // Panels are loading until we have both session and token data
+  const panelsLoading = sessionLoading || tokenLoading;
 
   const defaultLayout = loadSavedLayout();
 
-  // Keyboard shortcuts: Cmd+1 = focus chat, Cmd+2/3/4 = switch tab
-  useEffect(() => {
-    const TABS: EditorTab[] = ['vscode', 'desktop', 'terminal'];
-
-    function handleKeyDown(e: KeyboardEvent) {
-      if (!(e.metaKey || e.ctrlKey)) return;
-
-      const num = parseInt(e.key, 10);
-      if (num < 1 || num > 4) return;
-
-      e.preventDefault();
-      if (num === 1) {
-        chatInputRef.current?.focus();
-      } else {
-        setActiveTab(TABS[num - 2]);
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
 
   return (
     <div className="flex h-full flex-col bg-surface-0 dark:bg-surface-0">
@@ -115,6 +100,13 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
           <Link to="/sessions/$sessionId/files" params={{ sessionId }}>
             <Button variant="ghost" size="sm">Files</Button>
           </Link>
+          {session && (
+            <SessionActionsMenu
+              session={{ id: sessionId, workspace: session.workspace, status: sessionStatus }}
+              showOpen={true}
+              showEditorLink={false}
+            />
+          )}
           <ConnectionBadge status={connectionStatus} />
         </div>
       </header>
@@ -180,23 +172,26 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
               <TabButton
                 active={activeTab === 'vscode'}
                 onClick={() => setActiveTab('vscode')}
-                shortcut="2"
-              >
+                              >
                 VS Code
               </TabButton>
               <TabButton
                 active={activeTab === 'desktop'}
                 onClick={() => setActiveTab('desktop')}
-                shortcut="3"
-              >
+                              >
                 Desktop
               </TabButton>
               <TabButton
                 active={activeTab === 'terminal'}
                 onClick={() => setActiveTab('terminal')}
-                shortcut="4"
-              >
+                              >
                 Terminal
+              </TabButton>
+              <TabButton
+                active={activeTab === 'logs'}
+                onClick={() => setActiveTab('logs')}
+                              >
+                Logs
               </TabButton>
             </div>
 
@@ -206,7 +201,7 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
                 <VSCodePanel
                   gatewayUrl={gatewayUrl}
                   token={token}
-                  isLoading={sessionLoading}
+                  isLoading={panelsLoading}
                   className="h-full w-full"
                 />
               </div>
@@ -214,7 +209,7 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
                 <VNCPanel
                   gatewayUrl={gatewayUrl}
                   token={token}
-                  isLoading={sessionLoading}
+                  isLoading={panelsLoading}
                   className="h-full w-full"
                 />
               </div>
@@ -222,9 +217,12 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
                 <TerminalPanel
                   gatewayUrl={gatewayUrl}
                   token={token}
-                  isLoading={sessionLoading}
+                  isLoading={panelsLoading}
                   className="h-full w-full"
                 />
+              </div>
+              <div className={cn('absolute inset-0', activeTab !== 'logs' && 'invisible')}>
+                <LogsPanel entries={logEntries} className="h-full w-full" />
               </div>
             </div>
           </div>

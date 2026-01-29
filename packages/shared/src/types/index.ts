@@ -98,6 +98,7 @@ export interface Message {
   sessionId: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
+  parts?: unknown;
   toolCalls?: ToolCall[];
   createdAt: Date;
 }

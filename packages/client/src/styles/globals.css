@@ -82,4 +82,100 @@
   .label-mono {
     @apply font-mono text-2xs font-medium uppercase tracking-widest;
   }
+
+  /* Markdown body typography for chat messages */
+  .markdown-body {
+    word-wrap: break-word;
+  }
+
+  .markdown-body > *:first-child {
+    margin-top: 0;
+  }
+
+  .markdown-body > *:last-child {
+    margin-bottom: 0;
+  }
+
+  .markdown-body h1,
+  .markdown-body h2,
+  .markdown-body h3,
+  .markdown-body h4,
+  .markdown-body h5,
+  .markdown-body h6 {
+    @apply mt-4 mb-2 font-semibold text-neutral-900 dark:text-neutral-100;
+  }
+
+  .markdown-body h1 { @apply text-lg; }
+  .markdown-body h2 { @apply text-base; }
+  .markdown-body h3 { @apply text-sm font-semibold; }
+  .markdown-body h4,
+  .markdown-body h5,
+  .markdown-body h6 { @apply text-[13px] font-semibold; }
+
+  .markdown-body p {
+    @apply my-2 text-pretty;
+  }
+
+  .markdown-body ul,
+  .markdown-body ol {
+    @apply my-2 pl-6;
+  }
+
+  .markdown-body ul { @apply list-disc; }
+  .markdown-body ol { @apply list-decimal; }
+
+  .markdown-body li {
+    @apply my-0.5;
+  }
+
+  .markdown-body li > ul,
+  .markdown-body li > ol {
+    @apply my-0;
+  }
+
+  .markdown-body blockquote {
+    @apply my-2 border-l-2 border-neutral-300 pl-3 text-neutral-500 dark:border-neutral-600 dark:text-neutral-400;
+  }
+
+  .markdown-body hr {
+    @apply my-4 border-neutral-200 dark:border-neutral-700;
+  }
+
+  .markdown-body table {
+    @apply my-2 w-full border-collapse text-[12px];
+  }
+
+  .markdown-body th,
+  .markdown-body td {
+    @apply border border-neutral-200 px-2 py-1 text-left dark:border-neutral-700;
+  }
+
+  .markdown-body th {
+    @apply bg-neutral-50 font-medium dark:bg-neutral-800;
+  }
+
+  .markdown-body input[type='checkbox'] {
+    @apply mr-1.5 align-middle;
+  }
+
+  .markdown-body strong {
+    @apply font-semibold text-neutral-900 dark:text-neutral-100;
+  }
+
+  .markdown-body del {
+    @apply text-neutral-400 dark:text-neutral-500;
+  }
+
+  /* Shiki dual-theme support */
+  .shiki-wrapper .shiki,
+  .shiki-wrapper .shiki span {
+    color: var(--shiki-light) !important;
+    background-color: transparent !important;
+  }
+
+  .dark .shiki-wrapper .shiki,
+  .dark .shiki-wrapper .shiki span {
+    color: var(--shiki-dark) !important;
+    background-color: transparent !important;
+  }
 }

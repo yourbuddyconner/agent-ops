@@ -7,7 +7,7 @@
  * - Typed outbound/inbound message protocol
  */
 
-import type { DOToRunnerMessage, RunnerToDOMessage } from "./types.js";
+import type { AgentStatus, DOToRunnerMessage, RunnerToDOMessage, ToolCallStatus } from "./types.js";
 
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
@@ -19,8 +19,8 @@ export class AgentClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closing = false;
 
-  private promptHandler: ((messageId: string, content: string) => void) | null = null;
-  private answerHandler: ((questionId: string, answer: string | boolean) => void) | null = null;
+  private promptHandler: ((messageId: string, content: string) => void | Promise<void>) | null = null;
+  private answerHandler: ((questionId: string, answer: string | boolean) => void | Promise<void>) | null = null;
   private stopHandler: (() => void) | null = null;
 
   constructor(
@@ -94,8 +94,8 @@ export class AgentClient {
     this.send({ type: "question", questionId, text, options });
   }
 
-  sendToolCall(toolName: string, args: unknown, result: unknown): void {
-    this.send({ type: "tool", toolName, args, result });
+  sendToolCall(callID: string, toolName: string, status: ToolCallStatus, args: unknown, result: unknown): void {
+    this.send({ type: "tool", callID, toolName, status, args, result });
   }
 
   sendScreenshot(data: string, description: string): void {
@@ -110,13 +110,17 @@ export class AgentClient {
     this.send({ type: "complete" });
   }
 
+  sendAgentStatus(status: AgentStatus, detail?: string): void {
+    this.send({ type: "agentStatus", status, detail });
+  }
+
   // ─── Inbound Handlers (DO → Runner) ─────────────────────────────────
 
-  onPrompt(handler: (messageId: string, content: string) => void): void {
+  onPrompt(handler: (messageId: string, content: string) => void | Promise<void>): void {
     this.promptHandler = handler;
   }
 
-  onAnswer(handler: (questionId: string, answer: string | boolean) => void): void {
+  onAnswer(handler: (questionId: string, answer: string | boolean) => void | Promise<void>): void {
     this.answerHandler = handler;
   }
 
@@ -144,7 +148,7 @@ export class AgentClient {
     }
   }
 
-  private handleMessage(raw: string): void {
+  private async handleMessage(raw: string): Promise<void> {
     let msg: DOToRunnerMessage;
     try {
       msg = JSON.parse(raw);
@@ -153,16 +157,20 @@ export class AgentClient {
       return;
     }
 
-    switch (msg.type) {
-      case "prompt":
-        this.promptHandler?.(msg.messageId, msg.content);
-        break;
-      case "answer":
-        this.answerHandler?.(msg.questionId, msg.answer);
-        break;
-      case "stop":
-        this.stopHandler?.();
-        break;
+    try {
+      switch (msg.type) {
+        case "prompt":
+          await this.promptHandler?.(msg.messageId, msg.content);
+          break;
+        case "answer":
+          await this.answerHandler?.(msg.questionId, msg.answer);
+          break;
+        case "stop":
+          this.stopHandler?.();
+          break;
+      }
+    } catch (err) {
+      console.error(`[AgentClient] Error handling ${msg.type} message:`, err);
     }
   }
 

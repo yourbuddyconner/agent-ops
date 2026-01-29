@@ -23,9 +23,6 @@ x11vnc -display :99 -forever -shared -rfbport 5900 -nopw -quiet &
 websockify --web /usr/share/novnc ${VNC_PORT} localhost:5900 &
 echo "[start.sh] VNC accessible on port ${VNC_PORT}"
 
-# Start Chromium in background (available via VNC)
-chromium --no-sandbox --disable-gpu --window-size=1920,1080 --display=:99 &
-
 # ─── code-server (VS Code) ────────────────────────────────────────────
 
 echo "[start.sh] Starting code-server on port ${VSCODE_PORT}"
@@ -34,12 +31,39 @@ code-server \
   --auth none \
   --disable-telemetry \
   --disable-update-check \
+  --welcome-text "Agent-Ops Workspace" \
   /workspace &
 
 # ─── TTYD (web terminal) ──────────────────────────────────────────────
 
 echo "[start.sh] Starting TTYD on port ${TTYD_PORT}"
-ttyd -p ${TTYD_PORT} -i 127.0.0.1 -W bash &
+# Run TTYD with verbose output to debug
+# -W: Writable (allow client input)
+# -p: Port
+# The command after -- is what runs in the terminal
+ttyd -W -p ${TTYD_PORT} bash -c 'cd /workspace && exec bash -l' 2>&1 &
+TTYD_PID=$!
+sleep 2
+if ! kill -0 $TTYD_PID 2>/dev/null; then
+  echo "[start.sh] ERROR: TTYD failed to start!"
+  # Try to get any error output
+  wait $TTYD_PID 2>&1 || true
+else
+  echo "[start.sh] TTYD started with PID ${TTYD_PID}"
+  # Verify TTYD is listening
+  if command -v ss &>/dev/null; then
+    ss -tlnp | grep ":${TTYD_PORT}" || echo "[start.sh] WARNING: TTYD not listening on port ${TTYD_PORT}"
+  fi
+fi
+
+# ─── OpenCode Config & Tools ─────────────────────────────────────────
+
+echo "[start.sh] Setting up OpenCode config, custom tools, and skills"
+cp /opencode-config/opencode.json /workspace/opencode.json
+mkdir -p /workspace/.opencode/tools
+cp /opencode-config/tools/* /workspace/.opencode/tools/
+mkdir -p /workspace/.opencode/skills
+cp -r /opencode-config/skills/* /workspace/.opencode/skills/
 
 # ─── OpenCode Server ──────────────────────────────────────────────────
 

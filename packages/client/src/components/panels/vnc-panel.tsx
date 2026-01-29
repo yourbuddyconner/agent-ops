@@ -8,7 +8,14 @@ interface VNCPanelProps {
 }
 
 export function VNCPanel({ gatewayUrl, token, isLoading, className }: VNCPanelProps) {
-  const src = gatewayUrl ? `${gatewayUrl}/vnc/` : undefined;
+  // Use vnc.html (full viewer) with parameters:
+  // - path: WebSocket path with /vnc/ prefix for our gateway routing
+  // - autoconnect: Connect automatically on load
+  // - resize: Scale the display to fit the container
+  // - view_clip: false to allow scaling instead of clipping
+  const src = gatewayUrl
+    ? `${gatewayUrl}/vnc/vnc.html?path=vnc/websockify&autoconnect=true&resize=scale&view_clip=false`
+    : undefined;
 
   return (
     <IframePanel

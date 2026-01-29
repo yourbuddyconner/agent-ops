@@ -40,6 +40,7 @@ export function useInfiniteSessions() {
       sessions: data.pages.flatMap((page) => page.sessions),
       hasMore: data.pages[data.pages.length - 1]?.hasMore ?? false,
     }),
+    refetchInterval: 10_000,
   });
 }
 
@@ -54,6 +55,7 @@ export function useSession(sessionId: string) {
     queryFn: () => api.get<SessionDetailResponse>(`/sessions/${sessionId}`),
     enabled: !!sessionId,
     select: (data) => data.session,
+    refetchInterval: 15_000,
   });
 }
 
@@ -65,6 +67,7 @@ export function useCreateSession() {
       api.post<CreateSessionResponse>('/sessions', data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: sessionKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: sessionKeys.infinite() });
     },
   });
 }
@@ -75,8 +78,10 @@ export function useDeleteSession() {
   return useMutation({
     mutationFn: (sessionId: string) =>
       api.delete<void>(`/sessions/${sessionId}`),
-    onSuccess: () => {
+    onSuccess: (_, sessionId) => {
+      queryClient.invalidateQueries({ queryKey: sessionKeys.detail(sessionId) });
       queryClient.invalidateQueries({ queryKey: sessionKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: sessionKeys.infinite() });
     },
   });
 }
@@ -99,10 +104,34 @@ export function useTerminateSession() {
 
   return useMutation({
     mutationFn: (sessionId: string) =>
-      api.post<void>(`/sessions/${sessionId}/terminate`),
-    onSuccess: (_, sessionId) => {
+      api.delete<void>(`/sessions/${sessionId}`),
+    onMutate: async (sessionId) => {
+      // Cancel outgoing refetches so they don't overwrite our optimistic update
+      await queryClient.cancelQueries({ queryKey: sessionKeys.detail(sessionId) });
+      await queryClient.cancelQueries({ queryKey: sessionKeys.infinite() });
+
+      // Optimistically update session detail cache
+      const previousDetail = queryClient.getQueryData(sessionKeys.detail(sessionId));
+      queryClient.setQueryData(
+        sessionKeys.detail(sessionId),
+        (old: SessionDetailResponse | undefined) => {
+          if (!old) return old;
+          return { ...old, session: { ...old.session, status: 'terminated' } };
+        }
+      );
+
+      return { previousDetail };
+    },
+    onError: (_err, sessionId, context) => {
+      // Roll back optimistic update on error
+      if (context?.previousDetail) {
+        queryClient.setQueryData(sessionKeys.detail(sessionId), context.previousDetail);
+      }
+    },
+    onSettled: (_, __, sessionId) => {
       queryClient.invalidateQueries({ queryKey: sessionKeys.detail(sessionId) });
       queryClient.invalidateQueries({ queryKey: sessionKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: sessionKeys.infinite() });
     },
   });
 }

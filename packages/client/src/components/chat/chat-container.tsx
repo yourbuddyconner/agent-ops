@@ -1,8 +1,10 @@
 import { Link } from '@tanstack/react-router';
 import { useChat } from '@/hooks/use-chat';
+import { useSession } from '@/api/sessions';
 import { MessageList } from './message-list';
 import { ChatInput } from './chat-input';
 import { QuestionPrompt } from './question-prompt';
+import { SessionActionsMenu } from '@/components/sessions/session-actions-menu';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -12,6 +14,7 @@ interface ChatContainerProps {
 }
 
 export function ChatContainer({ sessionId }: ChatContainerProps) {
+  const { data: session } = useSession(sessionId);
   const {
     messages,
     sessionStatus,
@@ -19,6 +22,9 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     pendingQuestions,
     connectionStatus,
     isConnected,
+    isAgentThinking,
+    agentStatus,
+    agentStatusDetail,
     sendMessage,
     answerQuestion,
   } = useChat(sessionId);
@@ -56,6 +62,13 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             </Button>
           </Link>
           <ConnectionStatusBadge status={connectionStatus} />
+          {session && (
+            <SessionActionsMenu
+              session={{ id: sessionId, workspace: session.workspace, status: sessionStatus }}
+              showOpen={false}
+              showEditorLink={true}
+            />
+          )}
         </div>
       </header>
 
@@ -66,6 +79,9 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           <MessageList
             messages={messages}
             streamingContent={streamingContent}
+            isAgentThinking={isAgentThinking}
+            agentStatus={agentStatus}
+            agentStatusDetail={agentStatusDetail}
           />
           {pendingQuestions.map((q) => (
             <QuestionPrompt

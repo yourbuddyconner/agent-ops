@@ -11,6 +11,12 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env; Variables: Varia
   c,
   next
 ) => {
+  // Runner WebSocket connections authenticate via token validated by the DO itself
+  const url = new URL(c.req.url);
+  if (url.searchParams.get('role') === 'runner' && url.pathname.endsWith('/ws')) {
+    return next();
+  }
+
   // Check for Cloudflare Access JWT
   const cfAccessJwt = c.req.header('CF-Access-JWT-Assertion');
   if (cfAccessJwt) {
@@ -21,11 +27,15 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env; Variables: Varia
     }
   }
 
-  // Check for Bearer token (API key)
+  // Check for Bearer token (API key) — from header or query param
+  // Browser WebSocket API cannot send custom headers, so we also accept ?token= query param
   const authHeader = c.req.header('Authorization');
-  if (authHeader?.startsWith('Bearer ')) {
-    const token = authHeader.slice(7);
-    const user = await validateAPIKey(token, c.env);
+  const bearerToken = authHeader?.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : new URL(c.req.url).searchParams.get('token');
+
+  if (bearerToken) {
+    const user = await validateAPIKey(bearerToken, c.env);
     if (user) {
       c.set('user', user);
       return next();

@@ -1,33 +1,44 @@
-import { Link } from '@tanstack/react-router';
+import { useNavigate } from '@tanstack/react-router';
 import type { AgentSession } from '@/api/types';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatRelativeTime } from '@/lib/format';
+import { SessionActionsMenu } from './session-actions-menu';
 
 interface SessionCardProps {
   session: AgentSession;
 }
 
 export function SessionCard({ session }: SessionCardProps) {
+  const navigate = useNavigate();
+
   return (
-    <Link to="/sessions/$sessionId" params={{ sessionId: session.id }}>
-      <Card className="transition-colors hover:border-neutral-300">
-        <CardHeader className="pb-2">
-          <div className="flex items-start justify-between">
-            <CardTitle className="text-base">{session.workspace}</CardTitle>
+    <Card
+      className="cursor-pointer transition-colors hover:border-neutral-300"
+      onClick={() => navigate({ to: '/sessions/$sessionId', params: { sessionId: session.id } })}
+    >
+      <CardHeader className="pb-2">
+        <div className="flex items-start justify-between">
+          <CardTitle className="text-base">{session.workspace}</CardTitle>
+          <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
             <StatusBadge status={session.status} />
+            <SessionActionsMenu
+              session={session}
+              showOpen={false}
+              showEditorLink={true}
+            />
           </div>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between text-sm text-neutral-500">
-            <span className="truncate">ID: {session.id.slice(0, 8)}...</span>
-            <span className="tabular-nums">
-              {formatRelativeTime(session.lastActiveAt)}
-            </span>
-          </div>
-        </CardContent>
-      </Card>
-    </Link>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-center justify-between text-sm text-neutral-500">
+          <span className="truncate">ID: {session.id.slice(0, 8)}...</span>
+          <span className="tabular-nums">
+            {formatRelativeTime(session.lastActiveAt)}
+          </span>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

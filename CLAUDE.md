@@ -130,6 +130,45 @@ cd packages/worker && pnpm typecheck  # Single package
 make deploy             # Deploy worker to Cloudflare
 ```
 
+### Modal Backend Deployment
+
+Modal deployment requires the `agent-ops` conda environment and must be run from the project root:
+
+```bash
+# Deploy Modal backend (from project root)
+~/anaconda3/envs/agent-ops/bin/modal deploy backend/app.py
+```
+
+**Path resolution gotchas:**
+
+1. **`backend/app.py`** — Paths here are relative to the **current working directory** (project root), not the backend folder:
+   ```python
+   # Correct (relative to project root):
+   .add_local_dir("docker", remote_path="/root/docker")
+   .add_local_dir("packages/runner", remote_path="/root/packages/runner")
+
+   # Wrong (would look for ../docker from project root):
+   .add_local_dir("../docker", remote_path="/root/docker")
+   ```
+
+2. **`backend/images/base.py`** — Paths here are **remote paths** inside the Modal function container (where files were mounted by app.py):
+   ```python
+   # These reference /root/... which is where app.py mounted the local files
+   .add_local_dir("/root/packages/runner", "/runner", copy=True)
+   .add_local_file("/root/docker/start.sh", "/start.sh", copy=True)
+   ```
+
+**Forcing image rebuilds:**
+
+The sandbox image is cached. To force a rebuild after changing `docker/start.sh` or `packages/runner/`:
+
+1. Bump the version in `backend/images/base.py`:
+   ```python
+   "IMAGE_BUILD_VERSION": "2026-01-28-v7",  # increment this
+   ```
+2. Redeploy: `~/anaconda3/envs/agent-ops/bin/modal deploy backend/app.py`
+3. Create a new session (existing sandboxes won't update)
+
 ## Code Conventions
 
 ### Worker (Hono)

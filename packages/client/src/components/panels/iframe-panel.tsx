@@ -17,7 +17,10 @@ export function IframePanel({ src, token, title, isLoading, className }: IframeP
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
 
-  const fullUrl = src && token ? `${src}?token=${encodeURIComponent(token)}` : undefined;
+  // Append token as query param, using & if URL already has query params
+  const fullUrl = src && token
+    ? `${src}${src.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
+    : undefined;
 
   useEffect(() => {
     setIframeLoaded(false);

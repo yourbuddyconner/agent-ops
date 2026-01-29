@@ -7,10 +7,12 @@ import modal
 app = modal.App("agent-ops-backend")
 
 # Image for the web functions — includes our backend Python modules
+# Also mount runner package and docker files so sandbox image builds can reference them
 fn_image = (
     modal.Image.debian_slim()
     .add_local_python_source("session", "sandboxes", "config", "images")
-    .add_local_dir("../docker", remote_path="/root/docker")
+    .add_local_dir("docker", remote_path="/root/docker")
+    .add_local_dir("packages/runner", remote_path="/root/packages/runner")
 )
 
 from session import CreateSessionRequest, SessionManager

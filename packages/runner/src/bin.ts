@@ -62,11 +62,13 @@ async function main() {
   console.log(`[Runner] OpenCode URL: ${opencodeUrl}`);
   console.log(`[Runner] DO URL: ${doUrl}`);
 
-  // Start auth gateway (Phase 2 stub)
-  startGateway(gatewayPort);
-
   // Connect to SessionAgent DO
   const agentClient = new AgentClient(doUrl!, runnerToken!);
+
+  // Start auth gateway with image callback
+  startGateway(gatewayPort, (data, description) => {
+    agentClient.sendScreenshot(data, description);
+  });
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient);
 
   // Register handlers
@@ -85,6 +87,11 @@ async function main() {
     agentClient.disconnect();
     process.exit(0);
   });
+
+  // Brief delay before first connection — the sandbox may boot before the Worker
+  // finishes calling /start on the DO to store our runner token (race condition).
+  console.log("[Runner] Waiting 3s for DO initialization...");
+  await new Promise((resolve) => setTimeout(resolve, 3000));
 
   // Connect (will auto-reconnect on failure)
   await agentClient.connect();

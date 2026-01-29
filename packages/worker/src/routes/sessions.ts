@@ -90,50 +90,8 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
   const host = c.req.header('host') || 'localhost';
   const doWsUrl = `${wsProtocol}://${host}/api/sessions/${sessionId}/ws`;
 
-  // Call Python backend to spawn sandbox
-  let sandboxId: string | undefined;
-  let tunnelUrls: Record<string, string> | undefined;
-
-  try {
-    const backendResponse = await fetch(c.env.MODAL_BACKEND_URL.replace('{label}', 'create-session'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sessionId,
-        userId: user.id,
-        workspace: body.workspace,
-        imageType: 'base',
-        doWsUrl,
-        runnerToken,
-        jwtSecret: c.env.ENCRYPTION_KEY,
-        envVars: {
-          ANTHROPIC_API_KEY: '',  // TODO: pull from user's API keys DO
-        },
-      }),
-    });
-
-    if (!backendResponse.ok) {
-      const err = await backendResponse.text();
-      throw new Error(`Backend returned ${backendResponse.status}: ${err}`);
-    }
-
-    const backendResult = await backendResponse.json() as {
-      sandboxId: string;
-      tunnelUrls: Record<string, string>;
-    };
-
-    sandboxId = backendResult.sandboxId;
-    tunnelUrls = backendResult.tunnelUrls;
-  } catch (err) {
-    console.error('Failed to spawn sandbox:', err);
-    await db.updateSessionStatus(c.env.DB, sessionId, 'error');
-    return c.json({
-      error: 'Failed to create sandbox',
-      details: err instanceof Error ? err.message : String(err),
-    }, 500);
-  }
-
-  // Initialize SessionAgentDO
+  // Initialize SessionAgentDO — it will spawn the sandbox asynchronously
+  // so we can return immediately without waiting for the image build.
   const doId = c.env.SESSIONS.idFromName(sessionId);
   const sessionDO = c.env.SESSIONS.get(doId);
 
@@ -146,22 +104,25 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
         userId: user.id,
         workspace: body.workspace,
         runnerToken,
-        sandboxId,
-        tunnelUrls,
+        // DO will call Modal to spawn the sandbox in the background
+        backendUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'create-session'),
+        terminateUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'terminate-session'),
+        spawnRequest: {
+          sessionId,
+          userId: user.id,
+          workspace: body.workspace,
+          imageType: 'base',
+          doWsUrl,
+          runnerToken,
+          jwtSecret: c.env.ENCRYPTION_KEY,
+          envVars: {
+            ANTHROPIC_API_KEY: '',  // TODO: pull from user's API keys DO
+          },
+        },
       }),
     }));
   } catch (err) {
-    // DO initialization failed — clean up the sandbox to prevent leaks
-    console.error('Failed to initialize SessionAgentDO, terminating sandbox:', err);
-    try {
-      await fetch(c.env.MODAL_BACKEND_URL.replace('{label}', 'terminate-session'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sandboxId }),
-      });
-    } catch (cleanupErr) {
-      console.error('Failed to clean up leaked sandbox:', cleanupErr);
-    }
+    console.error('Failed to initialize SessionAgentDO:', err);
     await db.updateSessionStatus(c.env.DB, sessionId, 'error');
     return c.json({
       error: 'Failed to initialize session',
@@ -169,17 +130,13 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     }, 500);
   }
 
-  // Update session status
-  await db.updateSessionStatus(c.env.DB, sessionId, 'running');
-
   // Build client WebSocket URL
   const websocketUrl = `${wsProtocol}://${host}/api/sessions/${sessionId}/ws?role=client&userId=${user.id}`;
 
   return c.json(
     {
-      session: { ...session, status: 'running' as const },
+      session: { ...session, status: 'initializing' as const },
       websocketUrl,
-      tunnelUrls,
     },
     201
   );
@@ -479,25 +436,11 @@ sessionsRouter.delete('/:id', async (c) => {
     throw new NotFoundError('Session', id);
   }
 
-  // Stop the SessionAgent DO
+  // Stop the SessionAgent DO (it handles sandbox termination internally)
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
 
-  const stopRes = await sessionDO.fetch(new Request('http://do/stop', { method: 'POST' }));
-  const stopResult = await stopRes.json() as { sandboxId?: string };
-
-  // Terminate sandbox via Python backend
-  if (stopResult.sandboxId) {
-    try {
-      await fetch(c.env.MODAL_BACKEND_URL.replace('{label}', 'terminate-session'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sandboxId: stopResult.sandboxId }),
-      });
-    } catch (err) {
-      console.error('Failed to terminate sandbox:', err);
-    }
-  }
+  await sessionDO.fetch(new Request('http://do/stop', { method: 'POST' }));
 
   // Update DB status
   await db.updateSessionStatus(c.env.DB, id, 'terminated');

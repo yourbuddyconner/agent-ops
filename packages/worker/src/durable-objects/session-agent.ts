@@ -10,25 +10,34 @@ interface ClientMessage {
   answer?: string | boolean;
 }
 
+/** Agent status values for activity indication */
+type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
+
 /** Messages sent by the runner to the DO */
+/** Tool call status values */
+type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
+
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus';
   messageId?: string;
   content?: string;
   questionId?: string;
   text?: string;
   options?: string[];
+  callID?: string;
   toolName?: string;
   args?: unknown;
   result?: unknown;
   data?: string; // base64 screenshot
   description?: string;
   error?: string;
+  status?: AgentStatus | ToolCallStatus;
+  detail?: string;
 }
 
 /** Messages sent from DO to clients */
 interface ClientOutbound {
-  type: 'message' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left';
+  type: 'message' | 'message.updated' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus';
   [key: string]: unknown;
 }
 
@@ -239,7 +248,12 @@ export class SessionAgentDO {
     const token = url.searchParams.get('token');
     const expectedToken = this.getStateValue('runnerToken');
 
-    if (!token || !expectedToken || token !== expectedToken) {
+    // DO not yet initialized — runner connected before /start was called (race condition)
+    if (!expectedToken) {
+      return new Response('Session not initialized yet', { status: 503 });
+    }
+
+    if (!token || token !== expectedToken) {
       return new Response('Unauthorized', { status: 401 });
     }
 
@@ -580,27 +594,55 @@ export class SessionAgentDO {
       }
 
       case 'tool': {
-        // Store tool call and broadcast
-        const toolId = crypto.randomUUID();
+        // Upsert tool call by callID — each tool gets one row that updates in place
+        const toolId = msg.callID || crypto.randomUUID();
+        const toolStatus = (msg.status as ToolCallStatus) || 'completed';
         const parts = JSON.stringify({
           toolName: msg.toolName,
+          status: toolStatus,
           args: msg.args,
           result: msg.result,
         });
-        this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content, parts) VALUES (?, ?, ?, ?)',
-          toolId, 'tool', msg.content || `Tool: ${msg.toolName}`, parts
-        );
-        this.broadcastToClients({
-          type: 'message',
-          data: {
-            id: toolId,
-            role: 'tool',
-            content: msg.content || `Tool: ${msg.toolName}`,
-            parts: { toolName: msg.toolName, args: msg.args, result: msg.result },
-            createdAt: Math.floor(Date.now() / 1000),
-          },
-        });
+        const content = msg.content || `Tool: ${msg.toolName}`;
+
+        // Check if this tool message already exists
+        const existing = this.ctx.storage.sql
+          .exec('SELECT id FROM messages WHERE id = ?', toolId)
+          .toArray();
+
+        if (existing.length === 0) {
+          // First time seeing this callID — insert and broadcast as new message
+          this.ctx.storage.sql.exec(
+            'INSERT INTO messages (id, role, content, parts) VALUES (?, ?, ?, ?)',
+            toolId, 'tool', content, parts
+          );
+          this.broadcastToClients({
+            type: 'message',
+            data: {
+              id: toolId,
+              role: 'tool',
+              content,
+              parts: { toolName: msg.toolName, status: toolStatus, args: msg.args, result: msg.result },
+              createdAt: Math.floor(Date.now() / 1000),
+            },
+          });
+        } else {
+          // Update existing row and broadcast as message.updated
+          this.ctx.storage.sql.exec(
+            'UPDATE messages SET content = ?, parts = ? WHERE id = ?',
+            content, parts, toolId
+          );
+          this.broadcastToClients({
+            type: 'message.updated',
+            data: {
+              id: toolId,
+              role: 'tool',
+              content,
+              parts: { toolName: msg.toolName, status: toolStatus, args: msg.args, result: msg.result },
+              createdAt: Math.floor(Date.now() / 1000),
+            },
+          });
+        }
         break;
       }
 
@@ -684,6 +726,15 @@ export class SessionAgentDO {
         console.log(`[SessionAgentDO] Complete received, processing queue`);
         await this.handlePromptComplete();
         break;
+
+      case 'agentStatus':
+        // Forward agent status to all clients for real-time activity indication
+        this.broadcastToClients({
+          type: 'agentStatus',
+          status: msg.status,
+          detail: msg.detail,
+        });
+        break;
     }
   }
 
@@ -739,6 +790,10 @@ export class SessionAgentDO {
         vnc?: string;
         ttyd?: string;
       };
+      // For async sandbox spawning (DO calls Modal in the background)
+      backendUrl?: string;
+      terminateUrl?: string;
+      spawnRequest?: Record<string, unknown>;
     };
 
     // Store session state in durable SQLite
@@ -755,19 +810,29 @@ export class SessionAgentDO {
     if (body.tunnelUrls) {
       this.setStateValue('tunnelUrls', JSON.stringify(body.tunnelUrls));
     }
+    if (body.terminateUrl) {
+      this.setStateValue('terminateUrl', body.terminateUrl);
+    }
 
-    // Update status to running once sandbox info is stored
-    this.setStateValue('status', 'running');
-
-    // Notify connected clients
-    this.broadcastToClients({
-      type: 'status',
-      data: {
-        status: 'running',
-        sandboxRunning: !!body.sandboxId,
-        tunnelUrls: body.tunnelUrls,
-      },
-    });
+    // If sandbox info was provided directly, we're already running
+    if (body.sandboxId && body.tunnelUrls) {
+      this.setStateValue('status', 'running');
+      this.broadcastToClients({
+        type: 'status',
+        data: {
+          status: 'running',
+          sandboxRunning: true,
+          tunnelUrls: body.tunnelUrls,
+        },
+      });
+    } else if (body.backendUrl && body.spawnRequest) {
+      // Spawn sandbox asynchronously — return immediately, DO continues in background
+      this.broadcastToClients({
+        type: 'status',
+        data: { status: 'initializing' },
+      });
+      this.ctx.waitUntil(this.spawnSandbox(body.backendUrl, body.terminateUrl!, body.spawnRequest));
+    }
 
     // Publish session.started to EventBus
     this.notifyEventBus({
@@ -780,13 +845,80 @@ export class SessionAgentDO {
 
     return Response.json({
       success: true,
-      status: 'running',
+      status: 'initializing',
     });
+  }
+
+  /**
+   * Spawn a sandbox via the Modal backend. Runs in the background via waitUntil()
+   * so the Worker request can return immediately.
+   */
+  private async spawnSandbox(
+    backendUrl: string,
+    terminateUrl: string,
+    spawnRequest: Record<string, unknown>,
+  ): Promise<void> {
+    const sessionId = this.getStateValue('sessionId');
+    try {
+      const response = await fetch(backendUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(spawnRequest),
+      });
+
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`Backend returned ${response.status}: ${err}`);
+      }
+
+      const result = await response.json() as {
+        sandboxId: string;
+        tunnelUrls: Record<string, string>;
+      };
+
+      // Store sandbox info
+      this.setStateValue('sandboxId', result.sandboxId);
+      this.setStateValue('tunnelUrls', JSON.stringify(result.tunnelUrls));
+      this.setStateValue('status', 'running');
+
+      // Notify connected clients that sandbox is ready
+      this.broadcastToClients({
+        type: 'status',
+        data: {
+          status: 'running',
+          sandboxRunning: true,
+          tunnelUrls: result.tunnelUrls,
+        },
+      });
+
+      console.log(`[SessionAgentDO] Sandbox spawned: ${result.sandboxId} for session ${sessionId}`);
+    } catch (err) {
+      console.error(`[SessionAgentDO] Failed to spawn sandbox for session ${sessionId}:`, err);
+      this.setStateValue('status', 'error');
+      this.broadcastToClients({
+        type: 'status',
+        data: { status: 'error' },
+      });
+      this.broadcastToClients({
+        type: 'error',
+        error: `Failed to create sandbox: ${err instanceof Error ? err.message : String(err)}`,
+      });
+
+      // Publish session.errored to EventBus
+      this.notifyEventBus({
+        type: 'session.errored',
+        sessionId: sessionId || undefined,
+        userId: this.getStateValue('userId') || undefined,
+        data: { error: err instanceof Error ? err.message : String(err) },
+        timestamp: new Date().toISOString(),
+      });
+    }
   }
 
   private async handleStop(): Promise<Response> {
     const sandboxId = this.getStateValue('sandboxId');
     const sessionId = this.getStateValue('sessionId');
+    const terminateUrl = this.getStateValue('terminateUrl');
 
     // Tell runner to stop
     this.sendToRunner({ type: 'stop' });
@@ -798,6 +930,19 @@ export class SessionAgentDO {
         ws.close(1000, 'Session terminated');
       } catch {
         // ignore
+      }
+    }
+
+    // Terminate sandbox via Modal backend
+    if (sandboxId && terminateUrl) {
+      try {
+        await fetch(terminateUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sandboxId }),
+        });
+      } catch (err) {
+        console.error('Failed to terminate sandbox:', err);
       }
     }
 

@@ -16,6 +16,8 @@ interface DeleteSessionDialogProps {
   sessionId: string;
   sessionName: string;
   trigger?: React.ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   onDeleted?: () => void;
 }
 
@@ -23,6 +25,8 @@ export function DeleteSessionDialog({
   sessionId,
   sessionName,
   trigger,
+  open,
+  onOpenChange,
   onDeleted,
 }: DeleteSessionDialogProps) {
   const deleteSession = useDeleteSession();
@@ -30,6 +34,7 @@ export function DeleteSessionDialog({
   const handleDelete = async () => {
     try {
       await deleteSession.mutateAsync(sessionId);
+      onOpenChange?.(false);
       onDeleted?.();
     } catch {
       // Error handling is done by the mutation
@@ -37,10 +42,17 @@ export function DeleteSessionDialog({
   };
 
   return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        {trigger ?? <Button variant="destructive">Delete</Button>}
-      </AlertDialogTrigger>
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      {trigger && (
+        <AlertDialogTrigger asChild>
+          {trigger}
+        </AlertDialogTrigger>
+      )}
+      {!trigger && open === undefined && (
+        <AlertDialogTrigger asChild>
+          <Button variant="destructive">Delete</Button>
+        </AlertDialogTrigger>
+      )}
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Delete Session</AlertDialogTitle>

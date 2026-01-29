@@ -39,9 +39,9 @@ def get_base_image() -> modal.Image:
         .run_commands(
             "curl -fsSL https://bun.sh/install | bash",
         )
-        # Install OpenCode CLI
+        # Install OpenCode CLI + agent-browser
         .run_commands(
-            "npm install -g opencode-ai",
+            "npm install -g opencode-ai agent-browser",
         )
         # code-server (VS Code in browser)
         .run_commands(
@@ -55,6 +55,8 @@ def get_base_image() -> modal.Image:
             "websockify",
             "novnc",
             "chromium",
+            "imagemagick",
+            "xdotool",
         )
         # TTYD (web terminal)
         .run_commands(
@@ -62,19 +64,47 @@ def get_base_image() -> modal.Image:
             "chmod +x /usr/local/bin/ttyd",
         )
         # Runner package (Bun/TS — runs inside sandbox)
-        .add_local_dir("packages/runner", "/runner", copy=True)
+        # Exclude node_modules - it contains symlinks to monorepo root that cause timeouts
+        # We run bun install inside the container anyway
+        .add_local_dir(
+            "/root/packages/runner",
+            "/runner",
+            copy=True,
+            ignore=["node_modules", "*.log"],
+        )
         .run_commands("cd /runner && /root/.bun/bin/bun install")
         # Copy start.sh
-        .add_local_file("docker/start.sh", "/start.sh", copy=True)
+        .add_local_file("/root/docker/start.sh", "/start.sh", copy=True)
         .run_commands("chmod +x /start.sh")
+        # OpenCode config and custom tools (browser access)
+        .add_local_dir(
+            "/root/docker/opencode",
+            "/opencode-config",
+            copy=True,
+        )
+        .run_commands("npm install -g @opencode-ai/plugin")
         # Create workspace directory
         .run_commands("mkdir -p /workspace")
+        # Setup bash prompt and environment for terminals
+        .run_commands(
+            # Create a proper .bashrc with prompt using echo
+            "echo 'export PS1=\"agent@sandbox:\\w\\$ \"' > /root/.bashrc",
+            "echo 'alias ls=\"ls --color=auto\"' >> /root/.bashrc",
+            "echo 'alias ll=\"ls -la\"' >> /root/.bashrc",
+            "echo 'export BUN_INSTALL=\"/root/.bun\"' >> /root/.bashrc",
+            "echo 'export PATH=\"$BUN_INSTALL/bin:$PATH\"' >> /root/.bashrc",
+            # Also create /etc/bash.bashrc for system-wide defaults
+            "cp /root/.bashrc /etc/bash.bashrc",
+        )
         .env(
             {
                 "BUN_INSTALL": "/root/.bun",
                 "PATH": "/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                 "DISPLAY": ":99",
                 "HOME": "/root",
+                # Force image rebuild on deploy (change this value to trigger rebuild)
+                "IMAGE_BUILD_VERSION": "2026-01-29-v12",
+                "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
             }
         )
     )

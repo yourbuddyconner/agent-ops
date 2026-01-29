@@ -1,0 +1,129 @@
+import { useState } from 'react';
+import { Link } from '@tanstack/react-router';
+import type { SessionStatus } from '@/api/types';
+import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { TerminateSessionDialog } from './terminate-session-dialog';
+import { DeleteSessionDialog } from './delete-session-dialog';
+
+interface SessionActionsMenuProps {
+  session: { id: string; workspace: string; status: SessionStatus };
+  trigger?: React.ReactNode;
+  showOpen?: boolean;
+  showEditorLink?: boolean;
+  onActionComplete?: () => void;
+  align?: 'start' | 'center' | 'end';
+}
+
+const ACTIVE_STATUSES: SessionStatus[] = ['running', 'idle', 'initializing'];
+const DELETABLE_STATUSES: SessionStatus[] = ['terminated', 'error'];
+
+export function SessionActionsMenu({
+  session,
+  trigger,
+  showOpen = false,
+  showEditorLink = false,
+  onActionComplete,
+  align = 'end',
+}: SessionActionsMenuProps) {
+  const [dialog, setDialog] = useState<'terminate' | 'delete' | null>(null);
+
+  const canTerminate = ACTIVE_STATUSES.includes(session.status);
+  const canDelete = DELETABLE_STATUSES.includes(session.status);
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          {trigger ?? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 px-0 text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+            >
+              <MoreVerticalIcon className="h-4 w-4" />
+              <span className="sr-only">Session actions</span>
+            </Button>
+          )}
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align={align}>
+          {showOpen && (
+            <DropdownMenuItem asChild>
+              <Link to="/sessions/$sessionId" params={{ sessionId: session.id }}>
+                Open
+              </Link>
+            </DropdownMenuItem>
+          )}
+          {showEditorLink && (
+            <DropdownMenuItem asChild>
+              <Link to="/sessions/$sessionId/editor" params={{ sessionId: session.id }}>
+                Open in Editor
+              </Link>
+            </DropdownMenuItem>
+          )}
+          {(showOpen || showEditorLink) && (canTerminate || canDelete) && (
+            <DropdownMenuSeparator />
+          )}
+          {canTerminate && (
+            <DropdownMenuItem
+              onClick={() => setDialog('terminate')}
+              className="text-red-600 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"
+            >
+              Terminate Session
+            </DropdownMenuItem>
+          )}
+          {canDelete && (
+            <DropdownMenuItem
+              onClick={() => setDialog('delete')}
+              className="text-red-600 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"
+            >
+              Delete Session
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <TerminateSessionDialog
+        sessionId={session.id}
+        sessionName={session.workspace}
+        open={dialog === 'terminate'}
+        onOpenChange={(open) => !open && setDialog(null)}
+        onTerminated={onActionComplete}
+      />
+      <DeleteSessionDialog
+        sessionId={session.id}
+        sessionName={session.workspace}
+        open={dialog === 'delete'}
+        onOpenChange={(open) => !open && setDialog(null)}
+        onDeleted={onActionComplete}
+      />
+    </>
+  );
+}
+
+function MoreVerticalIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="12" cy="5" r="1" />
+      <circle cx="12" cy="19" r="1" />
+    </svg>
+  );
+}
