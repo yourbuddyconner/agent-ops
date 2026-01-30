@@ -1,5 +1,5 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics } from '../lib/db.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
 
@@ -32,7 +32,7 @@ interface RunnerMessage {
   toolName?: string;
   args?: unknown;
   result?: unknown;
-  data?: string; // base64 screenshot
+  data?: string | { files?: { path: string; status: string; diff?: string }[] }; // base64 screenshot or diff payload
   description?: string;
   error?: string;
   status?: AgentStatus | ToolCallStatus;
@@ -145,6 +145,10 @@ export class SessionAgentDO {
         return this.handleHibernate();
       case '/clear-queue':
         return this.handleClearQueue();
+      case '/flush-metrics':
+        return this.handleFlushMetrics();
+      case '/gc':
+        return this.handleGarbageCollect();
       case '/prompt': {
         // HTTP-based prompt submission (alternative to WebSocket)
         const body = await request.json() as { content: string; model?: string };
@@ -227,6 +231,7 @@ export class SessionAgentDO {
       },
       data: {
         sandboxRunning: !!sandboxId,
+        runnerConnected: this.ctx.getWebSockets('runner').length > 0,
         connectedClients: this.getClientSockets().length + 1,
         connectedUsers,
         availableModels,
@@ -432,6 +437,9 @@ export class SessionAgentDO {
         // Don't return — still process question expiry below
       }
     }
+
+    // ─── Periodic Metrics Flush ──────────────────────────────────────
+    this.ctx.waitUntil(this.flushMetrics());
 
     // ─── Question Expiry ──────────────────────────────────────────────
     const expired = this.ctx.storage.sql
@@ -850,6 +858,8 @@ export class SessionAgentDO {
         // Prompt finished — check queue for next
         console.log(`[SessionAgentDO] Complete received, processing queue`);
         await this.handlePromptComplete();
+        // Flush metrics after each agent turn
+        this.ctx.waitUntil(this.flushMetrics());
         break;
 
       case 'agentStatus':
@@ -897,10 +907,12 @@ export class SessionAgentDO {
 
       case 'diff':
         // Runner returned diff data — broadcast to clients
+        // Runner sends { type, requestId, data: { files } } or { type, requestId, files }
+        const diffFiles = (typeof msg.data === 'object' && msg.data?.files) ? msg.data.files : (msg.files ?? []);
         this.broadcastToClients({
           type: 'diff',
           requestId: msg.requestId,
-          data: { files: msg.files ?? [] },
+          data: { files: diffFiles },
         });
         break;
 
@@ -1127,6 +1139,9 @@ export class SessionAgentDO {
     const terminateUrl = this.getStateValue('terminateUrl');
     const currentStatus = this.getStateValue('status');
 
+    // Flush metrics to D1 before termination
+    await this.flushMetrics();
+
     // Tell runner to stop
     this.sendToRunner({ type: 'stop' });
 
@@ -1232,6 +1247,21 @@ export class SessionAgentDO {
     });
 
     return Response.json({ success: true, cleared });
+  }
+
+  private async handleFlushMetrics(): Promise<Response> {
+    await this.flushMetrics();
+    return Response.json({ success: true });
+  }
+
+  private async handleGarbageCollect(): Promise<Response> {
+    try {
+      await this.flushMetrics();
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to flush metrics during GC:', err);
+    }
+    await this.ctx.storage.deleteAll();
+    return Response.json({ success: true });
   }
 
   private async handleProxy(request: Request, url: URL): Promise<Response> {
@@ -1354,6 +1384,9 @@ export class SessionAgentDO {
     }
 
     try {
+      // Flush metrics to D1 before hibernate
+      await this.flushMetrics();
+
       // Set status to hibernating
       this.setStateValue('status', 'hibernating');
       this.broadcastToClients({
@@ -1622,6 +1655,31 @@ export class SessionAgentDO {
       });
     } catch {
       // EventBus not available
+    }
+  }
+
+  /**
+   * Flush message/tool-call counts from local SQLite to D1.
+   * Called at lifecycle boundaries (stop, hibernate, alarm) and after each agent turn.
+   */
+  private async flushMetrics(): Promise<void> {
+    const sessionId = this.getStateValue('sessionId');
+    if (!sessionId) return;
+
+    try {
+      const msgRow = this.ctx.storage.sql
+        .exec('SELECT COUNT(*) as count FROM messages')
+        .toArray()[0];
+      const toolRow = this.ctx.storage.sql
+        .exec("SELECT COUNT(*) as count FROM messages WHERE role = 'tool'")
+        .toArray()[0];
+
+      const messageCount = (msgRow?.count as number) ?? 0;
+      const toolCallCount = (toolRow?.count as number) ?? 0;
+
+      await updateSessionMetrics(this.env.DB, sessionId, { messageCount, toolCallCount });
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to flush metrics:', err);
     }
   }
 

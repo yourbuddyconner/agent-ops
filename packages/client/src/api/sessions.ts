@@ -72,6 +72,22 @@ export function useCreateSession() {
   });
 }
 
+export function useBulkDeleteSessions() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (sessionIds: string[]) =>
+      api.post<{ deleted: number; errors: { sessionId: string; error: string }[] }>(
+        '/sessions/bulk-delete',
+        { sessionIds }
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: sessionKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: sessionKeys.infinite() });
+    },
+  });
+}
+
 export function useDeleteSession() {
   const queryClient = useQueryClient();
 

@@ -521,6 +521,76 @@ sessionsRouter.post('/:id/wake', async (c) => {
 });
 
 /**
+ * POST /api/sessions/bulk-delete
+ * Permanently delete multiple sessions — stops DOs, wipes storage, removes D1 rows.
+ */
+const bulkDeleteSchema = z.object({
+  sessionIds: z.array(z.string().uuid()).min(1).max(100),
+});
+
+sessionsRouter.post('/bulk-delete', zValidator('json', bulkDeleteSchema), async (c) => {
+  const user = c.get('user');
+  const { sessionIds } = c.req.valid('json');
+
+  // Validate all sessions belong to the authenticated user
+  const placeholders = sessionIds.map(() => '?').join(',');
+  const rows = await c.env.DB.prepare(
+    `SELECT id FROM sessions WHERE id IN (${placeholders}) AND user_id = ?`
+  )
+    .bind(...sessionIds, user.id)
+    .all<{ id: string }>();
+
+  const ownedIds = new Set(rows.results.map((r) => r.id));
+  const validIds = sessionIds.filter((id) => ownedIds.has(id));
+
+  if (validIds.length === 0) {
+    return c.json({ deleted: 0, errors: [] });
+  }
+
+  const errors: { sessionId: string; error: string }[] = [];
+
+  // Fan-out: stop each DO, then GC its storage
+  const stopResults = await Promise.allSettled(
+    validIds.map(async (sessionId) => {
+      const doId = c.env.SESSIONS.idFromName(sessionId);
+      const sessionDO = c.env.SESSIONS.get(doId);
+
+      try {
+        await sessionDO.fetch(new Request('http://do/stop', { method: 'POST' }));
+      } catch (err) {
+        // Stopping may fail if already terminated — continue to GC
+      }
+
+      try {
+        await sessionDO.fetch(new Request('http://do/gc', { method: 'POST' }));
+      } catch (err) {
+        errors.push({
+          sessionId,
+          error: `GC failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    })
+  );
+
+  // Batch-delete D1 rows
+  const deletePlaceholders = validIds.map(() => '?').join(',');
+  await c.env.DB.prepare(
+    `DELETE FROM sessions WHERE id IN (${deletePlaceholders}) AND user_id = ?`
+  )
+    .bind(...validIds, user.id)
+    .run();
+
+  // Also delete associated messages
+  await c.env.DB.prepare(
+    `DELETE FROM messages WHERE session_id IN (${deletePlaceholders})`
+  )
+    .bind(...validIds)
+    .run();
+
+  return c.json({ deleted: validIds.length, errors });
+});
+
+/**
  * DELETE /api/sessions/:id
  * Terminate a session — stops the DO and terminates the sandbox.
  */
