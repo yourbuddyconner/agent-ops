@@ -123,10 +123,27 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     envVars.GIT_USER_EMAIL = userRow?.email || user.email;
   }
 
+  // Fetch user's idle timeout preference
+  const userRow = await db.getUserById(c.env.DB, user.id);
+  const idleTimeoutSeconds = userRow?.idleTimeoutSeconds ?? 900;
+  const idleTimeoutMs = idleTimeoutSeconds * 1000;
+
   // Initialize SessionAgentDO — it will spawn the sandbox asynchronously
   // so we can return immediately without waiting for the image build.
   const doId = c.env.SESSIONS.idFromName(sessionId);
   const sessionDO = c.env.SESSIONS.get(doId);
+
+  const spawnRequest = {
+    sessionId,
+    userId: user.id,
+    workspace: body.workspace,
+    imageType: 'base',
+    doWsUrl,
+    runnerToken,
+    jwtSecret: c.env.ENCRYPTION_KEY,
+    idleTimeoutSeconds,
+    envVars,
+  };
 
   try {
     await sessionDO.fetch(new Request('http://do/start', {
@@ -140,16 +157,10 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
         // DO will call Modal to spawn the sandbox in the background
         backendUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'create-session'),
         terminateUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'terminate-session'),
-        spawnRequest: {
-          sessionId,
-          userId: user.id,
-          workspace: body.workspace,
-          imageType: 'base',
-          doWsUrl,
-          runnerToken,
-          jwtSecret: c.env.ENCRYPTION_KEY,
-          envVars,
-        },
+        hibernateUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'hibernate-session'),
+        restoreUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'restore-session'),
+        idleTimeoutMs,
+        spawnRequest,
       }),
     }));
   } catch (err) {
@@ -232,6 +243,11 @@ sessionsRouter.get('/:id/sandbox-token', async (c) => {
   // Don't attempt token generation for terminated sessions
   if (session.status === 'terminated' || session.status === 'error') {
     return c.json({ error: 'Session is not running' }, 503);
+  }
+
+  // Return special response for hibernated sessions
+  if (session.status === 'hibernated' || session.status === 'hibernating' || session.status === 'restoring') {
+    return c.json({ status: session.status }, 503);
   }
 
   // Get tunnel URLs from the SessionAgent DO (source of truth, not stale D1 status)
@@ -448,6 +464,60 @@ sessionsRouter.get('/:id/events', async (c) => {
       'Connection': 'keep-alive',
     },
   });
+});
+
+/**
+ * POST /api/sessions/:id/hibernate
+ * Hibernate a running session — snapshots the sandbox and terminates it.
+ */
+sessionsRouter.post('/:id/hibernate', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  const session = await db.getSession(c.env.DB, id);
+
+  if (!session) {
+    throw new NotFoundError('Session', id);
+  }
+
+  if (session.userId !== user.id) {
+    throw new NotFoundError('Session', id);
+  }
+
+  const doId = c.env.SESSIONS.idFromName(id);
+  const sessionDO = c.env.SESSIONS.get(doId);
+
+  const res = await sessionDO.fetch(new Request('http://do/hibernate', { method: 'POST' }));
+  const result = await res.json() as { status: string; message: string };
+
+  return c.json(result);
+});
+
+/**
+ * POST /api/sessions/:id/wake
+ * Wake a hibernated session — restores the sandbox from snapshot.
+ */
+sessionsRouter.post('/:id/wake', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  const session = await db.getSession(c.env.DB, id);
+
+  if (!session) {
+    throw new NotFoundError('Session', id);
+  }
+
+  if (session.userId !== user.id) {
+    throw new NotFoundError('Session', id);
+  }
+
+  const doId = c.env.SESSIONS.idFromName(id);
+  const sessionDO = c.env.SESSIONS.get(doId);
+
+  const res = await sessionDO.fetch(new Request('http://do/wake', { method: 'POST' }));
+  const result = await res.json() as { status: string; message: string };
+
+  return c.json(result);
 });
 
 /**

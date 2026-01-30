@@ -33,6 +33,7 @@ const updateProfileSchema = z.object({
   gitName: z.string().max(255).optional(),
   gitEmail: z.string().email().max(255).optional(),
   onboardingCompleted: z.boolean().optional(),
+  idleTimeoutSeconds: z.number().int().min(300).max(3600).optional(),
 });
 
 /**

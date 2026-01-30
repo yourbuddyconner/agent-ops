@@ -50,6 +50,9 @@ function StatusBadge({ status }: { status: AgentSession['status'] }) {
     initializing: 'warning',
     running: 'success',
     idle: 'default',
+    hibernating: 'warning',
+    hibernated: 'secondary',
+    restoring: 'warning',
     terminated: 'secondary',
     error: 'error',
   };

@@ -2,11 +2,14 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { useFileFinder, type FileReadResponse } from '@/api/files';
 import { api } from '@/api/client';
+import { useWakeSession } from '@/api/sessions';
 import type { ProviderModels } from '@/hooks/use-chat';
 
 interface ChatInputProps {
   onSend: (content: string, model?: string) => void;
   disabled?: boolean;
+  /** Blocks sending but keeps textarea interactive (e.g. during hibernate transitions) */
+  sendDisabled?: boolean;
   placeholder?: string;
   inputRef?: React.RefObject<HTMLTextAreaElement | null>;
   availableModels?: ProviderModels[];
@@ -15,6 +18,7 @@ interface ChatInputProps {
   onAbort?: () => void;
   isAgentActive?: boolean;
   sessionId?: string;
+  sessionStatus?: string;
 }
 
 interface FlatModel {
@@ -64,6 +68,7 @@ function truncatePath(path: string, maxLen = 60): string {
 export function ChatInput({
   onSend,
   disabled = false,
+  sendDisabled = false,
   placeholder = 'Type a message...',
   inputRef,
   availableModels = [],
@@ -72,6 +77,7 @@ export function ChatInput({
   onAbort,
   isAgentActive = false,
   sessionId,
+  sessionStatus,
 }: ChatInputProps) {
   const [value, setValue] = useState('');
   const [highlightIndex, setHighlightIndex] = useState(0);
@@ -84,6 +90,14 @@ export function ChatInput({
   const textareaRef = inputRef ?? internalRef;
   const overlayRef = useRef<HTMLDivElement>(null);
   const fileOverlayRef = useRef<HTMLDivElement>(null);
+
+  // Wake session on focus if hibernated
+  const wakeMutation = useWakeSession();
+  const handleFocus = useCallback(() => {
+    if (sessionId && sessionStatus === 'hibernated' && !wakeMutation.isPending) {
+      wakeMutation.mutate(sessionId);
+    }
+  }, [sessionId, sessionStatus, wakeMutation.isPending]);
 
   // Track cursor position on every input change and selection change
   const updateCursorPos = useCallback(() => {
@@ -201,7 +215,7 @@ export function ChatInput({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!value.trim() || disabled || isSendingFiles) return;
+    if (!value.trim() || disabled || sendDisabled || isSendingFiles) return;
 
     // If input is a /model command, treat as model selection if there's an exact or single match
     if (modelCommandMatch) {
@@ -461,6 +475,7 @@ export function ChatInput({
             updateCursorPos();
           }}
           onKeyDown={handleKeyDown}
+          onFocus={handleFocus}
           onSelect={updateCursorPos}
           onClick={updateCursorPos}
           placeholder={placeholder}
@@ -478,16 +493,22 @@ export function ChatInput({
             Stop
           </Button>
         ) : (
-          <Button type="submit" disabled={!value.trim() || disabled || isSendingFiles} size="sm">
+          <Button type="submit" disabled={!value.trim() || disabled || sendDisabled || isSendingFiles} size="sm">
             {isSendingFiles ? 'Loading...' : 'Send'}
           </Button>
         )}
       </div>
       <div className="mt-1.5 flex items-center justify-between">
         <p className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
-          {isAgentActive
-            ? 'Esc to stop · Shift+Enter for new line · @ to attach files · /model to switch'
-            : 'Enter to send · Shift+Enter for new line · @ to attach files · /model to switch'}
+          {sessionStatus === 'restoring'
+            ? 'Restoring session...'
+            : sessionStatus === 'hibernated'
+              ? 'Session hibernated — focus to restore · Enter to send'
+              : sessionStatus === 'hibernating'
+                ? 'Session hibernating...'
+                : isAgentActive
+                  ? 'Esc to stop · Shift+Enter for new line · @ to attach files · /model to switch'
+                  : 'Enter to send · Shift+Enter for new line · @ to attach files · /model to switch'}
         </p>
         {hasModels && (
           <select

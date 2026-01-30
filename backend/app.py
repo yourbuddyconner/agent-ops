@@ -77,6 +77,63 @@ async def terminate_session(request: dict) -> dict:
 
 
 @app.function(image=fn_image)
+@modal.fastapi_endpoint(method="POST", label="hibernate-session")
+async def hibernate_session(request: dict) -> dict:
+    """Hibernate a session by snapshotting the sandbox filesystem and terminating it.
+
+    Request body:
+        sandboxId: str
+
+    Returns:
+        snapshotImageId: str
+    """
+    sandbox_id = request["sandboxId"]
+    snapshot_image_id = await session_manager.hibernate(sandbox_id)
+    return {"snapshotImageId": snapshot_image_id}
+
+
+@app.function(image=fn_image)
+@modal.fastapi_endpoint(method="POST", label="restore-session")
+async def restore_session(request: dict) -> dict:
+    """Restore a session from a filesystem snapshot.
+
+    Request body:
+        sessionId: str
+        userId: str
+        workspace: str
+        imageType: str (default "base")
+        doWsUrl: str
+        runnerToken: str
+        jwtSecret: str
+        idleTimeoutSeconds: int (default 900)
+        envVars: dict[str, str] (optional)
+        snapshotImageId: str
+
+    Returns:
+        sandboxId: str
+        tunnelUrls: dict[str, str]
+    """
+    req = CreateSessionRequest(
+        session_id=request["sessionId"],
+        user_id=request["userId"],
+        workspace=request["workspace"],
+        image_type=request.get("imageType", "base"),
+        do_ws_url=request["doWsUrl"],
+        runner_token=request["runnerToken"],
+        jwt_secret=request["jwtSecret"],
+        idle_timeout_seconds=request.get("idleTimeoutSeconds", 900),
+        env_vars=request.get("envVars"),
+    )
+
+    result = await session_manager.restore(req, request["snapshotImageId"])
+
+    return {
+        "sandboxId": result.sandbox_id,
+        "tunnelUrls": result.tunnel_urls,
+    }
+
+
+@app.function(image=fn_image)
 @modal.fastapi_endpoint(method="POST", label="session-status")
 async def session_status(request: dict) -> dict:
     """Get status of a session's sandbox.

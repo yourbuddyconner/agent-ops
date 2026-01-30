@@ -118,6 +118,31 @@ export function useSessionToken(sessionId: string) {
   });
 }
 
+export function useHibernateSession() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (sessionId: string) =>
+      api.post<{ status: string; message: string }>(`/sessions/${sessionId}/hibernate`),
+    onSuccess: (_, sessionId) => {
+      queryClient.invalidateQueries({ queryKey: sessionKeys.detail(sessionId) });
+      queryClient.invalidateQueries({ queryKey: sessionKeys.infinite() });
+    },
+  });
+}
+
+export function useWakeSession() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (sessionId: string) =>
+      api.post<{ status: string; message: string }>(`/sessions/${sessionId}/wake`),
+    onSuccess: (_, sessionId) => {
+      queryClient.invalidateQueries({ queryKey: sessionKeys.detail(sessionId) });
+    },
+  });
+}
+
 export function useTerminateSession() {
   const queryClient = useQueryClient();
 

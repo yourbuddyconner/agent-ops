@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import type { SessionStatus } from '@/api/types';
+import { useHibernateSession } from '@/api/sessions';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -22,6 +23,7 @@ interface SessionActionsMenuProps {
 }
 
 const ACTIVE_STATUSES: SessionStatus[] = ['running', 'idle', 'initializing'];
+const HIBERNATABLE_STATUSES: SessionStatus[] = ['running'];
 const DELETABLE_STATUSES: SessionStatus[] = ['terminated', 'error'];
 
 export function SessionActionsMenu({
@@ -33,8 +35,10 @@ export function SessionActionsMenu({
   align = 'end',
 }: SessionActionsMenuProps) {
   const [dialog, setDialog] = useState<'terminate' | 'delete' | null>(null);
+  const hibernateMutation = useHibernateSession();
 
   const canTerminate = ACTIVE_STATUSES.includes(session.status);
+  const canHibernate = HIBERNATABLE_STATUSES.includes(session.status);
   const canDelete = DELETABLE_STATUSES.includes(session.status);
 
   return (
@@ -67,8 +71,16 @@ export function SessionActionsMenu({
               </Link>
             </DropdownMenuItem>
           )}
-          {(showOpen || showEditorLink) && (canTerminate || canDelete) && (
+          {(showOpen || showEditorLink) && (canHibernate || canTerminate || canDelete) && (
             <DropdownMenuSeparator />
+          )}
+          {canHibernate && (
+            <DropdownMenuItem
+              onClick={() => hibernateMutation.mutate(session.id)}
+              disabled={hibernateMutation.isPending}
+            >
+              {hibernateMutation.isPending ? 'Hibernating...' : 'Hibernate Session'}
+            </DropdownMenuItem>
           )}
           {canTerminate && (
             <DropdownMenuItem

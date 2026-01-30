@@ -42,7 +42,9 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   const [showDiff, setShowDiff] = useState(false);
 
   const isLoading = connectionStatus === 'connecting';
-  const isDisabled = !isConnected || sessionStatus === 'terminated';
+  const isTerminated = sessionStatus === 'terminated';
+  const isHibernateTransition = sessionStatus === 'hibernating' || sessionStatus === 'restoring';
+  const isDisabled = !isConnected || isTerminated;
   const isAgentActive = isAgentThinking || agentStatus === 'thinking' || agentStatus === 'tool_calling' || agentStatus === 'streaming';
 
   // Global Escape key handler for abort
@@ -112,14 +114,26 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
         <ChatSkeleton />
       ) : (
         <>
-          <MessageList
-            messages={messages}
-            streamingContent={streamingContent}
-            isAgentThinking={isAgentThinking}
-            agentStatus={agentStatus}
-            agentStatusDetail={agentStatusDetail}
-            onRevert={revertMessage}
-          />
+          <div className="relative flex-1 overflow-hidden">
+            <MessageList
+              messages={messages}
+              streamingContent={streamingContent}
+              isAgentThinking={isAgentThinking}
+              agentStatus={agentStatus}
+              agentStatusDetail={agentStatusDetail}
+              onRevert={revertMessage}
+            />
+            {isHibernateTransition && (
+              <div className="absolute inset-0 flex items-center justify-center bg-surface-0/70 dark:bg-surface-0/80 backdrop-blur-[2px]">
+                <div className="flex items-center gap-2.5 rounded-lg border border-neutral-200 bg-surface-0 px-4 py-2.5 shadow-sm dark:border-neutral-700 dark:bg-surface-1">
+                  <LoaderIcon className="h-4 w-4 animate-spin text-neutral-500" />
+                  <span className="font-mono text-[12px] text-neutral-600 dark:text-neutral-400">
+                    {sessionStatus === 'hibernating' ? 'Hibernating session...' : 'Restoring session...'}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
           {pendingQuestions.map((q) => (
             <QuestionPrompt
               key={q.questionId}
@@ -133,6 +147,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           <ChatInput
             onSend={sendMessage}
             disabled={isDisabled}
+            sendDisabled={isHibernateTransition}
             placeholder={
               isDisabled
                 ? 'Session is not available'
@@ -144,6 +159,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             onAbort={abort}
             isAgentActive={isAgentActive}
             sessionId={sessionId}
+            sessionStatus={sessionStatus}
           />
         </>
       )}
@@ -166,6 +182,9 @@ function SessionStatusBadge({ status }: { status: string }) {
     initializing: 'warning',
     running: 'success',
     idle: 'default',
+    hibernating: 'warning',
+    hibernated: 'secondary',
+    restoring: 'warning',
     terminated: 'secondary',
     error: 'error',
   };
@@ -265,6 +284,25 @@ function FilesIcon({ className }: { className?: string }) {
     >
       <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
       <polyline points="14 2 14 8 20 8" />
+    </svg>
+  );
+}
+
+function LoaderIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
     </svg>
   );
 }

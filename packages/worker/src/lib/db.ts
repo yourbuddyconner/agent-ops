@@ -448,13 +448,13 @@ export async function getUserById(db: D1Database, userId: string): Promise<User 
 export async function updateUserProfile(
   db: D1Database,
   userId: string,
-  data: { name?: string; gitName?: string; gitEmail?: string; onboardingCompleted?: boolean }
+  data: { name?: string; gitName?: string; gitEmail?: string; onboardingCompleted?: boolean; idleTimeoutSeconds?: number }
 ): Promise<User | null> {
   await db
     .prepare(
-      "UPDATE users SET name = COALESCE(?, name), git_name = ?, git_email = ?, onboarding_completed = COALESCE(?, onboarding_completed), updated_at = datetime('now') WHERE id = ?"
+      "UPDATE users SET name = COALESCE(?, name), git_name = ?, git_email = ?, onboarding_completed = COALESCE(?, onboarding_completed), idle_timeout_seconds = COALESCE(?, idle_timeout_seconds), updated_at = datetime('now') WHERE id = ?"
     )
-    .bind(data.name ?? null, data.gitName ?? null, data.gitEmail ?? null, data.onboardingCompleted !== undefined ? (data.onboardingCompleted ? 1 : 0) : null, userId)
+    .bind(data.name ?? null, data.gitName ?? null, data.gitEmail ?? null, data.onboardingCompleted !== undefined ? (data.onboardingCompleted ? 1 : 0) : null, data.idleTimeoutSeconds ?? null, userId)
     .run();
 
   return getUserById(db, userId);
@@ -516,6 +516,7 @@ function mapUser(row: any): User {
     gitName: row.git_name || undefined,
     gitEmail: row.git_email || undefined,
     onboardingCompleted: !!row.onboarding_completed,
+    idleTimeoutSeconds: row.idle_timeout_seconds ?? 900,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
   };

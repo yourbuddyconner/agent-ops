@@ -77,7 +77,7 @@ export interface AgentQuestion {
 }
 
 // Session types
-export type SessionStatus = 'initializing' | 'running' | 'idle' | 'terminated' | 'error';
+export type SessionStatus = 'initializing' | 'running' | 'idle' | 'hibernating' | 'hibernated' | 'restoring' | 'terminated' | 'error';
 
 export interface AgentSession {
   id: string;
@@ -130,6 +130,7 @@ export interface User {
   gitName?: string;
   gitEmail?: string;
   onboardingCompleted?: boolean;
+  idleTimeoutSeconds?: number;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -59,6 +59,34 @@ class SessionManager:
         """Terminate a session's sandbox."""
         await self.sandbox_manager.terminate_sandbox(sandbox_id)
 
+    async def hibernate(self, sandbox_id: str) -> str:
+        """Hibernate a session by snapshotting its sandbox filesystem and terminating it.
+
+        Returns the snapshot image ID.
+        """
+        return await self.sandbox_manager.snapshot_and_terminate(sandbox_id)
+
+    async def restore(self, req: CreateSessionRequest, snapshot_image_id: str) -> CreateSessionResponse:
+        """Restore a session from a filesystem snapshot."""
+        config = SandboxConfig(
+            session_id=req.session_id,
+            user_id=req.user_id,
+            workspace=req.workspace,
+            do_ws_url=req.do_ws_url,
+            runner_token=req.runner_token,
+            jwt_secret=req.jwt_secret,
+            image_type=req.image_type,
+            idle_timeout_seconds=req.idle_timeout_seconds,
+            env_vars=req.env_vars,
+        )
+
+        result: SandboxResult = await self.sandbox_manager.restore_sandbox(config, snapshot_image_id)
+
+        return CreateSessionResponse(
+            sandbox_id=result.sandbox_id,
+            tunnel_urls=result.tunnel_urls,
+        )
+
     async def status(self, sandbox_id: str) -> dict:
         """Get session sandbox status."""
         return await self.sandbox_manager.get_sandbox_status(sandbox_id)

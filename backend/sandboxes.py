@@ -115,6 +115,62 @@ class SandboxManager:
                 "status": "terminated",
             }
 
+    async def snapshot_and_terminate(self, sandbox_id: str) -> str:
+        """Snapshot a sandbox's filesystem and terminate it. Returns the snapshot image ID."""
+        sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
+        image = await sandbox.snapshot_filesystem.aio(timeout=55)
+        await sandbox.terminate.aio()
+        return image.object_id
+
+    async def restore_sandbox(self, config: SandboxConfig, snapshot_image_id: str) -> SandboxResult:
+        """Restore a sandbox from a filesystem snapshot image."""
+        image = modal.Image.from_id(snapshot_image_id)
+
+        secrets_dict: dict[str, str] = {
+            "DO_WS_URL": config.do_ws_url,
+            "RUNNER_TOKEN": config.runner_token,
+            "SESSION_ID": config.session_id,
+            "JWT_SECRET": config.jwt_secret,
+            "OPENCODE_SERVER_PASSWORD": get_secret("OPENCODE_SERVER_PASSWORD"),
+        }
+        secrets_dict = {k: v for k, v in secrets_dict.items() if v}
+
+        if config.env_vars:
+            secrets_dict.update(config.env_vars)
+
+        sandbox = await modal.Sandbox.create.aio(
+            "/bin/bash", "/start.sh",
+            app=self.app,
+            image=image,
+            encrypted_ports=[OPENCODE_PORT, GATEWAY_PORT],
+            timeout=MAX_TIMEOUT_SECONDS,
+            idle_timeout=config.idle_timeout_seconds,
+            secrets=[modal.Secret.from_dict(secrets_dict)],
+            volumes={
+                "/workspace": modal.Volume.from_name(
+                    f"workspace-{config.session_id.replace(':', '-')}",
+                    create_if_missing=True,
+                ),
+            },
+        )
+
+        tunnels = await sandbox.tunnels.aio()
+
+        tunnel_urls: dict[str, str] = {}
+        if OPENCODE_PORT in tunnels:
+            tunnel_urls["opencode"] = tunnels[OPENCODE_PORT].url
+        if GATEWAY_PORT in tunnels:
+            gateway_url = tunnels[GATEWAY_PORT].url
+            tunnel_urls["gateway"] = gateway_url
+            tunnel_urls["vscode"] = f"{gateway_url}/vscode"
+            tunnel_urls["vnc"] = f"{gateway_url}/vnc"
+            tunnel_urls["ttyd"] = f"{gateway_url}/ttyd"
+
+        return SandboxResult(
+            sandbox_id=sandbox.object_id,
+            tunnel_urls=tunnel_urls,
+        )
+
     def _get_image(self, image_type: str) -> modal.Image:
         """Get the appropriate image for the workspace type."""
         # Phase 1: always use base image

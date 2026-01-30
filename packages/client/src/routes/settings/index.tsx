@@ -71,6 +71,8 @@ function SettingsPage() {
           </div>
         </SettingsSection>
 
+        <IdleTimeoutSection />
+
         <SettingsSection title="API Keys">
           <APIKeyList />
         </SettingsSection>
@@ -167,6 +169,76 @@ function GitConfigSection() {
             <span className="text-sm text-red-600 dark:text-red-400">
               Failed to save. Check that the email is valid.
             </span>
+          )}
+        </div>
+      </div>
+    </SettingsSection>
+  );
+}
+
+const IDLE_TIMEOUT_OPTIONS = [
+  { label: '5 minutes', value: 300 },
+  { label: '10 minutes', value: 600 },
+  { label: '15 minutes', value: 900 },
+  { label: '30 minutes', value: 1800 },
+  { label: '1 hour', value: 3600 },
+];
+
+function IdleTimeoutSection() {
+  const user = useAuthStore((s) => s.user);
+  const updateProfile = useUpdateProfile();
+  const [saved, setSaved] = React.useState(false);
+  const currentValue = user?.idleTimeoutSeconds ?? 900;
+
+  function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const value = parseInt(e.target.value);
+    updateProfile.mutate(
+      { idleTimeoutSeconds: value },
+      {
+        onSuccess: () => {
+          setSaved(true);
+          setTimeout(() => setSaved(false), 2000);
+        },
+      }
+    );
+  }
+
+  return (
+    <SettingsSection title="Session">
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Sessions automatically hibernate after a period of inactivity to save resources. They restore transparently when you return.
+        </p>
+        <div>
+          <label
+            htmlFor="idle-timeout"
+            className="text-sm font-medium text-neutral-700 dark:text-neutral-300"
+          >
+            Idle timeout
+          </label>
+          <select
+            id="idle-timeout"
+            value={currentValue}
+            onChange={handleChange}
+            disabled={updateProfile.isPending}
+            className="mt-1 block w-full max-w-md rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
+          >
+            {IDLE_TIMEOUT_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+            Time before an idle session is hibernated. New sessions will use this setting.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {saved && (
+            <span className="text-sm text-green-600 dark:text-green-400">Saved</span>
+          )}
+          {updateProfile.isError && (
+            <span className="text-sm text-red-600 dark:text-red-400">Failed to save.</span>
           )}
         </div>
       </div>
