@@ -4,7 +4,10 @@
 export type DOToRunnerMessage =
   | { type: "prompt"; messageId: string; content: string; model?: string }
   | { type: "answer"; questionId: string; answer: string | boolean }
-  | { type: "stop" };
+  | { type: "stop" }
+  | { type: "abort" }
+  | { type: "revert"; messageId: string }
+  | { type: "diff"; requestId: string };
 
 /** Tool call status values */
 export type ToolCallStatus = "pending" | "running" | "completed" | "error";
@@ -23,7 +26,10 @@ export type RunnerToDOMessage =
   | { type: "complete" }
   | { type: "agentStatus"; status: AgentStatus; detail?: string }
   | { type: "create-pr"; branch: string; title: string; body?: string; base?: string }
-  | { type: "models"; models: AvailableModels };
+  | { type: "models"; models: AvailableModels }
+  | { type: "aborted" }
+  | { type: "reverted"; messageIds: string[] }
+  | { type: "diff"; requestId: string; data: { files: DiffFile[] } };
 
 /** Model discovery types */
 export interface ProviderModels {
@@ -32,6 +38,13 @@ export interface ProviderModels {
 }
 
 export type AvailableModels = ProviderModels[];
+
+/** Diff file entry returned by OpenCode diff API */
+export interface DiffFile {
+  path: string;
+  status: "added" | "modified" | "deleted";
+  diff?: string;
+}
 
 // ─── CLI Config ────────────────────────────────────────────────────────────
 

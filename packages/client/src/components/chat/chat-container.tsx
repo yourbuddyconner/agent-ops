@@ -1,9 +1,11 @@
+import { useState, useEffect } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useChat } from '@/hooks/use-chat';
 import { useSession } from '@/api/sessions';
 import { MessageList } from './message-list';
 import { ChatInput } from './chat-input';
 import { QuestionPrompt } from './question-prompt';
+import { DiffDialog } from './diff-dialog';
 import { SessionActionsMenu } from '@/components/sessions/session-actions-menu';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -30,10 +32,30 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     setSelectedModel,
     sendMessage,
     answerQuestion,
+    abort,
+    revertMessage,
+    requestDiff,
+    diffData,
+    diffLoading,
   } = useChat(sessionId);
+
+  const [showDiff, setShowDiff] = useState(false);
 
   const isLoading = connectionStatus === 'connecting';
   const isDisabled = !isConnected || sessionStatus === 'terminated';
+  const isAgentActive = isAgentThinking || agentStatus === 'thinking' || agentStatus === 'tool_calling' || agentStatus === 'streaming';
+
+  // Global Escape key handler for abort
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isAgentActive) {
+        e.preventDefault();
+        abort();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isAgentActive, abort]);
 
   return (
     <div className="flex h-full flex-col">
@@ -64,6 +86,17 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
               Files
             </Button>
           </Link>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              requestDiff();
+              setShowDiff(true);
+            }}
+          >
+            <DiffIcon className="mr-1 h-3.5 w-3.5" />
+            Changes
+          </Button>
           <ConnectionStatusBadge status={connectionStatus} />
           {session && (
             <SessionActionsMenu
@@ -85,6 +118,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             isAgentThinking={isAgentThinking}
             agentStatus={agentStatus}
             agentStatusDetail={agentStatusDetail}
+            onRevert={revertMessage}
           />
           {pendingQuestions.map((q) => (
             <QuestionPrompt
@@ -107,9 +141,18 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             availableModels={availableModels}
             selectedModel={selectedModel}
             onModelChange={setSelectedModel}
+            onAbort={abort}
+            isAgentActive={isAgentActive}
           />
         </>
       )}
+
+      <DiffDialog
+        open={showDiff}
+        onOpenChange={setShowDiff}
+        files={diffData}
+        loading={diffLoading}
+      />
     </div>
   );
 }
@@ -221,6 +264,27 @@ function FilesIcon({ className }: { className?: string }) {
     >
       <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
       <polyline points="14 2 14 8 20 8" />
+    </svg>
+  );
+}
+
+function DiffIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M12 3v14" />
+      <path d="M5 10h14" />
+      <path d="M5 21h14" />
     </svg>
   );
 }

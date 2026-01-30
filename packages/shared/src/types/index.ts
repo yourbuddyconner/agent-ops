@@ -110,6 +110,13 @@ export interface ToolCall {
   result?: unknown;
 }
 
+// Diff types
+export interface DiffFile {
+  path: string;
+  status: 'added' | 'modified' | 'deleted';
+  diff?: string;
+}
+
 // Auth types
 export type AuthProvider = 'github' | 'google';
 
@@ -120,6 +127,9 @@ export interface User {
   name?: string;
   avatarUrl?: string;
   githubUsername?: string;
+  gitName?: string;
+  gitEmail?: string;
+  onboardingCompleted?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

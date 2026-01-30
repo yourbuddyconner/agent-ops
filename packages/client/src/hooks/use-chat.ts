@@ -27,6 +27,12 @@ export interface ProviderModels {
   models: { id: string; name: string }[];
 }
 
+export interface DiffFile {
+  path: string;
+  status: 'added' | 'modified' | 'deleted';
+  diff?: string;
+}
+
 interface ChatState {
   messages: Message[];
   status: SessionStatus;
@@ -38,6 +44,8 @@ interface ChatState {
   agentStatus: AgentStatus;
   agentStatusDetail?: string;
   availableModels: ProviderModels[];
+  diffData: DiffFile[] | null;
+  diffLoading: boolean;
 }
 
 interface WebSocketInitMessage {
@@ -119,6 +127,17 @@ interface WebSocketModelsMessage {
   models: ProviderModels[];
 }
 
+interface WebSocketMessagesRemovedMessage {
+  type: 'messages.removed';
+  messageIds: string[];
+}
+
+interface WebSocketDiffMessage {
+  type: 'diff';
+  requestId: string;
+  data: { files: DiffFile[] };
+}
+
 type WebSocketChatMessage =
   | WebSocketInitMessage
   | WebSocketMessageMessage
@@ -129,6 +148,8 @@ type WebSocketChatMessage =
   | WebSocketAgentStatusMessage
   | WebSocketErrorMessage
   | WebSocketModelsMessage
+  | WebSocketMessagesRemovedMessage
+  | WebSocketDiffMessage
   | { type: 'pong' }
   | { type: 'user.joined'; userId: string }
   | { type: 'user.left'; userId: string };
@@ -147,6 +168,8 @@ export function useChat(sessionId: string) {
     agentStatus: 'idle',
     agentStatusDetail: undefined,
     availableModels: [],
+    diffData: null,
+    diffLoading: false,
   });
 
   const [selectedModel, setSelectedModel] = useState<string>(() => {
@@ -228,6 +251,8 @@ export function useChat(sessionId: string) {
           agentStatus: 'idle',
           agentStatusDetail: undefined,
           availableModels: initModels,
+          diffData: null,
+          diffLoading: false,
         });
         if (initModels.length > 0) autoSelectModel(initModels);
         appendLogEntry('init', `Session ${message.session.id.slice(0, 8)} initialized (${message.session.status})`);
@@ -329,12 +354,16 @@ export function useChat(sessionId: string) {
       }
 
       case 'chunk':
-        setState((prev) => ({
-          ...prev,
-          streamingContent: prev.streamingContent + message.content,
-          // Stop thinking when streaming starts
-          isAgentThinking: false,
-        }));
+        setState((prev) => {
+          // Ignore trailing chunks after abort (agent is idle)
+          if (prev.agentStatus === 'idle') return prev;
+          return {
+            ...prev,
+            streamingContent: prev.streamingContent + message.content,
+            // Stop thinking when streaming starts
+            isAgentThinking: false,
+          };
+        });
         break;
 
       case 'question':
@@ -403,6 +432,28 @@ export function useChat(sessionId: string) {
         break;
       }
 
+      case 'messages.removed': {
+        const removedMsg = message as WebSocketMessagesRemovedMessage;
+        const removedSet = new Set(removedMsg.messageIds);
+        setState((prev) => ({
+          ...prev,
+          messages: prev.messages.filter((m) => !removedSet.has(m.id)),
+        }));
+        appendLogEntry('revert', `Removed ${removedMsg.messageIds.length} messages`);
+        break;
+      }
+
+      case 'diff': {
+        const diffMsg = message as WebSocketDiffMessage;
+        setState((prev) => ({
+          ...prev,
+          diffData: diffMsg.data.files,
+          diffLoading: false,
+        }));
+        appendLogEntry('diff', `Received diff with ${diffMsg.data.files.length} files`);
+        break;
+      }
+
       case 'pong':
         break;
 
@@ -436,6 +487,33 @@ export function useChat(sessionId: string) {
     },
     [isConnected, send]
   );
+
+  const abort = useCallback(() => {
+    if (!isConnected) return;
+    send({ type: 'abort' });
+    // Optimistically clear streaming state
+    setState((prev) => ({
+      ...prev,
+      streamingContent: '',
+      isAgentThinking: false,
+      agentStatus: 'idle' as const,
+      agentStatusDetail: undefined,
+    }));
+  }, [isConnected, send]);
+
+  const revertMessage = useCallback(
+    (messageId: string) => {
+      if (!isConnected) return;
+      send({ type: 'revert', messageId });
+    },
+    [isConnected, send]
+  );
+
+  const requestDiff = useCallback(() => {
+    if (!isConnected) return;
+    setState((prev) => ({ ...prev, diffLoading: true, diffData: null }));
+    send({ type: 'diff' });
+  }, [isConnected, send]);
 
   const answerQuestion = useCallback(
     (questionId: string, answer: string | boolean) => {
@@ -501,5 +579,10 @@ export function useChat(sessionId: string) {
     isConnected,
     sendMessage,
     answerQuestion,
+    abort,
+    revertMessage,
+    requestDiff,
+    diffData: state.diffData,
+    diffLoading: state.diffLoading,
   };
 }

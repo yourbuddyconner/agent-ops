@@ -4,11 +4,13 @@ import type { Env } from '../env.js';
 
 /** Messages sent by browser clients to the DO */
 interface ClientMessage {
-  type: 'prompt' | 'answer' | 'ping';
+  type: 'prompt' | 'answer' | 'ping' | 'abort' | 'revert' | 'diff';
   content?: string;
   model?: string;
   questionId?: string;
   answer?: string | boolean;
+  messageId?: string;
+  requestId?: string;
 }
 
 /** Agent status values for activity indication */
@@ -19,7 +21,7 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'models';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'models' | 'aborted' | 'reverted' | 'diff';
   messageId?: string;
   content?: string;
   questionId?: string;
@@ -39,22 +41,26 @@ interface RunnerMessage {
   body?: string;
   base?: string;
   models?: { provider: string; models: { id: string; name: string }[] }[];
+  requestId?: string;
+  messageIds?: string[];
+  files?: { path: string; status: string; diff?: string }[];
 }
 
 /** Messages sent from DO to clients */
 interface ClientOutbound {
-  type: 'message' | 'message.updated' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models';
+  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff';
   [key: string]: unknown;
 }
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff';
   messageId?: string;
   content?: string;
   model?: string;
   questionId?: string;
   answer?: string | boolean;
+  requestId?: string;
 }
 
 // ─── Durable SQLite Table Schemas ──────────────────────────────────────────
@@ -469,6 +475,22 @@ export class SessionAgentDO {
       case 'ping':
         ws.send(JSON.stringify({ type: 'pong' }));
         break;
+
+      case 'abort':
+        await this.handleAbort();
+        break;
+
+      case 'revert':
+        if (!msg.messageId) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Missing messageId' }));
+          return;
+        }
+        await this.handleRevert(msg.messageId);
+        break;
+
+      case 'diff':
+        await this.handleDiff();
+        break;
     }
   }
 
@@ -566,6 +588,61 @@ export class SessionAgentDO {
       data: { questionId, answer: String(answer) },
       timestamp: new Date().toISOString(),
     });
+  }
+
+  private async handleAbort() {
+    // Clear prompt queue
+    this.ctx.storage.sql.exec("DELETE FROM prompt_queue WHERE status = 'queued'");
+
+    // Forward abort to runner
+    this.sendToRunner({ type: 'abort' });
+
+    // Broadcast status immediately (runner will confirm with 'aborted')
+    this.broadcastToClients({
+      type: 'agentStatus',
+      status: 'idle',
+    });
+  }
+
+  private async handleRevert(messageId: string) {
+    // Find the message and all messages created at or after it
+    const targetMsg = this.ctx.storage.sql
+      .exec('SELECT created_at FROM messages WHERE id = ?', messageId)
+      .toArray();
+
+    if (targetMsg.length === 0) {
+      return; // Message not found
+    }
+
+    const createdAt = targetMsg[0].created_at as number;
+    const affectedMessages = this.ctx.storage.sql
+      .exec('SELECT id FROM messages WHERE created_at >= ? ORDER BY created_at ASC', createdAt)
+      .toArray();
+
+    const removedIds = affectedMessages.map((m) => m.id as string);
+
+    // Delete the messages from SQLite
+    if (removedIds.length > 0) {
+      const placeholders = removedIds.map(() => '?').join(',');
+      this.ctx.storage.sql.exec(
+        `DELETE FROM messages WHERE id IN (${placeholders})`,
+        ...removedIds
+      );
+    }
+
+    // Forward to runner so OpenCode can revert too
+    this.sendToRunner({ type: 'revert', messageId });
+
+    // Broadcast removal to all clients
+    this.broadcastToClients({
+      type: 'messages.removed',
+      messageIds: removedIds,
+    });
+  }
+
+  private async handleDiff() {
+    const requestId = crypto.randomUUID();
+    this.sendToRunner({ type: 'diff', requestId });
   }
 
   // ─── Runner Message Handling ───────────────────────────────────────────
@@ -764,6 +841,33 @@ export class SessionAgentDO {
             models: msg.models,
           });
         }
+        break;
+
+      case 'aborted':
+        // Runner confirmed abort — mark idle, broadcast
+        this.setStateValue('runnerBusy', 'false');
+        this.broadcastToClients({
+          type: 'agentStatus',
+          status: 'idle',
+        });
+        this.broadcastToClients({
+          type: 'status',
+          data: { runnerBusy: false, aborted: true },
+        });
+        break;
+
+      case 'reverted':
+        // Runner confirmed revert — log for now
+        console.log(`[SessionAgentDO] Revert confirmed for messages: ${msg.messageIds?.join(', ')}`);
+        break;
+
+      case 'diff':
+        // Runner returned diff data — broadcast to clients
+        this.broadcastToClients({
+          type: 'diff',
+          requestId: msg.requestId,
+          data: { files: msg.files ?? [] },
+        });
         break;
     }
   }

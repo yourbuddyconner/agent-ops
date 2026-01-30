@@ -11,9 +11,10 @@ interface MessageListProps {
   isAgentThinking?: boolean;
   agentStatus?: AgentStatus;
   agentStatusDetail?: string;
+  onRevert?: (messageId: string) => void;
 }
 
-export function MessageList({ messages, streamingContent, isAgentThinking, agentStatus, agentStatusDetail }: MessageListProps) {
+export function MessageList({ messages, streamingContent, isAgentThinking, agentStatus, agentStatusDetail, onRevert }: MessageListProps) {
 
   if (messages.length === 0 && !streamingContent) {
     return (
@@ -36,7 +37,7 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
     <div className="flex-1 overflow-y-auto">
       <div className="divide-y divide-neutral-100 dark:divide-neutral-800/60">
         {messages.map((message) => (
-          <MessageItem key={message.id} message={message} />
+          <MessageItem key={message.id} message={message} onRevert={onRevert} />
         ))}
         {streamingContent && <StreamingMessage content={streamingContent} />}
         {isAgentThinking && !streamingContent && <ThinkingIndicator status={agentStatus} detail={agentStatusDetail} />}

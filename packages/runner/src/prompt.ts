@@ -17,7 +17,7 @@
  */
 
 import { AgentClient } from "./agent-client.js";
-import type { AvailableModels } from "./types.js";
+import type { AvailableModels, DiffFile } from "./types.js";
 
 // OpenCode ToolState status values
 type ToolStatus = "pending" | "running" | "completed" | "error";
@@ -81,6 +81,10 @@ export class PromptHandler {
   private toolStates = new Map<string, ToolStatus>();
   private lastError: string | null = null; // Track session errors
   private hadToolSinceLastText = false; // Track if tools ran since last text chunk
+
+  // Message ID mapping: DO message IDs ↔ OpenCode message IDs
+  private doToOcMessageId = new Map<string, string>();
+  private ocToDOMessageId = new Map<string, string>();
 
   constructor(opencodeUrl: string, agentClient: AgentClient) {
     this.opencodeUrl = opencodeUrl;
@@ -159,6 +163,89 @@ export class PromptHandler {
       console.log(`[PromptHandler] Permission response: ${res.status}`);
     } catch (err) {
       console.error("[PromptHandler] Error forwarding answer:", err);
+    }
+  }
+
+  async handleAbort(): Promise<void> {
+    if (!this.sessionId) return;
+
+    console.log("[PromptHandler] Aborting current generation");
+
+    // Clear prompt state BEFORE the fetch so the SSE handler stops
+    // forwarding events immediately (handlePartUpdated checks activeMessageId)
+    this.clearResponseTimeout();
+    this.activeMessageId = null;
+    this.streamedContent = "";
+    this.hasActivity = false;
+    this.hadToolSinceLastText = false;
+    this.lastChunkTime = 0;
+    this.lastError = null;
+    this.toolStates.clear();
+
+    // Tell DO first so clients get immediate feedback
+    this.agentClient.sendAborted();
+    this.agentClient.sendAgentStatus("idle");
+
+    // Then tell OpenCode to stop generating (may be slow)
+    try {
+      const res = await fetch(`${this.opencodeUrl}/session/${this.sessionId}/abort`, {
+        method: "POST",
+      });
+      console.log(`[PromptHandler] Abort response: ${res.status}`);
+    } catch (err) {
+      console.error("[PromptHandler] Error calling abort:", err);
+    }
+  }
+
+  async handleRevert(doMessageId: string): Promise<void> {
+    if (!this.sessionId) return;
+
+    console.log(`[PromptHandler] Reverting from DO message ${doMessageId}`);
+    const ocMessageId = this.doToOcMessageId.get(doMessageId);
+    if (ocMessageId) {
+      try {
+        const res = await fetch(`${this.opencodeUrl}/session/${this.sessionId}/revert`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messageID: ocMessageId }),
+        });
+        console.log(`[PromptHandler] Revert response: ${res.status}`);
+      } catch (err) {
+        console.error("[PromptHandler] Error calling revert:", err);
+      }
+
+      // Clean up mappings for the reverted message
+      this.doToOcMessageId.delete(doMessageId);
+      this.ocToDOMessageId.delete(ocMessageId);
+    } else {
+      console.warn(`[PromptHandler] No OpenCode message ID found for DO message ${doMessageId}`);
+    }
+
+    this.agentClient.sendReverted([doMessageId]);
+  }
+
+  async handleDiff(requestId: string): Promise<void> {
+    if (!this.sessionId) {
+      this.agentClient.sendDiff(requestId, []);
+      return;
+    }
+
+    console.log(`[PromptHandler] Fetching diff for request ${requestId}`);
+    try {
+      const res = await fetch(`${this.opencodeUrl}/session/${this.sessionId}/diff`);
+      if (!res.ok) {
+        console.warn(`[PromptHandler] Diff response: ${res.status}`);
+        this.agentClient.sendDiff(requestId, []);
+        return;
+      }
+
+      const data = await res.json() as { files?: DiffFile[] } | DiffFile[];
+      const files = Array.isArray(data) ? data : (data.files ?? []);
+      console.log(`[PromptHandler] Diff: ${files.length} files`);
+      this.agentClient.sendDiff(requestId, files);
+    } catch (err) {
+      console.error("[PromptHandler] Error fetching diff:", err);
+      this.agentClient.sendDiff(requestId, []);
     }
   }
 
@@ -556,6 +643,16 @@ export class PromptHandler {
     const role = info.role as string | undefined;
 
     console.log(`[PromptHandler] message.updated: role=${role} (active: ${this.activeMessageId ? 'yes' : 'no'}, content: ${this.streamedContent.length} chars, activity: ${this.hasActivity})`);
+
+    // Capture OpenCode message ID mapping for revert support
+    const ocMessageId = info.id as string | undefined;
+    if (ocMessageId && this.activeMessageId) {
+      if (!this.doToOcMessageId.has(this.activeMessageId)) {
+        this.doToOcMessageId.set(this.activeMessageId, ocMessageId);
+        this.ocToDOMessageId.set(ocMessageId, this.activeMessageId);
+        console.log(`[PromptHandler] Mapped DO message ${this.activeMessageId} → OC message ${ocMessageId}`);
+      }
+    }
 
     // Do NOT finalize on message.updated — even if time.completed is set.
     // OpenCode may create multiple assistant messages per prompt (e.g., one before

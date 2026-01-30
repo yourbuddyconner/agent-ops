@@ -88,6 +88,21 @@ async function main() {
     process.exit(0);
   });
 
+  agentClient.onAbort(async () => {
+    console.log("[Runner] Received abort signal");
+    await promptHandler.handleAbort();
+  });
+
+  agentClient.onRevert(async (messageId) => {
+    console.log(`[Runner] Received revert for message: ${messageId}`);
+    await promptHandler.handleRevert(messageId);
+  });
+
+  agentClient.onDiff(async (requestId) => {
+    console.log(`[Runner] Received diff request: ${requestId}`);
+    await promptHandler.handleDiff(requestId);
+  });
+
   // Brief delay before first connection — the sandbox may boot before the Worker
   // finishes calling /start on the DO to store our runner token (race condition).
   console.log("[Runner] Waiting 3s for DO initialization...");

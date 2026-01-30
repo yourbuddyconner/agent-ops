@@ -7,7 +7,7 @@
  * - Typed outbound/inbound message protocol
  */
 
-import type { AgentStatus, AvailableModels, DOToRunnerMessage, RunnerToDOMessage, ToolCallStatus } from "./types.js";
+import type { AgentStatus, AvailableModels, DiffFile, DOToRunnerMessage, RunnerToDOMessage, ToolCallStatus } from "./types.js";
 
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
@@ -22,6 +22,9 @@ export class AgentClient {
   private promptHandler: ((messageId: string, content: string, model?: string) => void | Promise<void>) | null = null;
   private answerHandler: ((questionId: string, answer: string | boolean) => void | Promise<void>) | null = null;
   private stopHandler: (() => void) | null = null;
+  private abortHandler: (() => void | Promise<void>) | null = null;
+  private revertHandler: ((messageId: string) => void | Promise<void>) | null = null;
+  private diffHandler: ((requestId: string) => void | Promise<void>) | null = null;
 
   constructor(
     private doUrl: string,
@@ -122,6 +125,18 @@ export class AgentClient {
     this.send({ type: "models", models });
   }
 
+  sendAborted(): void {
+    this.send({ type: "aborted" });
+  }
+
+  sendReverted(messageIds: string[]): void {
+    this.send({ type: "reverted", messageIds });
+  }
+
+  sendDiff(requestId: string, files: DiffFile[]): void {
+    this.send({ type: "diff", requestId, data: { files } });
+  }
+
   // ─── Inbound Handlers (DO → Runner) ─────────────────────────────────
 
   onPrompt(handler: (messageId: string, content: string, model?: string) => void | Promise<void>): void {
@@ -134,6 +149,18 @@ export class AgentClient {
 
   onStop(handler: () => void): void {
     this.stopHandler = handler;
+  }
+
+  onAbort(handler: () => void | Promise<void>): void {
+    this.abortHandler = handler;
+  }
+
+  onRevert(handler: (messageId: string) => void | Promise<void>): void {
+    this.revertHandler = handler;
+  }
+
+  onDiff(handler: (requestId: string) => void | Promise<void>): void {
+    this.diffHandler = handler;
   }
 
   // ─── Internal ────────────────────────────────────────────────────────
@@ -175,6 +202,15 @@ export class AgentClient {
           break;
         case "stop":
           this.stopHandler?.();
+          break;
+        case "abort":
+          await this.abortHandler?.();
+          break;
+        case "revert":
+          await this.revertHandler?.(msg.messageId);
+          break;
+        case "diff":
+          await this.diffHandler?.(msg.requestId);
           break;
       }
     } catch (err) {

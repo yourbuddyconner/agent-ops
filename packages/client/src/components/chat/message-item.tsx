@@ -5,6 +5,7 @@ import { MarkdownContent } from './markdown';
 
 interface MessageItemProps {
   message: Message;
+  onRevert?: (messageId: string) => void;
 }
 
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
@@ -16,7 +17,7 @@ interface ToolCallData {
   result: unknown;
 }
 
-export function MessageItem({ message }: MessageItemProps) {
+export function MessageItem({ message, onRevert }: MessageItemProps) {
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
   const isTool = message.role === 'tool';
@@ -30,7 +31,7 @@ export function MessageItem({ message }: MessageItemProps) {
 
   return (
     <div
-      className={cn('flex gap-3 px-4 py-3', {
+      className={cn('group relative flex gap-3 px-4 py-3', {
         'bg-transparent': isUser,
         'bg-surface-1 dark:bg-surface-1': isAssistant,
         'bg-accent/[0.03] dark:bg-accent/[0.04]': isTool,
@@ -103,6 +104,16 @@ export function MessageItem({ message }: MessageItemProps) {
           </div>
         )}
       </div>
+
+      {isUser && onRevert && (
+        <button
+          type="button"
+          onClick={() => onRevert(message.id)}
+          className="absolute right-3 top-3 rounded px-1.5 py-0.5 font-mono text-[10px] font-medium text-neutral-400 opacity-0 transition-opacity hover:bg-neutral-100 hover:text-neutral-600 group-hover:opacity-100 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+        >
+          Undo
+        </button>
+      )}
     </div>
   );
 }

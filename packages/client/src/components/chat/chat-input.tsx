@@ -10,6 +10,8 @@ interface ChatInputProps {
   availableModels?: ProviderModels[];
   selectedModel?: string;
   onModelChange?: (model: string) => void;
+  onAbort?: () => void;
+  isAgentActive?: boolean;
 }
 
 interface FlatModel {
@@ -26,6 +28,8 @@ export function ChatInput({
   availableModels = [],
   selectedModel = '',
   onModelChange,
+  onAbort,
+  isAgentActive = false,
 }: ChatInputProps) {
   const [value, setValue] = useState('');
   const [highlightIndex, setHighlightIndex] = useState(0);
@@ -135,10 +139,17 @@ export function ChatInput({
       }
     }
 
-    if (e.key === 'Escape' && isModelCommand) {
-      e.preventDefault();
-      setModelCommandDismissed(true);
-      return;
+    if (e.key === 'Escape') {
+      if (isModelCommand) {
+        e.preventDefault();
+        setModelCommandDismissed(true);
+        return;
+      }
+      if (isAgentActive && onAbort) {
+        e.preventDefault();
+        onAbort();
+        return;
+      }
     }
 
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -229,13 +240,26 @@ export function ChatInput({
           rows={1}
           className="flex-1 resize-none rounded-md border border-neutral-200 bg-surface-0 px-3 py-2 text-[13px] text-neutral-900 placeholder:text-neutral-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface-0 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:bg-surface-1 dark:text-neutral-100 dark:placeholder:text-neutral-500"
         />
-        <Button type="submit" disabled={!value.trim() || disabled} size="sm">
-          Send
-        </Button>
+        {isAgentActive ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            onClick={onAbort}
+          >
+            Stop
+          </Button>
+        ) : (
+          <Button type="submit" disabled={!value.trim() || disabled} size="sm">
+            Send
+          </Button>
+        )}
       </div>
       <div className="mt-1.5 flex items-center justify-between">
         <p className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
-          Enter to send · Shift+Enter for new line · /model to switch
+          {isAgentActive
+            ? 'Esc to stop · Shift+Enter for new line · /model to switch'
+            : 'Enter to send · Shift+Enter for new line · /model to switch'}
         </p>
         {hasModels && (
           <select
