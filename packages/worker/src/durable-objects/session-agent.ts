@@ -6,6 +6,7 @@ import type { Env } from '../env.js';
 interface ClientMessage {
   type: 'prompt' | 'answer' | 'ping';
   content?: string;
+  model?: string;
   questionId?: string;
   answer?: string | boolean;
 }
@@ -18,7 +19,7 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'models';
   messageId?: string;
   content?: string;
   questionId?: string;
@@ -37,11 +38,12 @@ interface RunnerMessage {
   title?: string;
   body?: string;
   base?: string;
+  models?: { provider: string; models: { id: string; name: string }[] }[];
 }
 
 /** Messages sent from DO to clients */
 interface ClientOutbound {
-  type: 'message' | 'message.updated' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus';
+  type: 'message' | 'message.updated' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models';
   [key: string]: unknown;
 }
 
@@ -50,6 +52,7 @@ interface RunnerOutbound {
   type: 'prompt' | 'answer' | 'stop';
   messageId?: string;
   content?: string;
+  model?: string;
   questionId?: string;
   answer?: string | boolean;
 }
@@ -133,11 +136,11 @@ export class SessionAgentDO {
         return this.handleClearQueue();
       case '/prompt': {
         // HTTP-based prompt submission (alternative to WebSocket)
-        const body = await request.json() as { content: string };
+        const body = await request.json() as { content: string; model?: string };
         if (!body.content) {
           return new Response(JSON.stringify({ error: 'Missing content' }), { status: 400 });
         }
-        await this.handlePrompt(body.content);
+        await this.handlePrompt(body.content, body.model);
         return Response.json({ success: true });
       }
     }
@@ -194,6 +197,9 @@ export class SessionAgentDO {
     const sessionId = this.getStateValue('sessionId');
     const workspace = this.getStateValue('workspace') || '';
 
+    const availableModelsRaw = this.getStateValue('availableModels');
+    const availableModels = availableModelsRaw ? JSON.parse(availableModelsRaw) : undefined;
+
     server.send(JSON.stringify({
       type: 'init',
       session: {
@@ -212,6 +218,7 @@ export class SessionAgentDO {
         sandboxRunning: !!sandboxId,
         connectedClients: this.getClientSockets().length + 1,
         connectedUsers,
+        availableModels,
       },
     }));
 
@@ -448,7 +455,7 @@ export class SessionAgentDO {
           ws.send(JSON.stringify({ type: 'error', message: 'Missing content' }));
           return;
         }
-        await this.handlePrompt(msg.content);
+        await this.handlePrompt(msg.content, msg.model);
         break;
 
       case 'answer':
@@ -465,7 +472,7 @@ export class SessionAgentDO {
     }
   }
 
-  private async handlePrompt(content: string) {
+  private async handlePrompt(content: string, model?: string) {
     // Store user message
     const messageId = crypto.randomUUID();
     this.ctx.storage.sql.exec(
@@ -520,6 +527,7 @@ export class SessionAgentDO {
       type: 'prompt',
       messageId,
       content,
+      model,
     });
   }
 
@@ -703,7 +711,9 @@ export class SessionAgentDO {
 
       case 'error': {
         // Store error and broadcast
-        const errId = msg.messageId || crypto.randomUUID();
+        // Always generate a new ID — msg.messageId is the prompt's user message ID,
+        // which already exists in the messages table (PRIMARY KEY conflict).
+        const errId = crypto.randomUUID();
         const errorText = msg.error || msg.content || 'Unknown error';
         this.ctx.storage.sql.exec(
           'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
@@ -743,6 +753,17 @@ export class SessionAgentDO {
       case 'create-pr':
         // Runner requests PR creation — forward to worker API via EventBus notification
         await this.handleCreatePR(msg as unknown as { type: 'create-pr'; branch: string; title: string; body?: string; base?: string });
+        break;
+
+      case 'models':
+        // Runner discovered available models — store and broadcast to clients
+        if (msg.models) {
+          this.setStateValue('availableModels', JSON.stringify(msg.models));
+          this.broadcastToClients({
+            type: 'models',
+            models: msg.models,
+          });
+        }
         break;
     }
   }

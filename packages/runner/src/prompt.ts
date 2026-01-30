@@ -17,6 +17,7 @@
  */
 
 import { AgentClient } from "./agent-client.js";
+import type { AvailableModels } from "./types.js";
 
 // OpenCode ToolState status values
 type ToolStatus = "pending" | "running" | "completed" | "error";
@@ -78,6 +79,8 @@ export class PromptHandler {
 
   // Track tool states to detect completion (pending/running → completed)
   private toolStates = new Map<string, ToolStatus>();
+  private lastError: string | null = null; // Track session errors
+  private hadToolSinceLastText = false; // Track if tools ran since last text chunk
 
   constructor(opencodeUrl: string, agentClient: AgentClient) {
     this.opencodeUrl = opencodeUrl;
@@ -100,8 +103,8 @@ export class PromptHandler {
     });
   }
 
-  async handlePrompt(messageId: string, content: string): Promise<void> {
-    console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"`);
+  async handlePrompt(messageId: string, content: string, model?: string): Promise<void> {
+    console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}`);
     try {
       // If there's a pending response from a previous prompt, finalize it first
       if (this.activeMessageId && this.hasActivity) {
@@ -122,14 +125,16 @@ export class PromptHandler {
       this.activeMessageId = messageId;
       this.streamedContent = "";
       this.hasActivity = false;
+      this.hadToolSinceLastText = false;
       this.lastChunkTime = 0;
+      this.lastError = null;
       this.toolStates.clear();
 
       // Notify client that agent is thinking
       this.agentClient.sendAgentStatus("thinking");
 
       // Send message async (fire-and-forget)
-      await this.sendPromptAsync(this.sessionId, content);
+      await this.sendPromptAsync(this.sessionId, content, model);
       console.log(`[PromptHandler] Prompt ${messageId} sent to OpenCode`);
 
       // Response will arrive via SSE events — don't block here
@@ -176,16 +181,82 @@ export class PromptHandler {
     return data.id;
   }
 
-  private async sendPromptAsync(sessionId: string, content: string): Promise<void> {
+  async fetchAvailableModels(): Promise<AvailableModels> {
+    try {
+      const res = await fetch(`${this.opencodeUrl}/provider`);
+      if (!res.ok) {
+        console.warn(`[PromptHandler] Failed to fetch providers: ${res.status}`);
+        return [];
+      }
+
+      // Response shape: { all: Provider[], default: {...}, connected: string[] }
+      // Provider: { id, name, models: { [key]: { id, name, ... } }, ... }
+      const data = await res.json() as {
+        all: Array<{
+          id: string;
+          name: string;
+          models: Record<string, { id: string; name: string }>;
+        }>;
+        connected: string[];
+      };
+
+      if (!Array.isArray(data.all)) {
+        console.warn("[PromptHandler] Unexpected /provider response shape:", JSON.stringify(data).slice(0, 200));
+        return [];
+      }
+
+      // Only show providers listed in "connected" — providers must have their
+      // API keys stored in ~/.local/share/opencode/auth.json (via start.sh)
+      const connectedSet = new Set(data.connected || []);
+      const result: AvailableModels = [];
+
+      for (const provider of data.all) {
+        if (!connectedSet.has(provider.id)) continue;
+        if (!provider.models || typeof provider.models !== "object") continue;
+
+        const models = Object.values(provider.models).map((m) => ({
+          id: `${provider.id}/${m.id}`,
+          name: m.name || m.id,
+        }));
+        if (models.length > 0) {
+          result.push({ provider: provider.name || provider.id, models });
+        }
+      }
+
+      console.log(`[PromptHandler] Discovered ${result.reduce((n, p) => n + p.models.length, 0)} models from ${result.length} providers`);
+      return result;
+    } catch (err) {
+      console.warn("[PromptHandler] Error fetching available models:", err);
+      return [];
+    }
+  }
+
+  private async sendPromptAsync(sessionId: string, content: string, model?: string): Promise<void> {
     const url = `${this.opencodeUrl}/session/${sessionId}/prompt_async`;
-    console.log(`[PromptHandler] POST ${url}`);
+    console.log(`[PromptHandler] POST ${url}${model ? ` (model: ${model})` : ''}`);
+
+    const body: Record<string, unknown> = {
+      parts: [{ type: "text", text: content }],
+    };
+    if (model) {
+      // OpenCode expects model as { providerID, modelID }
+      // Our model IDs come from the provider list as raw model IDs (e.g. "claude-3-5-sonnet-20241022")
+      // with the provider known separately, but we store them with a provider prefix
+      // like "providerID/modelID" or just "modelID" if provider is implicit.
+      const slashIdx = model.indexOf("/");
+      if (slashIdx !== -1) {
+        body.model = { providerID: model.slice(0, slashIdx), modelID: model.slice(slashIdx + 1) };
+      } else {
+        // No provider prefix — need to find which provider owns this model
+        // For now, pass just the modelID and let OpenCode figure it out
+        body.model = { providerID: "", modelID: model };
+      }
+    }
 
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        parts: [{ type: "text", text: content }],
-      }),
+      body: JSON.stringify(body),
     });
 
     console.log(`[PromptHandler] prompt_async response: ${res.status} ${res.statusText}`);
@@ -319,6 +390,31 @@ export class PromptHandler {
         break;
       }
 
+      case "session.error": {
+        // OpenCode session error — extract error message
+        // props.error may be an object (e.g. { message: "...", code: "..." }),
+        // so we need to drill into it rather than just String()-ing it.
+        const rawError = props.error ?? props.message ?? props.description;
+        let errorMsg: string;
+        if (rawError === undefined || rawError === null) {
+          errorMsg = "Unknown agent error";
+        } else if (typeof rawError === "string") {
+          errorMsg = rawError;
+        } else if (typeof rawError === "object") {
+          // Try common error shape: { message: string } or { error: string }
+          const obj = rawError as Record<string, unknown>;
+          errorMsg = String(obj.message ?? obj.error ?? obj.description ?? JSON.stringify(rawError));
+        } else {
+          errorMsg = String(rawError);
+        }
+        console.error(`[PromptHandler] session.error: ${errorMsg}`);
+        // Also log the raw structure for debugging
+        console.error(`[PromptHandler] session.error raw:`, JSON.stringify(props));
+        this.lastError = errorMsg;
+        this.hasActivity = true;
+        break;
+      }
+
       case "server.connected":
       case "session.created":
       case "session.updated":
@@ -360,6 +456,12 @@ export class PromptHandler {
           this.agentClient.sendAgentStatus("streaming");
         }
         this.hasActivity = true;
+        // Add paragraph separator when text resumes after tool calls
+        if (this.hadToolSinceLastText && this.streamedContent.length > 0) {
+          this.streamedContent += "\n\n";
+          this.agentClient.sendStreamChunk(this.activeMessageId, "\n\n");
+          this.hadToolSinceLastText = false;
+        }
         this.streamedContent += delta;
         this.lastChunkTime = Date.now();
         this.agentClient.sendStreamChunk(this.activeMessageId, delta);
@@ -410,6 +512,7 @@ export class PromptHandler {
     this.toolStates.set(callID, currentStatus);
 
     this.hasActivity = true;
+    this.hadToolSinceLastText = true;
     this.lastChunkTime = Date.now();
     this.resetResponseTimeout();
 
@@ -497,10 +600,13 @@ export class PromptHandler {
     const messageId = this.activeMessageId;
     const content = this.streamedContent;
 
-    // Only send a result message if there's text content (tool-only responses don't need one)
+    // Send result, error, or nothing depending on what happened
     if (content) {
       console.log(`[PromptHandler] Sending result for ${messageId} (${content.length} chars): "${content.slice(0, 100)}..."`);
       this.agentClient.sendResult(messageId, content);
+    } else if (this.lastError) {
+      console.log(`[PromptHandler] Sending error for ${messageId}: ${this.lastError}`);
+      this.agentClient.sendError(messageId, this.lastError);
     } else {
       console.log(`[PromptHandler] No text content for ${messageId}, skipping result (tools-only response)`);
     }
@@ -513,8 +619,10 @@ export class PromptHandler {
 
     this.streamedContent = "";
     this.hasActivity = false;
+    this.hadToolSinceLastText = false;
     this.activeMessageId = null;
     this.lastChunkTime = 0;
+    this.lastError = null;
     this.toolStates.clear();
     console.log(`[PromptHandler] Response finalized`);
   }

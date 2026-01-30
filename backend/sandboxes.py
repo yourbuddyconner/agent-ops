@@ -46,15 +46,14 @@ class SandboxManager:
         image = self._get_image(config.image_type)
 
         # Build secrets dict — must include all env vars the sandbox needs
+        # LLM API keys (ANTHROPIC_API_KEY, etc.) are passed via config.env_vars
+        # from the Worker, not from Modal function env.
         secrets_dict: dict[str, str] = {
             "DO_WS_URL": config.do_ws_url,
             "RUNNER_TOKEN": config.runner_token,
             "SESSION_ID": config.session_id,
             "JWT_SECRET": config.jwt_secret,
             "OPENCODE_SERVER_PASSWORD": get_secret("OPENCODE_SERVER_PASSWORD"),
-            "ANTHROPIC_API_KEY": get_secret("ANTHROPIC_API_KEY"),
-            "OPENAI_API_KEY": get_secret("OPENAI_API_KEY"),
-            "GOOGLE_API_KEY": get_secret("GOOGLE_API_KEY"),
         }
 
         # Strip empty values so Modal doesn't set blank env vars

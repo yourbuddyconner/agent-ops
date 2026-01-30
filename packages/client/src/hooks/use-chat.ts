@@ -22,6 +22,11 @@ const MAX_LOG_ENTRIES = 500;
 
 type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 
+export interface ProviderModels {
+  provider: string;
+  models: { id: string; name: string }[];
+}
+
 interface ChatState {
   messages: Message[];
   status: SessionStatus;
@@ -32,6 +37,7 @@ interface ChatState {
   isAgentThinking: boolean;
   agentStatus: AgentStatus;
   agentStatusDetail?: string;
+  availableModels: ProviderModels[];
 }
 
 interface WebSocketInitMessage {
@@ -101,6 +107,18 @@ interface WebSocketMessageUpdatedMessage {
   };
 }
 
+interface WebSocketErrorMessage {
+  type: 'error';
+  messageId: string;
+  error?: string;
+  content?: string;
+}
+
+interface WebSocketModelsMessage {
+  type: 'models';
+  models: ProviderModels[];
+}
+
 type WebSocketChatMessage =
   | WebSocketInitMessage
   | WebSocketMessageMessage
@@ -109,6 +127,8 @@ type WebSocketChatMessage =
   | WebSocketChunkMessage
   | WebSocketQuestionMessage
   | WebSocketAgentStatusMessage
+  | WebSocketErrorMessage
+  | WebSocketModelsMessage
   | { type: 'pong' }
   | { type: 'user.joined'; userId: string }
   | { type: 'user.left'; userId: string };
@@ -126,7 +146,46 @@ export function useChat(sessionId: string) {
     isAgentThinking: false,
     agentStatus: 'idle',
     agentStatusDetail: undefined,
+    availableModels: [],
   });
+
+  const [selectedModel, setSelectedModel] = useState<string>(() => {
+    try {
+      return localStorage.getItem(`agent-ops:model:${sessionId}`) || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const handleModelChange = useCallback((model: string) => {
+    setSelectedModel(model);
+    try {
+      if (model) {
+        localStorage.setItem(`agent-ops:model:${sessionId}`, model);
+      } else {
+        localStorage.removeItem(`agent-ops:model:${sessionId}`);
+      }
+    } catch {
+      // ignore
+    }
+  }, [sessionId]);
+
+  // Auto-select an Anthropic model when models arrive and nothing is persisted
+  const autoSelectModel = useCallback((models: ProviderModels[]) => {
+    // Only auto-select if user hasn't already chosen a model
+    try {
+      if (localStorage.getItem(`agent-ops:model:${sessionId}`)) return;
+    } catch { /* ignore */ }
+
+    const anthropic = models.find((p) => p.provider.toLowerCase().includes('anthropic'));
+    if (anthropic && anthropic.models.length > 0) {
+      const defaultModel =
+        anthropic.models.find((m) => m.id.includes('claude-sonnet-4-5')) ||
+        anthropic.models.find((m) => m.id.includes('sonnet')) ||
+        anthropic.models[0];
+      handleModelChange(defaultModel.id);
+    }
+  }, [sessionId, handleModelChange]);
 
   const wsUrl = sessionId ? `/api/sessions/${sessionId}/ws?role=client` : null;
 
@@ -149,7 +208,8 @@ export function useChat(sessionId: string) {
     const message = msg as WebSocketChatMessage;
 
     switch (message.type) {
-      case 'init':
+      case 'init': {
+        const initModels = Array.isArray(message.data?.availableModels) ? message.data.availableModels as ProviderModels[] : [];
         setState({
           messages: message.session.messages.map((m) => ({
             id: m.id,
@@ -167,9 +227,12 @@ export function useChat(sessionId: string) {
           isAgentThinking: false,
           agentStatus: 'idle',
           agentStatusDetail: undefined,
+          availableModels: initModels,
         });
+        if (initModels.length > 0) autoSelectModel(initModels);
         appendLogEntry('init', `Session ${message.session.id.slice(0, 8)} initialized (${message.session.status})`);
         break;
+      }
 
       case 'message': {
         const d = message.data;
@@ -181,16 +244,37 @@ export function useChat(sessionId: string) {
           parts: d.parts,
           createdAt: new Date(d.createdAt * 1000),
         };
-        setState((prev) => ({
-          ...prev,
-          messages: [...prev.messages, msg],
-          streamingContent: '',
-          // Stop thinking when assistant responds; reset status after tool results
-          isAgentThinking: d.role === 'assistant' ? false : prev.isAgentThinking,
-          ...(d.role === 'tool'
-            ? { agentStatus: 'thinking' as const, agentStatusDetail: undefined }
-            : {}),
-        }));
+        setState((prev) => {
+          const newMessages = [...prev.messages];
+          let newStreamingContent = prev.streamingContent;
+
+          // When a tool message arrives while we have streaming content,
+          // flush the accumulated text as an intermediate assistant message
+          // so that text and tool calls appear in the order they were received.
+          if (d.role === 'tool' && prev.streamingContent.trim()) {
+            newMessages.push({
+              id: `streaming-${Date.now()}`,
+              sessionId,
+              role: 'assistant',
+              content: prev.streamingContent,
+              createdAt: new Date(),
+            });
+            newStreamingContent = '';
+          }
+
+          newMessages.push(msg);
+
+          return {
+            ...prev,
+            messages: newMessages,
+            streamingContent: d.role === 'assistant' ? '' : newStreamingContent,
+            // Stop thinking when assistant responds; reset status after tool results
+            isAgentThinking: d.role === 'assistant' ? false : prev.isAgentThinking,
+            ...(d.role === 'tool'
+              ? { agentStatus: 'thinking' as const, agentStatusDetail: undefined }
+              : {}),
+          };
+        });
         appendLogEntry('message', `${d.role}: ${d.content.slice(0, 80)}${d.content.length > 80 ? '...' : ''}`);
         break;
       }
@@ -282,6 +366,43 @@ export function useChat(sessionId: string) {
         break;
       }
 
+      case 'error': {
+        const errorMsg = message as WebSocketErrorMessage;
+        const rawError = errorMsg.error || errorMsg.content || 'Unknown error';
+        // Guard against object-type errors that slipped through serialization
+        const errorText = typeof rawError === 'string' ? rawError
+          : typeof rawError === 'object' ? (rawError as Record<string, unknown>).message as string || JSON.stringify(rawError)
+          : String(rawError);
+        const errorMessage: Message = {
+          id: errorMsg.messageId || crypto.randomUUID(),
+          sessionId,
+          role: 'system',
+          content: `Error: ${errorText}`,
+          createdAt: new Date(),
+        };
+        setState((prev) => ({
+          ...prev,
+          messages: [...prev.messages, errorMessage],
+          streamingContent: '',
+          isAgentThinking: false,
+          agentStatus: 'error',
+          agentStatusDetail: errorText,
+        }));
+        appendLogEntry('error', errorText.slice(0, 80));
+        break;
+      }
+
+      case 'models': {
+        const modelsMsg = message as WebSocketModelsMessage;
+        setState((prev) => ({
+          ...prev,
+          availableModels: modelsMsg.models,
+        }));
+        autoSelectModel(modelsMsg.models);
+        appendLogEntry('models', `Received ${modelsMsg.models.reduce((n, p) => n + p.models.length, 0)} models`);
+        break;
+      }
+
       case 'pong':
         break;
 
@@ -306,10 +427,10 @@ export function useChat(sessionId: string) {
   });
 
   const sendMessage = useCallback(
-    (content: string) => {
+    (content: string, model?: string) => {
       if (!isConnected) return;
 
-      send({ type: 'prompt', content });
+      send({ type: 'prompt', content, ...(model ? { model } : {}) });
       // Start thinking indicator when user sends a message
       setState((prev) => ({ ...prev, isAgentThinking: true }));
     },
@@ -373,6 +494,9 @@ export function useChat(sessionId: string) {
     isAgentThinking: state.isAgentThinking,
     agentStatus: state.agentStatus,
     agentStatusDetail: state.agentStatusDetail,
+    availableModels: state.availableModels,
+    selectedModel,
+    setSelectedModel: handleModelChange,
     connectionStatus: wsStatus,
     isConnected,
     sendMessage,

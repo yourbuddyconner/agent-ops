@@ -72,9 +72,9 @@ async function main() {
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient);
 
   // Register handlers
-  agentClient.onPrompt(async (messageId, content) => {
-    console.log(`[Runner] Received prompt: ${messageId}`);
-    await promptHandler.handlePrompt(messageId, content);
+  agentClient.onPrompt(async (messageId, content, model) => {
+    console.log(`[Runner] Received prompt: ${messageId}${model ? ` (model: ${model})` : ''}`);
+    await promptHandler.handlePrompt(messageId, content, model);
   });
 
   agentClient.onAnswer(async (questionId, answer) => {
@@ -96,6 +96,13 @@ async function main() {
   // Connect (will auto-reconnect on failure)
   await agentClient.connect();
   console.log("[Runner] Ready and waiting for prompts");
+
+  // Discover available models from OpenCode and send to DO
+  const models = await promptHandler.fetchAvailableModels();
+  if (models.length > 0) {
+    agentClient.sendModels(models);
+    console.log(`[Runner] Sent ${models.length} provider(s) to DO`);
+  }
 }
 
 main().catch((err) => {

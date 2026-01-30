@@ -7,7 +7,7 @@
  * - Typed outbound/inbound message protocol
  */
 
-import type { AgentStatus, DOToRunnerMessage, RunnerToDOMessage, ToolCallStatus } from "./types.js";
+import type { AgentStatus, AvailableModels, DOToRunnerMessage, RunnerToDOMessage, ToolCallStatus } from "./types.js";
 
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
@@ -19,7 +19,7 @@ export class AgentClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closing = false;
 
-  private promptHandler: ((messageId: string, content: string) => void | Promise<void>) | null = null;
+  private promptHandler: ((messageId: string, content: string, model?: string) => void | Promise<void>) | null = null;
   private answerHandler: ((questionId: string, answer: string | boolean) => void | Promise<void>) | null = null;
   private stopHandler: (() => void) | null = null;
 
@@ -118,9 +118,13 @@ export class AgentClient {
     this.send({ type: "create-pr", ...params });
   }
 
+  sendModels(models: AvailableModels): void {
+    this.send({ type: "models", models });
+  }
+
   // ─── Inbound Handlers (DO → Runner) ─────────────────────────────────
 
-  onPrompt(handler: (messageId: string, content: string) => void | Promise<void>): void {
+  onPrompt(handler: (messageId: string, content: string, model?: string) => void | Promise<void>): void {
     this.promptHandler = handler;
   }
 
@@ -164,7 +168,7 @@ export class AgentClient {
     try {
       switch (msg.type) {
         case "prompt":
-          await this.promptHandler?.(msg.messageId, msg.content);
+          await this.promptHandler?.(msg.messageId, msg.content, msg.model);
           break;
         case "answer":
           await this.answerHandler?.(msg.questionId, msg.answer);

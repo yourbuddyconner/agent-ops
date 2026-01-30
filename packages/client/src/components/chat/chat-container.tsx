@@ -25,6 +25,9 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     isAgentThinking,
     agentStatus,
     agentStatusDetail,
+    availableModels,
+    selectedModel,
+    setSelectedModel,
     sendMessage,
     answerQuestion,
   } = useChat(sessionId);
@@ -101,6 +104,9 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
                 ? 'Session is not available'
                 : 'Type a message...'
             }
+            availableModels={availableModels}
+            selectedModel={selectedModel}
+            onModelChange={setSelectedModel}
           />
         </>
       )}

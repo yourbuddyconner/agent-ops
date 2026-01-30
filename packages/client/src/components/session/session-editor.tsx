@@ -58,6 +58,9 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
     connectionStatus,
     isConnected,
     logEntries,
+    availableModels,
+    selectedModel,
+    setSelectedModel,
     sendMessage,
     answerQuestion,
   } = useChat(sessionId);
@@ -171,6 +174,9 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
                       ? 'Session is not available'
                       : 'Type a message...'
                   }
+                  availableModels={availableModels}
+                  selectedModel={selectedModel}
+                  onModelChange={setSelectedModel}
                 />
               </>
             )}

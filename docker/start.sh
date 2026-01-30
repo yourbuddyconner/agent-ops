@@ -90,6 +90,26 @@ else
   fi
 fi
 
+# ─── OpenCode Auth (provider credentials) ────────────────────────────
+# Store API keys in OpenCode's auth.json so providers appear as "connected"
+# in the /provider endpoint. This enables the model picker in the UI.
+
+echo "[start.sh] Setting up OpenCode provider credentials"
+mkdir -p /root/.local/share/opencode
+AUTH_JSON="{}"
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  AUTH_JSON=$(echo "$AUTH_JSON" | jq --arg key "$ANTHROPIC_API_KEY" '. + {"anthropic": {"type": "api", "key": $key}}')
+fi
+if [ -n "${OPENAI_API_KEY:-}" ]; then
+  AUTH_JSON=$(echo "$AUTH_JSON" | jq --arg key "$OPENAI_API_KEY" '. + {"openai": {"type": "api", "key": $key}}')
+fi
+if [ -n "${GOOGLE_API_KEY:-}" ]; then
+  AUTH_JSON=$(echo "$AUTH_JSON" | jq --arg key "$GOOGLE_API_KEY" '. + {"google": {"type": "api", "key": $key}}')
+fi
+echo "$AUTH_JSON" > /root/.local/share/opencode/auth.json
+chmod 600 /root/.local/share/opencode/auth.json
+echo "[start.sh] Registered $(echo "$AUTH_JSON" | jq 'keys | length') provider(s) in auth.json"
+
 # ─── OpenCode Config & Tools ─────────────────────────────────────────
 
 echo "[start.sh] Setting up OpenCode config, custom tools, and skills"

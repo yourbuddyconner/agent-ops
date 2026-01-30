@@ -16,6 +16,11 @@ export interface Env {
   // Secrets (set via wrangler secret put)
   ENCRYPTION_KEY: string;
 
+  // LLM Provider API Keys (passed to sandboxes)
+  ANTHROPIC_API_KEY?: string;
+  OPENAI_API_KEY?: string;
+  GOOGLE_API_KEY?: string;
+
   // GitHub OAuth
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;

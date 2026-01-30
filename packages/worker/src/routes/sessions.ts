@@ -94,9 +94,12 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
   const doWsUrl = `${wsProtocol}://${host}/api/sessions/${sessionId}/ws`;
 
   // Build environment variables for the sandbox
-  const envVars: Record<string, string> = {
-    ANTHROPIC_API_KEY: '',  // TODO: pull from user's API keys DO
-  };
+  const envVars: Record<string, string> = {};
+
+  // Pass LLM provider API keys to sandbox (if configured as Worker secrets)
+  if (c.env.ANTHROPIC_API_KEY) envVars.ANTHROPIC_API_KEY = c.env.ANTHROPIC_API_KEY;
+  if (c.env.OPENAI_API_KEY) envVars.OPENAI_API_KEY = c.env.OPENAI_API_KEY;
+  if (c.env.GOOGLE_API_KEY) envVars.GOOGLE_API_KEY = c.env.GOOGLE_API_KEY;
 
   // If repo URL provided, decrypt GitHub token and add repo/git env vars
   if (body.repoUrl) {

@@ -1,5 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "model": "anthropic/claude-sonnet-4-5",
   "instructions": [
     "You are running inside an Agent-Ops sandbox with a full dev environment.",
     "You have a virtual display at :99 with a VNC viewer.",

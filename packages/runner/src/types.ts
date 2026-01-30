@@ -2,7 +2,7 @@
 
 /** Messages sent from DO to Runner */
 export type DOToRunnerMessage =
-  | { type: "prompt"; messageId: string; content: string }
+  | { type: "prompt"; messageId: string; content: string; model?: string }
   | { type: "answer"; questionId: string; answer: string | boolean }
   | { type: "stop" };
 
@@ -22,7 +22,16 @@ export type RunnerToDOMessage =
   | { type: "error"; messageId: string; error: string }
   | { type: "complete" }
   | { type: "agentStatus"; status: AgentStatus; detail?: string }
-  | { type: "create-pr"; branch: string; title: string; body?: string; base?: string };
+  | { type: "create-pr"; branch: string; title: string; body?: string; base?: string }
+  | { type: "models"; models: AvailableModels };
+
+/** Model discovery types */
+export interface ProviderModels {
+  provider: string;
+  models: { id: string; name: string }[];
+}
+
+export type AvailableModels = ProviderModels[];
 
 // ─── CLI Config ────────────────────────────────────────────────────────────
 
