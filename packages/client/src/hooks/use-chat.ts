@@ -46,6 +46,7 @@ interface ChatState {
   availableModels: ProviderModels[];
   diffData: DiffFile[] | null;
   diffLoading: boolean;
+  runnerConnected: boolean;
 }
 
 interface WebSocketInitMessage {
@@ -170,6 +171,7 @@ export function useChat(sessionId: string) {
     availableModels: [],
     diffData: null,
     diffLoading: false,
+    runnerConnected: false,
   });
 
   const [selectedModel, setSelectedModel] = useState<string>(() => {
@@ -253,6 +255,7 @@ export function useChat(sessionId: string) {
           availableModels: initModels,
           diffData: null,
           diffLoading: false,
+          runnerConnected: !!message.data?.runnerConnected,
         });
         if (initModels.length > 0) autoSelectModel(initModels);
         appendLogEntry('init', `Session ${message.session.id.slice(0, 8)} initialized (${message.session.status})`);
@@ -328,11 +331,17 @@ export function useChat(sessionId: string) {
             nextUsers = data.connectedUsers as string[];
           }
 
+          // Track runner connection state
+          const runnerConnected = typeof data.runnerConnected === 'boolean'
+            ? data.runnerConnected
+            : prev.runnerConnected;
+
           return {
             ...prev,
             status: newStatus ?? prev.status,
             pendingQuestions: nextQuestions,
             connectedUsers: nextUsers,
+            runnerConnected,
           };
         });
         appendLogEntry('status', newStatus ? `Status changed to ${newStatus}` : 'Status update');
@@ -570,5 +579,6 @@ export function useChat(sessionId: string) {
     requestDiff,
     diffData: state.diffData,
     diffLoading: state.diffLoading,
+    runnerConnected: state.runnerConnected,
   };
 }

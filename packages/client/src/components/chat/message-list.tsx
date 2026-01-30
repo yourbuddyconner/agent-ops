@@ -3,6 +3,7 @@ import { MessageItem } from './message-item';
 import { StreamingMessage } from './streaming-message';
 import { ThinkingIndicator } from './thinking-indicator';
 import { MarkdownContent } from './markdown';
+import { ToolCard, type ToolCallData, type ToolCallStatus } from './tool-cards';
 
 type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 
@@ -57,7 +58,7 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
 
   if (messages.length === 0 && !streamingContent) {
     return (
-      <div className="flex flex-1 items-center justify-center">
+      <div className="flex h-full flex-1 items-center justify-center">
         <div className="text-center">
           <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-surface-2 dark:bg-surface-2">
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="text-neutral-400 dark:text-neutral-500">
@@ -148,7 +149,7 @@ function AssistantTurn({ messages }: { messages: Message[] }) {
           </span>
         </div>
 
-        <div className="space-y-2">
+        <div className="space-y-1">
           {segments.map((seg) =>
             seg.kind === 'tool' ? (
               <InlineToolCard key={seg.message.id} message={seg.message} />
@@ -162,7 +163,7 @@ function AssistantTurn({ messages }: { messages: Message[] }) {
   );
 }
 
-/** Inline tool card for rendering within an assistant turn. */
+/** Inline tool card for rendering within an assistant turn — delegates to specialized ToolCard. */
 function InlineToolCard({ message }: { message: Message }) {
   const toolData = getToolCallFromParts(message.parts);
 
@@ -171,77 +172,7 @@ function InlineToolCard({ message }: { message: Message }) {
     return <MarkdownContent content={message.content} />;
   }
 
-  const isActive = toolData.status === 'pending' || toolData.status === 'running';
-  const isDone = toolData.status === 'completed';
-  const isError = toolData.status === 'error';
-
-  const resultStr = (() => {
-    if (toolData.result === null || toolData.result === undefined) return null;
-    const s = typeof toolData.result === 'string' ? toolData.result : JSON.stringify(toolData.result, null, 2);
-    if (s.length > 500) return s.slice(0, 500) + '\n... (truncated)';
-    return s;
-  })();
-
-  return (
-    <div className="rounded border border-neutral-200 bg-surface-0 p-2 dark:border-neutral-700 dark:bg-surface-0">
-      <div className="flex items-center gap-2">
-        {isActive && (
-          <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent/60" />
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
-          </span>
-        )}
-        {isDone && (
-          <svg className="h-3 w-3 text-green-600 dark:text-green-400" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-          </svg>
-        )}
-        {isError && (
-          <svg className="h-3 w-3 text-red-500" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        )}
-
-        <span className="font-mono text-[11px] font-medium text-neutral-900 dark:text-neutral-100">
-          {toolData.toolName}
-        </span>
-
-        <span className={`font-mono text-[10px] ${
-          isActive ? 'text-accent' :
-          isDone ? 'text-green-600 dark:text-green-400' :
-          isError ? 'text-red-500' : ''
-        }`}>
-          {toolData.status}
-        </span>
-      </div>
-
-      {toolData.args != null && (
-        <details className="mt-1">
-          <summary className="cursor-pointer font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
-            arguments
-          </summary>
-          <pre className="mt-1 overflow-x-auto font-mono text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
-            {JSON.stringify(toolData.args, null, 2)}
-          </pre>
-        </details>
-      )}
-
-      {resultStr && (
-        <pre className="mt-1 border-t border-neutral-100 pt-1 overflow-x-auto font-mono text-[11px] leading-relaxed text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-          {resultStr}
-        </pre>
-      )}
-    </div>
-  );
-}
-
-type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
-
-interface ToolCallData {
-  toolName: string;
-  status: ToolCallStatus;
-  args: unknown;
-  result: unknown;
+  return <ToolCard tool={toolData} />;
 }
 
 function getToolCallFromParts(parts: unknown): ToolCallData | null {

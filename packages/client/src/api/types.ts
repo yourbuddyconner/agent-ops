@@ -19,6 +19,13 @@ export type {
   SyncStatusResponse,
   StoredAPIKey,
   WebhookPayload,
+  DashboardStatsResponse,
+  DashboardHeroStats,
+  DashboardDelta,
+  DashboardDayActivity,
+  DashboardTopRepo,
+  DashboardRecentSession,
+  DashboardActiveSession,
 } from '@agent-ops/shared';
 
 export type { GitHub, Gmail, GoogleCalendar } from '@agent-ops/shared';

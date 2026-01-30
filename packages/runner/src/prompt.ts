@@ -249,8 +249,44 @@ export class PromptHandler {
         return;
       }
 
-      const data = await res.json() as { files?: DiffFile[] } | DiffFile[];
-      const files = Array.isArray(data) ? data : (data.files ?? []);
+      // OpenCode returns FileDiff[]: { file, before, after, additions, deletions }
+      const data = await res.json() as Array<{
+        file: string;
+        before: string;
+        after: string;
+        additions: number;
+        deletions: number;
+      }>;
+
+      const files: DiffFile[] = data.map((entry) => {
+        // Derive status from content
+        const status: DiffFile["status"] =
+          !entry.before || entry.before === "" ? "added"
+          : !entry.after || entry.after === "" ? "deleted"
+          : "modified";
+
+        // Build a simple unified diff from before/after
+        const beforeLines = (entry.before || "").split("\n");
+        const afterLines = (entry.after || "").split("\n");
+        const diffLines: string[] = [
+          `--- a/${entry.file}`,
+          `+++ b/${entry.file}`,
+          `@@ -1,${beforeLines.length} +1,${afterLines.length} @@`,
+        ];
+        for (const line of beforeLines) {
+          if (line || beforeLines.length > 1) diffLines.push(`-${line}`);
+        }
+        for (const line of afterLines) {
+          if (line || afterLines.length > 1) diffLines.push(`+${line}`);
+        }
+
+        return {
+          path: entry.file,
+          status,
+          diff: diffLines.join("\n"),
+        };
+      });
+
       console.log(`[PromptHandler] Diff: ${files.length} files`);
       this.agentClient.sendDiff(requestId, files);
     } catch (err) {

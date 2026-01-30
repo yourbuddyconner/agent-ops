@@ -165,7 +165,7 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     }));
   } catch (err) {
     console.error('Failed to initialize SessionAgentDO:', err);
-    await db.updateSessionStatus(c.env.DB, sessionId, 'error');
+    await db.updateSessionStatus(c.env.DB, sessionId, 'error', undefined, `Failed to initialize session: ${err instanceof Error ? err.message : String(err)}`);
     return c.json({
       error: 'Failed to initialize session',
       details: err instanceof Error ? err.message : String(err),
