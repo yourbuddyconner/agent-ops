@@ -1,13 +1,18 @@
+import { useState } from 'react';
 import { useFileRead } from '@/api/files';
 import { Skeleton } from '@/components/ui/skeleton';
+import { MarkdownContent } from '@/components/chat/markdown/markdown-content';
 
 interface FilePreviewProps {
   sessionId: string;
   path: string;
 }
 
+const MARKDOWN_EXTENSIONS = new Set(['md', 'mdx', 'markdown']);
+
 export function FilePreview({ sessionId, path }: FilePreviewProps) {
   const { data, isLoading, isError } = useFileRead(sessionId, path);
+  const [renderMarkdown, setRenderMarkdown] = useState(true);
 
   if (isLoading) {
     return (
@@ -34,6 +39,7 @@ export function FilePreview({ sessionId, path }: FilePreviewProps) {
   // Get file extension for syntax highlighting hints
   const ext = path.split('.').pop()?.toLowerCase();
   const language = getLanguageFromExtension(ext);
+  const isMarkdown = MARKDOWN_EXTENSIONS.has(ext || '');
 
   // Check if it's a binary file (simple heuristic)
   const isBinary = data.content.includes('\u0000');
@@ -54,15 +60,31 @@ export function FilePreview({ sessionId, path }: FilePreviewProps) {
         <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
           {path}
         </span>
-        <span className="text-xs text-neutral-500 dark:text-neutral-400">
-          {language}
-        </span>
+        <div className="flex items-center gap-2">
+          {isMarkdown && (
+            <button
+              onClick={() => setRenderMarkdown((v) => !v)}
+              className="rounded border border-neutral-300 px-2 py-0.5 text-xs text-neutral-600 transition-colors hover:bg-neutral-200 dark:border-neutral-600 dark:text-neutral-400 dark:hover:bg-neutral-700"
+            >
+              {renderMarkdown ? 'Raw' : 'Preview'}
+            </button>
+          )}
+          <span className="text-xs text-neutral-500 dark:text-neutral-400">
+            {language}
+          </span>
+        </div>
       </div>
-      <pre className="overflow-x-auto p-4 text-sm">
-        <code className="font-mono text-neutral-800 dark:text-neutral-200">
-          {data.content}
-        </code>
-      </pre>
+      {isMarkdown && renderMarkdown ? (
+        <div className="p-4">
+          <MarkdownContent content={data.content} />
+        </div>
+      ) : (
+        <pre className="overflow-x-auto p-4 text-sm">
+          <code className="font-mono text-neutral-800 dark:text-neutral-200">
+            {data.content}
+          </code>
+        </pre>
+      )}
     </div>
   );
 }

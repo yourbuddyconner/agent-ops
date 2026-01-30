@@ -25,17 +25,25 @@ function AuthCallbackPage() {
     useAuthStore.setState({ token });
 
     api
-      .get<{ user: { id: string; email: string; name?: string; avatarUrl?: string } }>('/auth/me')
+      .get<{ user: { id: string; email: string; name?: string; avatarUrl?: string; githubUsername?: string; gitName?: string; gitEmail?: string; onboardingCompleted?: boolean } }>('/auth/me')
       .then((res) => {
         setAuth(token, {
           id: res.user.id,
           email: res.user.email,
           name: res.user.name,
           avatarUrl: res.user.avatarUrl,
+          githubUsername: res.user.githubUsername,
+          gitName: res.user.gitName,
+          gitEmail: res.user.gitEmail,
+          onboardingCompleted: res.user.onboardingCompleted,
           createdAt: new Date(),
           updatedAt: new Date(),
         });
-        navigate({ to: '/' });
+        if (!res.user.onboardingCompleted) {
+          navigate({ to: '/onboarding' });
+        } else {
+          navigate({ to: '/' });
+        }
       })
       .catch(() => {
         useAuthStore.getState().clearAuth();

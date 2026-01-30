@@ -39,6 +39,18 @@ export function FileBrowser({ sessionId }: FileBrowserProps) {
     setCurrentPath(path);
   };
 
+  const handleNavigateUp = () => {
+    if (currentPath === '/' || currentPath === '') return;
+    // Handle both absolute (/foo/bar) and relative (foo/bar) paths
+    const lastSlash = currentPath.lastIndexOf('/');
+    if (lastSlash <= 0) {
+      // At top level (e.g. "backend" or "/backend") — go to root
+      setCurrentPath('/');
+    } else {
+      setCurrentPath(currentPath.slice(0, lastSlash));
+    }
+  };
+
   const files = fileList?.files ?? [];
 
   return (
@@ -70,6 +82,8 @@ export function FileBrowser({ sessionId }: FileBrowserProps) {
               selectedPath={selectedFile?.path ?? null}
               onSelect={handleSelect}
               onExpand={handleExpand}
+              onNavigateUp={currentPath !== '/' ? handleNavigateUp : undefined}
+              currentPath={currentPath}
               expandedPaths={expandedPaths}
               isLoading={isLoadingFiles}
             />

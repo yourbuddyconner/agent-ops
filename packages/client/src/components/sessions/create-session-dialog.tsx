@@ -45,8 +45,12 @@ const PROGRESS_STEPS: ProgressStep[] = [
 
 function useSessionStatus(sessionId: string | null) {
   const [status, setStatus] = useState<SessionStatus | null>(null);
+  const [runnerConnected, setRunnerConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  // Track latest values in refs so the message handler can check both conditions
+  const statusRef = useRef<SessionStatus | null>(null);
+  const runnerConnectedRef = useRef(false);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -61,25 +65,47 @@ function useSessionStatus(sessionId: string | null) {
     const ws = new WebSocket(wsUrl.toString());
     wsRef.current = ws;
 
+    const closeIfReady = () => {
+      if (statusRef.current === 'running' && runnerConnectedRef.current) {
+        ws.close();
+      }
+    };
+
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
         // Listen for init message (contains current session status)
         if (msg.type === 'init' && msg.session?.status) {
+          statusRef.current = msg.session.status;
           setStatus(msg.session.status as SessionStatus);
-          if (msg.session.status === 'running' || msg.session.status === 'error') {
-            ws.close();
+          if (msg.session.runnerConnected) {
+            runnerConnectedRef.current = true;
+            setRunnerConnected(true);
           }
+          if (msg.session.status === 'error') {
+            ws.close();
+            return;
+          }
+          closeIfReady();
         }
         // Listen for status update messages
-        if (msg.type === 'status' && msg.data?.status) {
-          setStatus(msg.data.status as SessionStatus);
-          if (msg.data.status === 'running' || msg.data.status === 'error') {
-            ws.close();
+        if (msg.type === 'status') {
+          if (msg.data?.status) {
+            statusRef.current = msg.data.status;
+            setStatus(msg.data.status as SessionStatus);
+            if (msg.data.status === 'error') {
+              ws.close();
+              if (msg.data.error) {
+                setError(msg.data.error);
+              }
+              return;
+            }
           }
-          if (msg.data.status === 'error' && msg.data.error) {
-            setError(msg.data.error);
+          if (msg.data?.runnerConnected) {
+            runnerConnectedRef.current = true;
+            setRunnerConnected(true);
           }
+          closeIfReady();
         }
       } catch {
         // ignore parse errors
@@ -97,7 +123,7 @@ function useSessionStatus(sessionId: string | null) {
     };
   }, [sessionId]);
 
-  return { status, error };
+  return { status, runnerConnected, error };
 }
 
 // --- Time-ago helper ---
@@ -166,7 +192,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
   const validateRepo = useValidateRepo(repoMode === 'url' ? repoUrl : '');
 
   // WebSocket status tracking
-  const { status: wsStatus, error: wsError } = useSessionStatus(
+  const { status: wsStatus, runnerConnected, error: wsError } = useSessionStatus(
     view === 'progress' ? sessionResult?.session.id ?? null : null
   );
 
@@ -192,21 +218,21 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
     return () => clearInterval(interval);
   }, [view]);
 
-  // Auto-navigate when ready
+  // Auto-navigate when ready (both running and runner connected)
   useEffect(() => {
-    if (wsStatus === 'running' && sessionResult) {
+    if (wsStatus === 'running' && runnerConnected && sessionResult) {
       const timeout = setTimeout(() => {
         setOpen(false);
         navigate({ to: '/sessions/$sessionId', params: { sessionId: sessionResult.session.id } });
       }, 500);
       return () => clearTimeout(timeout);
     }
-  }, [wsStatus, sessionResult, navigate]);
+  }, [wsStatus, runnerConnected, sessionResult, navigate]);
 
   // Advance step index based on elapsed time when initializing
   const [timeBasedStep, setTimeBasedStep] = useState(1);
   useEffect(() => {
-    if (view !== 'progress' || !apiDone || wsStatus === 'running' || wsStatus === 'error') return;
+    if (view !== 'progress' || !apiDone || (wsStatus === 'running' && runnerConnected) || wsStatus === 'error') return;
     // Advance steps over time
     const hasRepo = !!selectedRepo || (repoMode === 'url' && !!repoUrl);
     if (elapsedSeconds >= 5 && hasRepo) setTimeBasedStep(2);
@@ -230,7 +256,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
   }, [createSession]);
 
   const handleOpenChange = (v: boolean) => {
-    if (!v && view === 'progress' && wsStatus !== 'running' && wsStatus !== 'error') {
+    if (!v && view === 'progress' && !(wsStatus === 'running' && runnerConnected) && wsStatus !== 'error') {
       // Don't allow closing during active progress
       return;
     }
@@ -309,8 +335,11 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
     activeStepKey = 'error';
   } else if (!apiDone) {
     activeStepKey = 'creating';
-  } else if (wsStatus === 'running') {
+  } else if (wsStatus === 'running' && runnerConnected) {
     activeStepKey = 'ready';
+  } else if (wsStatus === 'running' && !runnerConnected) {
+    // Sandbox is running but runner hasn't connected yet
+    activeStepKey = 'starting';
   } else {
     // Time-based progression
     const keys = effectiveSteps.map((s) => s.key);
@@ -582,7 +611,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
           <div>
             <DialogHeader>
               <DialogTitle>
-                {createError || wsError ? 'Session Failed' : wsStatus === 'running' ? 'Session Ready' : 'Starting Session'}
+                {createError || wsError ? 'Session Failed' : (wsStatus === 'running' && runnerConnected) ? 'Session Ready' : 'Starting Session'}
               </DialogTitle>
               <DialogDescription>
                 {workspace}
@@ -609,7 +638,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
                   {effectiveSteps.map((step) => {
                     const isDone =
                       step.key === 'ready'
-                        ? wsStatus === 'running'
+                        ? wsStatus === 'running' && runnerConnected
                         : effectiveSteps.findIndex((s) => s.key === step.key) <
                           effectiveSteps.findIndex((s) => s.key === activeStepKey);
                     const isActive = step.key === activeStepKey;
@@ -670,7 +699,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
                     Try Again
                   </Button>
                 </div>
-              ) : wsStatus === 'running' ? (
+              ) : (wsStatus === 'running' && runnerConnected) ? (
                 <Button type="button" onClick={handleOpenSession}>
                   Open Session
                 </Button>

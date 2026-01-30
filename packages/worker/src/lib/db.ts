@@ -440,6 +440,26 @@ export async function updateUserGitHub(
     .run();
 }
 
+export async function getUserById(db: D1Database, userId: string): Promise<User | null> {
+  const row = await db.prepare('SELECT * FROM users WHERE id = ?').bind(userId).first();
+  return row ? mapUser(row) : null;
+}
+
+export async function updateUserProfile(
+  db: D1Database,
+  userId: string,
+  data: { name?: string; gitName?: string; gitEmail?: string; onboardingCompleted?: boolean }
+): Promise<User | null> {
+  await db
+    .prepare(
+      "UPDATE users SET name = COALESCE(?, name), git_name = ?, git_email = ?, onboarding_completed = COALESCE(?, onboarding_completed), updated_at = datetime('now') WHERE id = ?"
+    )
+    .bind(data.name ?? null, data.gitName ?? null, data.gitEmail ?? null, data.onboardingCompleted !== undefined ? (data.onboardingCompleted ? 1 : 0) : null, userId)
+    .run();
+
+  return getUserById(db, userId);
+}
+
 export async function hasOAuthProvider(db: D1Database, userId: string, provider: string): Promise<boolean> {
   const result = await db
     .prepare('SELECT 1 FROM oauth_tokens WHERE user_id = ? AND provider = ?')
@@ -492,6 +512,10 @@ function mapUser(row: any): User {
     email: row.email,
     name: row.name || undefined,
     avatarUrl: row.avatar_url || undefined,
+    githubUsername: row.github_username || undefined,
+    gitName: row.git_name || undefined,
+    gitEmail: row.git_email || undefined,
+    onboardingCompleted: !!row.onboarding_completed,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
   };

@@ -271,28 +271,14 @@ export function useChat(sessionId: string) {
         };
         setState((prev) => {
           const newMessages = [...prev.messages];
-          let newStreamingContent = prev.streamingContent;
-
-          // When a tool message arrives while we have streaming content,
-          // flush the accumulated text as an intermediate assistant message
-          // so that text and tool calls appear in the order they were received.
-          if (d.role === 'tool' && prev.streamingContent.trim()) {
-            newMessages.push({
-              id: `streaming-${Date.now()}`,
-              sessionId,
-              role: 'assistant',
-              content: prev.streamingContent,
-              createdAt: new Date(),
-            });
-            newStreamingContent = '';
-          }
-
           newMessages.push(msg);
 
           return {
             ...prev,
             messages: newMessages,
-            streamingContent: d.role === 'assistant' ? '' : newStreamingContent,
+            // Clear streaming content when an assistant message arrives
+            // (the text is now persisted as a stored message segment)
+            streamingContent: d.role === 'assistant' ? '' : prev.streamingContent,
             // Stop thinking when assistant responds; reset status after tool results
             isAgentThinking: d.role === 'assistant' ? false : prev.isAgentThinking,
             ...(d.role === 'tool'

@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
+import { ValidationError } from '@agent-ops/shared';
 
 export const authRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -9,18 +11,46 @@ export const authRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
  * Returns the authenticated user's information and connected providers
  */
 authRouter.get('/me', async (c) => {
-  const user = c.get('user');
+  const authUser = c.get('user');
 
-  const hasGitHub = await db.hasOAuthProvider(c.env.DB, user.id, 'github');
-  const hasGoogle = await db.hasOAuthProvider(c.env.DB, user.id, 'google');
+  const [fullUser, hasGitHub, hasGoogle] = await Promise.all([
+    db.getUserById(c.env.DB, authUser.id),
+    db.hasOAuthProvider(c.env.DB, authUser.id, 'github'),
+    db.hasOAuthProvider(c.env.DB, authUser.id, 'google'),
+  ]);
 
   return c.json({
-    user,
+    user: fullUser ?? authUser,
     providers: {
       github: hasGitHub,
       google: hasGoogle,
     },
   });
+});
+
+const updateProfileSchema = z.object({
+  name: z.string().max(255).optional(),
+  gitName: z.string().max(255).optional(),
+  gitEmail: z.string().email().max(255).optional(),
+  onboardingCompleted: z.boolean().optional(),
+});
+
+/**
+ * PATCH /api/auth/me
+ * Update the authenticated user's profile (git config, etc.)
+ */
+authRouter.patch('/me', async (c) => {
+  const authUser = c.get('user');
+  const body = await c.req.json();
+
+  const result = updateProfileSchema.safeParse(body);
+  if (!result.success) {
+    throw new ValidationError(result.error.issues[0]?.message ?? 'Invalid input');
+  }
+
+  const updated = await db.updateUserProfile(c.env.DB, authUser.id, result.data);
+
+  return c.json({ user: updated });
 });
 
 /**

@@ -15,10 +15,10 @@ async function proxyToSession(env: Env, sessionId: string, path: string): Promis
 }
 
 /**
- * GET /api/files/search
- * Search files in a session's workspace via OpenCode
+ * GET /api/files/find
+ * Fuzzy find files by name in a session's workspace via OpenCode
  */
-filesRouter.get('/search', async (c) => {
+filesRouter.get('/find', async (c) => {
   const user = c.get('user');
   const { sessionId, query, limit } = c.req.query();
 
@@ -38,13 +38,60 @@ filesRouter.get('/search', async (c) => {
   const params = new URLSearchParams({ query });
   if (limit) params.set('limit', limit);
 
-  const response = await proxyToSession(c.env, sessionId, `file/search?${params}`);
+  const response = await proxyToSession(c.env, sessionId, `find/file?${params}`);
+
+  if (!response.ok) {
+    return c.json({ paths: [] });
+  }
+
+  // OpenCode returns a plain string array; wrap it for the frontend
+  const paths = await response.json() as string[];
+  return c.json({ paths });
+});
+
+/**
+ * GET /api/files/search
+ * Search file contents in a session's workspace via OpenCode
+ * OpenCode endpoint: GET /find?pattern=X (returns ripgrep-style matches)
+ */
+filesRouter.get('/search', async (c) => {
+  const user = c.get('user');
+  const { sessionId, query, limit } = c.req.query();
+
+  if (!sessionId) {
+    throw new ValidationError('sessionId is required');
+  }
+
+  if (!query) {
+    throw new ValidationError('query is required');
+  }
+
+  const session = await db.getSession(c.env.DB, sessionId);
+  if (!session || session.userId !== user.id) {
+    throw new NotFoundError('Session', sessionId);
+  }
+
+  const params = new URLSearchParams({ pattern: query });
+  if (limit) params.set('limit', limit);
+
+  const response = await proxyToSession(c.env, sessionId, `find?${params}`);
 
   if (!response.ok) {
     return c.json({ results: [] });
   }
 
-  return c.json(await response.json());
+  // OpenCode returns ripgrep-style matches; transform to frontend format
+  const matches = await response.json() as Array<{
+    path: { text: string };
+    lines: { text: string };
+    line_number: number;
+  }>;
+  const results = matches.map((m) => ({
+    path: m.path.text,
+    line: m.line_number,
+    content: m.lines.text,
+  }));
+  return c.json({ results });
 });
 
 /**
@@ -68,17 +115,19 @@ filesRouter.get('/read', async (c) => {
     throw new NotFoundError('Session', sessionId);
   }
 
+  // OpenCode endpoint: GET /file/content?path=X → { type: "text", content: "..." }
   const response = await proxyToSession(
     c.env,
     sessionId,
-    `file/read?path=${encodeURIComponent(path)}`,
+    `file/content?path=${encodeURIComponent(path)}`,
   );
 
   if (!response.ok) {
     throw new NotFoundError('File', path);
   }
 
-  return c.json(await response.json());
+  const data = await response.json() as { type: string; content: string };
+  return c.json({ content: data.content, path });
 });
 
 /**
@@ -100,17 +149,33 @@ filesRouter.get('/list', async (c) => {
     throw new NotFoundError('Session', sessionId);
   }
 
+  // OpenCode endpoint: GET /file?path=X → Array<FileNode>
   const response = await proxyToSession(
     c.env,
     sessionId,
-    `file/list?path=${encodeURIComponent(dirPath)}`,
+    `file?path=${encodeURIComponent(dirPath)}`,
   );
 
   if (!response.ok) {
     return c.json({ files: [] });
   }
 
-  return c.json(await response.json());
+  // OpenCode returns Array<{ name, path, absolute, type, ignored }>; transform to frontend format
+  const nodes = await response.json() as Array<{
+    name: string;
+    path: string;
+    absolute: string;
+    type: 'file' | 'directory';
+    ignored: boolean;
+  }>;
+  const files = nodes
+    .filter((n) => !n.ignored)
+    .map((n) => ({
+      name: n.name,
+      path: n.path,
+      type: n.type,
+    }));
+  return c.json({ files });
 });
 
 /**

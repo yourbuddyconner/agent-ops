@@ -7,7 +7,8 @@ export type DOToRunnerMessage =
   | { type: "stop" }
   | { type: "abort" }
   | { type: "revert"; messageId: string }
-  | { type: "diff"; requestId: string };
+  | { type: "diff"; requestId: string }
+  | { type: "pong" };
 
 /** Tool call status values */
 export type ToolCallStatus = "pending" | "running" | "completed" | "error";
@@ -29,7 +30,8 @@ export type RunnerToDOMessage =
   | { type: "models"; models: AvailableModels }
   | { type: "aborted" }
   | { type: "reverted"; messageIds: string[] }
-  | { type: "diff"; requestId: string; data: { files: DiffFile[] } };
+  | { type: "diff"; requestId: string; data: { files: DiffFile[] } }
+  | { type: "ping" };
 
 /** Model discovery types */
 export interface ProviderModels {

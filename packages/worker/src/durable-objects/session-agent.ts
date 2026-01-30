@@ -1,4 +1,5 @@
 import type { Env } from '../env.js';
+import { updateSessionStatus } from '../lib/db.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
 
@@ -21,7 +22,7 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'models' | 'aborted' | 'reverted' | 'diff';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'ping';
   messageId?: string;
   content?: string;
   questionId?: string;
@@ -54,7 +55,7 @@ interface ClientOutbound {
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'pong';
   messageId?: string;
   content?: string;
   model?: string;
@@ -869,6 +870,11 @@ export class SessionAgentDO {
           data: { files: msg.files ?? [] },
         });
         break;
+
+      case 'ping':
+        // Keepalive from runner — respond with pong
+        this.sendToRunner({ type: 'pong' });
+        break;
     }
   }
 
@@ -951,6 +957,9 @@ export class SessionAgentDO {
     // If sandbox info was provided directly, we're already running
     if (body.sandboxId && body.tunnelUrls) {
       this.setStateValue('status', 'running');
+      updateSessionStatus(this.env.DB, body.sessionId, 'running', body.sandboxId).catch((err) =>
+        console.error('[SessionAgentDO] Failed to sync status to D1:', err),
+      );
       this.broadcastToClients({
         type: 'status',
         data: {
@@ -1015,6 +1024,11 @@ export class SessionAgentDO {
       this.setStateValue('tunnelUrls', JSON.stringify(result.tunnelUrls));
       this.setStateValue('status', 'running');
 
+      // Sync status to D1 so sessions list shows correct status
+      updateSessionStatus(this.env.DB, sessionId!, 'running', result.sandboxId).catch((err) =>
+        console.error('[SessionAgentDO] Failed to sync status to D1:', err),
+      );
+
       // Notify connected clients that sandbox is ready
       this.broadcastToClients({
         type: 'status',
@@ -1029,6 +1043,11 @@ export class SessionAgentDO {
     } catch (err) {
       console.error(`[SessionAgentDO] Failed to spawn sandbox for session ${sessionId}:`, err);
       this.setStateValue('status', 'error');
+      if (sessionId) {
+        updateSessionStatus(this.env.DB, sessionId, 'error').catch((e) =>
+          console.error('[SessionAgentDO] Failed to sync error status to D1:', e),
+        );
+      }
       this.broadcastToClients({
         type: 'status',
         data: { status: 'error' },
@@ -1162,23 +1181,27 @@ export class SessionAgentDO {
     }
 
     const tunnelUrls = JSON.parse(tunnelUrlsRaw);
+    // Route through gateway's /opencode proxy to avoid Modal encrypted tunnel issues
+    // on the direct OpenCode port. Fall back to direct opencode URL if gateway not available.
+    const gatewayUrl = tunnelUrls.gateway;
     const opencodeUrl = tunnelUrls.opencode;
-    if (!opencodeUrl) {
+    const baseUrl = gatewayUrl ? `${gatewayUrl}/opencode` : opencodeUrl;
+    if (!baseUrl) {
       return Response.json({ error: 'OpenCode URL not available' }, { status: 503 });
     }
 
     // Strip /proxy prefix
     const proxyPath = url.pathname.replace(/^\/proxy/, '') + url.search;
-    const proxyUrl = opencodeUrl + proxyPath;
+    const proxyUrl = baseUrl + proxyPath;
 
     try {
-      return fetch(proxyUrl, {
+      const resp = await fetch(proxyUrl, {
         method: request.method,
-        headers: request.headers,
         body: request.body,
       });
+      return resp;
     } catch (error) {
-      console.error('Proxy error:', error);
+      console.error('[SessionAgentDO] Proxy error:', proxyUrl, error);
       return Response.json({ error: 'Failed to reach sandbox' }, { status: 502 });
     }
   }

@@ -187,6 +187,18 @@ oauthRouter.get('/github/callback', async (c) => {
       avatarUrl: profile.avatar_url,
     });
 
+    // Auto-populate git config if not already set
+    if (!user.gitName || !user.gitEmail) {
+      const gitName = user.gitName || profile.name || profile.login;
+      // If the user's email is private on GitHub, use the noreply address
+      const gitEmail = user.gitEmail || (
+        profile.email === null
+          ? `${profile.id}+${profile.login}@users.noreply.github.com`
+          : email
+      );
+      await db.updateUserProfile(c.env.DB, user.id, { gitName, gitEmail });
+    }
+
     // Encrypt and store OAuth token
     const encryptedToken = await encryptString(tokenData.access_token, c.env.ENCRYPTION_KEY);
     await db.upsertOAuthToken(c.env.DB, {

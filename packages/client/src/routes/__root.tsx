@@ -13,7 +13,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
     const { isAuthenticated, isHydrated } = useAuthStore.getState();
 
     // Skip auth check for login and OAuth callback pages
-    if (location.pathname === '/login' || location.pathname === '/auth/callback') {
+    if (location.pathname === '/login' || location.pathname === '/auth/callback' || location.pathname === '/onboarding') {
       return;
     }
 
@@ -34,7 +34,7 @@ function RootLayout() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isHydrated = useAuthStore((s) => s.isHydrated);
   const routerState = useRouterState();
-  const isLoginPage = routerState.location.pathname === '/login' || routerState.location.pathname === '/auth/callback';
+  const isLoginPage = routerState.location.pathname === '/login' || routerState.location.pathname === '/auth/callback' || routerState.location.pathname === '/onboarding';
 
   // Show loading while hydrating
   if (!isHydrated) {

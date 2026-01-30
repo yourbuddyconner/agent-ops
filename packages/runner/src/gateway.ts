@@ -206,6 +206,36 @@ function addSessionCookie(response: Response): Response {
 
 app.get("/health", (c) => c.json({ status: "ok", service: "gateway" }));
 
+// OpenCode proxy — no auth (accessed server-to-server from the DO, which has already authenticated)
+app.all("/opencode/*", async (c) => {
+  const path = c.req.path.replace(/^\/opencode/, "") || "/";
+  const url = new URL(c.req.url);
+  const searchParams = new URLSearchParams(url.search);
+  const cleanSearch = searchParams.toString() ? `?${searchParams.toString()}` : "";
+  const target = `http://127.0.0.1:4096${path}${cleanSearch}`;
+
+  try {
+    const res = await fetch(target, {
+      method: c.req.method,
+      headers: createProxyHeaders(c.req.raw.headers),
+      body: c.req.method !== "GET" && c.req.method !== "HEAD" ? c.req.raw.body : undefined,
+    });
+
+    const responseHeaders = new Headers(res.headers);
+    responseHeaders.delete("content-encoding");
+    responseHeaders.delete("transfer-encoding");
+
+    return new Response(res.body, {
+      status: res.status,
+      statusText: res.statusText,
+      headers: responseHeaders,
+    });
+  } catch (err) {
+    console.error(`[Gateway] OpenCode proxy error for ${target}:`, err);
+    return new Response(`OpenCode proxy error: ${err}`, { status: 502 });
+  }
+});
+
 // Apply auth middleware to all proxied routes
 app.use("/vscode/*", authMiddleware);
 app.use("/vnc/*", authMiddleware);

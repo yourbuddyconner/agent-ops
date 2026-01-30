@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as WorkflowsIndexRouteImport } from './routes/workflows/index'
@@ -24,6 +25,11 @@ import { Route as SessionsSessionIdIndexRouteImport } from './routes/sessions/$s
 import { Route as SessionsSessionIdFilesRouteImport } from './routes/sessions/$sessionId/files'
 import { Route as SessionsSessionIdEditorRouteImport } from './routes/sessions/$sessionId/editor'
 
+const OnboardingRoute = OnboardingRouteImport.update({
+  id: '/onboarding',
+  path: '/onboarding',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
@@ -98,6 +104,7 @@ const SessionsSessionIdEditorRoute = SessionsSessionIdEditorRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/onboarding': typeof OnboardingRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
@@ -114,6 +121,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/onboarding': typeof OnboardingRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
@@ -130,6 +138,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/onboarding': typeof OnboardingRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
@@ -148,6 +157,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
+    | '/onboarding'
     | '/auth/callback'
     | '/integrations/callback'
     | '/sessions/$sessionId'
@@ -164,6 +174,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/login'
+    | '/onboarding'
     | '/auth/callback'
     | '/integrations/callback'
     | '/workflows/$workflowId'
@@ -179,6 +190,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/login'
+    | '/onboarding'
     | '/auth/callback'
     | '/integrations/callback'
     | '/sessions/$sessionId'
@@ -196,6 +208,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
+  OnboardingRoute: typeof OnboardingRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
   IntegrationsCallbackRoute: typeof IntegrationsCallbackRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRouteWithChildren
@@ -209,6 +222,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/onboarding': {
+      id: '/onboarding'
+      path: '/onboarding'
+      fullPath: '/onboarding'
+      preLoaderRoute: typeof OnboardingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login': {
       id: '/login'
       path: '/login'
@@ -328,6 +348,7 @@ const SessionsSessionIdRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
+  OnboardingRoute: OnboardingRoute,
   AuthCallbackRoute: AuthCallbackRoute,
   IntegrationsCallbackRoute: IntegrationsCallbackRoute,
   SessionsSessionIdRoute: SessionsSessionIdRouteWithChildren,

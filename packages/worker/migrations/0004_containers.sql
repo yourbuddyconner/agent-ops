@@ -1,1 +1,0 @@
--- Migration emptied: containers feature removed. Table may still exist in deployed D1.

@@ -28,6 +28,10 @@ export interface FileSearchResponse {
   results: FileSearchResult[];
 }
 
+export interface FileFindResponse {
+  paths: string[];
+}
+
 export const fileKeys = {
   all: ['files'] as const,
   list: (sessionId: string, path?: string) =>
@@ -36,6 +40,8 @@ export const fileKeys = {
     [...fileKeys.all, 'read', sessionId, path] as const,
   search: (sessionId: string, query: string) =>
     [...fileKeys.all, 'search', sessionId, query] as const,
+  find: (sessionId: string, query: string) =>
+    [...fileKeys.all, 'find', sessionId, query] as const,
 };
 
 export function useFileList(sessionId: string, path?: string) {
@@ -58,6 +64,17 @@ export function useFileRead(sessionId: string, path: string) {
         `/files/read?sessionId=${sessionId}&path=${encodeURIComponent(path)}`
       ),
     enabled: !!sessionId && !!path,
+  });
+}
+
+export function useFileFinder(sessionId: string, query: string) {
+  return useQuery({
+    queryKey: fileKeys.find(sessionId, query),
+    queryFn: () =>
+      api.get<FileFindResponse>(
+        `/files/find?sessionId=${sessionId}&query=${encodeURIComponent(query)}&limit=20`
+      ),
+    enabled: !!sessionId && !!query && query.length >= 1,
   });
 }
 

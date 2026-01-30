@@ -177,6 +177,7 @@ export function SessionEditor({ sessionId }: SessionEditorProps) {
                   availableModels={availableModels}
                   selectedModel={selectedModel}
                   onModelChange={setSelectedModel}
+                  sessionId={sessionId}
                 />
               </>
             )}

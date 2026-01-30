@@ -143,6 +143,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             onModelChange={setSelectedModel}
             onAbort={abort}
             isAgentActive={isAgentActive}
+            sessionId={sessionId}
           />
         </>
       )}

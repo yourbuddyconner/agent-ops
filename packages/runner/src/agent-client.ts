@@ -11,12 +11,14 @@ import type { AgentStatus, AvailableModels, DiffFile, DOToRunnerMessage, RunnerT
 
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
+const PING_INTERVAL_MS = 30_000;
 
 export class AgentClient {
   private ws: WebSocket | null = null;
   private buffer: string[] = [];
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
   private closing = false;
 
   private promptHandler: ((messageId: string, content: string, model?: string) => void | Promise<void>) | null = null;
@@ -49,6 +51,7 @@ export class AgentClient {
         console.log("[AgentClient] Connected to SessionAgent DO");
         this.reconnectAttempts = 0;
         this.flushBuffer();
+        this.startPing();
         resolve();
       });
 
@@ -58,6 +61,7 @@ export class AgentClient {
 
       this.ws.addEventListener("close", (event) => {
         console.log(`[AgentClient] Connection closed: ${event.code} ${event.reason}`);
+        this.stopPing();
         this.ws = null;
         if (!this.closing) {
           this.scheduleReconnect();
@@ -73,6 +77,7 @@ export class AgentClient {
 
   disconnect(): void {
     this.closing = true;
+    this.stopPing();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -163,6 +168,22 @@ export class AgentClient {
     this.diffHandler = handler;
   }
 
+  // ─── Keepalive ──────────────────────────────────────────────────────
+
+  private startPing(): void {
+    this.stopPing();
+    this.pingTimer = setInterval(() => {
+      this.send({ type: "ping" });
+    }, PING_INTERVAL_MS);
+  }
+
+  private stopPing(): void {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+  }
+
   // ─── Internal ────────────────────────────────────────────────────────
 
   private send(message: RunnerToDOMessage): void {
@@ -211,6 +232,9 @@ export class AgentClient {
           break;
         case "diff":
           await this.diffHandler?.(msg.requestId);
+          break;
+        case "pong":
+          // Keepalive response — no action needed
           break;
       }
     } catch (err) {
