@@ -5,6 +5,7 @@ import rehypeRaw from 'rehype-raw';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import type { Components } from 'react-markdown';
 import { CodeBlock } from './code-block';
+import { MermaidBlock } from './mermaid-block';
 import { MarkdownImage } from './markdown-image';
 
 // Extend default sanitize schema to allow data: URIs on img src (for base64 screenshots)
@@ -34,6 +35,9 @@ const components: Components = {
     const code = String(children).replace(/\n$/, '');
 
     if (isBlock) {
+      if (match![1] === 'mermaid') {
+        return <MermaidBlock>{code}</MermaidBlock>;
+      }
       return <CodeBlock language={match![1]}>{code}</CodeBlock>;
     }
 

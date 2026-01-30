@@ -1,47 +1,57 @@
 # Agent Ops
 
-An agent platform built on TypeScript and Cloudflare infrastructure, integrating with OpenCode for AI agent orchestration. The system enables multi-tenant AI agents with access to various third-party integrations, persistent storage, and real-time communication.
+A hosted background coding agent platform. Users interact with an AI coding agent through a web UI or Slack. Each session runs in an isolated Modal sandbox with a full dev environment — VS Code, browser via VNC, terminal, and an OpenCode agent.
 
 ## Architecture
 
 ```mermaid
 flowchart TB
     subgraph Client["Client Layer"]
-        React["React Application"]
+        React["React SPA"]
     end
 
-    subgraph Edge["Edge Layer (Cloudflare Worker)"]
+    subgraph Edge["Edge Layer (Cloudflare)"]
         Router["Hono Router"]
-        
-        subgraph Routes["API Routes"]
-            Sessions["/api/sessions"]
-            Integrations["/api/integrations"]
-            Files["/api/files"]
-            Agent["/agent/*"]
-        end
-        
+
         subgraph DOs["Durable Objects"]
-            APIKeys["API Keys DO"]
-            AgentSessions["Agent Sessions DO"]
+            SessionAgent["SessionAgent DO"]
+            EventBus["EventBus DO"]
+            APIKeys["APIKeys DO"]
         end
-        
+
         subgraph Storage["Storage"]
             D1["D1 (SQLite)"]
             R2["R2 (Files)"]
         end
+
+        Pages["Cloudflare Pages"]
     end
 
-    subgraph Container["OpenCode Container"]
-        OpenCode["AI Agent Runtime"]
+    subgraph Modal["Modal Backend (Python)"]
+        App["Modal App"]
+        Sandbox["Sandbox Container"]
+
+        subgraph SandboxServices["Sandbox Services"]
+            Runner["Runner (Bun/TS)"]
+            OpenCode["OpenCode Agent"]
+            CodeServer["VS Code (code-server)"]
+            VNC["VNC (Xvfb + noVNC)"]
+            TTYD["Terminal (TTYD)"]
+            Gateway["Auth Gateway :9000"]
+        end
     end
 
     React --> Router
-    Router --> Routes
-    Sessions --> DOs
-    Agent --> AgentSessions
-    AgentSessions --> OpenCode
-    Routes --> Storage
-    DOs --> Storage
+    Pages -.- React
+    Router --> DOs
+    Router --> Storage
+    SessionAgent <-->|WebSocket| Runner
+    Runner --> OpenCode
+    Gateway --> CodeServer
+    Gateway --> VNC
+    Gateway --> TTYD
+    App --> Sandbox
+    EventBus -->|SSE| React
 ```
 
 ## Request Flow
@@ -50,293 +60,232 @@ flowchart TB
 sequenceDiagram
     participant Client
     participant Worker as Cloudflare Worker
-    participant Auth as Auth Middleware
-    participant DO as Agent Session DO
-    participant OpenCode as OpenCode Container
+    participant DO as SessionAgent DO
+    participant Modal as Modal Backend
+    participant Runner as Runner (in Sandbox)
+    participant Agent as OpenCode Agent
 
-    Client->>Worker: POST /agent/sessions/:id/messages
-    Worker->>Auth: Validate Bearer Token
-    Auth-->>Worker: User Context
-    Worker->>DO: Forward to Durable Object
-    DO->>OpenCode: Send Prompt (Streaming)
-    
-    loop Streaming Response
-        OpenCode-->>DO: Message Chunks
-        DO-->>Worker: Stream Chunks
-        Worker-->>Client: SSE Events
-    end
-    
-    DO->>DO: Store Message History
-```
+    Client->>Worker: POST /api/sessions (create)
+    Worker->>DO: Initialize session
+    DO->>Modal: Spawn sandbox
+    Modal-->>DO: Sandbox URLs + JWT
 
-## OAuth Integration Flow
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Client as React App
-    participant Worker as Cloudflare Worker
-    participant Provider as OAuth Provider<br/>(GitHub/Google)
-    participant DB as D1 Database
-
-    User->>Client: Click "Connect Integration"
-    Client->>Worker: GET /api/integrations/:service/auth
-    Worker-->>Client: Redirect URL
-    Client->>Provider: OAuth Authorization
-    User->>Provider: Grant Access
-    Provider-->>Client: Callback with Code
-    Client->>Worker: POST /api/integrations/callback
-    Worker->>Provider: Exchange Code for Token
-    Provider-->>Worker: Access Token
-    Worker->>DB: Store Encrypted Credentials
-    Worker-->>Client: Integration Connected
-```
-
-## Data Model
-
-```mermaid
-erDiagram
-    USERS ||--o{ SESSIONS : owns
-    USERS ||--o{ INTEGRATIONS : configures
-    USERS ||--o{ API_TOKENS : has
-    SESSIONS ||--o{ MESSAGES : contains
-    INTEGRATIONS ||--o{ SYNC_LOGS : generates
-
-    USERS {
-        string id PK
-        string email UK
-        string name
-        string avatar_url
-        datetime created_at
-    }
-
-    SESSIONS {
-        string id PK
-        string user_id FK
-        string status
-        string workspace
-        json metadata
-        datetime created_at
-        datetime last_active_at
-    }
-
-    MESSAGES {
-        string id PK
-        string session_id FK
-        string role
-        text content
-        json tool_calls
-        datetime created_at
-    }
-
-    INTEGRATIONS {
-        string id PK
-        string user_id FK
-        string service
-        json config
-        string sync_status
-        datetime last_synced_at
-    }
-
-    SYNC_LOGS {
-        string id PK
-        string integration_id FK
-        string status
-        int records_synced
-        text error_message
-        datetime started_at
-        datetime completed_at
-    }
-
-    API_TOKENS {
-        string id PK
-        string user_id FK
-        string token_hash
-        string name
-        datetime expires_at
-    }
-```
-
-## Integration Sync Architecture
-
-```mermaid
-flowchart LR
-    subgraph Triggers
-        Webhook["Webhooks"]
-        Cron["Cron (Hourly)"]
-        Manual["Manual Sync"]
-    end
-
-    subgraph Worker["Cloudflare Worker"]
-        Scheduler["Sync Scheduler"]
-        
-        subgraph Integrations
-            GitHub["GitHub"]
-            Gmail["Gmail"]
-            Calendar["Google Calendar"]
-        end
-    end
-
-    subgraph Storage
-        D1["D1 Database"]
-        R2["R2 Bucket"]
-    end
-
-    Webhook --> Scheduler
-    Cron --> Scheduler
-    Manual --> Scheduler
-    
-    Scheduler --> GitHub
-    Scheduler --> Gmail
-    Scheduler --> Calendar
-    
-    GitHub --> D1
-    Gmail --> D1
-    Calendar --> D1
-    
-    GitHub --> R2
-    Gmail --> R2
-    Calendar --> R2
+    Client->>Worker: Send message (WebSocket)
+    Worker->>DO: Forward to DO
+    DO->>Runner: Forward via WebSocket
+    Runner->>Agent: Execute prompt
+    Agent-->>Runner: Streaming response
+    Runner-->>DO: Stream results
+    DO-->>Client: Real-time updates (WebSocket/SSE)
 ```
 
 ## Packages
 
-| Package | Description |
-|---------|-------------|
-| `@agent-ops/client` | React frontend with TanStack Router/Query, Radix UI, Tailwind CSS |
-| `@agent-ops/worker` | Cloudflare Worker with Hono API, Durable Objects, D1/R2 storage |
-| `@agent-ops/shared` | Shared types, errors, and utilities |
+| Package | Tech | Description |
+|---------|------|-------------|
+| `packages/client` | React 19, Vite 6, TanStack Router/Query, Zustand, Tailwind, Radix UI | Web frontend (deployed to Cloudflare Pages) |
+| `packages/worker` | Cloudflare Workers, Hono 4, D1, R2, Durable Objects | API layer and session orchestration |
+| `packages/runner` | Bun, TypeScript, Hono, OpenCode SDK | Runs inside each sandbox, bridges DO <-> OpenCode |
+| `packages/shared` | TypeScript | Shared types and error classes |
+| `backend` | Python 3.12, Modal SDK | Sandbox lifecycle management |
+| `docker` | Dockerfile, shell scripts | Sandbox container image (code-server, VNC, TTYD) |
 
-## Prerequisites
+## Project Structure
 
-- Node.js 18+
-- [pnpm](https://pnpm.io/)
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (`pnpm add -g wrangler`)
-- A GitHub account (for OAuth)
-- Optionally: a Google Cloud account (for Google OAuth)
+```
+agent-ops/
+├── packages/
+│   ├── client/                # React SPA
+│   │   └── src/
+│   │       ├── api/           # API client, React Query hooks
+│   │       ├── components/    # UI components (chat, sessions, panels, etc.)
+│   │       ├── hooks/         # Custom hooks (chat, websocket, SSE, theme)
+│   │       ├── routes/        # TanStack file-based routes
+│   │       └── stores/        # Zustand state (auth, UI)
+│   ├── worker/                # Cloudflare Worker
+│   │   ├── src/
+│   │   │   ├── routes/        # Hono API routes
+│   │   │   ├── durable-objects/  # SessionAgent, EventBus, APIKeys
+│   │   │   ├── middleware/    # Auth middleware
+│   │   │   └── lib/           # DB helpers, utilities
+│   │   └── migrations/        # D1 SQL migrations
+│   ├── runner/                # Sandbox runner
+│   │   └── src/
+│   │       ├── bin.ts         # Entry point
+│   │       ├── agent-client.ts  # WebSocket client to DO
+│   │       ├── prompt.ts      # OpenCode prompt handling
+│   │       └── gateway.ts     # Auth proxy (port 9000)
+│   └── shared/                # Shared types & errors
+├── backend/                   # Modal Python backend
+│   ├── app.py                 # Modal App, web endpoints
+│   ├── session.py             # Session state tracking
+│   ├── sandboxes.py           # Sandbox lifecycle
+│   └── images/                # Sandbox image definitions
+├── docker/                    # Sandbox container setup
+│   ├── Dockerfile.sandbox
+│   └── start.sh
+├── V1.md                      # Full architecture spec
+├── Makefile                   # Dev, test, deploy commands
+└── .beans/                    # Task tracking
+```
 
 ## Quick Start
 
 ```bash
 pnpm install
-make db-migrate
+make db-setup        # Migrate + seed D1
 ```
 
-Then configure OAuth (see below) and run:
+Configure OAuth credentials in `packages/worker/.dev.vars` (see [OAuth Setup](#oauth-setup) below), then:
 
 ```bash
-make dev-all
+make dev-all         # Starts worker (:8787), client (:5173), and OpenCode container
 ```
 
-Frontend runs at `http://localhost:5173`, worker at `http://localhost:8787`.
+## Development Commands
+
+```bash
+# Start services
+make dev-all              # All services in parallel
+make dev-worker           # Cloudflare Worker on :8787
+make dev-client           # Vite dev server on :5173
+make dev-opencode         # OpenCode container on :4096
+
+# Database
+make db-migrate           # Run D1 migrations locally
+make db-seed              # Seed test data
+make db-reset             # Drop and recreate
+
+# Code quality
+make typecheck            # TypeScript check (all packages)
+make lint                 # Linter
+
+# Health checks
+make health               # Check all services
+make health-worker        # Check worker only
+
+# Deploy
+make deploy               # Deploy worker + Modal + client
+make deploy-worker        # Cloudflare Worker only
+make deploy-modal         # Modal backend only
+make deploy-client        # Cloudflare Pages only
+make release              # Full release (install, typecheck, build, push image, deploy all)
+```
+
+### Modal Backend Deployment
+
+Modal deployment requires the `agent-ops` conda environment and runs from the project root:
+
+```bash
+~/anaconda3/envs/agent-ops/bin/modal deploy backend/app.py
+```
+
+To force a sandbox image rebuild after changing `docker/` or `packages/runner/`:
+
+1. Bump `IMAGE_BUILD_VERSION` in `backend/images/base.py`
+2. Redeploy: `make deploy-modal`
+3. New sessions will use the updated image
 
 ## OAuth Setup
 
-Authentication uses GitHub OAuth (primary) and optionally Google OAuth. You need to create OAuth apps with the provider(s) and configure credentials locally.
+Authentication uses GitHub OAuth (primary) and optionally Google OAuth.
 
-### GitHub OAuth App (Required)
-
-GitHub OAuth is the primary login method and also provides repo access for cloning and PR creation.
+### GitHub OAuth (Required)
 
 1. Go to [GitHub > Settings > Developer settings > OAuth Apps](https://github.com/settings/developers)
-2. Click **New OAuth App**
-3. Fill in:
+2. Create a new OAuth App:
 
-   | Field | Dev Value | Production Value |
-   |-------|-----------|-----------------|
-   | Application name | `Agent Ops (dev)` | `Agent Ops` |
-   | Homepage URL | `http://localhost:5173` | `https://your-frontend-domain.com` |
-   | Authorization callback URL | `http://localhost:8787/auth/github/callback` | `https://agent-ops.conner-7e8.workers.dev/auth/github/callback` |
+   | Field | Dev | Production |
+   |-------|-----|------------|
+   | Homepage URL | `http://localhost:5173` | `https://your-domain.com` |
+   | Callback URL | `http://localhost:8787/auth/github/callback` | `https://agent-ops.conner-7e8.workers.dev/auth/github/callback` |
 
-4. Click **Register application**
-5. Copy the **Client ID**
-6. Click **Generate a new client secret** and copy it immediately
+3. Copy the **Client ID** and generate a **Client Secret**
 
-> Create **separate OAuth Apps** for dev and production. GitHub only allows one callback URL per app.
-
-The OAuth scopes requested are `repo read:user user:email` — this grants read/write access to repos the user can access, which is needed for cloning and PR creation inside sandboxes.
+Scopes requested: `repo read:user user:email` (needed for repo cloning and PR creation inside sandboxes).
 
 ### Google OAuth (Optional)
 
-Google OAuth provides an alternative sign-in method. It does not grant repo access — users who only sign in with Google won't be able to clone repos or create PRs.
+1. In [Google Cloud Console](https://console.cloud.google.com/), create OAuth credentials
+2. Add scopes: `openid`, `email`, `profile`
+3. Add redirect URI: `http://localhost:8787/auth/google/callback` (dev)
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a project or select an existing one
-3. Enable the **Google+ API** (or just proceed — the consent screen setup enables what's needed)
+### Local Credentials
 
-**Configure consent screen:**
-
-4. Go to **APIs & Services > OAuth consent screen**
-5. Select **External** user type, click **Create**
-6. Fill in:
-   - **App name**: `Agent Ops`
-   - **User support email**: your email
-   - **Developer contact email**: your email
-7. Click **Save and Continue**
-8. On the **Scopes** page, click **Add or Remove Scopes** and add:
-   - `openid`
-   - `email`
-   - `profile`
-9. Click **Save and Continue**
-10. On the **Test users** page, add your email address (required while app is in "Testing" mode)
-11. Click **Save and Continue**, then **Back to Dashboard**
-
-> While the app is in "Testing" publishing status, only test users you explicitly add can sign in. Click **Publish App** on the consent screen page when ready for production.
-
-**Create credentials:**
-
-12. Go to **APIs & Services > Credentials**
-13. Click **Create Credentials > OAuth client ID**
-14. Select **Web application**
-15. Name it `Agent Ops (dev)` or `Agent Ops`
-16. Under **Authorized redirect URIs**, add:
-
-   | Environment | Redirect URI |
-   |-------------|-------------|
-   | Dev | `http://localhost:8787/auth/google/callback` |
-   | Production | `https://agent-ops.conner-7e8.workers.dev/auth/google/callback` |
-
-17. Click **Create**
-18. Copy the **Client ID** and **Client Secret**
-
-> Like GitHub, use separate credentials for dev and production, or add both redirect URIs to one credential.
-
-### Configure Local Dev Credentials
-
-Edit `packages/worker/.dev.vars`:
+Create `packages/worker/.dev.vars`:
 
 ```
 ENCRYPTION_KEY=any-string-at-least-32-characters-long
 ENVIRONMENT=development
-
-# GitHub OAuth (required for login)
 GITHUB_CLIENT_ID=your_github_client_id
 GITHUB_CLIENT_SECRET=your_github_client_secret
-
-# Google OAuth (optional)
-GOOGLE_CLIENT_ID=your_google_client_id
-GOOGLE_CLIENT_SECRET=your_google_client_secret
+GOOGLE_CLIENT_ID=your_google_client_id        # optional
+GOOGLE_CLIENT_SECRET=your_google_client_secret  # optional
 ```
 
-`FRONTEND_URL` is already set to `http://localhost:5173` in `wrangler.toml` for dev.
-
-### Configure Production Credentials
-
-Run from `packages/worker/` (where `wrangler.toml` lives):
+### Production Secrets
 
 ```bash
 cd packages/worker
+npx wrangler secret put ENCRYPTION_KEY
 npx wrangler secret put GITHUB_CLIENT_ID
 npx wrangler secret put GITHUB_CLIENT_SECRET
-npx wrangler secret put ENCRYPTION_KEY
-npx wrangler secret put FRONTEND_URL           # your production frontend URL
-
-# If using Google OAuth:
-npx wrangler secret put GOOGLE_CLIENT_ID
-npx wrangler secret put GOOGLE_CLIENT_SECRET
+npx wrangler secret put FRONTEND_URL
 ```
 
-### How Auth Works
+## API Endpoints
+
+### Auth
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/auth/github` | GET | Start GitHub OAuth flow |
+| `/auth/google` | GET | Start Google OAuth flow |
+| `/auth/github/callback` | GET | GitHub OAuth callback |
+| `/auth/google/callback` | GET | Google OAuth callback |
+| `/api/auth/me` | GET | Current user info |
+| `/health` | GET | Health check |
+
+### Sessions
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/sessions` | GET | List sessions |
+| `/api/sessions` | POST | Create session (spawns sandbox) |
+| `/api/sessions/:id` | GET | Session details |
+| `/api/sessions/:id` | DELETE | Terminate session |
+| `/api/sessions/:id/ws` | WebSocket | Real-time session communication |
+| `/api/sessions/:id/events` | GET | SSE event stream |
+
+### Files & Repos
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/files` | GET | List files |
+| `/api/files` | POST | Upload file |
+| `/api/files/:id` | GET | Download file |
+| `/api/repos` | GET | List available repos |
+
+### Integrations & API Keys
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/integrations/available` | GET | Available integrations |
+| `/api/integrations` | GET | User integrations |
+| `/api/integrations/:service/configure` | POST | Configure integration |
+| `/api/api-keys` | GET/POST/DELETE | Manage API keys |
+
+### Workflows & Triggers
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/workflows` | GET/POST | List/create workflows |
+| `/api/workflows/:id` | GET/PUT/DELETE | Manage workflow |
+| `/api/triggers` | GET/POST | List/create triggers |
+| `/api/executions` | GET | Execution history |
+| `/webhooks/:path` | POST | Webhook trigger endpoint |
+
+## How Auth Works
 
 ```
 Browser                   Worker (:8787)              GitHub/Google
@@ -354,196 +303,23 @@ Browser                   Worker (:8787)              GitHub/Google
   |<-- { user, providers } --|                           |
 ```
 
-- The worker exchanges the OAuth code server-side (client secret never exposed to browser)
-- Session tokens are random 32-byte hex, hashed with SHA-256 before D1 storage, 7-day expiry
-- GitHub access tokens are encrypted with AES-256-GCM and stored in `oauth_tokens` for repo operations
-- API keys (from Settings page) continue to work as Bearer tokens for programmatic access
-
-## API Endpoints
-
-### Public
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-
-### Protected (require `Authorization: Bearer <token>`)
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/sessions` | GET | List user sessions |
-| `/api/sessions` | POST | Create new session |
-| `/api/sessions/:id` | GET | Get session details |
-| `/api/sessions/:id` | DELETE | Terminate session |
-| `/api/integrations/available` | GET | List available integrations |
-| `/api/integrations` | GET | List configured integrations |
-| `/api/integrations/:service/configure` | POST | Configure integration |
-| `/api/integrations/:id/sync` | POST | Trigger sync |
-| `/api/files` | GET | List files |
-| `/api/files` | POST | Upload file |
-| `/api/files/:id` | GET | Download file |
-
-### Agent Proxy
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/agent/sessions/:id/messages` | POST | Send message to agent |
-| `/agent/sessions/:id/messages` | GET | Get message history |
-| `/agent/sessions/:id/ws` | WebSocket | Real-time agent communication |
-
-## Testing
-
-### Health Check
-
-```bash
-curl http://localhost:8787/health
-```
-
-### With Authentication
-
-```bash
-# Using test token (after running db:seed)
-curl -H "Authorization: Bearer test-api-token-12345" \
-  http://localhost:8787/api/integrations/available
-```
-
-### Create a Session
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer test-api-token-12345" \
-  -H "Content-Type: application/json" \
-  -d '{"workspace": "/workspace/my-project"}' \
-  http://localhost:8787/api/sessions
-```
-
-## Development
-
-### Project Structure
-
-```
-agent-ops/
-├── Dockerfile              # OpenCode server container
-├── docker-compose.yml      # Local dev stack
-├── .env.example            # Environment template
-├── packages/
-│   ├── client/             # React frontend
-│   │   ├── src/
-│   │   │   ├── api/              # API client and hooks
-│   │   │   ├── components/       # React components
-│   │   │   ├── hooks/            # Custom hooks
-│   │   │   ├── routes/           # TanStack Router pages
-│   │   │   ├── stores/           # Zustand state stores
-│   │   │   └── styles/           # Global CSS
-│   │   ├── index.html
-│   │   └── vite.config.ts
-│   ├── shared/             # Shared types and utilities
-│   │   └── src/
-│   │       ├── types.ts
-│   │       └── errors.ts
-│   └── worker/             # Cloudflare Worker
-│       ├── src/
-│       │   ├── index.ts           # Entry point
-│       │   ├── env.ts             # Environment types
-│       │   ├── routes/            # API routes
-│       │   ├── durable-objects/   # DOs for state
-│       │   ├── integrations/      # Third-party integrations
-│       │   ├── middleware/        # Auth, error handling
-│       │   └── lib/               # OpenCode client, DB helpers
-│       ├── migrations/            # D1 SQL migrations
-│       ├── scripts/               # Utility scripts
-│       ├── .dev.vars              # Local secrets
-│       └── wrangler.toml          # Worker config
-└── workspaces/             # Docker volume mount
-```
-
-### Commands
-
-```bash
-# Client commands (from packages/client)
-pnpm run dev              # Start Vite dev server
-pnpm run build            # Production build
-pnpm run preview          # Preview production build
-pnpm run typecheck        # Type check
-
-# Worker commands (from packages/worker)
-pnpm run dev              # Start local dev server
-pnpm run build            # Dry-run deploy
-pnpm run deploy           # Deploy to Cloudflare
-pnpm run typecheck        # Type check
-pnpm run db:migrate       # Run D1 migrations (local)
-pnpm run db:migrate:prod  # Run D1 migrations (production)
-pnpm run db:seed          # Seed test data
-
-# Docker commands (from project root)
-docker-compose up -d      # Start OpenCode container
-docker-compose down       # Stop containers
-docker-compose logs -f    # View logs
-
-# Run from project root with filters
-pnpm --filter @agent-ops/client dev       # Start frontend
-pnpm --filter @agent-ops/worker dev       # Start worker
-pnpm --filter @agent-ops/client typecheck # Type check client
-pnpm --filter @agent-ops/worker typecheck # Type check worker
-```
-
-### Adding Integrations
-
-Integrations are located in `packages/worker/src/integrations/`. Each integration implements:
-
-1. OAuth flow (if applicable)
-2. Data sync logic
-3. Entity mapping to unified schema
-
-Current integrations:
-- GitHub (repos, issues, PRs)
-- Gmail (emails, threads)
-- Google Calendar (events)
+- Session tokens: random 32-byte hex, SHA-256 hashed, 7-day expiry
+- GitHub access tokens: AES-256-GCM encrypted in `oauth_tokens`
+- JWT tokens: issued by Worker for sandbox service auth, validated by Runner gateway
 
 ## Environment Variables
 
-### Worker (`.dev.vars` for local, `wrangler secret` for production)
+### Worker (`packages/worker/.dev.vars`)
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ENCRYPTION_KEY` | Yes | Key for AES-256-GCM encryption of OAuth tokens (32+ chars) |
-| `GITHUB_CLIENT_ID` | Yes | GitHub OAuth App client ID |
-| `GITHUB_CLIENT_SECRET` | Yes | GitHub OAuth App client secret |
-| `GOOGLE_CLIENT_ID` | No | Google OAuth client ID (for Google sign-in) |
+| `ENCRYPTION_KEY` | Yes | AES-256-GCM key for OAuth token encryption (32+ chars) |
+| `GITHUB_CLIENT_ID` | Yes | GitHub OAuth client ID |
+| `GITHUB_CLIENT_SECRET` | Yes | GitHub OAuth client secret |
+| `GOOGLE_CLIENT_ID` | No | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | No | Google OAuth client secret |
-| `FRONTEND_URL` | Prod only | Frontend URL for OAuth redirects (defaults to `localhost:5173`) |
+| `FRONTEND_URL` | Prod | Frontend URL for OAuth redirects |
 | `ENVIRONMENT` | No | `development` or `production` |
-
-## Deployment
-
-### Cloudflare Worker
-
-1. Create D1 database:
-   ```bash
-   wrangler d1 create agent-ops-db
-   ```
-
-2. Update `wrangler.toml` with database ID
-
-3. Create R2 bucket:
-   ```bash
-   wrangler r2 bucket create agent-ops-storage
-   ```
-
-4. Set secrets:
-   ```bash
-   wrangler secret put ENCRYPTION_KEY
-   wrangler secret put OPENCODE_SERVER_PASSWORD
-   ```
-
-5. Deploy:
-   ```bash
-   pnpm run deploy
-   ```
-
-### OpenCode Container
-
-Deploy to your container platform of choice (Fly.io, Railway, etc.) using the provided Dockerfile.
 
 ## License
 
