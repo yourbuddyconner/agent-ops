@@ -1,50 +1,16 @@
-import { useSessions } from './sessions';
-import { useIntegrations } from './integrations';
-import type { AgentSession } from './types';
-
-export interface DashboardStats {
-  activeSessions: number;
-  totalSessions: number;
-  integrations: number;
-  activeIntegrations: number;
-  recentSessions: AgentSession[];
-}
+import { useQuery } from '@tanstack/react-query';
+import { api } from './client';
+import type { DashboardStatsResponse } from './types';
 
 export const dashboardKeys = {
   all: ['dashboard'] as const,
-  stats: () => [...dashboardKeys.all, 'stats'] as const,
+  stats: (period: number) => [...dashboardKeys.all, 'stats', period] as const,
 };
 
-export function useDashboardStats() {
-  const sessionsQuery = useSessions();
-  const integrationsQuery = useIntegrations();
-
-  const isLoading = sessionsQuery.isLoading || integrationsQuery.isLoading;
-  const isError = sessionsQuery.isError || integrationsQuery.isError;
-  const error = sessionsQuery.error || integrationsQuery.error;
-
-  const sessions = sessionsQuery.data?.sessions ?? [];
-  const integrations = integrationsQuery.data?.integrations ?? [];
-
-  const stats: DashboardStats = {
-    activeSessions: sessions.filter((s) => s.status === 'running').length,
-    totalSessions: sessions.length,
-    integrations: integrations.length,
-    activeIntegrations: integrations.filter((i) => i.status === 'active').length,
-    recentSessions: sessions
-      .slice()
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .slice(0, 5),
-  };
-
-  return {
-    data: stats,
-    isLoading,
-    isError,
-    error,
-    refetch: () => {
-      sessionsQuery.refetch();
-      integrationsQuery.refetch();
-    },
-  };
+export function useDashboardStats(periodHours: number = 720) {
+  return useQuery({
+    queryKey: dashboardKeys.stats(periodHours),
+    queryFn: () => api.get<DashboardStatsResponse>(`/dashboard/stats?period=${periodHours}&unit=hours`),
+    refetchInterval: 60_000,
+  });
 }

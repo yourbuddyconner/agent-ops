@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useChat } from '@/hooks/use-chat';
 import { useSession } from '@/api/sessions';
@@ -37,13 +37,25 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     requestDiff,
     diffData,
     diffLoading,
+    runnerConnected,
   } = useChat(sessionId);
 
   const [showDiff, setShowDiff] = useState(false);
 
+  // Track whether we've seen a hibernate transition in this page session
+  // so we only show "awaiting runner" after a restore, not on initial load
+  const wasHibernatingRef = useRef(false);
+  if (sessionStatus === 'hibernating' || sessionStatus === 'restoring' || sessionStatus === 'hibernated') {
+    wasHibernatingRef.current = true;
+  }
+  if (runnerConnected) {
+    wasHibernatingRef.current = false;
+  }
+
   const isLoading = connectionStatus === 'connecting';
   const isTerminated = sessionStatus === 'terminated';
   const isHibernateTransition = sessionStatus === 'hibernating' || sessionStatus === 'restoring';
+  const isAwaitingRunner = wasHibernatingRef.current && sessionStatus === 'running' && !runnerConnected;
   const isDisabled = !isConnected || isTerminated;
   const isAgentActive = isAgentThinking || agentStatus === 'thinking' || agentStatus === 'tool_calling' || agentStatus === 'streaming';
 
@@ -73,7 +85,10 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           <span className="font-mono text-[12px] font-medium text-neutral-600 dark:text-neutral-400">
             {sessionId.slice(0, 8)}
           </span>
-          <SessionStatusBadge status={sessionStatus} />
+          <SessionStatusBadge
+            status={sessionStatus}
+            errorMessage={session?.errorMessage}
+          />
         </div>
         <div className="flex items-center gap-1.5">
           <Link to="/sessions/$sessionId/editor" params={{ sessionId }}>
@@ -114,7 +129,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
         <ChatSkeleton />
       ) : (
         <>
-          <div className="relative flex-1 overflow-hidden">
+          <div className="relative flex min-h-0 flex-1 flex-col">
             <MessageList
               messages={messages}
               streamingContent={streamingContent}
@@ -123,12 +138,23 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
               agentStatusDetail={agentStatusDetail}
               onRevert={revertMessage}
             />
-            {isHibernateTransition && (
+            {sessionStatus === 'hibernated' && (
+              <div className="absolute inset-0 flex items-center justify-center bg-surface-0/50 dark:bg-surface-0/60 backdrop-blur-[3px] transition-opacity duration-300">
+                <span className="font-mono text-[13px] text-neutral-400 dark:text-neutral-500">
+                  Begin typing to wake
+                </span>
+              </div>
+            )}
+            {(isHibernateTransition || isAwaitingRunner) && (
               <div className="absolute inset-0 flex items-center justify-center bg-surface-0/70 dark:bg-surface-0/80 backdrop-blur-[2px]">
                 <div className="flex items-center gap-2.5 rounded-lg border border-neutral-200 bg-surface-0 px-4 py-2.5 shadow-sm dark:border-neutral-700 dark:bg-surface-1">
                   <LoaderIcon className="h-4 w-4 animate-spin text-neutral-500" />
                   <span className="font-mono text-[12px] text-neutral-600 dark:text-neutral-400">
-                    {sessionStatus === 'hibernating' ? 'Hibernating session...' : 'Restoring session...'}
+                    {sessionStatus === 'hibernating'
+                      ? 'Hibernating session...'
+                      : isAwaitingRunner
+                        ? 'Connecting to agent...'
+                        : 'Restoring session...'}
                   </span>
                 </div>
               </div>
@@ -147,7 +173,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           <ChatInput
             onSend={sendMessage}
             disabled={isDisabled}
-            sendDisabled={isHibernateTransition}
+            sendDisabled={isHibernateTransition || isAwaitingRunner}
             placeholder={
               isDisabled
                 ? 'Session is not available'
@@ -174,7 +200,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   );
 }
 
-function SessionStatusBadge({ status }: { status: string }) {
+function SessionStatusBadge({ status, errorMessage }: { status: string; errorMessage?: string }) {
   const variants: Record<
     string,
     'default' | 'success' | 'warning' | 'error' | 'secondary'
@@ -189,7 +215,7 @@ function SessionStatusBadge({ status }: { status: string }) {
     error: 'error',
   };
 
-  return <Badge variant={variants[status] ?? 'default'}>{status}</Badge>;
+  return <Badge variant={variants[status] ?? 'default'} title={errorMessage}>{status}</Badge>;
 }
 
 function ConnectionStatusBadge({ status }: { status: string }) {

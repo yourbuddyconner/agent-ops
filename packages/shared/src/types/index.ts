@@ -89,6 +89,7 @@ export interface AgentSession {
   tunnelUrls?: Record<string, string>;
   gatewayUrl?: string;
   metadata?: Record<string, unknown>;
+  errorMessage?: string;
   createdAt: Date;
   lastActiveAt: Date;
 }
@@ -133,6 +134,66 @@ export interface User {
   idleTimeoutSeconds?: number;
   createdAt: Date;
   updatedAt: Date;
+}
+
+// Dashboard types
+export interface DashboardHeroStats {
+  totalSessions: number;
+  activeSessions: number;
+  totalMessages: number;
+  uniqueRepos: number;
+  totalToolCalls: number;
+  totalSessionDurationSeconds: number;
+  avgSessionDurationSeconds: number;
+  estimatedLinesChanged: number;
+  sessionHours: number;
+}
+
+export interface DashboardDelta {
+  sessions: number;
+  messages: number;
+}
+
+export interface DashboardDayActivity {
+  date: string;
+  sessions: number;
+  messages: number;
+}
+
+export interface DashboardTopRepo {
+  workspace: string;
+  sessionCount: number;
+  messageCount: number;
+}
+
+export interface DashboardRecentSession {
+  id: string;
+  workspace: string;
+  status: SessionStatus;
+  messageCount: number;
+  toolCallCount: number;
+  durationSeconds: number;
+  createdAt: string;
+  lastActiveAt: string;
+  errorMessage?: string;
+}
+
+export interface DashboardActiveSession {
+  id: string;
+  workspace: string;
+  status: SessionStatus;
+  createdAt: string;
+  lastActiveAt: string;
+}
+
+export interface DashboardStatsResponse {
+  hero: DashboardHeroStats;
+  delta: DashboardDelta;
+  activity: DashboardDayActivity[];
+  topRepos: DashboardTopRepo[];
+  recentSessions: DashboardRecentSession[];
+  activeSessions: DashboardActiveSession[];
+  period: number;
 }
 
 // API Request/Response types

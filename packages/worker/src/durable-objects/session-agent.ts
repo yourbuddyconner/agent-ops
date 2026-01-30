@@ -1107,19 +1107,27 @@ export class SessionAgentDO {
       console.log(`[SessionAgentDO] Sandbox spawned: ${result.sandboxId} for session ${sessionId}`);
     } catch (err) {
       console.error(`[SessionAgentDO] Failed to spawn sandbox for session ${sessionId}:`, err);
+      const errorText = `Failed to create sandbox: ${err instanceof Error ? err.message : String(err)}`;
       this.setStateValue('status', 'error');
       if (sessionId) {
-        updateSessionStatus(this.env.DB, sessionId, 'error').catch((e) =>
+        updateSessionStatus(this.env.DB, sessionId, 'error', undefined, errorText).catch((e) =>
           console.error('[SessionAgentDO] Failed to sync error status to D1:', e),
         );
       }
+      // Persist error as a system message so it's visible on reconnect
+      const errId = crypto.randomUUID();
+      this.ctx.storage.sql.exec(
+        'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
+        errId, 'system', `Error: ${errorText}`
+      );
       this.broadcastToClients({
         type: 'status',
         data: { status: 'error' },
       });
       this.broadcastToClients({
         type: 'error',
-        error: `Failed to create sandbox: ${err instanceof Error ? err.message : String(err)}`,
+        messageId: errId,
+        error: errorText,
       });
 
       // Publish session.errored to EventBus
@@ -1444,19 +1452,27 @@ export class SessionAgentDO {
       console.log(`[SessionAgentDO] Session ${sessionId} hibernated, snapshot: ${result.snapshotImageId}`);
     } catch (err) {
       console.error(`[SessionAgentDO] Failed to hibernate session ${sessionId}:`, err);
+      const errorText = `Failed to hibernate: ${err instanceof Error ? err.message : String(err)}`;
       this.setStateValue('status', 'error');
       if (sessionId) {
-        updateSessionStatus(this.env.DB, sessionId, 'error').catch((e) =>
+        updateSessionStatus(this.env.DB, sessionId, 'error', undefined, errorText).catch((e) =>
           console.error('[SessionAgentDO] Failed to sync error status to D1:', e),
         );
       }
+      // Persist error as a system message
+      const errId = crypto.randomUUID();
+      this.ctx.storage.sql.exec(
+        'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
+        errId, 'system', `Error: ${errorText}`
+      );
       this.broadcastToClients({
         type: 'status',
         data: { status: 'error' },
       });
       this.broadcastToClients({
         type: 'error',
-        error: `Failed to hibernate: ${err instanceof Error ? err.message : String(err)}`,
+        messageId: errId,
+        error: errorText,
       });
     }
   }
@@ -1532,19 +1548,27 @@ export class SessionAgentDO {
       console.log(`[SessionAgentDO] Session ${sessionId} restored, new sandbox: ${result.sandboxId}`);
     } catch (err) {
       console.error(`[SessionAgentDO] Failed to restore session ${sessionId}:`, err);
+      const errorText = `Failed to restore session: ${err instanceof Error ? err.message : String(err)}`;
       this.setStateValue('status', 'error');
       if (sessionId) {
-        updateSessionStatus(this.env.DB, sessionId, 'error').catch((e) =>
+        updateSessionStatus(this.env.DB, sessionId, 'error', undefined, errorText).catch((e) =>
           console.error('[SessionAgentDO] Failed to sync error status to D1:', e),
         );
       }
+      // Persist error as a system message
+      const errId = crypto.randomUUID();
+      this.ctx.storage.sql.exec(
+        'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
+        errId, 'system', `Error: ${errorText}`
+      );
       this.broadcastToClients({
         type: 'status',
         data: { status: 'error' },
       });
       this.broadcastToClients({
         type: 'error',
-        error: `Failed to restore session: ${err instanceof Error ? err.message : String(err)}`,
+        messageId: errId,
+        error: errorText,
       });
     }
   }

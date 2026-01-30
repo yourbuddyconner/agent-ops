@@ -18,7 +18,7 @@ export function StreamingMessage({ content }: StreamingMessageProps) {
         </div>
 
         <div className="relative">
-          <MarkdownContent content={content} />
+          <MarkdownContent content={content} isStreaming />
           <span className="ml-0.5 inline-block h-3.5 w-[2px] animate-pulse bg-accent/60" />
         </div>
       </div>

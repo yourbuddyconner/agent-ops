@@ -110,13 +110,14 @@ export async function updateSessionStatus(
   db: D1Database,
   id: string,
   status: AgentSession['status'],
-  containerId?: string
+  containerId?: string,
+  errorMessage?: string
 ): Promise<void> {
   await db
     .prepare(
-      'UPDATE sessions SET status = ?, container_id = COALESCE(?, container_id), last_active_at = datetime(\'now\') WHERE id = ?'
+      'UPDATE sessions SET status = ?, container_id = COALESCE(?, container_id), error_message = ?, last_active_at = datetime(\'now\') WHERE id = ?'
     )
-    .bind(status, containerId || null, id)
+    .bind(status, containerId || null, errorMessage || null, id)
     .run();
 }
 
@@ -468,6 +469,20 @@ export async function hasOAuthProvider(db: D1Database, userId: string, provider:
   return !!result;
 }
 
+// Session metrics (flushed from DO)
+export async function updateSessionMetrics(
+  db: D1Database,
+  id: string,
+  metrics: { messageCount: number; toolCallCount: number }
+): Promise<void> {
+  await db
+    .prepare(
+      "UPDATE sessions SET message_count = ?, tool_call_count = ?, last_active_at = datetime('now') WHERE id = ?"
+    )
+    .bind(metrics.messageCount, metrics.toolCallCount, id)
+    .run();
+}
+
 // Mapping helpers
 function mapSession(row: any): AgentSession {
   return {
@@ -477,6 +492,7 @@ function mapSession(row: any): AgentSession {
     status: row.status,
     containerId: row.container_id || undefined,
     metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+    errorMessage: row.error_message || undefined,
     createdAt: new Date(row.created_at),
     lastActiveAt: new Date(row.last_active_at),
   };
