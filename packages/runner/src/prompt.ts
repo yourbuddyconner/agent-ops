@@ -152,17 +152,27 @@ export class PromptHandler {
 
   async handleAnswer(questionId: string, answer: string | boolean): Promise<void> {
     if (!this.sessionId) return;
+    const response = answer === false ? "reject" : "always";
+    await this.respondToPermission(questionId, response);
+  }
+
+  private async approvePermission(permissionId: string): Promise<void> {
+    await this.respondToPermission(permissionId, "always");
+  }
+
+  private async respondToPermission(permissionId: string, response: "once" | "always" | "reject"): Promise<void> {
+    if (!this.sessionId) return;
 
     try {
-      // OpenCode uses permission.respond for answering permission requests
-      const res = await fetch(`${this.opencodeUrl}/session/${this.sessionId}/permission`, {
+      const url = `${this.opencodeUrl}/session/${this.sessionId}/permissions/${permissionId}`;
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: questionId, allow: Boolean(answer) }),
+        body: JSON.stringify({ response }),
       });
-      console.log(`[PromptHandler] Permission response: ${res.status}`);
+      console.log(`[PromptHandler] Permission ${permissionId} → ${response}: ${res.status}`);
     } catch (err) {
-      console.error("[PromptHandler] Error forwarding answer:", err);
+      console.error("[PromptHandler] Error responding to permission:", err);
     }
   }
 
@@ -459,20 +469,19 @@ export class PromptHandler {
         break;
       }
 
+      case "permission.asked":
       case "permission.updated": {
-        // Permission request created or updated
-        if (this.activeMessageId) {
-          const id = String(props.id ?? "");
-          const questionText = String(
-            (props as Record<string, unknown>).message ??
-            (props as Record<string, unknown>).description ??
-            id ??
-            "Permission requested"
-          );
-          if (id) {
-            console.log(`[PromptHandler] Permission request: ${id}`);
-            this.agentClient.sendQuestion(id, questionText);
-          }
+        // Permission request — auto-approve since this is a headless agent
+        const permId = String(props.id ?? "");
+        const title = String(
+          (props as Record<string, unknown>).title ??
+          (props as Record<string, unknown>).message ??
+          (props as Record<string, unknown>).description ??
+          "Permission requested"
+        );
+        if (permId) {
+          console.log(`[PromptHandler] Permission request: ${permId} — "${title}" (auto-approving)`);
+          this.approvePermission(permId);
         }
         break;
       }
@@ -503,6 +512,7 @@ export class PromptHandler {
       }
 
       case "server.connected":
+      case "server.heartbeat":
       case "session.created":
       case "session.updated":
       case "session.deleted":
@@ -543,10 +553,9 @@ export class PromptHandler {
           this.agentClient.sendAgentStatus("streaming");
         }
         this.hasActivity = true;
-        // Add paragraph separator when text resumes after tool calls
-        if (this.hadToolSinceLastText && this.streamedContent.length > 0) {
-          this.streamedContent += "\n\n";
-          this.agentClient.sendStreamChunk(this.activeMessageId, "\n\n");
+        // Text resuming after tool calls — streamedContent was already committed
+        // before the tool started, so just reset the flag and keep accumulating.
+        if (this.hadToolSinceLastText) {
           this.hadToolSinceLastText = false;
         }
         this.streamedContent += delta;
@@ -602,6 +611,15 @@ export class PromptHandler {
     this.hadToolSinceLastText = true;
     this.lastChunkTime = Date.now();
     this.resetResponseTimeout();
+
+    // When a NEW tool appears and we have accumulated text, commit the text
+    // as a stored assistant message so it persists across page reloads.
+    // The client merges consecutive assistant text messages back together.
+    if (!prevStatus && this.streamedContent.trim() && this.activeMessageId) {
+      console.log(`[PromptHandler] Committing text segment (${this.streamedContent.length} chars) before tool "${toolName}"`);
+      this.agentClient.sendResult(this.activeMessageId, this.streamedContent);
+      this.streamedContent = "";
+    }
 
     // Send tool call on every state transition with callID + status
     if (currentStatus === "pending" || currentStatus === "running") {
