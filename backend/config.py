@@ -4,6 +4,7 @@ import os
 
 # Sandbox defaults
 DEFAULT_IDLE_TIMEOUT_SECONDS = 15 * 60  # 15 minutes
+MODAL_IDLE_TIMEOUT_BUFFER_SECONDS = 5 * 60  # 5-minute buffer beyond DO's idle timeout
 MAX_TIMEOUT_SECONDS = 24 * 60 * 60  # 24 hours
 OPENCODE_PORT = 4096
 GATEWAY_PORT = 9000

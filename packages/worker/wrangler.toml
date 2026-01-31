@@ -10,6 +10,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "development"
+ALLOWED_EMAILS = "me@connerswann.me"
 MODAL_BACKEND_URL = "https://yourbuddyconner--{label}.modal.run"
 # FRONTEND_URL - set via .dev.vars (local) or `wrangler secret put` (production)
 # SANDBOX_JWT_SECRET - set via `wrangler secret put SANDBOX_JWT_SECRET`

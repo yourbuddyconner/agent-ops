@@ -47,6 +47,9 @@ export interface Env {
 
   // JWT secret for sandbox iframe authentication
   SANDBOX_JWT_SECRET: string;
+
+  // Email allowlist (comma-separated). If unset, all emails are allowed.
+  ALLOWED_EMAILS?: string;
 }
 
 // Type for Hono context variables

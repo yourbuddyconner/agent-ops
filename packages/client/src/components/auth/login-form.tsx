@@ -43,9 +43,10 @@ export function LoginForm() {
             {error === 'invalid_state' && 'Invalid OAuth state. Please try again.'}
             {error === 'token_exchange_failed' && 'Failed to exchange token. Please try again.'}
             {error === 'no_email' && 'Could not retrieve email from provider.'}
+            {error === 'not_allowed' && 'Access restricted. Contact the administrator.'}
             {error === 'oauth_error' && 'An error occurred during sign in. Please try again.'}
             {error === 'validation_failed' && 'Session validation failed. Please sign in again.'}
-            {!['missing_params', 'invalid_state', 'token_exchange_failed', 'no_email', 'oauth_error', 'validation_failed'].includes(error) && 'An unexpected error occurred.'}
+            {!['missing_params', 'invalid_state', 'token_exchange_failed', 'no_email', 'not_allowed', 'oauth_error', 'validation_failed'].includes(error) && 'An unexpected error occurred.'}
           </p>
         )}
         <Button

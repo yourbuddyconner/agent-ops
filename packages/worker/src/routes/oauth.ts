@@ -37,6 +37,12 @@ async function validateStateJWT(state: string, env: Env): Promise<boolean> {
   return payload !== null;
 }
 
+function isEmailAllowed(env: Env, email: string): boolean {
+  const allowed = env.ALLOWED_EMAILS;
+  if (!allowed) return true;
+  return allowed.split(',').map(e => e.trim().toLowerCase()).includes(email.toLowerCase());
+}
+
 function getFrontendUrl(env: Env): string {
   return env.FRONTEND_URL || 'http://localhost:5173';
 }
@@ -158,6 +164,10 @@ oauthRouter.get('/github/callback', async (c) => {
 
     if (!email) {
       return c.redirect(`${frontendUrl}/login?error=no_email`);
+    }
+
+    if (!isEmailAllowed(c.env, email)) {
+      return c.redirect(`${frontendUrl}/login?error=not_allowed`);
     }
 
     const githubId = String(profile.id);
@@ -312,6 +322,10 @@ oauthRouter.get('/google/callback', async (c) => {
 
     if (!payload.email || !payload.email_verified) {
       return c.redirect(`${frontendUrl}/login?error=email_not_verified`);
+    }
+
+    if (!isEmailAllowed(c.env, payload.email)) {
+      return c.redirect(`${frontendUrl}/login?error=not_allowed`);
     }
 
     // Find user by email or create new

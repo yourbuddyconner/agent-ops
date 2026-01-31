@@ -10,10 +10,19 @@ from config import (
     DEFAULT_IDLE_TIMEOUT_SECONDS,
     GATEWAY_PORT,
     MAX_TIMEOUT_SECONDS,
+    MODAL_IDLE_TIMEOUT_BUFFER_SECONDS,
     OPENCODE_PORT,
     get_secret,
 )
 from images.base import get_base_image
+
+
+class SandboxAlreadyFinishedError(Exception):
+    """Raised when trying to snapshot a sandbox that has already exited."""
+
+    def __init__(self, sandbox_id: str) -> None:
+        self.sandbox_id = sandbox_id
+        super().__init__(f"Sandbox {sandbox_id} has already finished and cannot be snapshotted")
 
 
 @dataclass
@@ -69,7 +78,7 @@ class SandboxManager:
             image=image,
             encrypted_ports=[OPENCODE_PORT, GATEWAY_PORT],
             timeout=MAX_TIMEOUT_SECONDS,
-            idle_timeout=config.idle_timeout_seconds,
+            idle_timeout=config.idle_timeout_seconds + MODAL_IDLE_TIMEOUT_BUFFER_SECONDS,
             secrets=[modal.Secret.from_dict(secrets_dict)],
             volumes={
                 "/workspace": modal.Volume.from_name(
@@ -118,7 +127,11 @@ class SandboxManager:
     async def snapshot_and_terminate(self, sandbox_id: str) -> str:
         """Snapshot a sandbox's filesystem and terminate it. Returns the snapshot image ID."""
         sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
-        image = await sandbox.snapshot_filesystem.aio(timeout=55)
+        try:
+            image = await sandbox.snapshot_filesystem.aio(timeout=55)
+        except modal.exception.ConflictError:
+            # Sandbox already exited (e.g. idle timeout) — can't snapshot
+            raise SandboxAlreadyFinishedError(sandbox_id)
         await sandbox.terminate.aio()
         return image.object_id
 
@@ -144,7 +157,7 @@ class SandboxManager:
             image=image,
             encrypted_ports=[OPENCODE_PORT, GATEWAY_PORT],
             timeout=MAX_TIMEOUT_SECONDS,
-            idle_timeout=config.idle_timeout_seconds,
+            idle_timeout=config.idle_timeout_seconds + MODAL_IDLE_TIMEOUT_BUFFER_SECONDS,
             secrets=[modal.Secret.from_dict(secrets_dict)],
             volumes={
                 "/workspace": modal.Volume.from_name(

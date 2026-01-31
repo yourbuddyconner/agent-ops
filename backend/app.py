@@ -15,6 +15,7 @@ fn_image = (
     .add_local_dir("packages/runner", remote_path="/root/packages/runner")
 )
 
+from sandboxes import SandboxAlreadyFinishedError
 from session import CreateSessionRequest, SessionManager
 
 session_manager = SessionManager(app)
@@ -87,8 +88,16 @@ async def hibernate_session(request: dict) -> dict:
     Returns:
         snapshotImageId: str
     """
+    from fastapi.responses import JSONResponse
+
     sandbox_id = request["sandboxId"]
-    snapshot_image_id = await session_manager.hibernate(sandbox_id)
+    try:
+        snapshot_image_id = await session_manager.hibernate(sandbox_id)
+    except SandboxAlreadyFinishedError:
+        return JSONResponse(
+            status_code=409,
+            content={"error": "sandbox_already_finished", "message": "Sandbox has already exited (idle timeout). Cannot hibernate."},
+        )
     return {"snapshotImageId": snapshot_image_id}
 
 

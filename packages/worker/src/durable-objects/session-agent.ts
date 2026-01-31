@@ -1417,6 +1417,30 @@ export class SessionAgentDO {
         body: JSON.stringify({ sandboxId }),
       });
 
+      if (response.status === 409) {
+        // Sandbox already exited (idle timeout) — can't snapshot, treat as stopped
+        console.log(`[SessionAgentDO] Session ${sessionId} sandbox already finished, marking as terminated`);
+        this.sendToRunner({ type: 'stop' });
+        const runnerSockets409 = this.ctx.getWebSockets('runner');
+        for (const ws of runnerSockets409) {
+          try { ws.close(1000, 'Sandbox already exited'); } catch { /* ignore */ }
+        }
+        this.setStateValue('sandboxId', '');
+        this.setStateValue('tunnelUrls', '');
+        this.setStateValue('runnerBusy', 'false');
+        this.setStateValue('status', 'terminated');
+        this.broadcastToClients({
+          type: 'status',
+          data: { status: 'terminated', sandboxRunning: false },
+        });
+        if (sessionId) {
+          updateSessionStatus(this.env.DB, sessionId, 'terminated').catch((e) =>
+            console.error('[SessionAgentDO] Failed to sync terminated status to D1:', e),
+          );
+        }
+        return;
+      }
+
       if (!response.ok) {
         const err = await response.text();
         throw new Error(`Backend returned ${response.status}: ${err}`);
