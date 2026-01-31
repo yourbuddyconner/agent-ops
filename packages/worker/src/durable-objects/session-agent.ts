@@ -1,5 +1,5 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds } from '../lib/db.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
 
@@ -1020,6 +1020,7 @@ export class SessionAgentDO {
     // If sandbox info was provided directly, we're already running
     if (body.sandboxId && body.tunnelUrls) {
       this.setStateValue('status', 'running');
+      this.markRunningStarted();
       updateSessionStatus(this.env.DB, body.sessionId, 'running', body.sandboxId).catch((err) =>
         console.error('[SessionAgentDO] Failed to sync status to D1:', err),
       );
@@ -1087,6 +1088,7 @@ export class SessionAgentDO {
       this.setStateValue('sandboxId', result.sandboxId);
       this.setStateValue('tunnelUrls', JSON.stringify(result.tunnelUrls));
       this.setStateValue('status', 'running');
+      this.markRunningStarted();
 
       // Sync status to D1 so sessions list shows correct status
       updateSessionStatus(this.env.DB, sessionId!, 'running', result.sandboxId).catch((err) =>
@@ -1147,7 +1149,11 @@ export class SessionAgentDO {
     const terminateUrl = this.getStateValue('terminateUrl');
     const currentStatus = this.getStateValue('status');
 
-    // Flush metrics to D1 before termination
+    // Flush active time and metrics to D1 before termination
+    if (currentStatus === 'running') {
+      await this.flushActiveSeconds();
+      this.clearRunningStarted();
+    }
     await this.flushMetrics();
 
     // Tell runner to stop
@@ -1392,7 +1398,9 @@ export class SessionAgentDO {
     }
 
     try {
-      // Flush metrics to D1 before hibernate
+      // Flush active time and metrics to D1 before hibernate
+      await this.flushActiveSeconds();
+      this.clearRunningStarted();
       await this.flushMetrics();
 
       // Set status to hibernating
@@ -1550,6 +1558,7 @@ export class SessionAgentDO {
       this.setStateValue('tunnelUrls', JSON.stringify(result.tunnelUrls));
       this.setStateValue('snapshotImageId', '');
       this.setStateValue('status', 'running');
+      this.markRunningStarted();
       this.setStateValue('lastUserActivityAt', String(Date.now()));
 
       this.rescheduleIdleAlarm();
@@ -1707,6 +1716,46 @@ export class SessionAgentDO {
   }
 
   /**
+   * Record that the sandbox just entered the 'running' state.
+   * Stores a timestamp so we can later compute elapsed active seconds.
+   */
+  private markRunningStarted(): void {
+    this.setStateValue('runningStartedAt', String(Date.now()));
+  }
+
+  /**
+   * Flush accumulated active seconds to D1.
+   * Called when leaving the 'running' state (hibernate, terminate, error).
+   * Also called periodically from flushMetrics to avoid losing time if the DO restarts.
+   */
+  private async flushActiveSeconds(): Promise<void> {
+    const sessionId = this.getStateValue('sessionId');
+    const startStr = this.getStateValue('runningStartedAt');
+    if (!sessionId || !startStr) return;
+
+    const startMs = parseInt(startStr);
+    if (isNaN(startMs)) return;
+
+    const elapsedSeconds = Math.floor((Date.now() - startMs) / 1000);
+    if (elapsedSeconds > 0) {
+      try {
+        await addActiveSeconds(this.env.DB, sessionId, elapsedSeconds);
+      } catch (err) {
+        console.error('[SessionAgentDO] Failed to flush active seconds:', err);
+      }
+    }
+    // Reset the start marker to now so we don't double-count on next flush
+    this.setStateValue('runningStartedAt', String(Date.now()));
+  }
+
+  /**
+   * Clear the running start marker (when leaving running state permanently).
+   */
+  private clearRunningStarted(): void {
+    this.setStateValue('runningStartedAt', '');
+  }
+
+  /**
    * Flush message/tool-call counts from local SQLite to D1.
    * Called at lifecycle boundaries (stop, hibernate, alarm) and after each agent turn.
    */
@@ -1726,6 +1775,12 @@ export class SessionAgentDO {
       const toolCallCount = (toolRow?.count as number) ?? 0;
 
       await updateSessionMetrics(this.env.DB, sessionId, { messageCount, toolCallCount });
+
+      // Also flush active seconds if currently running
+      const status = this.getStateValue('status');
+      if (status === 'running') {
+        await this.flushActiveSeconds();
+      }
     } catch (err) {
       console.error('[SessionAgentDO] Failed to flush metrics:', err);
     }

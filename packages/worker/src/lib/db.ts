@@ -483,6 +483,20 @@ export async function updateSessionMetrics(
     .run();
 }
 
+export async function addActiveSeconds(
+  db: D1Database,
+  id: string,
+  seconds: number
+): Promise<void> {
+  if (seconds <= 0) return;
+  await db
+    .prepare(
+      'UPDATE sessions SET active_seconds = active_seconds + ? WHERE id = ?'
+    )
+    .bind(Math.round(seconds), id)
+    .run();
+}
+
 // Mapping helpers
 function mapSession(row: any): AgentSession {
   return {

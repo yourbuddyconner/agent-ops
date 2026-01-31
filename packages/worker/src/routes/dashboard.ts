@@ -74,7 +74,7 @@ dashboardRouter.get('/stats', async (c) => {
         COUNT(DISTINCT workspace) as unique_repos,
         COALESCE(SUM(message_count), 0) as total_messages,
         COALESCE(SUM(tool_call_count), 0) as total_tool_calls,
-        COALESCE(SUM(CAST((julianday(COALESCE(last_active_at, datetime('now'))) - julianday(created_at)) * 86400 AS INTEGER)), 0) as total_duration
+        COALESCE(SUM(active_seconds), 0) as total_duration
       FROM sessions
       WHERE user_id = ? AND created_at >= ?
     `).bind(user.id, periodStartStr).first<{
@@ -132,7 +132,7 @@ dashboardRouter.get('/stats', async (c) => {
     c.env.DB.prepare(`
       SELECT
         id, workspace, status, message_count, tool_call_count,
-        CAST((julianday(COALESCE(last_active_at, datetime('now'))) - julianday(created_at)) * 86400 AS INTEGER) as duration_seconds,
+        active_seconds as duration_seconds,
         created_at, last_active_at, error_message
       FROM sessions
       WHERE user_id = ?
