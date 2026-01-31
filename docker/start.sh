@@ -16,6 +16,10 @@ echo "[start.sh] Session: ${SESSION_ID}"
 # ─── VNC Stack ─────────────────────────────────────────────────────────
 
 echo "[start.sh] Starting VNC stack (Xvfb + fluxbox + x11vnc + websockify)"
+# Clean up stale lock/socket files from previous runs (e.g. after snapshot restore).
+# After a filesystem snapshot restore, all processes are dead but their lock files persist.
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+rm -f /root/.local/share/code-server/heartbeat /root/.local/share/code-server/*.sock
 Xvfb :99 -screen 0 1920x1080x24 &
 sleep 1
 fluxbox &
