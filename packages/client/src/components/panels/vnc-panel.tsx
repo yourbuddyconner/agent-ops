@@ -4,10 +4,11 @@ interface VNCPanelProps {
   gatewayUrl: string | undefined;
   token: string | undefined;
   isLoading?: boolean;
+  statusMessage?: string;
   className?: string;
 }
 
-export function VNCPanel({ gatewayUrl, token, isLoading, className }: VNCPanelProps) {
+export function VNCPanel({ gatewayUrl, token, isLoading, statusMessage, className }: VNCPanelProps) {
   // Use vnc.html (full viewer) with parameters:
   // - path: WebSocket path with /vnc/ prefix for our gateway routing
   // - autoconnect: Connect automatically on load
@@ -23,6 +24,7 @@ export function VNCPanel({ gatewayUrl, token, isLoading, className }: VNCPanelPr
       token={token}
       title="Desktop"
       isLoading={isLoading}
+      statusMessage={statusMessage}
       className={className}
     />
   );

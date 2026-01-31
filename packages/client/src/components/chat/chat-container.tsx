@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useChat } from '@/hooks/use-chat';
 import { useSession } from '@/api/sessions';
+import { useDrawer } from '@/routes/sessions/$sessionId';
 import { MessageList } from './message-list';
 import { ChatInput } from './chat-input';
 import { QuestionPrompt } from './question-prompt';
@@ -17,6 +18,7 @@ interface ChatContainerProps {
 
 export function ChatContainer({ sessionId }: ChatContainerProps) {
   const { data: session } = useSession(sessionId);
+  const drawer = useDrawer();
   const {
     messages,
     sessionStatus,
@@ -38,7 +40,13 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     diffData,
     diffLoading,
     runnerConnected,
+    logEntries,
   } = useChat(sessionId);
+
+  // Sync log entries to the editor drawer context
+  useEffect(() => {
+    drawer.setLogEntries(logEntries);
+  }, [logEntries, drawer.setLogEntries]);
 
   const [showDiff, setShowDiff] = useState(false);
 
@@ -58,6 +66,21 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   const isAwaitingRunner = wasHibernatingRef.current && sessionStatus === 'running' && !runnerConnected;
   const isDisabled = !isConnected || isTerminated;
   const isAgentActive = isAgentThinking || agentStatus === 'thinking' || agentStatus === 'tool_calling' || agentStatus === 'streaming';
+
+  // Sync transition overlays to layout level so they cover drawers too
+  // (hibernated state stays local so the chat input remains accessible for wake)
+  useEffect(() => {
+    if (isHibernateTransition || isAwaitingRunner) {
+      const message = sessionStatus === 'hibernating'
+        ? 'Hibernating session...'
+        : isAwaitingRunner
+          ? 'Connecting to agent...'
+          : 'Restoring session...';
+      drawer.setOverlay({ type: 'transition', message });
+    } else {
+      drawer.setOverlay(null);
+    }
+  }, [sessionStatus, isHibernateTransition, isAwaitingRunner, drawer.setOverlay]);
 
   // Global Escape key handler for abort
   useEffect(() => {
@@ -91,18 +114,14 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           />
         </div>
         <div className="flex items-center gap-1.5">
-          <Link to="/sessions/$sessionId/editor" params={{ sessionId }}>
-            <Button variant="ghost" size="sm">
-              <EditorIcon className="mr-1 h-3.5 w-3.5" />
-              Editor
-            </Button>
-          </Link>
-          <Link to="/sessions/$sessionId/files" params={{ sessionId }}>
-            <Button variant="ghost" size="sm">
-              <FilesIcon className="mr-1 h-3.5 w-3.5" />
-              Files
-            </Button>
-          </Link>
+          <Button variant="ghost" size="sm" onClick={drawer.toggleEditor}>
+            <EditorIcon className="mr-1 h-3.5 w-3.5" />
+            Editor
+          </Button>
+          <Button variant="ghost" size="sm" onClick={drawer.toggleFiles}>
+            <FilesIcon className="mr-1 h-3.5 w-3.5" />
+            Files
+          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -119,7 +138,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             <SessionActionsMenu
               session={{ id: sessionId, workspace: session.workspace, status: sessionStatus }}
               showOpen={false}
-              showEditorLink={true}
+              showEditorLink={false}
             />
           )}
         </div>
@@ -143,20 +162,6 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
                 <span className="font-mono text-[13px] text-neutral-400 dark:text-neutral-500">
                   Begin typing to wake
                 </span>
-              </div>
-            )}
-            {(isHibernateTransition || isAwaitingRunner) && (
-              <div className="absolute inset-0 flex items-center justify-center bg-surface-0/70 dark:bg-surface-0/80 backdrop-blur-[2px]">
-                <div className="flex items-center gap-2.5 rounded-lg border border-neutral-200 bg-surface-0 px-4 py-2.5 shadow-sm dark:border-neutral-700 dark:bg-surface-1">
-                  <LoaderIcon className="h-4 w-4 animate-spin text-neutral-500" />
-                  <span className="font-mono text-[12px] text-neutral-600 dark:text-neutral-400">
-                    {sessionStatus === 'hibernating'
-                      ? 'Hibernating session...'
-                      : isAwaitingRunner
-                        ? 'Connecting to agent...'
-                        : 'Restoring session...'}
-                  </span>
-                </div>
               </div>
             )}
           </div>
@@ -314,24 +319,6 @@ function FilesIcon({ className }: { className?: string }) {
   );
 }
 
-function LoaderIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-    </svg>
-  );
-}
 
 function DiffIcon({ className }: { className?: string }) {
   return (

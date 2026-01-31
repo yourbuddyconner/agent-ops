@@ -4,10 +4,11 @@ interface VSCodePanelProps {
   gatewayUrl: string | undefined;
   token: string | undefined;
   isLoading?: boolean;
+  statusMessage?: string;
   className?: string;
 }
 
-export function VSCodePanel({ gatewayUrl, token, isLoading, className }: VSCodePanelProps) {
+export function VSCodePanel({ gatewayUrl, token, isLoading, statusMessage, className }: VSCodePanelProps) {
   const src = gatewayUrl ? `${gatewayUrl}/vscode/` : undefined;
 
   return (
@@ -16,6 +17,7 @@ export function VSCodePanel({ gatewayUrl, token, isLoading, className }: VSCodeP
       token={token}
       title="VS Code"
       isLoading={isLoading}
+      statusMessage={statusMessage}
       className={className}
     />
   );

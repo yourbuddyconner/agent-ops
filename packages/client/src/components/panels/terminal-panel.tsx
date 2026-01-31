@@ -4,10 +4,11 @@ interface TerminalPanelProps {
   gatewayUrl: string | undefined;
   token: string | undefined;
   isLoading?: boolean;
+  statusMessage?: string;
   className?: string;
 }
 
-export function TerminalPanel({ gatewayUrl, token, isLoading, className }: TerminalPanelProps) {
+export function TerminalPanel({ gatewayUrl, token, isLoading, statusMessage, className }: TerminalPanelProps) {
   const src = gatewayUrl ? `${gatewayUrl}/ttyd/` : undefined;
 
   return (
@@ -16,6 +17,7 @@ export function TerminalPanel({ gatewayUrl, token, isLoading, className }: Termi
       token={token}
       title="Terminal"
       isLoading={isLoading}
+      statusMessage={statusMessage}
       className={className}
     />
   );

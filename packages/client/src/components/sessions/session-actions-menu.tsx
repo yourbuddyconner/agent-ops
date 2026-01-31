@@ -66,7 +66,7 @@ export function SessionActionsMenu({
           )}
           {showEditorLink && (
             <DropdownMenuItem asChild>
-              <Link to="/sessions/$sessionId/editor" params={{ sessionId: session.id }}>
+              <Link to="/sessions/$sessionId" params={{ sessionId: session.id }}>
                 Open in Editor
               </Link>
             </DropdownMenuItem>

@@ -6,6 +6,7 @@ interface IframePanelProps {
   token: string | undefined;
   title: string;
   isLoading?: boolean;
+  statusMessage?: string;
   className?: string;
 }
 
@@ -17,7 +18,7 @@ interface IframePanelProps {
  * it until the base `src` changes. Token refreshes happen in the background and
  * only take effect if the iframe needs to reload for other reasons.
  */
-export function IframePanel({ src, token, title, isLoading, className }: IframePanelProps) {
+export function IframePanel({ src, token, title, isLoading, statusMessage, className }: IframePanelProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
 
@@ -66,9 +67,11 @@ export function IframePanel({ src, token, title, isLoading, className }: IframeP
     return (
       <div className={cn('flex items-center justify-center bg-surface-0 text-neutral-500 dark:bg-surface-0 dark:text-neutral-400', className)}>
         <div className="text-center">
-          <div className="mx-auto mb-3 h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-accent dark:border-neutral-600 dark:border-t-accent" />
+          {!statusMessage && (
+            <div className="mx-auto mb-3 h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-accent dark:border-neutral-600 dark:border-t-accent" />
+          )}
           <p className="font-mono text-[11px]">
-            {isLoading ? `Loading ${title}...` : 'Waiting for sandbox...'}
+            {statusMessage ?? (isLoading ? `Loading ${title}...` : 'Waiting for sandbox...')}
           </p>
         </div>
       </div>
