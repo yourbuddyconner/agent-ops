@@ -11,7 +11,8 @@ tags:
     - sandbox
     - backend
 created_at: 2026-01-31T07:49:54Z
-updated_at: 2026-01-31T07:49:54Z
+updated_at: 2026-01-31T08:04:38Z
+parent: agent-ops-4i58
 ---
 
 Build a plugin system where plugins are npm packages that extend AgentOps across all layers (frontend, worker, runner, sandbox). A central manifest declares capabilities; a build-time resolver generates per-layer registries. The Python backend reads a resolved JSON file to apply sandbox declarations.

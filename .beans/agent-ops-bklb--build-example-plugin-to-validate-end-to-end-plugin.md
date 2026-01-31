@@ -10,8 +10,10 @@ tags:
     - runner
     - sandbox
 created_at: 2026-01-31T07:51:07Z
-updated_at: 2026-01-31T07:51:07Z
+updated_at: 2026-01-31T08:03:01Z
 parent: agent-ops-xc0m
+blocking:
+    - agent-ops-ab23
 ---
 
 Create a minimal in-repo example plugin that exercises all extension points.

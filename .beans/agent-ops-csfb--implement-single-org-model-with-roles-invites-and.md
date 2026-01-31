@@ -9,7 +9,8 @@ tags:
     - frontend
     - worker
 created_at: 2026-01-31T07:47:30Z
-updated_at: 2026-01-31T07:47:30Z
+updated_at: 2026-01-31T08:04:38Z
+parent: agent-ops-7e2r
 ---
 
 Add a single-organization model to Agent-Ops. The org has admin/member roles, org-level LLM API key management, org-level integrations, user invites with email+role, and email domain gating. The first user to sign up automatically becomes admin.
