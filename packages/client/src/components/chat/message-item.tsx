@@ -2,6 +2,7 @@ import type { Message } from '@/api/types';
 import { formatTime } from '@/lib/format';
 import { MarkdownContent } from './markdown';
 import { ToolCard, type ToolCallData, type ToolCallStatus } from './tool-cards';
+import { useDrawer } from '@/routes/sessions/$sessionId';
 
 interface MessageItemProps {
   message: Message;
@@ -12,6 +13,8 @@ export function MessageItem({ message, onRevert }: MessageItemProps) {
   const isUser = message.role === 'user';
   const isTool = message.role === 'tool';
   const isSystem = message.role === 'system';
+  const { activePanel } = useDrawer();
+  const compact = activePanel !== null;
 
   // Extract base64 screenshot parts if present
   const screenshotParts = getScreenshotParts(message.parts);
@@ -23,7 +26,7 @@ export function MessageItem({ message, onRevert }: MessageItemProps) {
   if (isUser) {
     return (
       <div className="group relative flex justify-end py-2.5 animate-fade-in">
-        <div className="max-w-[75%]">
+        <div className={compact ? 'max-w-[90%]' : 'max-w-[75%]'}>
           <div className="rounded-2xl rounded-br-md bg-neutral-900 px-4 py-2.5 text-white shadow-sm dark:bg-neutral-100 dark:text-neutral-900 dark:shadow-none [&_.markdown-body]:text-white/95 [&_.markdown-body]:dark:text-neutral-900">
             <MarkdownContent content={message.content} />
           </div>

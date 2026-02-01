@@ -52,14 +52,14 @@ const components: Components = {
   },
   code({ className, children, ...rest }) {
     const match = /language-(\w+)/.exec(className || '');
-    const isBlock = Boolean(match);
     const code = String(children).replace(/\n$/, '');
+    const isBlock = Boolean(match) || code.includes('\n');
 
     if (isBlock) {
-      if (match![1] === 'mermaid') {
+      if (match?.[1] === 'mermaid') {
         return <MermaidOrPlaceholder code={code} />;
       }
-      return <CodeBlock language={match![1]}>{code}</CodeBlock>;
+      return <CodeBlock language={match?.[1] ?? 'text'}>{code}</CodeBlock>;
     }
 
     return (
@@ -98,7 +98,7 @@ export const MarkdownContent = memo(function MarkdownContent({ content, isStream
   const element = useMemo(
     () => (
       <StreamingContext.Provider value={isStreaming}>
-        <div className="markdown-body mt-1 text-[13px] leading-relaxed text-neutral-700 dark:text-neutral-300">
+        <div className="markdown-body mt-1 max-w-full overflow-hidden text-[13px] leading-relaxed text-neutral-700 dark:text-neutral-300">
           <ReactMarkdown
             remarkPlugins={remarkPlugins}
             rehypePlugins={rehypePlugins}

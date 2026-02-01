@@ -6,6 +6,7 @@ import { ThinkingIndicator } from './thinking-indicator';
 import { MarkdownContent } from './markdown';
 import { ToolCard, type ToolCallData, type ToolCallStatus } from './tool-cards';
 import { ChildSessionInlineList } from './child-session-card';
+import { useDrawer } from '@/routes/sessions/$sessionId';
 import type { ChildSessionEvent } from '@/hooks/use-chat';
 import type { ChildSessionSummary } from '@/api/types';
 
@@ -62,6 +63,8 @@ function groupIntoTurns(messages: Message[]): MessageTurn[] {
 
 export function MessageList({ messages, streamingContent, isAgentThinking, agentStatus, agentStatusDetail, onRevert, childSessionEvents, childSessions }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const { activePanel } = useDrawer();
+  const compact = activePanel !== null;
 
   // Auto-scroll to bottom on new messages or streaming content
   useEffect(() => {
@@ -94,8 +97,8 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
   const turns = groupIntoTurns(messages);
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto scroll-smooth">
-      <div className="mx-auto max-w-3xl space-y-0.5 px-5 py-5">
+    <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden scroll-smooth">
+      <div className={`space-y-0.5 ${compact ? 'px-3 py-3' : 'mx-auto max-w-3xl px-5 py-5'}`}>
         {turns.map((turn) => {
           if (turn.type === 'standalone') {
             const msg = turn.messages[0];

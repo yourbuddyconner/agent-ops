@@ -200,9 +200,9 @@ function SessionLayout() {
             onLayoutChanged={saveLayout}
             className="h-full"
           >
-            <Panel defaultSize={25} minSize={20}>
-              <div className="flex h-full">
-                <div className="flex-1 min-w-0">
+            <Panel defaultSize={25} minSize={20} className="!overflow-hidden">
+              <div className="flex h-full w-full overflow-hidden">
+                <div className="flex-1 min-w-0 overflow-hidden">
                   <Outlet />
                 </div>
                 {sidebarOpen && (

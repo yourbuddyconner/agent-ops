@@ -85,7 +85,8 @@
 
   /* Markdown body typography for chat messages */
   .markdown-body {
-    word-wrap: break-word;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   .markdown-body > *:first-child {
