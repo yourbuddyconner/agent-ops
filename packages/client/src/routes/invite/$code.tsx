@@ -1,7 +1,9 @@
 import * as React from 'react';
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { useAuthStore } from '@/stores/auth';
+import { api } from '@/api/client';
 
 export const Route = createFileRoute('/invite/$code')({
   component: InvitePage,
@@ -24,9 +26,13 @@ interface InviteInfo {
 
 function InvitePage() {
   const { code } = Route.useParams();
+  const navigate = useNavigate();
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const user = useAuthStore((s) => s.user);
   const [invite, setInvite] = React.useState<InviteInfo | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const [accepting, setAccepting] = React.useState(false);
 
   React.useEffect(() => {
     const workerUrl = getWorkerBaseUrl();
@@ -44,6 +50,24 @@ function InvitePage() {
       })
       .finally(() => setLoading(false));
   }, [code]);
+
+  async function handleAccept() {
+    setAccepting(true);
+    try {
+      await api.post(`/invites/${encodeURIComponent(code)}/accept`);
+      // Refresh user data to pick up new role
+      const res = await api.get<{ user: { id: string; email: string; name?: string; avatarUrl?: string; role?: string } }>('/auth/me');
+      if (res.user.role) {
+        useAuthStore.setState((s) => ({
+          user: s.user ? { ...s.user, role: res.user.role as 'admin' | 'member' } : s.user,
+        }));
+      }
+      navigate({ to: '/' });
+    } catch {
+      setError('Failed to accept invite. It may have already been used.');
+      setAccepting(false);
+    }
+  }
 
   const workerUrl = getWorkerBaseUrl();
 
@@ -67,8 +91,8 @@ function InvitePage() {
             <CardDescription>{error || 'This invite link is not valid.'}</CardDescription>
           </CardHeader>
           <CardContent className="text-center">
-            <a href="/login" className="text-sm text-neutral-500 underline">
-              Go to login
+            <a href={isAuthenticated ? '/' : '/login'} className="text-sm text-neutral-500 underline">
+              {isAuthenticated ? 'Go to dashboard' : 'Go to login'}
             </a>
           </CardContent>
         </Card>
@@ -85,8 +109,8 @@ function InvitePage() {
             <CardDescription>This invite has already been accepted.</CardDescription>
           </CardHeader>
           <CardContent className="text-center">
-            <a href="/login" className="text-sm text-neutral-500 underline">
-              Go to login
+            <a href={isAuthenticated ? '/' : '/login'} className="text-sm text-neutral-500 underline">
+              {isAuthenticated ? 'Go to dashboard' : 'Go to login'}
             </a>
           </CardContent>
         </Card>
@@ -103,8 +127,8 @@ function InvitePage() {
             <CardDescription>This invite link has expired. Ask an admin for a new one.</CardDescription>
           </CardHeader>
           <CardContent className="text-center">
-            <a href="/login" className="text-sm text-neutral-500 underline">
-              Go to login
+            <a href={isAuthenticated ? '/' : '/login'} className="text-sm text-neutral-500 underline">
+              {isAuthenticated ? 'Go to dashboard' : 'Go to login'}
             </a>
           </CardContent>
         </Card>
@@ -112,6 +136,51 @@ function InvitePage() {
     );
   }
 
+  // Logged-in user: show accept button directly
+  if (isAuthenticated && user) {
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-neutral-50 p-4 dark:bg-neutral-950">
+        <Card className="w-full max-w-md">
+          <CardHeader className="text-center">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-neutral-900 dark:bg-neutral-100">
+              <svg
+                className="h-6 w-6 text-white dark:text-neutral-900"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
+                />
+              </svg>
+            </div>
+            <CardTitle className="text-2xl">Join {invite.orgName}</CardTitle>
+            <CardDescription>
+              You've been invited to join as a <span className="font-medium capitalize">{invite.role}</span>
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="rounded-md border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-800">
+              <p className="text-sm text-neutral-600 dark:text-neutral-400">
+                Signed in as <span className="font-medium text-neutral-900 dark:text-neutral-100">{user.email}</span>
+              </p>
+            </div>
+            <Button className="w-full" onClick={handleAccept} disabled={accepting}>
+              {accepting ? 'Accepting...' : 'Accept Invite'}
+            </Button>
+            <p className="text-center text-xs text-neutral-500 pt-1">
+              <a href="/" className="underline">Go to dashboard</a>
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Not logged in: show OAuth buttons
   return (
     <div className="flex min-h-dvh items-center justify-center bg-neutral-50 p-4 dark:bg-neutral-950">
       <Card className="w-full max-w-md">

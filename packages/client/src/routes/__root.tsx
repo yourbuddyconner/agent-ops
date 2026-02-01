@@ -12,8 +12,8 @@ export const Route = createRootRouteWithContext<RouterContext>()({
   beforeLoad: ({ location }) => {
     const { isAuthenticated, isHydrated } = useAuthStore.getState();
 
-    // Skip auth check for login and OAuth callback pages
-    if (location.pathname === '/login' || location.pathname === '/auth/callback' || location.pathname === '/onboarding') {
+    // Skip auth check for login, OAuth callback, invite, and onboarding pages
+    if (location.pathname === '/login' || location.pathname === '/auth/callback' || location.pathname === '/onboarding' || location.pathname.startsWith('/invite/')) {
       return;
     }
 
@@ -34,7 +34,7 @@ function RootLayout() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isHydrated = useAuthStore((s) => s.isHydrated);
   const routerState = useRouterState();
-  const isLoginPage = routerState.location.pathname === '/login' || routerState.location.pathname === '/auth/callback' || routerState.location.pathname === '/onboarding';
+  const isLoginPage = routerState.location.pathname === '/login' || routerState.location.pathname === '/auth/callback' || routerState.location.pathname === '/onboarding' || routerState.location.pathname.startsWith('/invite/');
 
   // Show loading while hydrating
   if (!isHydrated) {

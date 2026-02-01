@@ -23,7 +23,7 @@ import { eventsRouter } from './routes/events.js';
 import { reposRouter } from './routes/repos.js';
 import { dashboardRouter } from './routes/dashboard.js';
 import { adminRouter } from './routes/admin.js';
-import { invitesRouter } from './routes/invites.js';
+import { invitesRouter, invitesApiRouter } from './routes/invites.js';
 
 // Durable Object exports
 export { APIKeysDurableObject } from './durable-objects/api-keys.js';
@@ -78,6 +78,7 @@ app.route('/api/events', eventsRouter);
 app.route('/api/repos', reposRouter);
 app.route('/api/dashboard', dashboardRouter);
 app.route('/api/admin', adminRouter);
+app.route('/api/invites', invitesApiRouter);
 
 // Agent container proxy (protected)
 app.use('/agent/*', authMiddleware);
