@@ -50,6 +50,9 @@ export interface Env {
 
   // Email allowlist (comma-separated). If unset, all emails are allowed.
   ALLOWED_EMAILS?: string;
+
+  // Bootstrap admin email (first admin fallback)
+  ADMIN_EMAIL?: string;
 }
 
 // Type for Hono context variables
@@ -57,6 +60,7 @@ export interface Variables {
   user: {
     id: string;
     email: string;
+    role: 'admin' | 'member';
   };
   requestId: string;
 }

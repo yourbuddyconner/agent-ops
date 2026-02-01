@@ -37,10 +37,57 @@ async function validateStateJWT(state: string, env: Env): Promise<boolean> {
   return payload !== null;
 }
 
-function isEmailAllowed(env: Env, email: string): boolean {
+async function isEmailAllowed(env: Env, email: string): Promise<boolean> {
+  const emailLower = email.toLowerCase();
+
+  try {
+    const orgSettings = await env.DB.prepare("SELECT * FROM org_settings WHERE id = 'default'").first<{
+      domain_gating_enabled: number;
+      allowed_email_domain: string | null;
+      email_allowlist_enabled: number;
+      allowed_emails: string | null;
+    }>();
+
+    if (orgSettings) {
+      const domainGating = !!orgSettings.domain_gating_enabled;
+      const emailAllowlist = !!orgSettings.email_allowlist_enabled;
+
+      if (domainGating && orgSettings.allowed_email_domain) {
+        const domain = emailLower.split('@')[1];
+        if (domain === orgSettings.allowed_email_domain.toLowerCase()) return true;
+        if (emailAllowlist) {
+          // Check allowlist too if both are enabled
+        } else {
+          return false;
+        }
+      }
+
+      if (emailAllowlist && orgSettings.allowed_emails) {
+        const allowed = orgSettings.allowed_emails.split(',').map(e => e.trim().toLowerCase());
+        if (allowed.includes(emailLower)) return true;
+        if (domainGating) return false; // Already checked domain above
+        return false;
+      }
+
+      if (domainGating || emailAllowlist) {
+        return false; // A gating method is enabled but email didn't pass
+      }
+    }
+
+    // Check for a valid invite
+    const invite = await env.DB.prepare(
+      "SELECT 1 FROM invites WHERE email = ? AND accepted_at IS NULL AND expires_at > datetime('now')"
+    ).bind(emailLower).first();
+    if (invite) return true;
+
+  } catch {
+    // DB not available or table doesn't exist yet — fall through to env var
+  }
+
+  // Backward compat: env var fallback
   const allowed = env.ALLOWED_EMAILS;
   if (!allowed) return true;
-  return allowed.split(',').map(e => e.trim().toLowerCase()).includes(email.toLowerCase());
+  return allowed.split(',').map(e => e.trim().toLowerCase()).includes(emailLower);
 }
 
 function getFrontendUrl(env: Env): string {
@@ -166,7 +213,7 @@ oauthRouter.get('/github/callback', async (c) => {
       return c.redirect(`${frontendUrl}/login?error=no_email`);
     }
 
-    if (!isEmailAllowed(c.env, email)) {
+    if (!(await isEmailAllowed(c.env, email))) {
       return c.redirect(`${frontendUrl}/login?error=not_allowed`);
     }
 
@@ -174,6 +221,7 @@ oauthRouter.get('/github/callback', async (c) => {
 
     // Find user by github_id, then by email, or create new
     let user = await db.findUserByGitHubId(c.env.DB, githubId);
+    let isNewUser = false;
 
     if (!user) {
       user = await db.findUserByEmail(c.env.DB, email);
@@ -187,6 +235,20 @@ oauthRouter.get('/github/callback', async (c) => {
         name: profile.name || profile.login,
         avatarUrl: profile.avatar_url,
       });
+      isNewUser = true;
+
+      // First-user-admin: if this is the only user, promote to admin
+      const userCount = await db.getUserCount(c.env.DB);
+      if (userCount === 1) {
+        await db.updateUserRole(c.env.DB, user.id, 'admin');
+      }
+
+      // Accept invite if one exists
+      const invite = await db.getInviteByEmail(c.env.DB, email);
+      if (invite) {
+        await db.markInviteAccepted(c.env.DB, invite.id);
+        await db.updateUserRole(c.env.DB, user.id, invite.role);
+      }
     }
 
     // Update GitHub-specific fields
@@ -324,7 +386,7 @@ oauthRouter.get('/google/callback', async (c) => {
       return c.redirect(`${frontendUrl}/login?error=email_not_verified`);
     }
 
-    if (!isEmailAllowed(c.env, payload.email)) {
+    if (!(await isEmailAllowed(c.env, payload.email))) {
       return c.redirect(`${frontendUrl}/login?error=not_allowed`);
     }
 
@@ -338,6 +400,19 @@ oauthRouter.get('/google/callback', async (c) => {
         name: payload.name,
         avatarUrl: payload.picture,
       });
+
+      // First-user-admin: if this is the only user, promote to admin
+      const userCount = await db.getUserCount(c.env.DB);
+      if (userCount === 1) {
+        await db.updateUserRole(c.env.DB, user.id, 'admin');
+      }
+
+      // Accept invite if one exists
+      const invite = await db.getInviteByEmail(c.env.DB, payload.email);
+      if (invite) {
+        await db.markInviteAccepted(c.env.DB, invite.id);
+        await db.updateUserRole(c.env.DB, user.id, invite.role);
+      }
     }
 
     // Encrypt and store Google OAuth tokens

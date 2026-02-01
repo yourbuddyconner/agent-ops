@@ -1,13 +1,13 @@
 ---
 # agent-ops-stlm
 title: Update integrations route to include org-scope integrations
-status: todo
+status: completed
 type: task
 priority: normal
 tags:
     - worker
 created_at: 2026-01-31T07:48:51Z
-updated_at: 2026-01-31T07:48:51Z
+updated_at: 2026-02-01T02:25:25Z
 parent: agent-ops-csfb
 ---
 

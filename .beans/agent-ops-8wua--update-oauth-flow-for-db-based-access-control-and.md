@@ -1,13 +1,13 @@
 ---
 # agent-ops-8wua
 title: Update OAuth flow for DB-based access control and first-user-admin
-status: todo
+status: completed
 type: task
 priority: high
 tags:
     - worker
 created_at: 2026-01-31T07:48:44Z
-updated_at: 2026-01-31T07:48:44Z
+updated_at: 2026-02-01T02:25:25Z
 parent: agent-ops-csfb
 ---
 

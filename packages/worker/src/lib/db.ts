@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { AgentSession, Integration, Message, User, SyncStatusResponse } from '@agent-ops/shared';
+import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse } from '@agent-ops/shared';
 
 /**
  * Database helper functions for D1
@@ -29,6 +29,7 @@ export async function getOrCreateUser(
     email: data.email,
     name: data.name,
     avatarUrl: data.avatarUrl,
+    role: 'member' as const,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -141,6 +142,7 @@ export async function createIntegration(
     service: data.service as Integration['service'],
     config: data.config as unknown as Integration['config'],
     status: 'pending',
+    scope: 'user' as const,
     lastSyncedAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -497,7 +499,168 @@ export async function addActiveSeconds(
     .run();
 }
 
+// Org settings operations
+export async function getOrgSettings(db: D1Database): Promise<OrgSettings> {
+  const row = await db.prepare("SELECT * FROM org_settings WHERE id = 'default'").first();
+  if (!row) {
+    return {
+      id: 'default',
+      name: 'My Organization',
+      domainGatingEnabled: false,
+      emailAllowlistEnabled: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+  }
+  return mapOrgSettings(row);
+}
+
+export async function updateOrgSettings(
+  db: D1Database,
+  updates: Partial<Pick<OrgSettings, 'name' | 'allowedEmailDomain' | 'allowedEmails' | 'domainGatingEnabled' | 'emailAllowlistEnabled'>>
+): Promise<OrgSettings> {
+  const sets: string[] = [];
+  const params: (string | number | null)[] = [];
+
+  if (updates.name !== undefined) { sets.push('name = ?'); params.push(updates.name); }
+  if (updates.allowedEmailDomain !== undefined) { sets.push('allowed_email_domain = ?'); params.push(updates.allowedEmailDomain || null); }
+  if (updates.allowedEmails !== undefined) { sets.push('allowed_emails = ?'); params.push(updates.allowedEmails || null); }
+  if (updates.domainGatingEnabled !== undefined) { sets.push('domain_gating_enabled = ?'); params.push(updates.domainGatingEnabled ? 1 : 0); }
+  if (updates.emailAllowlistEnabled !== undefined) { sets.push('email_allowlist_enabled = ?'); params.push(updates.emailAllowlistEnabled ? 1 : 0); }
+
+  if (sets.length > 0) {
+    sets.push("updated_at = datetime('now')");
+    await db.prepare(`UPDATE org_settings SET ${sets.join(', ')} WHERE id = 'default'`).bind(...params).run();
+  }
+
+  return getOrgSettings(db);
+}
+
+// Org API key operations
+export async function listOrgApiKeys(db: D1Database): Promise<OrgApiKey[]> {
+  const result = await db.prepare('SELECT id, provider, set_by, created_at, updated_at FROM org_api_keys ORDER BY provider').all();
+  return (result.results || []).map((row: any) => ({
+    id: row.id,
+    provider: row.provider,
+    isSet: true,
+    setBy: row.set_by,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  }));
+}
+
+export async function getOrgApiKey(db: D1Database, provider: string): Promise<{ encryptedKey: string } | null> {
+  const row = await db.prepare('SELECT encrypted_key FROM org_api_keys WHERE provider = ?').bind(provider).first<{ encrypted_key: string }>();
+  return row ? { encryptedKey: row.encrypted_key } : null;
+}
+
+export async function setOrgApiKey(
+  db: D1Database,
+  params: { id: string; provider: string; encryptedKey: string; setBy: string }
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO org_api_keys (id, provider, encrypted_key, set_by)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(provider) DO UPDATE SET
+         encrypted_key = excluded.encrypted_key,
+         set_by = excluded.set_by,
+         updated_at = datetime('now')`
+    )
+    .bind(params.id, params.provider, params.encryptedKey, params.setBy)
+    .run();
+}
+
+export async function deleteOrgApiKey(db: D1Database, provider: string): Promise<void> {
+  await db.prepare('DELETE FROM org_api_keys WHERE provider = ?').bind(provider).run();
+}
+
+// Invite operations
+export async function createInvite(
+  db: D1Database,
+  params: { id: string; email: string; role: UserRole; invitedBy: string; expiresAt: string }
+): Promise<Invite> {
+  await db
+    .prepare('INSERT INTO invites (id, email, role, invited_by, expires_at) VALUES (?, ?, ?, ?, ?)')
+    .bind(params.id, params.email, params.role, params.invitedBy, params.expiresAt)
+    .run();
+
+  return {
+    id: params.id,
+    email: params.email,
+    role: params.role,
+    invitedBy: params.invitedBy,
+    expiresAt: new Date(params.expiresAt),
+    createdAt: new Date(),
+  };
+}
+
+export async function getInviteByEmail(db: D1Database, email: string): Promise<Invite | null> {
+  const row = await db
+    .prepare("SELECT * FROM invites WHERE email = ? AND accepted_at IS NULL AND expires_at > datetime('now')")
+    .bind(email)
+    .first();
+  return row ? mapInvite(row) : null;
+}
+
+export async function listInvites(db: D1Database): Promise<Invite[]> {
+  const result = await db.prepare('SELECT * FROM invites ORDER BY created_at DESC').all();
+  return (result.results || []).map(mapInvite);
+}
+
+export async function deleteInvite(db: D1Database, id: string): Promise<void> {
+  await db.prepare('DELETE FROM invites WHERE id = ?').bind(id).run();
+}
+
+export async function markInviteAccepted(db: D1Database, id: string): Promise<void> {
+  await db.prepare("UPDATE invites SET accepted_at = datetime('now') WHERE id = ?").bind(id).run();
+}
+
+// User management operations (org)
+export async function updateUserRole(db: D1Database, userId: string, role: UserRole): Promise<void> {
+  await db.prepare("UPDATE users SET role = ?, updated_at = datetime('now') WHERE id = ?").bind(role, userId).run();
+}
+
+export async function getUserCount(db: D1Database): Promise<number> {
+  const row = await db.prepare('SELECT COUNT(*) as count FROM users').first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
+export async function listUsers(db: D1Database): Promise<User[]> {
+  const result = await db.prepare('SELECT * FROM users ORDER BY created_at').all();
+  return (result.results || []).map(mapUser);
+}
+
+export async function deleteUser(db: D1Database, userId: string): Promise<void> {
+  await db.prepare('DELETE FROM users WHERE id = ?').bind(userId).run();
+}
+
 // Mapping helpers
+function mapOrgSettings(row: any): OrgSettings {
+  return {
+    id: row.id,
+    name: row.name,
+    allowedEmailDomain: row.allowed_email_domain || undefined,
+    allowedEmails: row.allowed_emails || undefined,
+    domainGatingEnabled: !!row.domain_gating_enabled,
+    emailAllowlistEnabled: !!row.email_allowlist_enabled,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  };
+}
+
+function mapInvite(row: any): Invite {
+  return {
+    id: row.id,
+    email: row.email,
+    role: row.role,
+    invitedBy: row.invited_by,
+    acceptedAt: row.accepted_at ? new Date(row.accepted_at) : undefined,
+    expiresAt: new Date(row.expires_at),
+    createdAt: new Date(row.created_at),
+  };
+}
+
 function mapSession(row: any): AgentSession {
   return {
     id: row.id,
@@ -519,6 +682,7 @@ function mapIntegration(row: any): Integration {
     service: row.service,
     config: JSON.parse(row.config),
     status: row.status,
+    scope: row.scope || 'user',
     lastSyncedAt: row.last_synced_at ? new Date(row.last_synced_at) : null,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
@@ -547,6 +711,7 @@ function mapUser(row: any): User {
     gitEmail: row.git_email || undefined,
     onboardingCompleted: !!row.onboarding_completed,
     idleTimeoutSeconds: row.idle_timeout_seconds ?? 900,
+    role: row.role || 'member',
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
   };

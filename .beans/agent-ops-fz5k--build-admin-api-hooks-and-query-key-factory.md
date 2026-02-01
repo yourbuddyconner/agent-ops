@@ -1,13 +1,13 @@
 ---
 # agent-ops-fz5k
 title: Build admin API hooks and query key factory
-status: todo
+status: completed
 type: task
 priority: high
 tags:
     - frontend
 created_at: 2026-01-31T07:49:04Z
-updated_at: 2026-01-31T07:49:57Z
+updated_at: 2026-02-01T02:26:42Z
 parent: agent-ops-csfb
 blocking:
     - agent-ops-b8xw

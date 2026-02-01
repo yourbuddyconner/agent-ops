@@ -1,25 +1,5 @@
----
-# agent-ops-vlqt
-title: Add org schema migration and shared types
-status: completed
-type: task
-priority: high
-tags:
-    - backend
-    - worker
-created_at: 2026-01-31T07:47:56Z
-updated_at: 2026-02-01T02:22:29Z
-parent: agent-ops-csfb
-blocking:
-    - agent-ops-guyj
-    - agent-ops-82w2
-    - agent-ops-stlm
----
+-- Organization: single-org model with roles, invites, and access control
 
-Create migration 0006_organization.sql and update shared types/errors.
-
-## Migration (packages/worker/migrations/0006_organization.sql)
-```sql
 ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member';
 
 CREATE TABLE org_settings (
@@ -55,18 +35,3 @@ CREATE TABLE invites (
 CREATE INDEX idx_invites_email ON invites(email);
 
 ALTER TABLE integrations ADD COLUMN scope TEXT NOT NULL DEFAULT 'user';
-```
-
-## Shared Types (packages/shared/src/types/index.ts)
-- Add `UserRole = 'admin' | 'member'`
-- Add `role: UserRole` to User interface
-- Add `scope: 'user' | 'org'` to Integration interface
-- Add interfaces: OrgSettings, OrgApiKey (with provider, isSet flag, setBy, timestamps), Invite (email, role, invitedBy, acceptedAt, expiresAt, timestamps)
-
-## Shared Errors (packages/shared/src/errors.ts)
-- Add ForbiddenError class (HTTP 403) if not already present
-
-## Acceptance Criteria
-- make db-migrate runs cleanly
-- pnpm typecheck passes in shared package
-- All new types are exported from shared

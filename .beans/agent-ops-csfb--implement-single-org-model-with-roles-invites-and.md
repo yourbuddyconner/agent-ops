@@ -1,7 +1,7 @@
 ---
 # agent-ops-csfb
 title: Implement single-org model with roles, invites, and access control
-status: todo
+status: completed
 type: epic
 priority: high
 tags:
@@ -9,7 +9,7 @@ tags:
     - frontend
     - worker
 created_at: 2026-01-31T07:47:30Z
-updated_at: 2026-01-31T08:04:38Z
+updated_at: 2026-02-01T02:29:26Z
 parent: agent-ops-7e2r
 ---
 

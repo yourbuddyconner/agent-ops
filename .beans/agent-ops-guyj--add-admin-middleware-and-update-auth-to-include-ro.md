@@ -1,13 +1,13 @@
 ---
 # agent-ops-guyj
 title: Add admin middleware and update auth to include role
-status: todo
+status: completed
 type: task
 priority: high
 tags:
     - worker
 created_at: 2026-01-31T07:47:57Z
-updated_at: 2026-01-31T07:49:57Z
+updated_at: 2026-02-01T02:23:43Z
 parent: agent-ops-csfb
 blocking:
     - agent-ops-9nj8

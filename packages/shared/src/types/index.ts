@@ -16,6 +16,7 @@ export interface Integration {
   service: IntegrationService;
   config: IntegrationConfig;
   status: 'active' | 'error' | 'pending' | 'disconnected';
+  scope: 'user' | 'org';
   lastSyncedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -121,7 +122,9 @@ export interface DiffFile {
 // Auth types
 export type AuthProvider = 'github' | 'google';
 
-// User types
+// User & Organization types
+export type UserRole = 'admin' | 'member';
+
 export interface User {
   id: string;
   email: string;
@@ -132,8 +135,39 @@ export interface User {
   gitEmail?: string;
   onboardingCompleted?: boolean;
   idleTimeoutSeconds?: number;
+  role: UserRole;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface OrgSettings {
+  id: string;
+  name: string;
+  allowedEmailDomain?: string;
+  allowedEmails?: string;
+  domainGatingEnabled: boolean;
+  emailAllowlistEnabled: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface OrgApiKey {
+  id: string;
+  provider: string;
+  isSet: boolean;
+  setBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface Invite {
+  id: string;
+  email: string;
+  role: UserRole;
+  invitedBy: string;
+  acceptedAt?: Date;
+  expiresAt: Date;
+  createdAt: Date;
 }
 
 // Dashboard types

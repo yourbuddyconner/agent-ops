@@ -1,13 +1,13 @@
 ---
 # agent-ops-ctmq
 title: Add LLM key fallback chain to session creation
-status: todo
+status: completed
 type: task
 priority: high
 tags:
     - worker
 created_at: 2026-01-31T07:48:47Z
-updated_at: 2026-01-31T07:48:47Z
+updated_at: 2026-02-01T02:25:49Z
 parent: agent-ops-csfb
 ---
 

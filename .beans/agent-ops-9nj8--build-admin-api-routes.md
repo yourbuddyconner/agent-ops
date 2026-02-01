@@ -1,13 +1,13 @@
 ---
 # agent-ops-9nj8
 title: Build admin API routes
-status: todo
+status: completed
 type: task
 priority: high
 tags:
     - worker
 created_at: 2026-01-31T07:48:28Z
-updated_at: 2026-01-31T07:49:57Z
+updated_at: 2026-02-01T02:24:29Z
 parent: agent-ops-csfb
 blocking:
     - agent-ops-fz5k

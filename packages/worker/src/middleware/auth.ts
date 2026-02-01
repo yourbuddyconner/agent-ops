@@ -47,17 +47,17 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env; Variables: Varia
 async function validateAuthSession(
   tokenHash: string,
   env: Env
-): Promise<{ id: string; email: string } | null> {
+): Promise<{ id: string; email: string; role: 'admin' | 'member' } | null> {
   try {
     const result = await env.DB.prepare(
-      `SELECT u.id, u.email
+      `SELECT u.id, u.email, u.role
        FROM auth_sessions s
        JOIN users u ON s.user_id = u.id
        WHERE s.token_hash = ?
          AND s.expires_at > datetime('now')`
     )
       .bind(tokenHash)
-      .first<{ id: string; email: string }>();
+      .first<{ id: string; email: string; role: string }>();
 
     if (result) {
       // Update last_used_at (fire-and-forget)
@@ -67,7 +67,7 @@ async function validateAuthSession(
         .catch(() => {});
     }
 
-    return result || null;
+    return result ? { id: result.id, email: result.email, role: (result.role || 'member') as 'admin' | 'member' } : null;
   } catch {
     return null;
   }
@@ -76,10 +76,10 @@ async function validateAuthSession(
 async function validateAPIKey(
   tokenHash: string,
   env: Env
-): Promise<{ id: string; email: string } | null> {
+): Promise<{ id: string; email: string; role: 'admin' | 'member' } | null> {
   try {
     const result = await env.DB.prepare(
-      `SELECT u.id, u.email
+      `SELECT u.id, u.email, u.role
        FROM api_tokens t
        JOIN users u ON t.user_id = u.id
        WHERE t.token_hash = ?
@@ -87,7 +87,7 @@ async function validateAPIKey(
          AND t.revoked_at IS NULL`
     )
       .bind(tokenHash)
-      .first<{ id: string; email: string }>();
+      .first<{ id: string; email: string; role: string }>();
 
     if (result) {
       env.DB.prepare("UPDATE api_tokens SET last_used_at = datetime('now') WHERE token_hash = ?")
@@ -96,7 +96,7 @@ async function validateAPIKey(
         .catch(() => {});
     }
 
-    return result || null;
+    return result ? { id: result.id, email: result.email, role: (result.role || 'member') as 'admin' | 'member' } : null;
   } catch {
     return null;
   }

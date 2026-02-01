@@ -6,6 +6,7 @@ import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
 import { signJWT } from '../lib/jwt.js';
 import { decryptString } from '../lib/crypto.js';
+import { decryptApiKey } from './admin.js';
 
 export const sessionsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -96,10 +97,25 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
   // Build environment variables for the sandbox
   const envVars: Record<string, string> = {};
 
-  // Pass LLM provider API keys to sandbox (if configured as Worker secrets)
-  if (c.env.ANTHROPIC_API_KEY) envVars.ANTHROPIC_API_KEY = c.env.ANTHROPIC_API_KEY;
-  if (c.env.OPENAI_API_KEY) envVars.OPENAI_API_KEY = c.env.OPENAI_API_KEY;
-  if (c.env.GOOGLE_API_KEY) envVars.GOOGLE_API_KEY = c.env.GOOGLE_API_KEY;
+  // LLM key fallback chain: org DB keys → env vars
+  const providerEnvMap = [
+    { provider: 'anthropic', envKey: 'ANTHROPIC_API_KEY' },
+    { provider: 'openai', envKey: 'OPENAI_API_KEY' },
+    { provider: 'google', envKey: 'GOOGLE_API_KEY' },
+  ] as const;
+
+  for (const { provider, envKey } of providerEnvMap) {
+    try {
+      const orgKey = await db.getOrgApiKey(c.env.DB, provider);
+      if (orgKey) {
+        envVars[envKey] = await decryptApiKey(orgKey.encryptedKey, c.env.ENCRYPTION_KEY);
+        continue;
+      }
+    } catch {
+      // DB table may not exist yet — fall through to env var
+    }
+    if (c.env[envKey]) envVars[envKey] = c.env[envKey]!;
+  }
 
   // If repo URL provided, decrypt GitHub token and add repo/git env vars
   if (body.repoUrl) {

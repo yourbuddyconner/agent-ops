@@ -22,6 +22,7 @@ import { executionsRouter } from './routes/executions.js';
 import { eventsRouter } from './routes/events.js';
 import { reposRouter } from './routes/repos.js';
 import { dashboardRouter } from './routes/dashboard.js';
+import { adminRouter } from './routes/admin.js';
 
 // Durable Object exports
 export { APIKeysDurableObject } from './durable-objects/api-keys.js';
@@ -72,6 +73,7 @@ app.route('/api/executions', executionsRouter);
 app.route('/api/events', eventsRouter);
 app.route('/api/repos', reposRouter);
 app.route('/api/dashboard', dashboardRouter);
+app.route('/api/admin', adminRouter);
 
 // Agent container proxy (protected)
 app.use('/agent/*', authMiddleware);

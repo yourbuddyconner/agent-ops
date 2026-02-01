@@ -30,25 +30,55 @@ const triggerSyncSchema = z.object({
 
 /**
  * GET /api/integrations
- * List user's integrations
+ * List user's integrations + org-scope integrations
  */
 integrationsRouter.get('/', async (c) => {
   const user = c.get('user');
 
-  const integrations = await db.getUserIntegrations(c.env.DB, user.id);
+  // Get user's own integrations
+  const userIntegrations = await db.getUserIntegrations(c.env.DB, user.id);
+
+  // Get org-scope integrations (visible to all members)
+  const orgResult = await c.env.DB.prepare(
+    "SELECT * FROM integrations WHERE scope = 'org' AND user_id != ? ORDER BY created_at DESC"
+  ).bind(user.id).all();
+  const orgIntegrations = (orgResult.results || []).map((row: any) => ({
+    id: row.id,
+    service: row.service,
+    status: row.status,
+    scope: 'org' as const,
+    config: JSON.parse(row.config),
+    lastSyncedAt: row.last_synced_at ? new Date(row.last_synced_at) : null,
+    createdAt: new Date(row.created_at),
+  }));
 
   // Don't expose sensitive data
-  const sanitized = integrations.map((i) => ({
-    id: i.id,
-    service: i.service,
-    status: i.status,
-    config: {
-      syncFrequency: i.config.syncFrequency,
-      entities: i.config.entities,
-    },
-    lastSyncedAt: i.lastSyncedAt,
-    createdAt: i.createdAt,
-  }));
+  const sanitized = [
+    ...userIntegrations.map((i) => ({
+      id: i.id,
+      service: i.service,
+      status: i.status,
+      scope: i.scope,
+      config: {
+        syncFrequency: i.config.syncFrequency,
+        entities: i.config.entities,
+      },
+      lastSyncedAt: i.lastSyncedAt,
+      createdAt: i.createdAt,
+    })),
+    ...orgIntegrations.map((i) => ({
+      id: i.id,
+      service: i.service,
+      status: i.status,
+      scope: i.scope,
+      config: {
+        syncFrequency: i.config.syncFrequency,
+        entities: i.config.entities,
+      },
+      lastSyncedAt: i.lastSyncedAt,
+      createdAt: i.createdAt,
+    })),
+  ];
 
   return c.json({ integrations: sanitized });
 });
