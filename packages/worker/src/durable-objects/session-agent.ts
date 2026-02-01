@@ -692,6 +692,12 @@ export class SessionAgentDO {
   private async handleRunnerMessage(msg: RunnerMessage) {
     console.log(`[SessionAgentDO] Runner message: type=${msg.type}`);
 
+    // Reset idle timer on any runner activity — agent work counts as session activity
+    if (msg.type === 'tool' || msg.type === 'result' || msg.type === 'stream' || msg.type === 'agentStatus') {
+      this.setStateValue('lastUserActivityAt', String(Date.now()));
+      this.rescheduleIdleAlarm();
+    }
+
     switch (msg.type) {
       case 'stream':
         // Forward stream chunks to all clients (don't store)
