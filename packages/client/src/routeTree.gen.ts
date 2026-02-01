@@ -18,6 +18,7 @@ import { Route as SessionsIndexRouteImport } from './routes/sessions/index'
 import { Route as IntegrationsIndexRouteImport } from './routes/integrations/index'
 import { Route as WorkflowsExecutionsRouteImport } from './routes/workflows/executions'
 import { Route as WorkflowsWorkflowIdRouteImport } from './routes/workflows/$workflowId'
+import { Route as SettingsAdminRouteImport } from './routes/settings/admin'
 import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId'
 import { Route as IntegrationsCallbackRouteImport } from './routes/integrations/callback'
 import { Route as AuthCallbackRouteImport } from './routes/auth/callback'
@@ -68,6 +69,11 @@ const WorkflowsWorkflowIdRoute = WorkflowsWorkflowIdRouteImport.update({
   path: '/workflows/$workflowId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsAdminRoute = SettingsAdminRouteImport.update({
+  id: '/settings/admin',
+  path: '/settings/admin',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SessionsSessionIdRoute = SessionsSessionIdRouteImport.update({
   id: '/sessions/$sessionId',
   path: '/sessions/$sessionId',
@@ -96,6 +102,7 @@ export interface FileRoutesByFullPath {
   '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
+  '/settings/admin': typeof SettingsAdminRoute
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
   '/workflows/executions': typeof WorkflowsExecutionsRoute
   '/integrations/': typeof IntegrationsIndexRoute
@@ -110,6 +117,7 @@ export interface FileRoutesByTo {
   '/onboarding': typeof OnboardingRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
+  '/settings/admin': typeof SettingsAdminRoute
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
   '/workflows/executions': typeof WorkflowsExecutionsRoute
   '/integrations': typeof IntegrationsIndexRoute
@@ -126,6 +134,7 @@ export interface FileRoutesById {
   '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
+  '/settings/admin': typeof SettingsAdminRoute
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
   '/workflows/executions': typeof WorkflowsExecutionsRoute
   '/integrations/': typeof IntegrationsIndexRoute
@@ -143,6 +152,7 @@ export interface FileRouteTypes {
     | '/auth/callback'
     | '/integrations/callback'
     | '/sessions/$sessionId'
+    | '/settings/admin'
     | '/workflows/$workflowId'
     | '/workflows/executions'
     | '/integrations/'
@@ -157,6 +167,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/auth/callback'
     | '/integrations/callback'
+    | '/settings/admin'
     | '/workflows/$workflowId'
     | '/workflows/executions'
     | '/integrations'
@@ -172,6 +183,7 @@ export interface FileRouteTypes {
     | '/auth/callback'
     | '/integrations/callback'
     | '/sessions/$sessionId'
+    | '/settings/admin'
     | '/workflows/$workflowId'
     | '/workflows/executions'
     | '/integrations/'
@@ -188,6 +200,7 @@ export interface RootRouteChildren {
   AuthCallbackRoute: typeof AuthCallbackRoute
   IntegrationsCallbackRoute: typeof IntegrationsCallbackRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRouteWithChildren
+  SettingsAdminRoute: typeof SettingsAdminRoute
   WorkflowsWorkflowIdRoute: typeof WorkflowsWorkflowIdRoute
   WorkflowsExecutionsRoute: typeof WorkflowsExecutionsRoute
   IntegrationsIndexRoute: typeof IntegrationsIndexRoute
@@ -261,6 +274,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkflowsWorkflowIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/admin': {
+      id: '/settings/admin'
+      path: '/settings/admin'
+      fullPath: '/settings/admin'
+      preLoaderRoute: typeof SettingsAdminRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/sessions/$sessionId': {
       id: '/sessions/$sessionId'
       path: '/sessions/$sessionId'
@@ -310,6 +330,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthCallbackRoute: AuthCallbackRoute,
   IntegrationsCallbackRoute: IntegrationsCallbackRoute,
   SessionsSessionIdRoute: SessionsSessionIdRouteWithChildren,
+  SettingsAdminRoute: SettingsAdminRoute,
   WorkflowsWorkflowIdRoute: WorkflowsWorkflowIdRoute,
   WorkflowsExecutionsRoute: WorkflowsExecutionsRoute,
   IntegrationsIndexRoute: IntegrationsIndexRoute,

@@ -142,7 +142,7 @@ function LLMKeysSection() {
             {LLM_PROVIDERS.map((provider) => {
               const existing = keys?.find((k) => k.provider === provider.id);
               return (
-                <LLMKeyRow key={provider.id} provider={provider.id} label={provider.label} isSet={!!existing} setBy={existing?.setBy} />
+                <LLMKeyRow key={provider.id} provider={provider.id} label={provider.label} isSet={!!existing} />
               );
             })}
           </div>
@@ -152,7 +152,7 @@ function LLMKeysSection() {
   );
 }
 
-function LLMKeyRow({ provider, label, isSet, setBy }: { provider: string; label: string; isSet: boolean; setBy?: string }) {
+function LLMKeyRow({ provider, label, isSet }: { provider: string; label: string; isSet: boolean }) {
   const setKey = useSetLLMKey();
   const deleteKey = useDeleteLLMKey();
   const [value, setValue] = React.useState('');

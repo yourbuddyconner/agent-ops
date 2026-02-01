@@ -4,9 +4,9 @@ Full dev environment: Node.js, Bun, OpenCode CLI,
 code-server, VNC stack (Xvfb + fluxbox + x11vnc + websockify + noVNC),
 Chromium, TTYD.
 
-Uses modal.Image.debian_slim() which is based on the official python Docker
-images (currently Debian Trixie/13, GLIBC 2.40). This satisfies wrangler's
-requirement for GLIBC 2.32+ and ships Chromium as a normal apt package.
+Uses debian:bookworm-slim with add_python="3.12" (Debian 12, GLIBC 2.36).
+This satisfies wrangler's requirement for GLIBC 2.32+ and ships Chromium
+as a normal apt package.
 """
 
 import modal
@@ -17,7 +17,7 @@ from config import NODE_VERSION
 def get_base_image() -> modal.Image:
     """Build the full sandbox image with all dev environment services."""
     return (
-        modal.Image.debian_slim(python_version="3.12")
+        modal.Image.from_registry("debian:bookworm-slim", add_python="3.12")
         .apt_install(
             "git",
             "curl",
@@ -106,7 +106,7 @@ def get_base_image() -> modal.Image:
                 "DISPLAY": ":99",
                 "HOME": "/root",
                 # Force image rebuild on deploy (change this value to trigger rebuild)
-                "IMAGE_BUILD_VERSION": "2026-01-31-v39",
+                "IMAGE_BUILD_VERSION": "2026-02-01-v42-bookworm",
                 "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
             }
         )

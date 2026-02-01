@@ -15,7 +15,6 @@ import {
   updateUserRole,
   deleteUser,
 } from '../lib/db.js';
-import { nanoid } from 'nanoid';
 
 export const adminRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -65,7 +64,7 @@ adminRouter.put('/llm-keys/:provider', async (c) => {
   const user = c.get('user');
 
   await setOrgApiKey(c.env.DB, {
-    id: nanoid(),
+    id: crypto.randomUUID(),
     provider,
     encryptedKey,
     setBy: user.id,
@@ -98,7 +97,7 @@ adminRouter.post('/invites', async (c) => {
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   const invite = await createInvite(c.env.DB, {
-    id: nanoid(),
+    id: crypto.randomUUID(),
     email: email.trim().toLowerCase(),
     role: role || 'member',
     invitedBy: user.id,

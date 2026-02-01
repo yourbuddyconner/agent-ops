@@ -25,7 +25,7 @@ function AuthCallbackPage() {
     useAuthStore.setState({ token });
 
     api
-      .get<{ user: { id: string; email: string; name?: string; avatarUrl?: string; githubUsername?: string; gitName?: string; gitEmail?: string; onboardingCompleted?: boolean } }>('/auth/me')
+      .get<{ user: { id: string; email: string; name?: string; avatarUrl?: string; githubUsername?: string; gitName?: string; gitEmail?: string; onboardingCompleted?: boolean; role?: string } }>('/auth/me')
       .then((res) => {
         setAuth(token, {
           id: res.user.id,
@@ -36,6 +36,7 @@ function AuthCallbackPage() {
           gitName: res.user.gitName,
           gitEmail: res.user.gitEmail,
           onboardingCompleted: res.user.onboardingCompleted,
+          role: (res.user.role as 'admin' | 'member') || 'member',
           createdAt: new Date(),
           updatedAt: new Date(),
         });
