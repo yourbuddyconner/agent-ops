@@ -171,7 +171,7 @@ The sandbox image is cached. To force a rebuild after changing `docker/start.sh`
 
 ## Developing Inside a Sandbox
 
-When working on the agent-ops codebase from inside a Modal sandbox (e.g. via an Agent-Ops session), the environment has specific constraints. The sandbox is an Ubuntu 22.04 container — not a full VM — so some tools are unavailable.
+When working on the agent-ops codebase from inside a Modal sandbox (e.g. via an Agent-Ops session), the environment has specific constraints. The sandbox is a Debian container (Trixie/13, GLIBC 2.40) — not a full VM — so some tools are unavailable.
 
 ### What works
 
