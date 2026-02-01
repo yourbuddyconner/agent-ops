@@ -7,6 +7,11 @@ import { GlobCard } from './glob-card';
 import { GrepCard } from './grep-card';
 import { TodoWriteCard, TodoReadCard } from './todo-card';
 import { ListCard } from './list-card';
+import { QuestionCard } from './question-card';
+import { WebFetchCard } from './webfetch-card';
+import { PatchCard } from './patch-card';
+import { LspCard } from './lsp-card';
+import { SkillCard } from './skill-card';
 import { GenericCard } from './generic-card';
 
 export type { ToolCallData, ToolCallStatus } from './types';
@@ -66,6 +71,28 @@ export function ToolCard({ tool }: { tool: ToolCallData }) {
     case 'list_dir':
     case 'list_directory':
       return <ListCard tool={tool} />;
+
+    case 'question':
+    case 'ask':
+    case 'ask_user':
+      return <QuestionCard tool={tool} />;
+
+    case 'webfetch':
+    case 'web_fetch':
+    case 'fetch_url':
+      return <WebFetchCard tool={tool} />;
+
+    case 'patch':
+    case 'apply_patch':
+      return <PatchCard tool={tool} />;
+
+    case 'lsp':
+    case 'language_server':
+      return <LspCard tool={tool} />;
+
+    case 'skill':
+    case 'load_skill':
+      return <SkillCard tool={tool} />;
   }
 
   // Fuzzy matches for tools with prefixes like "mcp__ide__" or "namespace.tool"
@@ -100,6 +127,17 @@ export function ToolCard({ tool }: { tool: ToolCallData }) {
     case 'ls':
     case 'list':
       return <ListCard tool={tool} />;
+    case 'question':
+    case 'ask':
+      return <QuestionCard tool={tool} />;
+    case 'webfetch':
+      return <WebFetchCard tool={tool} />;
+    case 'patch':
+      return <PatchCard tool={tool} />;
+    case 'lsp':
+      return <LspCard tool={tool} />;
+    case 'skill':
+      return <SkillCard tool={tool} />;
   }
 
   return <GenericCard tool={tool} />;

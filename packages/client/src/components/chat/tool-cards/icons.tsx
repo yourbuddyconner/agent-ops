@@ -101,6 +101,57 @@ export function WrenchIcon({ className }: { className?: string }) {
   );
 }
 
+export function QuestionIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="8" r="6.5" />
+      <path d="M6 6.5a2 2 0 0 1 3.9.5c0 1.3-2 1.5-2 3" />
+      <circle cx="8" cy="12.5" r="0.5" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+export function GlobeIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="8" r="6.5" />
+      <path d="M1.5 8h13" />
+      <path d="M8 1.5c2 2.3 2.5 4.2 2.5 6.5s-.5 4.2-2.5 6.5" />
+      <path d="M8 1.5c-2 2.3-2.5 4.2-2.5 6.5s.5 4.2 2.5 6.5" />
+    </svg>
+  );
+}
+
+export function PatchIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9.5 1.5H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5L9.5 1.5z" />
+      <polyline points="9.5 1.5 9.5 5 13 5" />
+      <line x1="5.5" y1="8" x2="10.5" y2="8" />
+      <line x1="5.5" y1="10.5" x2="10.5" y2="10.5" />
+      <line x1="5.5" y1="8" x2="5.5" y2="10.5" />
+    </svg>
+  );
+}
+
+export function LspIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="4 5 1.5 8 4 11" />
+      <polyline points="12 5 14.5 8 12 11" />
+      <line x1="9.5" y1="3" x2="6.5" y2="13" />
+    </svg>
+  );
+}
+
+export function SkillIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="8 1.5 9.8 5.5 14 6 11 9 11.8 13.5 8 11.5 4.2 13.5 5 9 2 6 6.2 5.5" />
+    </svg>
+  );
+}
+
 export function ChevronIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">

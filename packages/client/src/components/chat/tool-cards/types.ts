@@ -63,3 +63,41 @@ export interface TodoWriteArgs {
 export interface ListArgs {
   path?: string;
 }
+
+export interface QuestionArgs {
+  question?: string;
+  header?: string;
+  options?: Array<{
+    label?: string;
+    value?: string;
+    description?: string;
+  }>;
+}
+
+export interface WebFetchArgs {
+  url?: string;
+  prompt?: string;
+}
+
+export interface PatchArgs {
+  file_path?: string;
+  filePath?: string;
+  patch?: string;
+  diff?: string;
+  content?: string;
+}
+
+export interface LspArgs {
+  operation?: string;
+  file_path?: string;
+  filePath?: string;
+  line?: number;
+  character?: number;
+  symbol?: string;
+  query?: string;
+}
+
+export interface SkillArgs {
+  name?: string;
+  path?: string;
+}
