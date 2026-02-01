@@ -21,6 +21,11 @@ const createSessionSchema = z.object({
       timeout: z.number().optional(),
     })
     .optional(),
+  sourceType: z.enum(['pr', 'issue', 'branch', 'manual']).optional(),
+  sourcePrNumber: z.number().int().positive().optional(),
+  sourceIssueNumber: z.number().int().positive().optional(),
+  sourceRepoFullName: z.string().optional(),
+  initialPrompt: z.string().max(100000).optional(),
 });
 
 const sendMessageSchema = z.object({
@@ -87,6 +92,25 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     userId: user.id,
     workspace: body.workspace,
     metadata: body.config,
+  });
+
+  // Create git state record
+  const sourceType = body.sourceType || (body.repoUrl ? 'branch' : 'manual');
+  // Extract repo full name from URL if not provided
+  let sourceRepoFullName = body.sourceRepoFullName || null;
+  if (!sourceRepoFullName && body.repoUrl) {
+    const match = body.repoUrl.match(/github\.com[/:]([^/]+\/[^/.]+)/);
+    if (match) sourceRepoFullName = match[1];
+  }
+
+  await db.createSessionGitState(c.env.DB, {
+    sessionId,
+    sourceType,
+    sourcePrNumber: body.sourcePrNumber,
+    sourceIssueNumber: body.sourceIssueNumber,
+    sourceRepoFullName: sourceRepoFullName || undefined,
+    sourceRepoUrl: body.repoUrl,
+    branch: body.branch,
   });
 
   // Construct WebSocket URL for the DO (used by Runner inside sandbox)
@@ -177,6 +201,7 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
         restoreUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'restore-session'),
         idleTimeoutMs,
         spawnRequest,
+        initialPrompt: body.initialPrompt,
       }),
     }));
   } catch (err) {
@@ -235,6 +260,29 @@ sessionsRouter.get('/:id', async (c) => {
     session: { ...session, gatewayUrl },
     doStatus,
   });
+});
+
+/**
+ * GET /api/sessions/:id/git-state
+ * Get the git state for a session
+ */
+sessionsRouter.get('/:id/git-state', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  const session = await db.getSession(c.env.DB, id);
+
+  if (!session) {
+    throw new NotFoundError('Session', id);
+  }
+
+  if (session.userId !== user.id) {
+    throw new NotFoundError('Session', id);
+  }
+
+  const gitState = await db.getSessionGitState(c.env.DB, id);
+
+  return c.json({ gitState });
 });
 
 /**

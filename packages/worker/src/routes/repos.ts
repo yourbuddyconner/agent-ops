@@ -136,6 +136,121 @@ reposRouter.get('/validate', async (c) => {
   });
 });
 
+/**
+ * GET /api/repos/:owner/:repo/pulls
+ * List open pull requests for a repository
+ */
+reposRouter.get('/:owner/:repo/pulls', async (c) => {
+  const user = c.get('user');
+  const { owner, repo } = c.req.param();
+
+  const token = await getGitHubToken(c.env, user.id);
+
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=30`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'Agent-Ops',
+      },
+    },
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    console.error('GitHub pulls fetch failed:', res.status, err);
+    return c.json({ error: 'Failed to fetch pull requests' }, 502);
+  }
+
+  const pulls = (await res.json()) as Array<{
+    number: number;
+    title: string;
+    state: string;
+    draft: boolean;
+    body: string | null;
+    html_url: string;
+    updated_at: string;
+    user: { login: string; avatar_url: string };
+    head: { ref: string; sha: string; repo: { full_name: string; clone_url: string } };
+    base: { ref: string; sha: string };
+  }>;
+
+  return c.json({
+    pulls: pulls.map((pr) => ({
+      number: pr.number,
+      title: pr.title,
+      state: pr.state,
+      draft: pr.draft,
+      body: pr.body,
+      url: pr.html_url,
+      updatedAt: pr.updated_at,
+      author: { login: pr.user.login, avatarUrl: pr.user.avatar_url },
+      headRef: pr.head.ref,
+      headSha: pr.head.sha,
+      baseRef: pr.base.ref,
+      repoFullName: pr.head.repo?.full_name,
+      repoCloneUrl: pr.head.repo?.clone_url,
+    })),
+  });
+});
+
+/**
+ * GET /api/repos/:owner/:repo/issues
+ * List open issues (excluding PRs) for a repository
+ */
+reposRouter.get('/:owner/:repo/issues', async (c) => {
+  const user = c.get('user');
+  const { owner, repo } = c.req.param();
+
+  const token = await getGitHubToken(c.env, user.id);
+
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/issues?state=open&sort=updated&direction=desc&per_page=30`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'Agent-Ops',
+      },
+    },
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    console.error('GitHub issues fetch failed:', res.status, err);
+    return c.json({ error: 'Failed to fetch issues' }, 502);
+  }
+
+  const allItems = (await res.json()) as Array<{
+    number: number;
+    title: string;
+    body: string | null;
+    html_url: string;
+    updated_at: string;
+    pull_request?: unknown;
+    labels: Array<{ name: string; color: string }>;
+    assignees: Array<{ login: string; avatar_url: string }>;
+    user: { login: string; avatar_url: string };
+  }>;
+
+  // GitHub returns PRs in the issues endpoint — filter them out
+  const issues = allItems.filter((item) => !item.pull_request);
+
+  return c.json({
+    issues: issues.map((issue) => ({
+      number: issue.number,
+      title: issue.title,
+      body: issue.body,
+      url: issue.html_url,
+      updatedAt: issue.updated_at,
+      author: { login: issue.user.login, avatarUrl: issue.user.avatar_url },
+      labels: issue.labels.map((l) => ({ name: l.name, color: l.color })),
+      assignees: issue.assignees.map((a) => ({ login: a.login, avatarUrl: a.avatar_url })),
+    })),
+  });
+});
+
 const createPRSchema = z.object({
   branch: z.string().min(1),
   title: z.string().min(1).max(256),

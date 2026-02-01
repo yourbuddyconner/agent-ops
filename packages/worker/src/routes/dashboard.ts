@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env, Variables } from '../env.js';
 import type { DashboardStatsResponse } from '@agent-ops/shared';
+import * as db from '../lib/db.js';
 
 export const dashboardRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -209,4 +210,17 @@ dashboardRouter.get('/stats', async (c) => {
   };
 
   return c.json(response);
+});
+
+/**
+ * GET /api/dashboard/adoption?period=30
+ * Returns adoption metrics for agent-created PRs and commits.
+ */
+dashboardRouter.get('/adoption', async (c) => {
+  const periodStr = c.req.query('period') || '30';
+  const period = Math.min(Math.max(parseInt(periodStr), 1), 365);
+
+  const metrics = await db.getAdoptionMetrics(c.env.DB, period);
+
+  return c.json(metrics);
 });

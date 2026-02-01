@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { useCreateSession } from '@/api/sessions';
-import { useRepos, useValidateRepo, type Repo } from '@/api/repos';
+import { useRepos, useValidateRepo, useRepoPulls, useRepoIssues, type Repo, type RepoPull, type RepoIssue } from '@/api/repos';
 import { getWebSocketUrl } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import type { SessionSourceType } from '@/api/types';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -24,7 +25,7 @@ interface CreateSessionDialogProps {
 }
 
 type DialogView = 'form' | 'progress';
-type RepoMode = 'my-repos' | 'url';
+type RepoMode = 'my-repos' | 'url' | 'from-pr' | 'from-issue';
 
 // --- Progress step definitions ---
 
@@ -181,6 +182,12 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
   const [repoSearch, setRepoSearch] = useState('');
   const [workspaceManuallyEdited, setWorkspaceManuallyEdited] = useState(false);
 
+  // PR/Issue selection state
+  const [selectedPR, setSelectedPR] = useState<RepoPull | null>(null);
+  const [selectedIssue, setSelectedIssue] = useState<RepoIssue | null>(null);
+  const [sourceType, setSourceType] = useState<SessionSourceType | undefined>(undefined);
+  const [initialPrompt, setInitialPrompt] = useState<string | undefined>(undefined);
+
   // Progress state
   const [sessionResult, setSessionResult] = useState<CreateSessionResponse | null>(null);
   const [apiDone, setApiDone] = useState(false);
@@ -190,6 +197,18 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
   // Queries
   const { data: reposData, isLoading: reposLoading } = useRepos();
   const validateRepo = useValidateRepo(repoMode === 'url' ? repoUrl : '');
+
+  // PR/Issue queries — derive owner/repo from selected repo
+  const prIssueOwner = selectedRepo?.fullName?.split('/')[0] ?? '';
+  const prIssueRepoName = selectedRepo?.fullName?.split('/')[1] ?? '';
+  const { data: pullsData, isLoading: pullsLoading } = useRepoPulls(
+    repoMode === 'from-pr' ? prIssueOwner : '',
+    repoMode === 'from-pr' ? prIssueRepoName : ''
+  );
+  const { data: issuesData, isLoading: issuesLoading } = useRepoIssues(
+    repoMode === 'from-issue' ? prIssueOwner : '',
+    repoMode === 'from-issue' ? prIssueRepoName : ''
+  );
 
   // WebSocket status tracking
   const { status: wsStatus, runnerConnected, error: wsError } = useSessionStatus(
@@ -252,6 +271,10 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
     setCreateError(null);
     setElapsedSeconds(0);
     setTimeBasedStep(1);
+    setSelectedPR(null);
+    setSelectedIssue(null);
+    setSourceType(undefined);
+    setInitialPrompt(undefined);
     createSession.reset();
   }, [createSession]);
 
@@ -288,17 +311,32 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
     setApiDone(false);
 
     // Build request
-    const request: { workspace: string; repoUrl?: string; branch?: string } = {
+    const request: {
+      workspace: string;
+      repoUrl?: string;
+      branch?: string;
+      sourceType?: SessionSourceType;
+      sourcePrNumber?: number;
+      sourceIssueNumber?: number;
+      sourceRepoFullName?: string;
+      initialPrompt?: string;
+    } = {
       workspace: workspace.trim(),
     };
 
     if (selectedRepo) {
       request.repoUrl = selectedRepo.cloneUrl;
       if (branch.trim()) request.branch = branch.trim();
+      request.sourceRepoFullName = selectedRepo.fullName;
     } else if (repoMode === 'url' && repoUrl.trim()) {
       request.repoUrl = repoUrl.trim();
       if (branch.trim()) request.branch = branch.trim();
     }
+
+    if (sourceType) request.sourceType = sourceType;
+    if (selectedPR) request.sourcePrNumber = selectedPR.number;
+    if (selectedIssue) request.sourceIssueNumber = selectedIssue.number;
+    if (initialPrompt) request.initialPrompt = initialPrompt;
 
     try {
       const result = await createSession.mutateAsync(request);
@@ -373,38 +411,30 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
                     <span className="ml-1 text-xs font-normal text-neutral-400">(optional)</span>
                   </label>
                   <div className="flex rounded-md border border-neutral-200 dark:border-neutral-700">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRepoMode('my-repos');
-                        setRepoUrl('');
-                      }}
-                      className={cn(
-                        'px-2.5 py-1 text-xs font-medium transition-colors',
-                        'rounded-l-md border-r border-neutral-200 dark:border-neutral-700',
-                        repoMode === 'my-repos'
-                          ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-                          : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'
-                      )}
-                    >
-                      My repos
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRepoMode('url');
-                        setSelectedRepo(null);
-                      }}
-                      className={cn(
-                        'px-2.5 py-1 text-xs font-medium transition-colors',
-                        'rounded-r-md',
-                        repoMode === 'url'
-                          ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-                          : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'
-                      )}
-                    >
-                      URL
-                    </button>
+                    {(['my-repos', 'url', 'from-pr', 'from-issue'] as const).map((mode, i, arr) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => {
+                          setRepoMode(mode);
+                          if (mode === 'my-repos') { setRepoUrl(''); setSelectedPR(null); setSelectedIssue(null); setSourceType(undefined); setInitialPrompt(undefined); }
+                          if (mode === 'url') { setSelectedRepo(null); setSelectedPR(null); setSelectedIssue(null); setSourceType(undefined); setInitialPrompt(undefined); }
+                          if (mode === 'from-pr') { setRepoUrl(''); setSelectedPR(null); setSelectedIssue(null); setSourceType('pr'); setInitialPrompt(undefined); }
+                          if (mode === 'from-issue') { setRepoUrl(''); setSelectedPR(null); setSelectedIssue(null); setSourceType('issue'); setInitialPrompt(undefined); }
+                        }}
+                        className={cn(
+                          'px-2.5 py-1 text-xs font-medium transition-colors',
+                          i === 0 && 'rounded-l-md',
+                          i < arr.length - 1 && 'border-r border-neutral-200 dark:border-neutral-700',
+                          i === arr.length - 1 && 'rounded-r-md',
+                          repoMode === mode
+                            ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                            : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'
+                        )}
+                      >
+                        {mode === 'my-repos' ? 'My repos' : mode === 'url' ? 'URL' : mode === 'from-pr' ? 'From PR' : 'From Issue'}
+                      </button>
+                    ))}
                   </div>
                 </div>
 
@@ -507,7 +537,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
                       </div>
                     )}
                   </div>
-                ) : (
+                ) : repoMode === 'url' ? (
                   <div>
                     <div className="relative">
                       <Input
@@ -538,6 +568,189 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
                       <p className="mt-1 text-xs text-neutral-500">
                         {validateRepo.data.repo.fullName} &middot; default branch: {validateRepo.data.repo.defaultBranch}
                       </p>
+                    )}
+                  </div>
+                ) : repoMode === 'from-pr' ? (
+                  <div>
+                    {!selectedRepo ? (
+                      <div>
+                        <Input
+                          value={repoSearch}
+                          onChange={(e) => setRepoSearch(e.target.value)}
+                          placeholder="Search repositories to select PRs from..."
+                          className="mb-2"
+                        />
+                        <div className="max-h-36 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700">
+                          {reposLoading ? (
+                            <div className="flex items-center justify-center py-4">
+                              <div className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-600" />
+                            </div>
+                          ) : filteredRepos.length === 0 ? (
+                            <p className="py-3 text-center text-sm text-neutral-400">No repos found</p>
+                          ) : (
+                            filteredRepos.map((repo) => (
+                              <button
+                                key={repo.id}
+                                type="button"
+                                onClick={() => handleSelectRepo(repo)}
+                                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-neutral-50 dark:hover:bg-neutral-800/50 border-b border-neutral-100 last:border-b-0 dark:border-neutral-800"
+                              >
+                                {repo.language && <span className={cn('h-2 w-2 rounded-full', LANG_COLORS[repo.language] ?? 'bg-neutral-400')} />}
+                                <span className="truncate font-medium text-neutral-900 dark:text-neutral-100">{repo.fullName}</span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ) : selectedPR ? (
+                      <div className="rounded-md border border-neutral-200 px-3 py-2 dark:border-neutral-700">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="font-mono text-xs text-neutral-400">#{selectedPR.number}</span>
+                            <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{selectedPR.title}</span>
+                            {selectedPR.draft && <Badge variant="secondary">draft</Badge>}
+                          </div>
+                          <button type="button" onClick={() => { setSelectedPR(null); setBranch(''); setInitialPrompt(undefined); }} className="text-xs text-neutral-400 hover:text-neutral-600">Change</button>
+                        </div>
+                        <p className="mt-1 text-xs text-neutral-400">{selectedPR.headRef} &rarr; {selectedPR.baseRef}</p>
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="text-xs text-neutral-500">{selectedRepo.fullName}</span>
+                          <button type="button" onClick={handleClearRepo} className="text-xs text-neutral-400 hover:text-neutral-600">Change repo</button>
+                        </div>
+                        <div className="max-h-48 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700">
+                          {pullsLoading ? (
+                            <div className="flex items-center justify-center py-4">
+                              <div className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-600" />
+                            </div>
+                          ) : !pullsData?.length ? (
+                            <p className="py-3 text-center text-sm text-neutral-400">No open pull requests</p>
+                          ) : (
+                            pullsData.map((pr) => (
+                              <button
+                                key={pr.number}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedPR(pr);
+                                  setBranch(pr.headRef);
+                                  if (!workspaceManuallyEdited) setWorkspace(selectedRepo!.name);
+                                  setInitialPrompt(`Continue work on PR #${pr.number}: ${pr.title}${pr.body ? `\n\n${pr.body}` : ''}`);
+                                }}
+                                className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/50 border-b border-neutral-100 last:border-b-0 dark:border-neutral-800"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono text-xs text-neutral-400">#{pr.number}</span>
+                                    <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{pr.title}</span>
+                                    {pr.draft && <Badge variant="secondary">draft</Badge>}
+                                  </div>
+                                  <p className="mt-0.5 text-xs text-neutral-400">{pr.headRef} &middot; {pr.author.login} &middot; {timeAgo(pr.updatedAt)}</p>
+                                </div>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  /* from-issue */
+                  <div>
+                    {!selectedRepo ? (
+                      <div>
+                        <Input
+                          value={repoSearch}
+                          onChange={(e) => setRepoSearch(e.target.value)}
+                          placeholder="Search repositories to select issues from..."
+                          className="mb-2"
+                        />
+                        <div className="max-h-36 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700">
+                          {reposLoading ? (
+                            <div className="flex items-center justify-center py-4">
+                              <div className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-600" />
+                            </div>
+                          ) : filteredRepos.length === 0 ? (
+                            <p className="py-3 text-center text-sm text-neutral-400">No repos found</p>
+                          ) : (
+                            filteredRepos.map((repo) => (
+                              <button
+                                key={repo.id}
+                                type="button"
+                                onClick={() => handleSelectRepo(repo)}
+                                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-neutral-50 dark:hover:bg-neutral-800/50 border-b border-neutral-100 last:border-b-0 dark:border-neutral-800"
+                              >
+                                {repo.language && <span className={cn('h-2 w-2 rounded-full', LANG_COLORS[repo.language] ?? 'bg-neutral-400')} />}
+                                <span className="truncate font-medium text-neutral-900 dark:text-neutral-100">{repo.fullName}</span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ) : selectedIssue ? (
+                      <div className="rounded-md border border-neutral-200 px-3 py-2 dark:border-neutral-700">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="font-mono text-xs text-neutral-400">#{selectedIssue.number}</span>
+                            <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{selectedIssue.title}</span>
+                          </div>
+                          <button type="button" onClick={() => { setSelectedIssue(null); setInitialPrompt(undefined); }} className="text-xs text-neutral-400 hover:text-neutral-600">Change</button>
+                        </div>
+                        {selectedIssue.labels.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {selectedIssue.labels.map((l) => (
+                              <span key={l.name} className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium" style={{ backgroundColor: `#${l.color}20`, color: `#${l.color}` }}>
+                                {l.name}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="text-xs text-neutral-500">{selectedRepo.fullName}</span>
+                          <button type="button" onClick={handleClearRepo} className="text-xs text-neutral-400 hover:text-neutral-600">Change repo</button>
+                        </div>
+                        <div className="max-h-48 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700">
+                          {issuesLoading ? (
+                            <div className="flex items-center justify-center py-4">
+                              <div className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-600" />
+                            </div>
+                          ) : !issuesData?.length ? (
+                            <p className="py-3 text-center text-sm text-neutral-400">No open issues</p>
+                          ) : (
+                            issuesData.map((issue) => (
+                              <button
+                                key={issue.number}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedIssue(issue);
+                                  if (!workspaceManuallyEdited) setWorkspace(selectedRepo!.name);
+                                  setInitialPrompt(`Work on issue #${issue.number}: ${issue.title}${issue.body ? `\n\n${issue.body}` : ''}`);
+                                }}
+                                className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/50 border-b border-neutral-100 last:border-b-0 dark:border-neutral-800"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono text-xs text-neutral-400">#{issue.number}</span>
+                                    <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{issue.title}</span>
+                                  </div>
+                                  <div className="mt-0.5 flex items-center gap-2">
+                                    {issue.labels.slice(0, 3).map((l) => (
+                                      <span key={l.name} className="inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium" style={{ backgroundColor: `#${l.color}20`, color: `#${l.color}` }}>
+                                        {l.name}
+                                      </span>
+                                    ))}
+                                    <span className="text-xs text-neutral-400">{issue.author.login} &middot; {timeAgo(issue.updatedAt)}</span>
+                                  </div>
+                                </div>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}

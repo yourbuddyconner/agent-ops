@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse } from '@agent-ops/shared';
+import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState } from '@agent-ops/shared';
 
 /**
  * Database helper functions for D1
@@ -652,7 +652,156 @@ export async function deleteUser(db: D1Database, userId: string): Promise<void> 
   await db.prepare('DELETE FROM users WHERE id = ?').bind(userId).run();
 }
 
+// Session git state operations
+export async function createSessionGitState(
+  db: D1Database,
+  data: {
+    sessionId: string;
+    sourceType?: SessionSourceType;
+    sourcePrNumber?: number;
+    sourceIssueNumber?: number;
+    sourceRepoFullName?: string;
+    sourceRepoUrl?: string;
+    branch?: string;
+    baseBranch?: string;
+  }
+): Promise<SessionGitState> {
+  const id = crypto.randomUUID();
+  await db
+    .prepare(
+      `INSERT INTO session_git_state (id, session_id, source_type, source_pr_number, source_issue_number, source_repo_full_name, source_repo_url, branch, base_branch)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(
+      id,
+      data.sessionId,
+      data.sourceType || null,
+      data.sourcePrNumber ?? null,
+      data.sourceIssueNumber ?? null,
+      data.sourceRepoFullName || null,
+      data.sourceRepoUrl || null,
+      data.branch || null,
+      data.baseBranch || null
+    )
+    .run();
+
+  return mapSessionGitState({
+    id,
+    session_id: data.sessionId,
+    source_type: data.sourceType || null,
+    source_pr_number: data.sourcePrNumber ?? null,
+    source_issue_number: data.sourceIssueNumber ?? null,
+    source_repo_full_name: data.sourceRepoFullName || null,
+    source_repo_url: data.sourceRepoUrl || null,
+    branch: data.branch || null,
+    base_branch: data.baseBranch || null,
+    commit_count: 0,
+    pr_number: null,
+    pr_title: null,
+    pr_state: null,
+    pr_url: null,
+    pr_created_at: null,
+    pr_merged_at: null,
+    agent_authored: 1,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+}
+
+export async function updateSessionGitState(
+  db: D1Database,
+  sessionId: string,
+  updates: Partial<{
+    branch: string;
+    baseBranch: string;
+    commitCount: number;
+    prNumber: number;
+    prTitle: string;
+    prState: PRState;
+    prUrl: string;
+    prCreatedAt: string;
+    prMergedAt: string;
+  }>
+): Promise<void> {
+  const sets: string[] = [];
+  const params: (string | number | null)[] = [];
+
+  if (updates.branch !== undefined) { sets.push('branch = ?'); params.push(updates.branch); }
+  if (updates.baseBranch !== undefined) { sets.push('base_branch = ?'); params.push(updates.baseBranch); }
+  if (updates.commitCount !== undefined) { sets.push('commit_count = ?'); params.push(updates.commitCount); }
+  if (updates.prNumber !== undefined) { sets.push('pr_number = ?'); params.push(updates.prNumber); }
+  if (updates.prTitle !== undefined) { sets.push('pr_title = ?'); params.push(updates.prTitle); }
+  if (updates.prState !== undefined) { sets.push('pr_state = ?'); params.push(updates.prState); }
+  if (updates.prUrl !== undefined) { sets.push('pr_url = ?'); params.push(updates.prUrl); }
+  if (updates.prCreatedAt !== undefined) { sets.push('pr_created_at = ?'); params.push(updates.prCreatedAt); }
+  if (updates.prMergedAt !== undefined) { sets.push('pr_merged_at = ?'); params.push(updates.prMergedAt); }
+
+  if (sets.length === 0) return;
+
+  sets.push("updated_at = datetime('now')");
+  await db
+    .prepare(`UPDATE session_git_state SET ${sets.join(', ')} WHERE session_id = ?`)
+    .bind(...params, sessionId)
+    .run();
+}
+
+export async function getSessionGitState(db: D1Database, sessionId: string): Promise<SessionGitState | null> {
+  const row = await db
+    .prepare('SELECT * FROM session_git_state WHERE session_id = ?')
+    .bind(sessionId)
+    .first();
+  return row ? mapSessionGitState(row) : null;
+}
+
+export async function getAdoptionMetrics(db: D1Database, periodDays: number): Promise<AdoptionMetrics> {
+  const result = await db
+    .prepare(
+      `SELECT
+        COUNT(CASE WHEN pr_number IS NOT NULL AND agent_authored = 1 THEN 1 END) as total_prs_created,
+        COUNT(CASE WHEN pr_state = 'merged' AND agent_authored = 1 THEN 1 END) as total_prs_merged,
+        COALESCE(SUM(commit_count), 0) as total_commits
+      FROM session_git_state
+      WHERE created_at >= datetime('now', '-' || ? || ' days')`
+    )
+    .bind(periodDays)
+    .first<{ total_prs_created: number; total_prs_merged: number; total_commits: number }>();
+
+  const totalCreated = result?.total_prs_created ?? 0;
+  const totalMerged = result?.total_prs_merged ?? 0;
+
+  return {
+    totalPRsCreated: totalCreated,
+    totalPRsMerged: totalMerged,
+    mergeRate: totalCreated > 0 ? Math.round((totalMerged / totalCreated) * 100) : 0,
+    totalCommits: result?.total_commits ?? 0,
+  };
+}
+
 // Mapping helpers
+function mapSessionGitState(row: any): SessionGitState {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    sourceType: row.source_type || null,
+    sourcePrNumber: row.source_pr_number ?? null,
+    sourceIssueNumber: row.source_issue_number ?? null,
+    sourceRepoFullName: row.source_repo_full_name || null,
+    sourceRepoUrl: row.source_repo_url || null,
+    branch: row.branch || null,
+    baseBranch: row.base_branch || null,
+    commitCount: row.commit_count ?? 0,
+    prNumber: row.pr_number ?? null,
+    prTitle: row.pr_title || null,
+    prState: row.pr_state || null,
+    prUrl: row.pr_url || null,
+    prCreatedAt: row.pr_created_at || null,
+    prMergedAt: row.pr_merged_at || null,
+    agentAuthored: !!row.agent_authored,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function mapOrgSettings(row: any): OrgSettings {
   return {
     id: row.id,

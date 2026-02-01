@@ -77,6 +77,39 @@ export interface AgentQuestion {
   expiresAt?: Date;
 }
 
+// Git state types
+export type SessionSourceType = 'pr' | 'issue' | 'branch' | 'manual';
+export type PRState = 'draft' | 'open' | 'closed' | 'merged';
+
+export interface SessionGitState {
+  id: string;
+  sessionId: string;
+  sourceType: SessionSourceType | null;
+  sourcePrNumber: number | null;
+  sourceIssueNumber: number | null;
+  sourceRepoFullName: string | null;
+  sourceRepoUrl: string | null;
+  branch: string | null;
+  baseBranch: string | null;
+  commitCount: number;
+  prNumber: number | null;
+  prTitle: string | null;
+  prState: PRState | null;
+  prUrl: string | null;
+  prCreatedAt: string | null;
+  prMergedAt: string | null;
+  agentAuthored: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdoptionMetrics {
+  totalPRsCreated: number;
+  totalPRsMerged: number;
+  mergeRate: number;
+  totalCommits: number;
+}
+
 // Session types
 export type SessionStatus = 'initializing' | 'running' | 'idle' | 'hibernating' | 'hibernated' | 'restoring' | 'terminated' | 'error';
 
@@ -241,6 +274,11 @@ export interface CreateSessionRequest {
     memory?: string;
     timeout?: number;
   };
+  sourceType?: SessionSourceType;
+  sourcePrNumber?: number;
+  sourceIssueNumber?: number;
+  sourceRepoFullName?: string;
+  initialPrompt?: string;
 }
 
 export interface CreateSessionResponse {

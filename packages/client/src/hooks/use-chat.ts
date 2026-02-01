@@ -139,6 +139,25 @@ interface WebSocketDiffMessage {
   data: { files: DiffFile[] };
 }
 
+interface WebSocketGitStateMessage {
+  type: 'git-state';
+  data: {
+    branch?: string;
+    baseBranch?: string;
+    commitCount?: number;
+  };
+}
+
+interface WebSocketPrCreatedMessage {
+  type: 'pr-created';
+  data: {
+    number: number;
+    title: string;
+    url: string;
+    state: string;
+  };
+}
+
 type WebSocketChatMessage =
   | WebSocketInitMessage
   | WebSocketMessageMessage
@@ -151,6 +170,8 @@ type WebSocketChatMessage =
   | WebSocketModelsMessage
   | WebSocketMessagesRemovedMessage
   | WebSocketDiffMessage
+  | WebSocketGitStateMessage
+  | WebSocketPrCreatedMessage
   | { type: 'pong' }
   | { type: 'user.joined'; userId: string }
   | { type: 'user.left'; userId: string };
@@ -446,6 +467,48 @@ export function useChat(sessionId: string) {
           diffLoading: false,
         }));
         appendLogEntry('diff', `Received diff with ${diffMsg.data.files.length} files`);
+        break;
+      }
+
+      case 'git-state': {
+        const gitMsg = message as WebSocketGitStateMessage;
+        // Update the git-state query cache with real-time data
+        queryClient.setQueryData(
+          sessionKeys.gitState(sessionId),
+          (old: { gitState: Record<string, unknown> | null } | undefined) => {
+            const prev = old?.gitState ?? {};
+            return {
+              gitState: {
+                ...prev,
+                ...(gitMsg.data.branch !== undefined ? { branch: gitMsg.data.branch } : {}),
+                ...(gitMsg.data.baseBranch !== undefined ? { baseBranch: gitMsg.data.baseBranch } : {}),
+                ...(gitMsg.data.commitCount !== undefined ? { commitCount: gitMsg.data.commitCount } : {}),
+              },
+            };
+          }
+        );
+        appendLogEntry('git-state', `Branch: ${gitMsg.data.branch ?? '?'}, commits: ${gitMsg.data.commitCount ?? '?'}`);
+        break;
+      }
+
+      case 'pr-created': {
+        const prMsg = message as WebSocketPrCreatedMessage;
+        queryClient.setQueryData(
+          sessionKeys.gitState(sessionId),
+          (old: { gitState: Record<string, unknown> | null } | undefined) => {
+            const prev = old?.gitState ?? {};
+            return {
+              gitState: {
+                ...prev,
+                prNumber: prMsg.data.number,
+                prTitle: prMsg.data.title,
+                prUrl: prMsg.data.url,
+                prState: prMsg.data.state,
+              },
+            };
+          }
+        );
+        appendLogEntry('pr-created', `PR #${prMsg.data.number}: ${prMsg.data.title}`);
         break;
       }
 

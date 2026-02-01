@@ -5,6 +5,7 @@ import type {
   CreateSessionRequest,
   CreateSessionResponse,
   ListSessionsResponse,
+  SessionGitState,
 } from './types';
 
 export const sessionKeys = {
@@ -15,6 +16,7 @@ export const sessionKeys = {
   infinite: () => [...sessionKeys.all, 'infinite'] as const,
   details: () => [...sessionKeys.all, 'detail'] as const,
   detail: (id: string) => [...sessionKeys.details(), id] as const,
+  gitState: (id: string) => [...sessionKeys.detail(id), 'git-state'] as const,
 };
 
 export function useSessions(cursor?: string) {
@@ -156,6 +158,17 @@ export function useWakeSession() {
     onSuccess: (_, sessionId) => {
       queryClient.invalidateQueries({ queryKey: sessionKeys.detail(sessionId) });
     },
+  });
+}
+
+export function useSessionGitState(sessionId: string) {
+  return useQuery({
+    queryKey: sessionKeys.gitState(sessionId),
+    queryFn: () =>
+      api.get<{ gitState: SessionGitState | null }>(`/sessions/${sessionId}/git-state`),
+    enabled: !!sessionId,
+    select: (data) => data.gitState,
+    refetchInterval: 15_000,
   });
 }
 

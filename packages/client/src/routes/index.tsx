@@ -8,6 +8,7 @@ import { HeroMetrics } from '@/components/dashboard/hero-metrics';
 import { ActivityChart } from '@/components/dashboard/activity-chart';
 import { ActivityFeed } from '@/components/dashboard/activity-feed';
 import { TopRepositories } from '@/components/dashboard/top-repositories';
+import { AdoptionCard } from '@/components/dashboard/adoption-card';
 import { DashboardSkeleton } from '@/components/dashboard/dashboard-skeleton';
 
 export const Route = createFileRoute('/')({
@@ -43,8 +44,9 @@ function DashboardPage() {
             <div className="lg:col-span-3">
               <ActivityFeed sessions={data.recentSessions} />
             </div>
-            <div className="lg:col-span-2">
+            <div className="lg:col-span-2 space-y-6">
               <TopRepositories repos={data.topRepos} />
+              <AdoptionCard />
             </div>
           </div>
         </div>

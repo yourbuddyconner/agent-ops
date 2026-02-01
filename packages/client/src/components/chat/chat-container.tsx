@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useChat } from '@/hooks/use-chat';
-import { useSession } from '@/api/sessions';
+import { useSession, useSessionGitState } from '@/api/sessions';
 import { useDrawer } from '@/routes/sessions/$sessionId';
 import { MessageList } from './message-list';
 import { ChatInput } from './chat-input';
@@ -18,6 +18,7 @@ interface ChatContainerProps {
 
 export function ChatContainer({ sessionId }: ChatContainerProps) {
   const { data: session } = useSession(sessionId);
+  const { data: gitState } = useSessionGitState(sessionId);
   const drawer = useDrawer();
   const {
     messages,
@@ -133,6 +134,30 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             <DiffIcon className="mr-1 h-3.5 w-3.5" />
             Changes
           </Button>
+          <Button variant="ghost" size="sm" onClick={drawer.toggleSidebar} title="Toggle session info sidebar">
+            <InfoIcon className="h-3.5 w-3.5" />
+          </Button>
+          {gitState?.prUrl && (
+            <a href={gitState.prUrl} target="_blank" rel="noopener noreferrer">
+              <Button variant="ghost" size="sm">
+                <PRIcon className="mr-1 h-3.5 w-3.5" />
+                View PR
+                {gitState.prState && (
+                  <Badge
+                    variant={
+                      gitState.prState === 'merged' ? 'default'
+                        : gitState.prState === 'open' ? 'success'
+                        : gitState.prState === 'draft' ? 'secondary'
+                        : 'error'
+                    }
+                    className="ml-1"
+                  >
+                    {gitState.prState}
+                  </Badge>
+                )}
+              </Button>
+            </a>
+          )}
           <ConnectionStatusBadge status={connectionStatus} />
           {session && (
             <SessionActionsMenu
@@ -319,6 +344,49 @@ function FilesIcon({ className }: { className?: string }) {
   );
 }
 
+
+function InfoIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4" />
+      <path d="M12 8h.01" />
+    </svg>
+  );
+}
+
+function PRIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <circle cx="18" cy="18" r="3" />
+      <circle cx="6" cy="6" r="3" />
+      <path d="M13 6h3a2 2 0 0 1 2 2v7" />
+      <line x1="6" x2="6" y1="9" y2="21" />
+    </svg>
+  );
+}
 
 function DiffIcon({ className }: { className?: string }) {
   return (

@@ -1,5 +1,5 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState } from '../lib/db.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
 
@@ -22,7 +22,7 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'ping';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'ping' | 'git-state' | 'pr-created';
   messageId?: string;
   content?: string;
   questionId?: string;
@@ -45,11 +45,15 @@ interface RunnerMessage {
   requestId?: string;
   messageIds?: string[];
   files?: { path: string; status: string; diff?: string }[];
+  number?: number;
+  url?: string;
+  baseBranch?: string;
+  commitCount?: number;
 }
 
 /** Messages sent from DO to clients */
 interface ClientOutbound {
-  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff';
+  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'git-state' | 'pr-created';
   [key: string]: unknown;
 }
 
@@ -316,6 +320,34 @@ export class SessionAgentDO {
         content: prompt.content,
       }));
       this.setStateValue('runnerBusy', 'true');
+    } else {
+      // Check for initial prompt (from create-from-PR/Issue)
+      const initialPrompt = this.getStateValue('initialPrompt');
+      if (initialPrompt) {
+        // Clear it so it only fires once
+        this.setStateValue('initialPrompt', '');
+        // Queue it through the normal prompt flow
+        const messageId = crypto.randomUUID();
+        this.ctx.storage.sql.exec(
+          'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
+          messageId, 'user', initialPrompt
+        );
+        this.broadcastToClients({
+          type: 'message',
+          data: {
+            id: messageId,
+            role: 'user',
+            content: initialPrompt,
+            createdAt: Math.floor(Date.now() / 1000),
+          },
+        });
+        server.send(JSON.stringify({
+          type: 'prompt',
+          messageId,
+          content: initialPrompt,
+        }));
+        this.setStateValue('runnerBusy', 'true');
+      }
     }
 
     this.broadcastToClients({
@@ -877,10 +909,21 @@ export class SessionAgentDO {
         });
         break;
 
-      case 'create-pr':
+      case 'create-pr': {
         // Runner requests PR creation — forward to worker API via EventBus notification
         await this.handleCreatePR(msg as unknown as { type: 'create-pr'; branch: string; title: string; body?: string; base?: string });
+        // Also update git state with branch info
+        const sessionIdCpr = this.getStateValue('sessionId');
+        if (sessionIdCpr && msg.branch) {
+          updateSessionGitState(this.env.DB, sessionIdCpr, {
+            branch: msg.branch,
+            baseBranch: msg.base,
+          }).catch((err) =>
+            console.error('[SessionAgentDO] Failed to update git state from create-pr:', err),
+          );
+        }
         break;
+      }
 
       case 'models':
         // Runner discovered available models — store and broadcast to clients
@@ -921,6 +964,58 @@ export class SessionAgentDO {
           data: { files: diffFiles },
         });
         break;
+
+      case 'git-state': {
+        // Runner reports current git branch/commit state
+        const sessionId = this.getStateValue('sessionId');
+        if (sessionId) {
+          const gitUpdates: Record<string, string | number> = {};
+          if (msg.branch !== undefined) gitUpdates.branch = msg.branch;
+          if (msg.baseBranch !== undefined) gitUpdates.baseBranch = msg.baseBranch;
+          if (msg.commitCount !== undefined) gitUpdates.commitCount = msg.commitCount;
+
+          if (Object.keys(gitUpdates).length > 0) {
+            updateSessionGitState(this.env.DB, sessionId, gitUpdates as any).catch((err) =>
+              console.error('[SessionAgentDO] Failed to update git state in D1:', err),
+            );
+          }
+        }
+        this.broadcastToClients({
+          type: 'git-state',
+          data: {
+            branch: msg.branch,
+            baseBranch: msg.baseBranch,
+            commitCount: msg.commitCount,
+          },
+        } as any);
+        break;
+      }
+
+      case 'pr-created': {
+        // Runner reports a PR was created
+        const sessionIdPr = this.getStateValue('sessionId');
+        if (sessionIdPr && msg.number) {
+          updateSessionGitState(this.env.DB, sessionIdPr, {
+            prNumber: msg.number,
+            prTitle: msg.title,
+            prUrl: msg.url,
+            prState: (msg.status as any) || 'open',
+            prCreatedAt: new Date().toISOString(),
+          }).catch((err) =>
+            console.error('[SessionAgentDO] Failed to update PR state in D1:', err),
+          );
+        }
+        this.broadcastToClients({
+          type: 'pr-created',
+          data: {
+            number: msg.number,
+            title: msg.title,
+            url: msg.url,
+            state: msg.status || 'open',
+          },
+        } as any);
+        break;
+      }
 
       case 'ping':
         // Keepalive from runner — respond with pong
@@ -988,6 +1083,7 @@ export class SessionAgentDO {
       restoreUrl?: string;
       spawnRequest?: Record<string, unknown>;
       idleTimeoutMs?: number;
+      initialPrompt?: string;
     };
 
     // Store session state in durable SQLite
@@ -1018,6 +1114,9 @@ export class SessionAgentDO {
     }
     if (body.spawnRequest) {
       this.setStateValue('spawnRequest', JSON.stringify(body.spawnRequest));
+    }
+    if (body.initialPrompt) {
+      this.setStateValue('initialPrompt', body.initialPrompt);
     }
 
     // Initialize idle tracking

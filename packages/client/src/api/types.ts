@@ -26,6 +26,10 @@ export type {
   DashboardTopRepo,
   DashboardRecentSession,
   DashboardActiveSession,
+  SessionGitState,
+  SessionSourceType,
+  PRState,
+  AdoptionMetrics,
 } from '@agent-ops/shared';
 
 export type { GitHub, Gmail, GoogleCalendar } from '@agent-ops/shared';

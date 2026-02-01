@@ -3,12 +3,14 @@ import { createFileRoute, Outlet } from '@tanstack/react-router';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
 import { EditorDrawer } from '@/components/session/editor-drawer';
 import { FilesDrawer } from '@/components/session/files-drawer';
+import { SessionMetadataSidebar } from '@/components/session/session-metadata-sidebar';
 import type { LogEntry } from '@/hooks/use-chat';
 
 type DrawerPanel = 'editor' | 'files' | null;
 
 const DRAWER_STORAGE_KEY = 'agent-ops:drawer-panel';
 const LAYOUT_STORAGE_KEY = 'agent-ops:editor-layout';
+const SIDEBAR_STORAGE_KEY = 'agent-ops:metadata-sidebar';
 
 function loadDrawerState(): DrawerPanel {
   try {
@@ -68,6 +70,8 @@ export interface DrawerContextValue {
   setLogEntries: (entries: LogEntry[]) => void;
   overlay: SessionOverlay;
   setOverlay: (overlay: SessionOverlay) => void;
+  sidebarOpen: boolean;
+  toggleSidebar: () => void;
 }
 
 const DrawerCtx = createContext<DrawerContextValue>({
@@ -81,6 +85,8 @@ const DrawerCtx = createContext<DrawerContextValue>({
   setLogEntries: () => {},
   overlay: null,
   setOverlay: () => {},
+  sidebarOpen: true,
+  toggleSidebar: () => {},
 });
 
 export function useDrawer() {
@@ -96,6 +102,12 @@ function SessionLayout() {
   const [activePanel, setActivePanel] = useState<DrawerPanel>(loadDrawerState);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [overlay, setOverlay] = useState<SessionOverlay>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    try {
+      const val = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+      return val !== 'false'; // default open
+    } catch { return true; }
+  });
 
   const openEditor = useCallback(() => {
     setActivePanel('editor');
@@ -128,6 +140,14 @@ function SessionLayout() {
     });
   }, []);
 
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      try { localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+
   const ctx: DrawerContextValue = {
     activePanel,
     openEditor,
@@ -139,6 +159,8 @@ function SessionLayout() {
     setLogEntries,
     overlay,
     setOverlay,
+    sidebarOpen,
+    toggleSidebar,
   };
 
   const defaultLayout = loadSavedLayout();
@@ -155,7 +177,14 @@ function SessionLayout() {
             className="h-full"
           >
             <Panel defaultSize={35} minSize={20}>
-              <Outlet />
+              <div className="flex h-full">
+                <div className="flex-1 min-w-0">
+                  <Outlet />
+                </div>
+                {sidebarOpen && (
+                  <SessionMetadataSidebar sessionId={sessionId} />
+                )}
+              </div>
             </Panel>
             <PanelResizeHandle className="group relative w-px bg-neutral-200 transition-colors hover:bg-accent/40 active:bg-accent dark:bg-neutral-800 dark:hover:bg-accent/40">
               <div className="absolute inset-y-0 -left-1 -right-1" />
@@ -170,7 +199,14 @@ function SessionLayout() {
             </Panel>
           </PanelGroup>
         ) : (
-          <Outlet />
+          <div className="flex h-full">
+            <div className="flex-1 min-w-0">
+              <Outlet />
+            </div>
+            {sidebarOpen && (
+              <SessionMetadataSidebar sessionId={sessionId} />
+            )}
+          </div>
         )}
 
         {/* Full-viewport overlay for hibernate transitions */}
