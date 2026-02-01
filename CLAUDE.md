@@ -169,6 +169,48 @@ The sandbox image is cached. To force a rebuild after changing `docker/start.sh`
 2. Redeploy: `~/anaconda3/envs/agent-ops/bin/modal deploy backend/app.py`
 3. Create a new session (existing sandboxes won't update)
 
+## Developing Inside a Sandbox
+
+When working on the agent-ops codebase from inside a Modal sandbox (e.g. via an Agent-Ops session), the environment has specific constraints. The sandbox is an Ubuntu 22.04 container — not a full VM — so some tools are unavailable.
+
+### What works
+
+```bash
+pnpm install                          # Install all dependencies
+cd packages/client && pnpm dev        # React frontend on http://localhost:5173
+pnpm typecheck                        # TypeScript checking across all packages
+cd packages/worker && pnpm typecheck  # Single-package typecheck
+git clone / commit / push / pull      # Git credentials are pre-configured
+```
+
+Node.js, Bun, and all standard build tools (build-essential, ripgrep, jq, etc.) are available.
+
+### What does NOT work
+
+- **`wrangler dev`** — The Cloudflare Worker dev server depends on `workerd`, which may have native library requirements. Use `pnpm typecheck` to validate worker changes instead.
+- **`wrangler d1 migrations apply --local`** — Same constraint. Write and review migration SQL directly; it gets applied during deployment.
+- **Docker** — Not available. Modal sandboxes are already containers; nested Docker (DinD) is not supported.
+- **`modal deploy`** — The Modal Python backend must be deployed from outside the sandbox (requires the `agent-ops` conda environment on the host).
+
+### Recommended workflow
+
+1. **Frontend**: Run `cd packages/client && pnpm dev`, open `http://localhost:5173` in the VNC browser (port 6080) to preview changes live.
+2. **Worker**: Edit code, run `cd packages/worker && pnpm typecheck`. You can't run the worker locally, but typecheck catches most issues.
+3. **Shared types**: Edit `packages/shared/src/`, then `pnpm typecheck` from root to verify all consumers compile.
+4. **Runner**: Edit `packages/runner/src/`, run `cd packages/runner && pnpm typecheck`. The live runner instance at `/runner` is managed by `start.sh` — don't restart it manually.
+5. **Migrations**: Write SQL in `packages/worker/migrations/NNNN_name.sql`. Migrations are applied via `wrangler d1 migrations apply` from outside the sandbox or during `make deploy`.
+
+### Testing against the deployed worker
+
+The production worker is at `https://agent-ops.conner-7e8.workers.dev`. To run the frontend against it:
+
+```bash
+cd packages/client
+VITE_API_URL=https://agent-ops.conner-7e8.workers.dev/api pnpm dev
+```
+
+You can also `curl` the deployed API directly for testing routes.
+
 ## Code Conventions
 
 ### Worker (Hono)

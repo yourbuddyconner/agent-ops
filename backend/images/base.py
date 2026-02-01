@@ -13,7 +13,8 @@ from config import NODE_VERSION
 def get_base_image() -> modal.Image:
     """Build the full sandbox image with all dev environment services."""
     return (
-        modal.Image.debian_slim()
+        modal.Image.from_registry("ubuntu:22.04")
+        .run_commands("apt-get update")
         .apt_install(
             "git",
             "curl",
@@ -54,9 +55,17 @@ def get_base_image() -> modal.Image:
             "x11vnc",
             "websockify",
             "novnc",
-            "chromium",
             "imagemagick",
             "xdotool",
+        )
+        # Chromium: Ubuntu 22.04 only ships snap which doesn't work in containers.
+        # Install from Debian's package repository instead.
+        .run_commands(
+            "echo 'deb http://deb.debian.org/debian bookworm main' > /etc/apt/sources.list.d/debian-bookworm.list",
+            "apt-get update",
+            "apt-get install -y --no-install-recommends chromium",
+            "rm /etc/apt/sources.list.d/debian-bookworm.list",
+            "apt-get update",
         )
         # TTYD (web terminal)
         .run_commands(
@@ -102,7 +111,7 @@ def get_base_image() -> modal.Image:
                 "DISPLAY": ":99",
                 "HOME": "/root",
                 # Force image rebuild on deploy (change this value to trigger rebuild)
-                "IMAGE_BUILD_VERSION": "2026-01-30-v33",
+                "IMAGE_BUILD_VERSION": "2026-01-31-v34",
                 "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
             }
         )
