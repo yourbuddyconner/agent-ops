@@ -21,7 +21,7 @@ from session import CreateSessionRequest, SessionManager
 session_manager = SessionManager(app)
 
 
-@app.function(image=fn_image)
+@app.function(image=fn_image, timeout=900)
 @modal.fastapi_endpoint(method="POST", label="create-session")
 async def create_session(request: dict) -> dict:
     """Create a new session and spawn a sandbox.
@@ -101,7 +101,7 @@ async def hibernate_session(request: dict) -> dict:
     return {"snapshotImageId": snapshot_image_id}
 
 
-@app.function(image=fn_image)
+@app.function(image=fn_image, timeout=900)
 @modal.fastapi_endpoint(method="POST", label="restore-session")
 async def restore_session(request: dict) -> dict:
     """Restore a session from a filesystem snapshot.
