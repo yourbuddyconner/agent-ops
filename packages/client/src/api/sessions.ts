@@ -6,6 +6,8 @@ import type {
   CreateSessionResponse,
   ListSessionsResponse,
   SessionGitState,
+  SessionFileChanged,
+  ChildSessionSummary,
 } from './types';
 
 export const sessionKeys = {
@@ -17,6 +19,8 @@ export const sessionKeys = {
   details: () => [...sessionKeys.all, 'detail'] as const,
   detail: (id: string) => [...sessionKeys.details(), id] as const,
   gitState: (id: string) => [...sessionKeys.detail(id), 'git-state'] as const,
+  children: (id: string) => [...sessionKeys.detail(id), 'children'] as const,
+  filesChanged: (id: string) => [...sessionKeys.detail(id), 'files-changed'] as const,
 };
 
 export function useSessions(cursor?: string) {
@@ -169,6 +173,40 @@ export function useSessionGitState(sessionId: string) {
     enabled: !!sessionId,
     select: (data) => data.gitState,
     refetchInterval: 15_000,
+  });
+}
+
+export function useSessionChildren(sessionId: string) {
+  return useQuery({
+    queryKey: sessionKeys.children(sessionId),
+    queryFn: () =>
+      api.get<{ children: ChildSessionSummary[] }>(`/sessions/${sessionId}/children`),
+    enabled: !!sessionId,
+    select: (data) => data.children,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useSessionFilesChanged(sessionId: string) {
+  return useQuery({
+    queryKey: sessionKeys.filesChanged(sessionId),
+    queryFn: () =>
+      api.get<{ files: SessionFileChanged[] }>(`/sessions/${sessionId}/files-changed`),
+    enabled: !!sessionId,
+    select: (data) => data.files,
+    refetchInterval: 15_000,
+  });
+}
+
+export function useUpdateSessionTitle() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ sessionId, title }: { sessionId: string; title: string }) =>
+      api.patch<{ success: boolean }>(`/sessions/${sessionId}`, { title }),
+    onSuccess: (_, { sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: sessionKeys.detail(sessionId) });
+    },
   });
 }
 

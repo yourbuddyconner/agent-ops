@@ -1,5 +1,5 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle } from '../lib/db.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
 
@@ -22,7 +22,7 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'ping' | 'git-state' | 'pr-created';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title';
   messageId?: string;
   content?: string;
   questionId?: string;
@@ -53,7 +53,7 @@ interface RunnerMessage {
 
 /** Messages sent from DO to clients */
 interface ClientOutbound {
-  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'git-state' | 'pr-created';
+  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title';
   [key: string]: unknown;
 }
 
@@ -215,6 +215,7 @@ export class SessionAgentDO {
     const connectedUsers = this.getConnectedUserIds();
     const sessionId = this.getStateValue('sessionId');
     const workspace = this.getStateValue('workspace') || '';
+    const title = this.getStateValue('title');
 
     const availableModelsRaw = this.getStateValue('availableModels');
     const availableModels = availableModelsRaw ? JSON.parse(availableModelsRaw) : undefined;
@@ -225,6 +226,7 @@ export class SessionAgentDO {
         id: sessionId,
         status,
         workspace,
+        title,
         messages: messages.map((msg) => ({
           id: msg.id,
           role: msg.role,
@@ -1013,6 +1015,56 @@ export class SessionAgentDO {
             url: msg.url,
             state: msg.status || 'open',
           },
+        } as any);
+        break;
+      }
+
+      case 'files-changed': {
+        // Runner reports files changed — upsert in D1, broadcast to clients
+        const sessionIdFc = this.getStateValue('sessionId');
+        const filesChanged = (msg as any).files as Array<{ path: string; status: string; additions?: number; deletions?: number }> | undefined;
+        if (sessionIdFc && Array.isArray(filesChanged)) {
+          for (const file of filesChanged) {
+            upsertSessionFileChanged(this.env.DB, sessionIdFc, {
+              filePath: file.path,
+              status: file.status,
+              additions: file.additions,
+              deletions: file.deletions,
+            }).catch((err) =>
+              console.error('[SessionAgentDO] Failed to upsert file changed:', err),
+            );
+          }
+        }
+        this.broadcastToClients({
+          type: 'files-changed',
+          files: filesChanged ?? [],
+        } as any);
+        break;
+      }
+
+      case 'child-session': {
+        // Runner reports a child/sub-agent session was spawned
+        this.broadcastToClients({
+          type: 'child-session',
+          childSessionId: (msg as any).childSessionId,
+          title: msg.title,
+        } as any);
+        break;
+      }
+
+      case 'title': {
+        // Runner reports session title update
+        const sessionIdTitle = this.getStateValue('sessionId');
+        const newTitle = msg.title || msg.content;
+        if (sessionIdTitle && newTitle) {
+          this.setStateValue('title', newTitle);
+          updateSessionTitle(this.env.DB, sessionIdTitle, newTitle).catch((err) =>
+            console.error('[SessionAgentDO] Failed to update session title:', err),
+          );
+        }
+        this.broadcastToClients({
+          type: 'title',
+          title: newTitle,
         } as any);
         break;
       }

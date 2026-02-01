@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useChat } from '@/hooks/use-chat';
-import { useSession, useSessionGitState } from '@/api/sessions';
+import { useSession, useSessionGitState, useUpdateSessionTitle, useSessionChildren } from '@/api/sessions';
 import { useDrawer } from '@/routes/sessions/$sessionId';
 import { MessageList } from './message-list';
 import { ChatInput } from './chat-input';
@@ -19,6 +19,8 @@ interface ChatContainerProps {
 export function ChatContainer({ sessionId }: ChatContainerProps) {
   const { data: session } = useSession(sessionId);
   const { data: gitState } = useSessionGitState(sessionId);
+  const { data: childSessions } = useSessionChildren(sessionId);
+  const updateTitle = useUpdateSessionTitle();
   const drawer = useDrawer();
   const {
     messages,
@@ -42,6 +44,9 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     diffLoading,
     runnerConnected,
     logEntries,
+    sessionTitle,
+    childSessionEvents,
+    connectedUsers,
   } = useChat(sessionId);
 
   // Sync log entries to the editor drawer context
@@ -49,10 +54,39 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     drawer.setLogEntries(logEntries);
   }, [logEntries, drawer.setLogEntries]);
 
+  // Sync connected users and selected model to layout context for sidebar
+  useEffect(() => {
+    drawer.setConnectedUsers(connectedUsers);
+  }, [connectedUsers, drawer.setConnectedUsers]);
+
+  useEffect(() => {
+    drawer.setSelectedModel(selectedModel);
+  }, [selectedModel, drawer.setSelectedModel]);
+
   const [showDiff, setShowDiff] = useState(false);
 
+  // Editable title state
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editTitleValue, setEditTitleValue] = useState('');
+  const titleInputRef = useRef<HTMLInputElement>(null);
+
+  const displayTitle = sessionTitle || session?.title || session?.workspace || sessionId.slice(0, 8);
+
+  const startEditingTitle = useCallback(() => {
+    setEditTitleValue(sessionTitle || session?.title || '');
+    setIsEditingTitle(true);
+    requestAnimationFrame(() => titleInputRef.current?.focus());
+  }, [sessionTitle, session?.title]);
+
+  const saveTitle = useCallback(() => {
+    const trimmed = editTitleValue.trim();
+    if (trimmed && trimmed !== (sessionTitle || session?.title)) {
+      updateTitle.mutate({ sessionId, title: trimmed });
+    }
+    setIsEditingTitle(false);
+  }, [editTitleValue, sessionTitle, session?.title, sessionId, updateTitle]);
+
   // Track whether we've seen a hibernate transition in this page session
-  // so we only show "awaiting runner" after a restore, not on initial load
   const wasHibernatingRef = useRef(false);
   if (sessionStatus === 'hibernating' || sessionStatus === 'restoring' || sessionStatus === 'hibernated') {
     wasHibernatingRef.current = true;
@@ -68,8 +102,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   const isDisabled = !isConnected || isTerminated;
   const isAgentActive = isAgentThinking || agentStatus === 'thinking' || agentStatus === 'tool_calling' || agentStatus === 'streaming';
 
-  // Sync transition overlays to layout level so they cover drawers too
-  // (hibernated state stays local so the chat input remains accessible for wake)
+  // Sync transition overlays to layout level
   useEffect(() => {
     if (isHibernateTransition || isAwaitingRunner) {
       const message = sessionStatus === 'hibernating'
@@ -97,68 +130,48 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between border-b border-neutral-200 bg-surface-0 px-3 py-2 dark:border-neutral-800 dark:bg-surface-0">
-        <div className="flex items-center gap-2.5">
+      {/* Header — Title bar */}
+      <header className="flex items-center justify-between border-b border-border bg-surface-0 px-3 py-1.5 dark:bg-surface-0">
+        <div className="flex items-center gap-2 min-w-0">
           <Link to="/sessions">
-            <Button variant="ghost" size="sm">
-              <BackIcon className="mr-1 h-3.5 w-3.5" />
-              Back
+            <Button variant="ghost" size="sm" className="h-6 px-1.5 text-neutral-400 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-200">
+              <BackIcon className="h-3.5 w-3.5" />
             </Button>
           </Link>
-          <div className="h-3.5 w-px bg-neutral-200 dark:bg-neutral-700" />
-          <span className="font-mono text-[12px] font-medium text-neutral-600 dark:text-neutral-400">
-            {sessionId.slice(0, 8)}
-          </span>
+          <div className="h-3 w-px bg-neutral-200 dark:bg-neutral-800" />
+
+          {/* Editable session title */}
+          {isEditingTitle ? (
+            <input
+              ref={titleInputRef}
+              value={editTitleValue}
+              onChange={(e) => setEditTitleValue(e.target.value)}
+              onBlur={saveTitle}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') saveTitle();
+                if (e.key === 'Escape') setIsEditingTitle(false);
+              }}
+              className="min-w-[120px] max-w-[300px] rounded-sm border border-accent/30 bg-transparent px-1.5 py-0.5 font-sans text-[13px] font-semibold text-neutral-900 outline-none selection:bg-accent/20 dark:text-neutral-100"
+              placeholder="Session title..."
+            />
+          ) : (
+            <button
+              onClick={startEditingTitle}
+              className="group flex items-center gap-1.5 truncate rounded-sm px-1 py-0.5 text-[13px] font-semibold text-neutral-900 transition-colors hover:bg-surface-1 dark:text-neutral-100 dark:hover:bg-surface-2"
+              title="Click to edit title"
+            >
+              <span className="truncate">{displayTitle}</span>
+              <PencilIcon className="h-2.5 w-2.5 shrink-0 text-neutral-300 opacity-0 transition-opacity group-hover:opacity-100 dark:text-neutral-600" />
+            </button>
+          )}
+
           <SessionStatusBadge
             status={sessionStatus}
             errorMessage={session?.errorMessage}
           />
+          <ConnectionStatusDot status={connectionStatus} />
         </div>
-        <div className="flex items-center gap-1.5">
-          <Button variant="ghost" size="sm" onClick={drawer.toggleEditor}>
-            <EditorIcon className="mr-1 h-3.5 w-3.5" />
-            Editor
-          </Button>
-          <Button variant="ghost" size="sm" onClick={drawer.toggleFiles}>
-            <FilesIcon className="mr-1 h-3.5 w-3.5" />
-            Files
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              requestDiff();
-              setShowDiff(true);
-            }}
-          >
-            <DiffIcon className="mr-1 h-3.5 w-3.5" />
-            Changes
-          </Button>
-          <Button variant="ghost" size="sm" onClick={drawer.toggleSidebar} title="Toggle session info sidebar">
-            <InfoIcon className="h-3.5 w-3.5" />
-          </Button>
-          {gitState?.prUrl && (
-            <a href={gitState.prUrl} target="_blank" rel="noopener noreferrer">
-              <Button variant="ghost" size="sm">
-                <PRIcon className="mr-1 h-3.5 w-3.5" />
-                View PR
-                {gitState.prState && (
-                  <Badge
-                    variant={
-                      gitState.prState === 'merged' ? 'default'
-                        : gitState.prState === 'open' ? 'success'
-                        : gitState.prState === 'draft' ? 'secondary'
-                        : 'error'
-                    }
-                    className="ml-1"
-                  >
-                    {gitState.prState}
-                  </Badge>
-                )}
-              </Button>
-            </a>
-          )}
-          <ConnectionStatusBadge status={connectionStatus} />
+        <div className="flex items-center gap-0.5">
           {session && (
             <SessionActionsMenu
               session={{ id: sessionId, workspace: session.workspace, status: sessionStatus }}
@@ -168,6 +181,55 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           )}
         </div>
       </header>
+
+      {/* Action toolbar */}
+      <div className="flex items-center gap-0.5 border-b border-neutral-100 bg-surface-0 px-2 py-0.5 dark:border-neutral-800/50 dark:bg-surface-0">
+        <Button variant="ghost" size="sm" onClick={drawer.toggleEditor} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+          <EditorIcon className="h-3 w-3" />
+          Editor
+        </Button>
+        <Button variant="ghost" size="sm" onClick={drawer.toggleFiles} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+          <FilesIcon className="h-3 w-3" />
+          Files
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            requestDiff();
+            setShowDiff(true);
+          }}
+          className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
+        >
+          <DiffIcon className="h-3 w-3" />
+          Changes
+        </Button>
+        {gitState?.prUrl && (
+          <a href={gitState.prUrl} target="_blank" rel="noopener noreferrer">
+            <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+              <PRIcon className="h-3 w-3" />
+              PR
+              {gitState.prState && (
+                <Badge
+                  variant={
+                    gitState.prState === 'merged' ? 'default'
+                      : gitState.prState === 'open' ? 'success'
+                      : gitState.prState === 'draft' ? 'secondary'
+                      : 'error'
+                  }
+                  className="ml-0.5 text-2xs"
+                >
+                  {gitState.prState}
+                </Badge>
+              )}
+            </Button>
+          </a>
+        )}
+        <div className="flex-1" />
+        <Button variant="ghost" size="sm" onClick={drawer.toggleSidebar} title="Toggle session info sidebar" className="h-6 px-1.5 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300">
+          <InfoIcon className="h-3 w-3" />
+        </Button>
+      </div>
 
       {isLoading ? (
         <ChatSkeleton />
@@ -181,12 +243,17 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
               agentStatus={agentStatus}
               agentStatusDetail={agentStatusDetail}
               onRevert={revertMessage}
+              childSessionEvents={childSessionEvents}
+              childSessions={childSessions}
             />
             {sessionStatus === 'hibernated' && (
-              <div className="absolute inset-0 flex items-center justify-center bg-surface-0/50 dark:bg-surface-0/60 backdrop-blur-[3px] transition-opacity duration-300">
-                <span className="font-mono text-[13px] text-neutral-400 dark:text-neutral-500">
-                  Begin typing to wake
-                </span>
+              <div className="absolute inset-0 flex items-center justify-center bg-surface-0/60 dark:bg-surface-0/70 backdrop-blur-[2px] transition-opacity duration-500">
+                <div className="flex flex-col items-center gap-1.5">
+                  <div className="h-1 w-1 rounded-full bg-neutral-300 animate-pulse-dot dark:bg-neutral-600" />
+                  <span className="font-mono text-[11px] tracking-wide text-neutral-400 dark:text-neutral-500">
+                    begin typing to wake
+                  </span>
+                </div>
               </div>
             )}
           </div>
@@ -207,7 +274,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             placeholder={
               isDisabled
                 ? 'Session is not available'
-                : 'Type a message...'
+                : 'Ask or build anything...'
             }
             availableModels={availableModels}
             selectedModel={selectedModel}
@@ -216,6 +283,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             isAgentActive={isAgentActive}
             sessionId={sessionId}
             sessionStatus={sessionStatus}
+            compact={drawer.activePanel !== null}
           />
         </>
       )}
@@ -248,31 +316,31 @@ function SessionStatusBadge({ status, errorMessage }: { status: string; errorMes
   return <Badge variant={variants[status] ?? 'default'} title={errorMessage}>{status}</Badge>;
 }
 
-function ConnectionStatusBadge({ status }: { status: string }) {
-  const variants: Record<
-    string,
-    'default' | 'success' | 'warning' | 'error' | 'secondary'
-  > = {
-    connecting: 'warning',
-    connected: 'success',
-    disconnected: 'secondary',
-    error: 'error',
+function ConnectionStatusDot({ status }: { status: string }) {
+  const colors: Record<string, string> = {
+    connecting: 'bg-amber-400',
+    connected: 'bg-emerald-500',
+    disconnected: 'bg-neutral-300 dark:bg-neutral-600',
+    error: 'bg-red-400',
   };
 
   return (
-    <Badge variant={variants[status] ?? 'default'}>
-      {status === 'connected' ? 'live' : status}
-    </Badge>
+    <div className="relative flex items-center justify-center" title={status === 'connected' ? 'Live' : status}>
+      <div className={`h-1.5 w-1.5 rounded-full ${colors[status] ?? 'bg-neutral-300'}`} />
+      {status === 'connected' && (
+        <div className="absolute h-2.5 w-2.5 rounded-full border border-emerald-500/30 animate-ping" style={{ animationDuration: '2s' }} />
+      )}
+    </div>
   );
 }
 
 function ChatSkeleton() {
   return (
     <div className="flex-1 p-4">
-      <div className="space-y-4">
+      <div className="mx-auto max-w-3xl space-y-4">
         {Array.from({ length: 3 }).map((_, i) => (
           <div key={i} className="flex gap-3">
-            <Skeleton className="h-8 w-8 rounded-full" />
+            <Skeleton className="h-6 w-6 rounded-full" />
             <div className="flex-1 space-y-2">
               <Skeleton className="h-4 w-24" />
               <Skeleton className="h-16 w-full" />
@@ -286,38 +354,25 @@ function ChatSkeleton() {
 
 function BackIcon({ className }: { className?: string }) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <path d="m12 19-7-7 7-7" />
       <path d="M19 12H5" />
     </svg>
   );
 }
 
+function PencilIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+      <path d="m15 5 4 4" />
+    </svg>
+  );
+}
+
 function EditorIcon({ className }: { className?: string }) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <rect width="18" height="18" x="3" y="3" rx="2" />
       <path d="M9 3v18" />
     </svg>
@@ -326,39 +381,16 @@ function EditorIcon({ className }: { className?: string }) {
 
 function FilesIcon({ className }: { className?: string }) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
       <polyline points="14 2 14 8 20 8" />
     </svg>
   );
 }
 
-
 function InfoIcon({ className }: { className?: string }) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <circle cx="12" cy="12" r="10" />
       <path d="M12 16v-4" />
       <path d="M12 8h.01" />
@@ -368,18 +400,7 @@ function InfoIcon({ className }: { className?: string }) {
 
 function PRIcon({ className }: { className?: string }) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <circle cx="18" cy="18" r="3" />
       <circle cx="6" cy="6" r="3" />
       <path d="M13 6h3a2 2 0 0 1 2 2v7" />
@@ -390,18 +411,7 @@ function PRIcon({ className }: { className?: string }) {
 
 function DiffIcon({ className }: { className?: string }) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <path d="M12 3v14" />
       <path d="M5 10h14" />
       <path d="M5 21h14" />

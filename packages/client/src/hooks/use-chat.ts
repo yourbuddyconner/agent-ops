@@ -33,6 +33,12 @@ export interface DiffFile {
   diff?: string;
 }
 
+export interface ChildSessionEvent {
+  childSessionId: string;
+  title?: string;
+  timestamp: number;
+}
+
 interface ChatState {
   messages: Message[];
   status: SessionStatus;
@@ -47,6 +53,8 @@ interface ChatState {
   diffData: DiffFile[] | null;
   diffLoading: boolean;
   runnerConnected: boolean;
+  sessionTitle?: string;
+  childSessionEvents: ChildSessionEvent[];
 }
 
 interface WebSocketInitMessage {
@@ -55,6 +63,7 @@ interface WebSocketInitMessage {
     id: string;
     status: SessionStatus;
     workspace: string;
+    title?: string;
     messages: Array<{
       id: string;
       role: 'user' | 'assistant' | 'system' | 'tool';
@@ -158,6 +167,22 @@ interface WebSocketPrCreatedMessage {
   };
 }
 
+interface WebSocketFilesChangedMessage {
+  type: 'files-changed';
+  files: Array<{ path: string; status: string; additions?: number; deletions?: number }>;
+}
+
+interface WebSocketChildSessionMessage {
+  type: 'child-session';
+  childSessionId: string;
+  title?: string;
+}
+
+interface WebSocketTitleMessage {
+  type: 'title';
+  title: string;
+}
+
 type WebSocketChatMessage =
   | WebSocketInitMessage
   | WebSocketMessageMessage
@@ -172,6 +197,9 @@ type WebSocketChatMessage =
   | WebSocketDiffMessage
   | WebSocketGitStateMessage
   | WebSocketPrCreatedMessage
+  | WebSocketFilesChangedMessage
+  | WebSocketChildSessionMessage
+  | WebSocketTitleMessage
   | { type: 'pong' }
   | { type: 'user.joined'; userId: string }
   | { type: 'user.left'; userId: string };
@@ -193,6 +221,8 @@ export function useChat(sessionId: string) {
     diffData: null,
     diffLoading: false,
     runnerConnected: false,
+    sessionTitle: undefined,
+    childSessionEvents: [],
   });
 
   const [selectedModel, setSelectedModel] = useState<string>(() => {
@@ -277,6 +307,8 @@ export function useChat(sessionId: string) {
           diffData: null,
           diffLoading: false,
           runnerConnected: !!message.data?.runnerConnected,
+          sessionTitle: message.session.title,
+          childSessionEvents: [],
         });
         if (initModels.length > 0) autoSelectModel(initModels);
         appendLogEntry('init', `Session ${message.session.id.slice(0, 8)} initialized (${message.session.status})`);
@@ -512,6 +544,50 @@ export function useChat(sessionId: string) {
         break;
       }
 
+      case 'files-changed': {
+        const filesMsg = message as WebSocketFilesChangedMessage;
+        // Update the files-changed query cache with real-time data
+        queryClient.invalidateQueries({ queryKey: sessionKeys.filesChanged(sessionId) });
+        appendLogEntry('files-changed', `${filesMsg.files.length} files changed`);
+        break;
+      }
+
+      case 'child-session': {
+        const childMsg = message as WebSocketChildSessionMessage;
+        setState((prev) => ({
+          ...prev,
+          childSessionEvents: [
+            ...prev.childSessionEvents,
+            {
+              childSessionId: childMsg.childSessionId,
+              title: childMsg.title,
+              timestamp: Date.now(),
+            },
+          ],
+        }));
+        queryClient.invalidateQueries({ queryKey: sessionKeys.children(sessionId) });
+        appendLogEntry('child-session', `Child session: ${childMsg.title || childMsg.childSessionId.slice(0, 8)}`);
+        break;
+      }
+
+      case 'title': {
+        const titleMsg = message as WebSocketTitleMessage;
+        setState((prev) => ({
+          ...prev,
+          sessionTitle: titleMsg.title,
+        }));
+        // Update session detail query cache with new title
+        queryClient.setQueryData(
+          sessionKeys.detail(sessionId),
+          (old: { session: Record<string, unknown>; doStatus: Record<string, unknown> } | undefined) => {
+            if (!old) return old;
+            return { ...old, session: { ...old.session, title: titleMsg.title } };
+          }
+        );
+        appendLogEntry('title', `Title: ${titleMsg.title}`);
+        break;
+      }
+
       case 'pong':
         break;
 
@@ -643,5 +719,7 @@ export function useChat(sessionId: string) {
     diffData: state.diffData,
     diffLoading: state.diffLoading,
     runnerConnected: state.runnerConnected,
+    sessionTitle: state.sessionTitle,
+    childSessionEvents: state.childSessionEvents,
   };
 }

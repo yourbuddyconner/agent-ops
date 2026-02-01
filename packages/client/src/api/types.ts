@@ -30,6 +30,8 @@ export type {
   SessionSourceType,
   PRState,
   AdoptionMetrics,
+  SessionFileChanged,
+  ChildSessionSummary,
 } from '@agent-ops/shared';
 
 export type { GitHub, Gmail, GoogleCalendar } from '@agent-ops/shared';

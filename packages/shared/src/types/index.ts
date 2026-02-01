@@ -110,6 +110,32 @@ export interface AdoptionMetrics {
   totalCommits: number;
 }
 
+// Session files changed tracking
+export type FileChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
+
+export interface SessionFileChanged {
+  id: string;
+  sessionId: string;
+  filePath: string;
+  status: FileChangeStatus;
+  additions: number;
+  deletions: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Child session summary (for parent session sidebar)
+export interface ChildSessionSummary {
+  id: string;
+  title?: string;
+  status: SessionStatus;
+  workspace: string;
+  prNumber?: number;
+  prState?: PRState;
+  prUrl?: string;
+  createdAt: string;
+}
+
 // Session types
 export type SessionStatus = 'initializing' | 'running' | 'idle' | 'hibernating' | 'hibernated' | 'restoring' | 'terminated' | 'error';
 
@@ -118,6 +144,8 @@ export interface AgentSession {
   userId: string;
   workspace: string;
   status: SessionStatus;
+  title?: string;
+  parentSessionId?: string;
   containerId?: string;
   sandboxId?: string;
   tunnelUrls?: Record<string, string>;
@@ -270,6 +298,8 @@ export interface CreateSessionRequest {
   workspace: string;
   repoUrl?: string;
   branch?: string;
+  title?: string;
+  parentSessionId?: string;
   config?: {
     memory?: string;
     timeout?: number;

@@ -19,6 +19,8 @@ interface ChatInputProps {
   isAgentActive?: boolean;
   sessionId?: string;
   sessionStatus?: string;
+  /** When true, uses a more compact layout (hides hint text, tighter padding) */
+  compact?: boolean;
 }
 
 interface FlatModel {
@@ -69,7 +71,7 @@ export function ChatInput({
   onSend,
   disabled = false,
   sendDisabled = false,
-  placeholder = 'Type a message...',
+  placeholder = 'Ask or build anything...',
   inputRef,
   availableModels = [],
   selectedModel = '',
@@ -78,6 +80,7 @@ export function ChatInput({
   isAgentActive = false,
   sessionId,
   sessionStatus,
+  compact = false,
 }: ChatInputProps) {
   const [value, setValue] = useState('');
   const [highlightIndex, setHighlightIndex] = useState(0);
@@ -377,22 +380,22 @@ export function ChatInput({
   return (
     <form
       onSubmit={handleSubmit}
-      className="border-t border-neutral-200 bg-surface-0 p-3 dark:border-neutral-800 dark:bg-surface-0"
+      className={`border-t border-border bg-surface-0 dark:bg-surface-0 ${compact ? 'px-3 py-2' : 'px-4 py-3'}`}
     >
       <div className="relative flex gap-2">
         {showModelOverlay && (
           <div
             ref={overlayRef}
-            className="absolute bottom-full left-0 right-10 mb-1 max-h-60 overflow-y-auto rounded-md border border-neutral-200 bg-surface-0 shadow-lg dark:border-neutral-700 dark:bg-surface-1"
+            className="absolute bottom-full left-0 right-10 mb-1.5 max-h-60 overflow-y-auto rounded-lg border border-neutral-200 bg-surface-0 shadow-panel dark:border-neutral-700 dark:bg-surface-1"
           >
             {filteredModels.length === 0 ? (
-              <div className="px-3 py-2 font-mono text-[11px] text-neutral-400">
+              <div className="px-3 py-2.5 font-mono text-[10px] text-neutral-400">
                 No matching models
               </div>
             ) : (
               groupedFiltered.map(([provider, models]) => (
                 <div key={provider}>
-                  <div className="sticky top-0 bg-neutral-50 px-3 py-1 font-mono text-[10px] font-medium uppercase tracking-wider text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500">
+                  <div className="sticky top-0 bg-surface-1/80 px-3 py-1 font-mono text-[9px] font-semibold uppercase tracking-[0.08em] text-neutral-400 backdrop-blur-sm dark:bg-surface-2/80 dark:text-neutral-500">
                     {provider}
                   </div>
                   {models.map((m) => {
@@ -404,10 +407,10 @@ export function ChatInput({
                         key={m.id}
                         type="button"
                         data-highlighted={isHighlighted}
-                        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[12px] transition-colors ${
+                        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[11px] transition-colors ${
                           isHighlighted
-                            ? 'bg-accent/10 text-accent dark:bg-accent/20'
-                            : 'text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'
+                            ? 'bg-accent/8 text-accent dark:bg-accent/15'
+                            : 'text-neutral-600 hover:bg-surface-1 dark:text-neutral-400 dark:hover:bg-surface-2'
                         }`}
                         onMouseEnter={() => setHighlightIndex(idx)}
                         onMouseDown={(e) => {
@@ -417,7 +420,7 @@ export function ChatInput({
                       >
                         <span className="flex-1">{m.name}</span>
                         {isSelected && (
-                          <span className="text-[10px] text-accent">current</span>
+                          <span className="text-[9px] font-medium text-accent/70">current</span>
                         )}
                       </button>
                     );
@@ -430,14 +433,14 @@ export function ChatInput({
         {showFileOverlay && (
           <div
             ref={fileOverlayRef}
-            className="absolute bottom-full left-0 right-10 mb-1 max-h-60 overflow-y-auto rounded-md border border-neutral-200 bg-surface-0 shadow-lg dark:border-neutral-700 dark:bg-surface-1"
+            className="absolute bottom-full left-0 right-10 mb-1.5 max-h-60 overflow-y-auto rounded-lg border border-neutral-200 bg-surface-0 shadow-panel dark:border-neutral-700 dark:bg-surface-1"
           >
             {fileFinderLoading ? (
-              <div className="px-3 py-2 font-mono text-[11px] text-neutral-400">
+              <div className="px-3 py-2.5 font-mono text-[10px] text-neutral-400">
                 Searching...
               </div>
             ) : filePaths.length === 0 ? (
-              <div className="px-3 py-2 font-mono text-[11px] text-neutral-400">
+              <div className="px-3 py-2.5 font-mono text-[10px] text-neutral-400">
                 {atQuery ? 'No files found' : 'Type to search files...'}
               </div>
             ) : (
@@ -448,10 +451,10 @@ export function ChatInput({
                     key={filePath}
                     type="button"
                     data-highlighted={isHighlighted}
-                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[12px] transition-colors ${
+                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[11px] transition-colors ${
                       isHighlighted
-                        ? 'bg-accent/10 text-accent dark:bg-accent/20'
-                        : 'text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'
+                        ? 'bg-accent/8 text-accent dark:bg-accent/15'
+                        : 'text-neutral-600 hover:bg-surface-1 dark:text-neutral-400 dark:hover:bg-surface-2'
                     }`}
                     onMouseEnter={() => setFileHighlightIndex(idx)}
                     onMouseDown={(e) => {
@@ -459,7 +462,7 @@ export function ChatInput({
                       selectFile(filePath);
                     }}
                   >
-                    <FileIcon className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+                    <FileIcon className="h-3 w-3 shrink-0 text-neutral-400" />
                     <span className="flex-1 truncate">{truncatePath(filePath)}</span>
                   </button>
                 );
@@ -481,7 +484,7 @@ export function ChatInput({
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none rounded-md border border-neutral-200 bg-surface-0 px-3 py-2 text-[13px] text-neutral-900 placeholder:text-neutral-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface-0 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:bg-surface-1 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+          className="flex-1 resize-none rounded-lg border border-neutral-200 bg-surface-1/40 px-3.5 py-2.5 text-[13px] text-neutral-900 placeholder:text-neutral-400 transition-colors focus-visible:border-accent/30 focus-visible:bg-surface-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:bg-surface-1 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus-visible:border-accent/30 dark:focus-visible:bg-surface-0"
         />
         {isAgentActive ? (
           <Button
@@ -498,23 +501,26 @@ export function ChatInput({
           </Button>
         )}
       </div>
-      <div className="mt-1.5 flex items-center justify-between">
-        <p className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
-          {sessionStatus === 'restoring'
-            ? 'Restoring session...'
-            : sessionStatus === 'hibernated'
-              ? 'Session hibernated — focus to restore · Enter to send'
-              : sessionStatus === 'hibernating'
-                ? 'Session hibernating...'
-                : isAgentActive
-                  ? 'Esc to stop · Shift+Enter for new line · @ to attach files · /model to switch'
-                  : 'Enter to send · Shift+Enter for new line · @ to attach files · /model to switch'}
-        </p>
+      <div className={`flex items-center justify-between gap-3 ${compact ? 'mt-1' : 'mt-1.5'}`}>
+        {!compact && (
+          <p className="font-mono text-[9px] tracking-wide text-neutral-400/70 dark:text-neutral-500">
+            {sessionStatus === 'restoring'
+              ? 'restoring session...'
+              : sessionStatus === 'hibernated'
+                ? 'hibernated — focus to restore'
+                : sessionStatus === 'hibernating'
+                  ? 'hibernating...'
+                  : isAgentActive
+                    ? 'esc to stop · shift+enter for new line · @ files · /model'
+                    : 'enter to send · shift+enter for new line · @ files · /model'}
+          </p>
+        )}
+        {compact && <div className="flex-1" />}
         {hasModels && (
           <select
             value={selectedModel}
             onChange={(e) => onModelChange?.(e.target.value)}
-            className="rounded border border-neutral-200 bg-surface-0 px-1.5 py-0.5 font-mono text-[10px] text-neutral-600 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 dark:border-neutral-700 dark:bg-surface-1 dark:text-neutral-400"
+            className="shrink-0 cursor-pointer appearance-none rounded-md border border-neutral-200/80 bg-surface-1/60 px-2 py-0.5 font-mono text-[9px] font-medium text-neutral-500 transition-colors hover:border-neutral-300 hover:text-neutral-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/30 dark:border-neutral-700 dark:bg-surface-2 dark:text-neutral-400 dark:hover:border-neutral-600"
           >
             <option value="">Default model</option>
             {availableModels.map((provider) => (

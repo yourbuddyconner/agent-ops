@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState } from '@agent-ops/shared';
+import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary } from '@agent-ops/shared';
 
 /**
  * Database helper functions for D1
@@ -38,11 +38,11 @@ export async function getOrCreateUser(
 // Session operations
 export async function createSession(
   db: D1Database,
-  data: { id: string; userId: string; workspace: string; containerId?: string; metadata?: Record<string, unknown> }
+  data: { id: string; userId: string; workspace: string; title?: string; parentSessionId?: string; containerId?: string; metadata?: Record<string, unknown> }
 ): Promise<AgentSession> {
   await db
     .prepare(
-      'INSERT INTO sessions (id, user_id, workspace, status, container_id, metadata) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO sessions (id, user_id, workspace, status, container_id, metadata, title, parent_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     )
     .bind(
       data.id,
@@ -50,7 +50,9 @@ export async function createSession(
       data.workspace,
       'initializing',
       data.containerId || null,
-      data.metadata ? JSON.stringify(data.metadata) : null
+      data.metadata ? JSON.stringify(data.metadata) : null,
+      data.title || null,
+      data.parentSessionId || null
     )
     .run();
 
@@ -59,6 +61,8 @@ export async function createSession(
     userId: data.userId,
     workspace: data.workspace,
     status: 'initializing',
+    title: data.title,
+    parentSessionId: data.parentSessionId,
     containerId: data.containerId,
     metadata: data.metadata,
     createdAt: new Date(),
@@ -777,6 +781,79 @@ export async function getAdoptionMetrics(db: D1Database, periodDays: number): Pr
   };
 }
 
+// Session title update
+export async function updateSessionTitle(db: D1Database, sessionId: string, title: string): Promise<void> {
+  await db
+    .prepare("UPDATE sessions SET title = ?, last_active_at = datetime('now') WHERE id = ?")
+    .bind(title, sessionId)
+    .run();
+}
+
+// Child sessions
+export async function getChildSessions(db: D1Database, parentSessionId: string): Promise<ChildSessionSummary[]> {
+  const result = await db
+    .prepare(
+      `SELECT s.id, s.title, s.status, s.workspace, s.created_at,
+              g.pr_number, g.pr_state, g.pr_url
+       FROM sessions s
+       LEFT JOIN session_git_state g ON g.session_id = s.id
+       WHERE s.parent_session_id = ?
+       ORDER BY s.created_at DESC`
+    )
+    .bind(parentSessionId)
+    .all();
+
+  return (result.results || []).map((row: any) => ({
+    id: row.id,
+    title: row.title || undefined,
+    status: row.status,
+    workspace: row.workspace,
+    prNumber: row.pr_number ?? undefined,
+    prState: row.pr_state || undefined,
+    prUrl: row.pr_url || undefined,
+    createdAt: row.created_at,
+  }));
+}
+
+// Session files changed
+export async function upsertSessionFileChanged(
+  db: D1Database,
+  sessionId: string,
+  file: { filePath: string; status: string; additions?: number; deletions?: number }
+): Promise<void> {
+  const id = `${sessionId}:${file.filePath}`;
+  await db
+    .prepare(
+      `INSERT INTO session_files_changed (id, session_id, file_path, status, additions, deletions)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, file_path) DO UPDATE SET
+         status = excluded.status,
+         additions = excluded.additions,
+         deletions = excluded.deletions,
+         updated_at = datetime('now')`
+    )
+    .bind(id, sessionId, file.filePath, file.status, file.additions ?? 0, file.deletions ?? 0)
+    .run();
+}
+
+export async function getSessionFilesChanged(db: D1Database, sessionId: string): Promise<SessionFileChanged[]> {
+  const result = await db
+    .prepare('SELECT * FROM session_files_changed WHERE session_id = ? ORDER BY file_path ASC')
+    .bind(sessionId)
+    .all();
+
+  return (result.results || []).map((row: any) => ({
+    id: row.id,
+    sessionId: row.session_id,
+    filePath: row.file_path,
+    status: row.status,
+    additions: row.additions ?? 0,
+    deletions: row.deletions ?? 0,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
 // Mapping helpers
 function mapSessionGitState(row: any): SessionGitState {
   return {
@@ -835,6 +912,8 @@ function mapSession(row: any): AgentSession {
     userId: row.user_id,
     workspace: row.workspace,
     status: row.status,
+    title: row.title || undefined,
+    parentSessionId: row.parent_session_id || undefined,
     containerId: row.container_id || undefined,
     metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
     errorMessage: row.error_message || undefined,

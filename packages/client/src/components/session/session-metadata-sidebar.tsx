@@ -1,15 +1,21 @@
 import { useState, useEffect } from 'react';
-import { useSession, useSessionGitState } from '@/api/sessions';
+import { Link } from '@tanstack/react-router';
+import { useSession, useSessionGitState, useSessionChildren, useSessionFilesChanged } from '@/api/sessions';
 import { Badge } from '@/components/ui/badge';
-import type { PRState } from '@/api/types';
+import type { PRState, SessionFileChanged } from '@/api/types';
 
 interface SessionMetadataSidebarProps {
   sessionId: string;
+  connectedUsers?: string[];
+  selectedModel?: string;
+  compact?: boolean;
 }
 
-export function SessionMetadataSidebar({ sessionId }: SessionMetadataSidebarProps) {
+export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedModel, compact = false }: SessionMetadataSidebarProps) {
   const { data: session } = useSession(sessionId);
   const { data: gitState } = useSessionGitState(sessionId);
+  const { data: childSessions } = useSessionChildren(sessionId);
+  const { data: filesChanged } = useSessionFilesChanged(sessionId);
 
   const [elapsed, setElapsed] = useState(0);
 
@@ -32,20 +38,46 @@ export function SessionMetadataSidebar({ sessionId }: SessionMetadataSidebarProp
   };
 
   return (
-    <div className="flex h-full w-[260px] flex-col border-l border-neutral-200 bg-surface-0 dark:border-neutral-800 dark:bg-surface-0">
-      <div className="border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
-        <span className="font-mono text-[11px] font-medium uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+    <div className={`flex h-full flex-col border-l border-border bg-surface-0 dark:bg-surface-0 ${compact ? 'w-[200px]' : 'w-[240px]'}`}>
+      <div className={`border-b border-border ${compact ? 'px-2 py-1' : 'px-3 py-1.5'}`}>
+        <span className="font-mono text-[9px] font-semibold uppercase tracking-[0.1em] text-neutral-400 dark:text-neutral-500">
           Session Info
         </span>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-2 space-y-4">
+      <div className={`flex-1 overflow-y-auto ${compact ? 'px-2 py-2 space-y-2' : 'px-3 py-2.5 space-y-3'}`}>
+        {/* Connected Users */}
+        {connectedUsers && connectedUsers.length > 0 && (
+          <SidebarSection label="Team">
+            <div className="flex flex-wrap gap-1">
+              {connectedUsers.map((userId) => (
+                <span
+                  key={userId}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-neutral-100 bg-surface-1/50 px-2 py-px font-mono text-[10px] text-neutral-500 dark:border-neutral-800 dark:bg-surface-2/50 dark:text-neutral-400"
+                >
+                  <span className="h-1 w-1 rounded-full bg-emerald-500" />
+                  {userId.slice(0, 8)}
+                </span>
+              ))}
+            </div>
+          </SidebarSection>
+        )}
+
         {/* Duration */}
         <SidebarSection label="Duration">
-          <span className="font-mono text-[12px] text-neutral-700 dark:text-neutral-300 tabular-nums">
+          <span className="font-mono text-[11px] font-medium text-neutral-600 dark:text-neutral-300 tabular-nums">
             {formatDuration(elapsed)}
           </span>
         </SidebarSection>
+
+        {/* Model */}
+        {selectedModel && (
+          <SidebarSection label="Model">
+            <span className="inline-flex rounded-sm bg-surface-2/60 px-1.5 py-px font-mono text-[10px] font-medium text-neutral-600 dark:bg-surface-2 dark:text-neutral-400">
+              {selectedModel}
+            </span>
+          </SidebarSection>
+        )}
 
         {/* Repository */}
         {(gitState?.sourceRepoFullName || session?.workspace) && (
@@ -55,29 +87,14 @@ export function SessionMetadataSidebar({ sessionId }: SessionMetadataSidebarProp
                 href={gitState.sourceRepoUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1 font-mono text-[12px] text-accent hover:underline"
+                className="group/repo flex items-center gap-1.5 font-mono text-[11px] text-neutral-600 transition-colors hover:text-accent dark:text-neutral-400 dark:hover:text-accent"
               >
-                <GitHubIcon className="h-3 w-3 shrink-0" />
-                {gitState.sourceRepoFullName || session?.workspace}
+                <GitHubIcon className="h-3 w-3 shrink-0 text-neutral-400 transition-colors group-hover/repo:text-accent dark:text-neutral-500" />
+                <span className="truncate">{gitState.sourceRepoFullName || session?.workspace}</span>
               </a>
             ) : (
-              <span className="font-mono text-[12px] text-neutral-700 dark:text-neutral-300">
+              <span className="font-mono text-[11px] text-neutral-600 dark:text-neutral-400">
                 {gitState?.sourceRepoFullName || session?.workspace}
-              </span>
-            )}
-          </SidebarSection>
-        )}
-
-        {/* Branch */}
-        {gitState?.branch && (
-          <SidebarSection label="Branch">
-            <div className="flex items-center gap-1.5">
-              <BranchIcon className="h-3 w-3 shrink-0 text-neutral-400" />
-              <CopyableText text={gitState.branch} />
-            </div>
-            {gitState.baseBranch && (
-              <span className="mt-0.5 block font-mono text-[11px] text-neutral-400 dark:text-neutral-500">
-                from {gitState.baseBranch}
               </span>
             )}
           </SidebarSection>
@@ -93,12 +110,12 @@ export function SessionMetadataSidebar({ sessionId }: SessionMetadataSidebarProp
                   href={gitState.prUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="font-mono text-[12px] text-accent hover:underline truncate"
+                  className="font-mono text-[11px] text-neutral-600 transition-colors hover:text-accent truncate dark:text-neutral-400 dark:hover:text-accent"
                 >
                   #{gitState.prNumber} {gitState.prTitle}
                 </a>
               ) : (
-                <span className="font-mono text-[12px] text-neutral-700 dark:text-neutral-300 truncate">
+                <span className="font-mono text-[11px] text-neutral-600 dark:text-neutral-400 truncate">
                   #{gitState.prNumber} {gitState.prTitle}
                 </span>
               )}
@@ -106,39 +123,130 @@ export function SessionMetadataSidebar({ sessionId }: SessionMetadataSidebarProp
           </SidebarSection>
         )}
 
+        {/* Branch */}
+        {gitState?.branch && (
+          <SidebarSection label="Branch">
+            <div className="flex items-center gap-1.5">
+              <BranchIcon className="h-2.5 w-2.5 shrink-0 text-neutral-400 dark:text-neutral-500" />
+              <CopyableText text={gitState.branch} />
+            </div>
+            {gitState.baseBranch && (
+              <span className="mt-0.5 ml-4 block font-mono text-[9px] text-neutral-400 dark:text-neutral-600">
+                from {gitState.baseBranch}
+              </span>
+            )}
+          </SidebarSection>
+        )}
+
+        {/* Child Sessions */}
+        {childSessions && childSessions.length > 0 && (
+          <SidebarSection label={`Sub-agents (${childSessions.length})`}>
+            <div className="space-y-px">
+              {childSessions.map((child) => (
+                <Link
+                  key={child.id}
+                  to="/sessions/$sessionId"
+                  params={{ sessionId: child.id }}
+                  className="group/child flex items-center gap-1.5 rounded-sm px-1.5 py-1 transition-colors hover:bg-surface-1 dark:hover:bg-surface-2"
+                >
+                  <StatusDot status={child.status} />
+                  <span className="truncate font-mono text-[10px] text-neutral-600 transition-colors group-hover/child:text-neutral-900 dark:text-neutral-400 dark:group-hover/child:text-neutral-200">
+                    {child.title || child.workspace}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </SidebarSection>
+        )}
+
+        {/* Files Changed */}
+        {filesChanged && filesChanged.length > 0 && (
+          <SidebarSection label={`Files (${filesChanged.length})`}>
+            <div className="space-y-0">
+              {filesChanged.map((file) => (
+                <FileChangedItem key={file.id} file={file} />
+              ))}
+            </div>
+          </SidebarSection>
+        )}
+
         {/* Source context */}
         {gitState?.sourceType === 'issue' && gitState.sourceIssueNumber && (
           <SidebarSection label="Source">
-            <span className="font-mono text-[12px] text-neutral-600 dark:text-neutral-400">
-              From Issue #{gitState.sourceIssueNumber}
+            <span className="font-mono text-[10px] text-neutral-500 dark:text-neutral-500">
+              Issue #{gitState.sourceIssueNumber}
             </span>
           </SidebarSection>
         )}
         {gitState?.sourceType === 'pr' && gitState.sourcePrNumber && (
           <SidebarSection label="Source">
-            <span className="font-mono text-[12px] text-neutral-600 dark:text-neutral-400">
-              From PR #{gitState.sourcePrNumber}
+            <span className="font-mono text-[10px] text-neutral-500 dark:text-neutral-500">
+              PR #{gitState.sourcePrNumber}
             </span>
           </SidebarSection>
         )}
 
         {/* Stats */}
-        <SidebarSection label="Stats">
-          <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-            {gitState?.commitCount != null && gitState.commitCount > 0 && (
+        {gitState?.commitCount != null && gitState.commitCount > 0 && (
+          <SidebarSection label="Stats">
+            <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
               <StatItem label="Commits" value={gitState.commitCount} />
-            )}
-          </div>
-        </SidebarSection>
+            </div>
+          </SidebarSection>
+        )}
       </div>
     </div>
+  );
+}
+
+function FileChangedItem({ file }: { file: SessionFileChanged }) {
+  const statusColors: Record<string, string> = {
+    added: 'text-emerald-600 dark:text-emerald-400',
+    modified: 'text-amber-600 dark:text-amber-400',
+    deleted: 'text-red-500 dark:text-red-400',
+    renamed: 'text-blue-500 dark:text-blue-400',
+  };
+
+  const fileName = file.filePath.split('/').pop() || file.filePath;
+
+  return (
+    <div className="group/file flex items-center gap-1.5 rounded-sm px-1 py-[3px] transition-colors hover:bg-surface-1 dark:hover:bg-surface-2" title={file.filePath}>
+      <span className={`shrink-0 font-mono text-[9px] font-bold leading-none ${statusColors[file.status] ?? 'text-neutral-400'}`}>
+        {file.status[0].toUpperCase()}
+      </span>
+      <span className="truncate font-mono text-[10px] text-neutral-600 dark:text-neutral-400">
+        {fileName}
+      </span>
+      {(file.additions > 0 || file.deletions > 0) && (
+        <span className="ml-auto shrink-0 font-mono text-[9px] tabular-nums opacity-60 group-hover/file:opacity-100 transition-opacity">
+          {file.additions > 0 && <span className="text-emerald-600 dark:text-emerald-400">+{file.additions}</span>}
+          {file.additions > 0 && file.deletions > 0 && ' '}
+          {file.deletions > 0 && <span className="text-red-500 dark:text-red-400">-{file.deletions}</span>}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function StatusDot({ status }: { status: string }) {
+  const colors: Record<string, string> = {
+    running: 'bg-emerald-400',
+    initializing: 'bg-amber-400',
+    idle: 'bg-neutral-400',
+    terminated: 'bg-neutral-300 dark:bg-neutral-600',
+    error: 'bg-red-400',
+    hibernated: 'bg-neutral-300 dark:bg-neutral-600',
+  };
+
+  return (
+    <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${colors[status] ?? 'bg-neutral-300'}`} />
   );
 }
 
 function SidebarSection({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <span className="mb-1 block font-mono text-[10px] font-medium uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+      <span className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-[0.08em] text-neutral-400 dark:text-neutral-500">
         {label}
       </span>
       {children}
@@ -149,8 +257,8 @@ function SidebarSection({ label, children }: { label: string; children: React.Re
 function StatItem({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="flex items-baseline justify-between">
-      <span className="font-mono text-[11px] text-neutral-400 dark:text-neutral-500">{label}</span>
-      <span className="font-mono text-[12px] font-medium text-neutral-700 dark:text-neutral-300 tabular-nums">
+      <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500">{label}</span>
+      <span className="font-mono text-[11px] font-semibold text-neutral-700 dark:text-neutral-300 tabular-nums">
         {value}
       </span>
     </div>
@@ -170,14 +278,14 @@ function CopyableText({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="flex items-center gap-1 font-mono text-[12px] text-neutral-700 hover:text-accent dark:text-neutral-300 dark:hover:text-accent transition-colors truncate"
+      className="group/copy flex items-center gap-1 font-mono text-[11px] text-neutral-600 hover:text-accent dark:text-neutral-400 dark:hover:text-accent transition-colors truncate"
       title="Click to copy"
     >
       <span className="truncate">{text}</span>
       {copied ? (
-        <CheckIcon className="h-3 w-3 shrink-0 text-green-500" />
+        <CheckIcon className="h-2.5 w-2.5 shrink-0 text-emerald-500" />
       ) : (
-        <CopyIcon className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-100" />
+        <CopyIcon className="h-2.5 w-2.5 shrink-0 opacity-0 transition-opacity group-hover/copy:opacity-60" />
       )}
     </button>
   );

@@ -15,6 +15,8 @@ const createSessionSchema = z.object({
   workspace: z.string().min(1).max(100),
   repoUrl: z.string().url().optional(),
   branch: z.string().optional(),
+  title: z.string().max(200).optional(),
+  parentSessionId: z.string().uuid().optional(),
   config: z
     .object({
       memory: z.string().optional(),
@@ -91,6 +93,8 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     id: sessionId,
     userId: user.id,
     workspace: body.workspace,
+    title: body.title,
+    parentSessionId: body.parentSessionId,
     metadata: body.config,
   });
 
@@ -652,6 +656,59 @@ sessionsRouter.post('/bulk-delete', zValidator('json', bulkDeleteSchema), async 
     .run();
 
   return c.json({ deleted: validIds.length, errors });
+});
+
+/**
+ * GET /api/sessions/:id/children
+ * Get child sessions for a parent session.
+ */
+sessionsRouter.get('/:id/children', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  const session = await db.getSession(c.env.DB, id);
+  if (!session) throw new NotFoundError('Session', id);
+  if (session.userId !== user.id) throw new NotFoundError('Session', id);
+
+  const children = await db.getChildSessions(c.env.DB, id);
+  return c.json({ children });
+});
+
+/**
+ * GET /api/sessions/:id/files-changed
+ * Get files changed in a session.
+ */
+sessionsRouter.get('/:id/files-changed', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  const session = await db.getSession(c.env.DB, id);
+  if (!session) throw new NotFoundError('Session', id);
+  if (session.userId !== user.id) throw new NotFoundError('Session', id);
+
+  const files = await db.getSessionFilesChanged(c.env.DB, id);
+  return c.json({ files });
+});
+
+/**
+ * PATCH /api/sessions/:id
+ * Update session title.
+ */
+const updateSessionSchema = z.object({
+  title: z.string().max(200),
+});
+
+sessionsRouter.patch('/:id', zValidator('json', updateSessionSchema), async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+  const body = c.req.valid('json');
+
+  const session = await db.getSession(c.env.DB, id);
+  if (!session) throw new NotFoundError('Session', id);
+  if (session.userId !== user.id) throw new NotFoundError('Session', id);
+
+  await db.updateSessionTitle(c.env.DB, id, body.title);
+  return c.json({ success: true });
 });
 
 /**

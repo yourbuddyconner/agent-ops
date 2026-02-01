@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { createFileRoute, Outlet } from '@tanstack/react-router';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
 import { EditorDrawer } from '@/components/session/editor-drawer';
@@ -72,6 +72,10 @@ export interface DrawerContextValue {
   setOverlay: (overlay: SessionOverlay) => void;
   sidebarOpen: boolean;
   toggleSidebar: () => void;
+  connectedUsers: string[];
+  setConnectedUsers: (users: string[]) => void;
+  selectedModel: string | undefined;
+  setSelectedModel: (model: string | undefined) => void;
 }
 
 const DrawerCtx = createContext<DrawerContextValue>({
@@ -87,6 +91,10 @@ const DrawerCtx = createContext<DrawerContextValue>({
   setOverlay: () => {},
   sidebarOpen: true,
   toggleSidebar: () => {},
+  connectedUsers: [],
+  setConnectedUsers: () => {},
+  selectedModel: undefined,
+  setSelectedModel: () => {},
 });
 
 export function useDrawer() {
@@ -102,6 +110,8 @@ function SessionLayout() {
   const [activePanel, setActivePanel] = useState<DrawerPanel>(loadDrawerState);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [overlay, setOverlay] = useState<SessionOverlay>(null);
+  const [connectedUsers, setConnectedUsers] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string | undefined>(undefined);
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     try {
       const val = localStorage.getItem(SIDEBAR_STORAGE_KEY);
@@ -148,6 +158,16 @@ function SessionLayout() {
     });
   }, []);
 
+  // Auto-close sidebar when editor/files panel opens
+  const prevActivePanel = useRef(activePanel);
+  useEffect(() => {
+    if (prevActivePanel.current === null && activePanel !== null && sidebarOpen) {
+      setSidebarOpen(false);
+      try { localStorage.setItem(SIDEBAR_STORAGE_KEY, 'false'); } catch { /* ignore */ }
+    }
+    prevActivePanel.current = activePanel;
+  }, [activePanel]);
+
   const ctx: DrawerContextValue = {
     activePanel,
     openEditor,
@@ -161,6 +181,10 @@ function SessionLayout() {
     setOverlay,
     sidebarOpen,
     toggleSidebar,
+    connectedUsers,
+    setConnectedUsers,
+    selectedModel,
+    setSelectedModel,
   };
 
   const defaultLayout = loadSavedLayout();
@@ -176,20 +200,20 @@ function SessionLayout() {
             onLayoutChanged={saveLayout}
             className="h-full"
           >
-            <Panel defaultSize={35} minSize={20}>
+            <Panel defaultSize={25} minSize={20}>
               <div className="flex h-full">
                 <div className="flex-1 min-w-0">
                   <Outlet />
                 </div>
                 {sidebarOpen && (
-                  <SessionMetadataSidebar sessionId={sessionId} />
+                  <SessionMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} compact />
                 )}
               </div>
             </Panel>
             <PanelResizeHandle className="group relative w-px bg-neutral-200 transition-colors hover:bg-accent/40 active:bg-accent dark:bg-neutral-800 dark:hover:bg-accent/40">
               <div className="absolute inset-y-0 -left-1 -right-1" />
             </PanelResizeHandle>
-            <Panel defaultSize={65} minSize={30}>
+            <Panel defaultSize={75} minSize={30}>
               {activePanel === 'editor' && (
                 <EditorDrawer sessionId={sessionId} logEntries={logEntries} />
               )}

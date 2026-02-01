@@ -50,6 +50,16 @@ function RootLayout() {
     return <Outlet />;
   }
 
+  // Session detail pages get full viewport (no sidebar/header)
+  const isSessionDetail = /^\/sessions\/[^/]+/.test(routerState.location.pathname);
+  if (isSessionDetail) {
+    return (
+      <div className="h-dvh bg-neutral-50 dark:bg-neutral-900">
+        <Outlet />
+      </div>
+    );
+  }
+
   // Authenticated layout with sidebar and header
   return (
     <div className="flex h-dvh bg-neutral-50 dark:bg-neutral-900">
