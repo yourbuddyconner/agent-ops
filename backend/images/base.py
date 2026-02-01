@@ -14,7 +14,11 @@ def get_base_image() -> modal.Image:
     """Build the full sandbox image with all dev environment services."""
     return (
         modal.Image.from_registry("ubuntu:22.04")
-        .run_commands("apt-get update")
+        .run_commands(
+            "apt-get update",
+            "apt-get install -y python3 python3-pip",
+            "ln -sf /usr/bin/python3 /usr/bin/python",
+        )
         .apt_install(
             "git",
             "curl",
@@ -111,7 +115,7 @@ def get_base_image() -> modal.Image:
                 "DISPLAY": ":99",
                 "HOME": "/root",
                 # Force image rebuild on deploy (change this value to trigger rebuild)
-                "IMAGE_BUILD_VERSION": "2026-01-31-v34",
+                "IMAGE_BUILD_VERSION": "2026-01-31-v35",
                 "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
             }
         )
