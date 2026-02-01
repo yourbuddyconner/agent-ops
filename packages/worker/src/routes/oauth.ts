@@ -24,21 +24,35 @@ async function hashToken(token: string): Promise<string> {
   return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function createStateJWT(env: Env, provider: string): Promise<string> {
+async function createStateJWT(env: Env, provider: string, inviteCode?: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  return signJWT(
-    { sub: provider, sid: crypto.randomUUID(), iat: now, exp: now + 5 * 60 },
-    env.ENCRYPTION_KEY,
-  );
+  const payload: any = { sub: provider, sid: crypto.randomUUID(), iat: now, exp: now + 5 * 60 };
+  if (inviteCode) {
+    payload.invite_code = inviteCode;
+  }
+  return signJWT(payload, env.ENCRYPTION_KEY);
 }
 
-async function validateStateJWT(state: string, env: Env): Promise<boolean> {
+async function parseStateJWT(state: string, env: Env): Promise<{ valid: boolean; inviteCode?: string }> {
   const payload = await verifyJWT(state, env.ENCRYPTION_KEY);
-  return payload !== null;
+  if (!payload) return { valid: false };
+  return { valid: true, inviteCode: (payload as any).invite_code };
 }
 
-async function isEmailAllowed(env: Env, email: string): Promise<boolean> {
+async function isEmailAllowed(env: Env, email: string, inviteCode?: string): Promise<boolean> {
   const emailLower = email.toLowerCase();
+
+  // If a valid invite code is provided, always allow
+  if (inviteCode) {
+    try {
+      const invite = await env.DB.prepare(
+        "SELECT 1 FROM invites WHERE code = ? AND accepted_at IS NULL AND expires_at > datetime('now')"
+      ).bind(inviteCode).first();
+      if (invite) return true;
+    } catch {
+      // Fall through
+    }
+  }
 
   try {
     const orgSettings = await env.DB.prepare("SELECT * FROM org_settings WHERE id = 'default'").first<{
@@ -74,7 +88,7 @@ async function isEmailAllowed(env: Env, email: string): Promise<boolean> {
       }
     }
 
-    // Check for a valid invite
+    // Check for a valid invite by email
     const invite = await env.DB.prepare(
       "SELECT 1 FROM invites WHERE email = ? AND accepted_at IS NULL AND expires_at > datetime('now')"
     ).bind(emailLower).first();
@@ -105,7 +119,8 @@ function getWorkerUrl(env: Env, req: Request): string {
  * GET /auth/github — Redirect to GitHub OAuth
  */
 oauthRouter.get('/github', async (c) => {
-  const state = await createStateJWT(c.env, 'github');
+  const inviteCode = c.req.query('invite_code');
+  const state = await createStateJWT(c.env, 'github', inviteCode);
   const workerUrl = getWorkerUrl(c.env, c.req.raw);
 
   const params = new URLSearchParams({
@@ -130,11 +145,12 @@ oauthRouter.get('/github/callback', async (c) => {
     return c.redirect(`${frontendUrl}/login?error=missing_params`);
   }
 
-  // Validate CSRF state
-  const validState = await validateStateJWT(state, c.env);
-  if (!validState) {
+  // Validate CSRF state and extract invite_code
+  const stateResult = await parseStateJWT(state, c.env);
+  if (!stateResult.valid) {
     return c.redirect(`${frontendUrl}/login?error=invalid_state`);
   }
+  const inviteCode = stateResult.inviteCode;
 
   try {
     const workerUrl = getWorkerUrl(c.env, c.req.raw);
@@ -213,7 +229,7 @@ oauthRouter.get('/github/callback', async (c) => {
       return c.redirect(`${frontendUrl}/login?error=no_email`);
     }
 
-    if (!(await isEmailAllowed(c.env, email))) {
+    if (!(await isEmailAllowed(c.env, email, inviteCode))) {
       return c.redirect(`${frontendUrl}/login?error=not_allowed`);
     }
 
@@ -242,11 +258,19 @@ oauthRouter.get('/github/callback', async (c) => {
       if (userCount === 1) {
         await db.updateUserRole(c.env.DB, user.id, 'admin');
       }
+    }
 
-      // Accept invite if one exists
+    // Accept invite by code (if provided), or fall back to email-based invite
+    if (inviteCode) {
+      const invite = await db.getInviteByCode(c.env.DB, inviteCode);
+      if (invite) {
+        await db.markInviteAccepted(c.env.DB, invite.id, user.id);
+        await db.updateUserRole(c.env.DB, user.id, invite.role);
+      }
+    } else if (isNewUser) {
       const invite = await db.getInviteByEmail(c.env.DB, email);
       if (invite) {
-        await db.markInviteAccepted(c.env.DB, invite.id);
+        await db.markInviteAccepted(c.env.DB, invite.id, user.id);
         await db.updateUserRole(c.env.DB, user.id, invite.role);
       }
     }
@@ -310,7 +334,8 @@ oauthRouter.get('/github/callback', async (c) => {
  * GET /auth/google — Redirect to Google OAuth
  */
 oauthRouter.get('/google', async (c) => {
-  const state = await createStateJWT(c.env, 'google');
+  const inviteCode = c.req.query('invite_code');
+  const state = await createStateJWT(c.env, 'google', inviteCode);
   const workerUrl = getWorkerUrl(c.env, c.req.raw);
 
   const params = new URLSearchParams({
@@ -338,10 +363,11 @@ oauthRouter.get('/google/callback', async (c) => {
     return c.redirect(`${frontendUrl}/login?error=missing_params`);
   }
 
-  const validState = await validateStateJWT(state, c.env);
-  if (!validState) {
+  const stateResult = await parseStateJWT(state, c.env);
+  if (!stateResult.valid) {
     return c.redirect(`${frontendUrl}/login?error=invalid_state`);
   }
+  const inviteCode = stateResult.inviteCode;
 
   try {
     const workerUrl = getWorkerUrl(c.env, c.req.raw);
@@ -386,12 +412,13 @@ oauthRouter.get('/google/callback', async (c) => {
       return c.redirect(`${frontendUrl}/login?error=email_not_verified`);
     }
 
-    if (!(await isEmailAllowed(c.env, payload.email))) {
+    if (!(await isEmailAllowed(c.env, payload.email, inviteCode))) {
       return c.redirect(`${frontendUrl}/login?error=not_allowed`);
     }
 
     // Find user by email or create new
     let user = await db.findUserByEmail(c.env.DB, payload.email);
+    let isNewUser = false;
 
     if (!user) {
       user = await db.getOrCreateUser(c.env.DB, {
@@ -400,17 +427,26 @@ oauthRouter.get('/google/callback', async (c) => {
         name: payload.name,
         avatarUrl: payload.picture,
       });
+      isNewUser = true;
 
       // First-user-admin: if this is the only user, promote to admin
       const userCount = await db.getUserCount(c.env.DB);
       if (userCount === 1) {
         await db.updateUserRole(c.env.DB, user.id, 'admin');
       }
+    }
 
-      // Accept invite if one exists
+    // Accept invite by code (if provided), or fall back to email-based invite
+    if (inviteCode) {
+      const invite = await db.getInviteByCode(c.env.DB, inviteCode);
+      if (invite) {
+        await db.markInviteAccepted(c.env.DB, invite.id, user.id);
+        await db.updateUserRole(c.env.DB, user.id, invite.role);
+      }
+    } else if (isNewUser) {
       const invite = await db.getInviteByEmail(c.env.DB, payload.email);
       if (invite) {
-        await db.markInviteAccepted(c.env.DB, invite.id);
+        await db.markInviteAccepted(c.env.DB, invite.id, user.id);
         await db.updateUserRole(c.env.DB, user.id, invite.role);
       }
     }

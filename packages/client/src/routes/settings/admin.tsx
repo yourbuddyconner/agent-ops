@@ -322,36 +322,36 @@ function InvitesSection() {
   const { data: invites, isLoading } = useInvites();
   const createInvite = useCreateInvite();
   const deleteInvite = useDeleteInvite();
-  const [email, setEmail] = React.useState('');
   const [role, setRole] = React.useState<UserRole>('member');
+  const [email, setEmail] = React.useState('');
+  const [copiedCode, setCopiedCode] = React.useState<string | null>(null);
 
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    if (!email) return;
     createInvite.mutate(
-      { email, role },
-      { onSuccess: () => { setEmail(''); setRole('member'); } }
+      { role, email: email || undefined },
+      { onSuccess: () => { setRole('member'); setEmail(''); } }
     );
+  }
+
+  function getInviteUrl(code: string): string {
+    return `${window.location.origin}/invite/${code}`;
+  }
+
+  function copyLink(code: string) {
+    navigator.clipboard.writeText(getInviteUrl(code));
+    setCopiedCode(code);
+    setTimeout(() => setCopiedCode(null), 2000);
   }
 
   return (
     <Section title="Invites">
       <div className="space-y-4">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Create an invite link to share with anyone. They'll sign in with OAuth and join with the assigned role.
+        </p>
+
         <form onSubmit={handleCreate} className="flex items-end gap-3">
-          <div className="flex-1">
-            <label htmlFor="invite-email" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-              Email
-            </label>
-            <input
-              id="invite-email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="user@example.com"
-              className={inputClass}
-              required
-            />
-          </div>
           <div>
             <label htmlFor="invite-role" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
               Role
@@ -366,14 +366,44 @@ function InvitesSection() {
               <option value="admin">Admin</option>
             </select>
           </div>
-          <Button type="submit" disabled={!email || createInvite.isPending}>
-            {createInvite.isPending ? 'Sending...' : 'Send Invite'}
+          <div className="flex-1">
+            <label htmlFor="invite-email" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+              Email <span className="text-neutral-400 font-normal">(optional, for your reference)</span>
+            </label>
+            <input
+              id="invite-email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="user@example.com"
+              className={inputClass}
+            />
+          </div>
+          <Button type="submit" disabled={createInvite.isPending}>
+            {createInvite.isPending ? 'Creating...' : 'Create Invite'}
           </Button>
         </form>
 
+        {createInvite.isSuccess && createInvite.data?.code && (
+          <div className="rounded-md border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-900/20">
+            <p className="text-sm font-medium text-green-800 dark:text-green-300 mb-1">Invite created! Share this link:</p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 text-sm bg-white dark:bg-neutral-800 rounded px-2 py-1 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700 truncate">
+                {getInviteUrl(createInvite.data.code)}
+              </code>
+              <Button
+                variant="secondary"
+                onClick={() => copyLink(createInvite.data!.code)}
+              >
+                {copiedCode === createInvite.data.code ? 'Copied!' : 'Copy'}
+              </Button>
+            </div>
+          </div>
+        )}
+
         {createInvite.isError && (
           <p className="text-sm text-red-600 dark:text-red-400">
-            Failed to create invite. The email may already have a pending invite.
+            Failed to create invite.
           </p>
         )}
 
@@ -387,10 +417,10 @@ function InvitesSection() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-neutral-200 dark:border-neutral-700">
-                <th className="pb-2 text-left font-medium text-neutral-500 dark:text-neutral-400">Email</th>
+                <th className="pb-2 text-left font-medium text-neutral-500 dark:text-neutral-400">Code</th>
                 <th className="pb-2 text-left font-medium text-neutral-500 dark:text-neutral-400">Role</th>
                 <th className="pb-2 text-left font-medium text-neutral-500 dark:text-neutral-400">Status</th>
-                <th className="pb-2 text-left font-medium text-neutral-500 dark:text-neutral-400">Expires</th>
+                <th className="pb-2 text-left font-medium text-neutral-500 dark:text-neutral-400">Created</th>
                 <th className="pb-2" />
               </tr>
             </thead>
@@ -403,9 +433,14 @@ function InvitesSection() {
                 return (
                   <tr
                     key={invite.id}
-                    className={`border-b border-neutral-100 dark:border-neutral-700/50 ${isExpired ? 'opacity-50' : ''}`}
+                    className={`border-b border-neutral-100 dark:border-neutral-700/50 ${isExpired || isAccepted ? 'opacity-50' : ''}`}
                   >
-                    <td className="py-2 text-neutral-900 dark:text-neutral-100">{invite.email}</td>
+                    <td className="py-2 text-neutral-900 dark:text-neutral-100">
+                      <span className="font-mono text-xs">{invite.code.slice(0, 8)}...</span>
+                      {invite.email && (
+                        <span className="ml-2 text-neutral-400 dark:text-neutral-500 text-xs">{invite.email}</span>
+                      )}
+                    </td>
                     <td className="py-2 capitalize text-neutral-700 dark:text-neutral-300">{invite.role}</td>
                     <td className="py-2">
                       <span
@@ -421,18 +456,28 @@ function InvitesSection() {
                       </span>
                     </td>
                     <td className="py-2 text-neutral-500 dark:text-neutral-400">
-                      {new Date(invite.expiresAt).toLocaleDateString()}
+                      {new Date(invite.createdAt).toLocaleDateString()}
                     </td>
                     <td className="py-2 text-right">
-                      {!isAccepted && (
-                        <Button
-                          variant="secondary"
-                          onClick={() => deleteInvite.mutate(invite.id)}
-                          disabled={deleteInvite.isPending}
-                        >
-                          Revoke
-                        </Button>
-                      )}
+                      <div className="flex items-center gap-2 justify-end">
+                        {!isAccepted && !isExpired && (
+                          <Button
+                            variant="secondary"
+                            onClick={() => copyLink(invite.code)}
+                          >
+                            {copiedCode === invite.code ? 'Copied!' : 'Copy Link'}
+                          </Button>
+                        )}
+                        {!isAccepted && (
+                          <Button
+                            variant="secondary"
+                            onClick={() => deleteInvite.mutate(invite.id)}
+                            disabled={deleteInvite.isPending}
+                          >
+                            Revoke
+                          </Button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );

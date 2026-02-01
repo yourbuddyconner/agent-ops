@@ -578,15 +578,16 @@ export async function deleteOrgApiKey(db: D1Database, provider: string): Promise
 // Invite operations
 export async function createInvite(
   db: D1Database,
-  params: { id: string; email: string; role: UserRole; invitedBy: string; expiresAt: string }
+  params: { id: string; code: string; email?: string; role: UserRole; invitedBy: string; expiresAt: string }
 ): Promise<Invite> {
   await db
-    .prepare('INSERT INTO invites (id, email, role, invited_by, expires_at) VALUES (?, ?, ?, ?, ?)')
-    .bind(params.id, params.email, params.role, params.invitedBy, params.expiresAt)
+    .prepare('INSERT INTO invites (id, code, email, role, invited_by, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(params.id, params.code, params.email || null, params.role, params.invitedBy, params.expiresAt)
     .run();
 
   return {
     id: params.id,
+    code: params.code,
     email: params.email,
     role: params.role,
     invitedBy: params.invitedBy,
@@ -603,6 +604,22 @@ export async function getInviteByEmail(db: D1Database, email: string): Promise<I
   return row ? mapInvite(row) : null;
 }
 
+export async function getInviteByCode(db: D1Database, code: string): Promise<Invite | null> {
+  const row = await db
+    .prepare("SELECT * FROM invites WHERE code = ? AND accepted_at IS NULL AND expires_at > datetime('now')")
+    .bind(code)
+    .first();
+  return row ? mapInvite(row) : null;
+}
+
+export async function getInviteByCodeAny(db: D1Database, code: string): Promise<Invite | null> {
+  const row = await db
+    .prepare("SELECT * FROM invites WHERE code = ?")
+    .bind(code)
+    .first();
+  return row ? mapInvite(row) : null;
+}
+
 export async function listInvites(db: D1Database): Promise<Invite[]> {
   const result = await db.prepare('SELECT * FROM invites ORDER BY created_at DESC').all();
   return (result.results || []).map(mapInvite);
@@ -612,8 +629,8 @@ export async function deleteInvite(db: D1Database, id: string): Promise<void> {
   await db.prepare('DELETE FROM invites WHERE id = ?').bind(id).run();
 }
 
-export async function markInviteAccepted(db: D1Database, id: string): Promise<void> {
-  await db.prepare("UPDATE invites SET accepted_at = datetime('now') WHERE id = ?").bind(id).run();
+export async function markInviteAccepted(db: D1Database, id: string, acceptedBy?: string): Promise<void> {
+  await db.prepare("UPDATE invites SET accepted_at = datetime('now'), accepted_by = ? WHERE id = ?").bind(acceptedBy || null, id).run();
 }
 
 // User management operations (org)
@@ -652,10 +669,12 @@ function mapOrgSettings(row: any): OrgSettings {
 function mapInvite(row: any): Invite {
   return {
     id: row.id,
-    email: row.email,
+    code: row.code,
+    email: row.email || undefined,
     role: row.role,
     invitedBy: row.invited_by,
     acceptedAt: row.accepted_at ? new Date(row.accepted_at) : undefined,
+    acceptedBy: row.accepted_by || undefined,
     expiresAt: new Date(row.expires_at),
     createdAt: new Date(row.created_at),
   };

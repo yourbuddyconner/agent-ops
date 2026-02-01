@@ -20,6 +20,7 @@ import { Route as WorkflowsExecutionsRouteImport } from './routes/workflows/exec
 import { Route as WorkflowsWorkflowIdRouteImport } from './routes/workflows/$workflowId'
 import { Route as SettingsAdminRouteImport } from './routes/settings/admin'
 import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId'
+import { Route as InviteCodeRouteImport } from './routes/invite/$code'
 import { Route as IntegrationsCallbackRouteImport } from './routes/integrations/callback'
 import { Route as AuthCallbackRouteImport } from './routes/auth/callback'
 import { Route as SessionsSessionIdIndexRouteImport } from './routes/sessions/$sessionId/index'
@@ -79,6 +80,11 @@ const SessionsSessionIdRoute = SessionsSessionIdRouteImport.update({
   path: '/sessions/$sessionId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const InviteCodeRoute = InviteCodeRouteImport.update({
+  id: '/invite/$code',
+  path: '/invite/$code',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IntegrationsCallbackRoute = IntegrationsCallbackRouteImport.update({
   id: '/integrations/callback',
   path: '/integrations/callback',
@@ -101,6 +107,7 @@ export interface FileRoutesByFullPath {
   '/onboarding': typeof OnboardingRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
+  '/invite/$code': typeof InviteCodeRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
   '/settings/admin': typeof SettingsAdminRoute
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
@@ -117,6 +124,7 @@ export interface FileRoutesByTo {
   '/onboarding': typeof OnboardingRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
+  '/invite/$code': typeof InviteCodeRoute
   '/settings/admin': typeof SettingsAdminRoute
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
   '/workflows/executions': typeof WorkflowsExecutionsRoute
@@ -133,6 +141,7 @@ export interface FileRoutesById {
   '/onboarding': typeof OnboardingRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
+  '/invite/$code': typeof InviteCodeRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
   '/settings/admin': typeof SettingsAdminRoute
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
@@ -151,6 +160,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/auth/callback'
     | '/integrations/callback'
+    | '/invite/$code'
     | '/sessions/$sessionId'
     | '/settings/admin'
     | '/workflows/$workflowId'
@@ -167,6 +177,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/auth/callback'
     | '/integrations/callback'
+    | '/invite/$code'
     | '/settings/admin'
     | '/workflows/$workflowId'
     | '/workflows/executions'
@@ -182,6 +193,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/auth/callback'
     | '/integrations/callback'
+    | '/invite/$code'
     | '/sessions/$sessionId'
     | '/settings/admin'
     | '/workflows/$workflowId'
@@ -199,6 +211,7 @@ export interface RootRouteChildren {
   OnboardingRoute: typeof OnboardingRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
   IntegrationsCallbackRoute: typeof IntegrationsCallbackRoute
+  InviteCodeRoute: typeof InviteCodeRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRouteWithChildren
   SettingsAdminRoute: typeof SettingsAdminRoute
   WorkflowsWorkflowIdRoute: typeof WorkflowsWorkflowIdRoute
@@ -288,6 +301,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SessionsSessionIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/invite/$code': {
+      id: '/invite/$code'
+      path: '/invite/$code'
+      fullPath: '/invite/$code'
+      preLoaderRoute: typeof InviteCodeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/integrations/callback': {
       id: '/integrations/callback'
       path: '/integrations/callback'
@@ -329,6 +349,7 @@ const rootRouteChildren: RootRouteChildren = {
   OnboardingRoute: OnboardingRoute,
   AuthCallbackRoute: AuthCallbackRoute,
   IntegrationsCallbackRoute: IntegrationsCallbackRoute,
+  InviteCodeRoute: InviteCodeRoute,
   SessionsSessionIdRoute: SessionsSessionIdRouteWithChildren,
   SettingsAdminRoute: SettingsAdminRoute,
   WorkflowsWorkflowIdRoute: WorkflowsWorkflowIdRoute,

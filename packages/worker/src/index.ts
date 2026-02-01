@@ -23,6 +23,7 @@ import { eventsRouter } from './routes/events.js';
 import { reposRouter } from './routes/repos.js';
 import { dashboardRouter } from './routes/dashboard.js';
 import { adminRouter } from './routes/admin.js';
+import { invitesRouter } from './routes/invites.js';
 
 // Durable Object exports
 export { APIKeysDurableObject } from './durable-objects/api-keys.js';
@@ -59,6 +60,9 @@ app.route('/webhooks', webhooksRouter);
 
 // OAuth routes (no auth required — handles login flow)
 app.route('/auth', oauthRouter);
+
+// Public invite validation (no auth required)
+app.route('/invites', invitesRouter);
 
 // Protected API routes
 app.use('/api/*', authMiddleware);

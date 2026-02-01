@@ -78,7 +78,7 @@ export function useCreateInvite() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (data: { email: string; role?: 'admin' | 'member' }) =>
+    mutationFn: (data: { email?: string; role?: 'admin' | 'member' }) =>
       api.post<Invite>('/admin/invites', data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: adminKeys.invites() });

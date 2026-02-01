@@ -11,6 +11,7 @@ import {
   listInvites,
   createInvite,
   deleteInvite,
+  getInviteByCodeAny,
   listUsers,
   updateUserRole,
   deleteUser,
@@ -87,18 +88,20 @@ adminRouter.get('/invites', async (c) => {
 });
 
 adminRouter.post('/invites', async (c) => {
-  const { email, role } = await c.req.json<{ email: string; role?: 'admin' | 'member' }>();
+  const { email, role } = await c.req.json<{ email?: string; role?: 'admin' | 'member' }>();
 
-  if (!email || typeof email !== 'string' || !email.includes('@')) {
-    throw new ValidationError('Valid email address is required');
-  }
+  // Generate a random 12-char alphanumeric code
+  const bytes = new Uint8Array(9);
+  crypto.getRandomValues(bytes);
+  const code = Array.from(bytes).map(b => b.toString(36).padStart(2, '0')).join('').slice(0, 12);
 
   const user = c.get('user');
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   const invite = await createInvite(c.env.DB, {
     id: crypto.randomUUID(),
-    email: email.trim().toLowerCase(),
+    code,
+    email: email?.trim().toLowerCase(),
     role: role || 'member',
     invitedBy: user.id,
     expiresAt,

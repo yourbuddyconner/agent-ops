@@ -162,10 +162,12 @@ export interface OrgApiKey {
 
 export interface Invite {
   id: string;
-  email: string;
+  code: string;
+  email?: string;
   role: UserRole;
   invitedBy: string;
   acceptedAt?: Date;
+  acceptedBy?: string;
   expiresAt: Date;
   createdAt: Date;
 }
