@@ -173,7 +173,18 @@ The sandbox image is cached. To force a rebuild after changing `docker/start.sh`
 
 When working on the agent-ops codebase from inside a Modal sandbox (e.g. via an Agent-Ops session), the environment has specific constraints. The sandbox is a Debian container (Trixie/13, GLIBC 2.40) — not a full VM — so some tools are unavailable.
 
-### What works
+### What's available
+
+The sandbox comes with a full dev environment already running:
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| **OpenCode server** | 4096 | AI coding agent (HTTP + SSE) |
+| **VS Code (code-server)** | 8080 | Web IDE |
+| **noVNC** | 6080 | Virtual display GUI (Xvfb on :99) |
+| **TTYD** | 7681 | Web terminal |
+| **Auth gateway** | 9000 | JWT proxy that routes to all services above |
+| **Runner** | — | Bridges OpenCode ↔ SessionAgent DO via WebSocket |
 
 ```bash
 pnpm install                          # Install all dependencies
@@ -185,19 +196,30 @@ git clone / commit / push / pull      # Git credentials are pre-configured
 
 Node.js, Bun, and all standard build tools (build-essential, ripgrep, jq, etc.) are available.
 
+### Running OpenCode
+
+OpenCode (`opencode-ai`) is installed globally in the sandbox. The system instance runs on port 4096 (managed by `start.sh`), but you can run your own instance on a different port for testing:
+
+```bash
+opencode serve --port 4097
+```
+
+This is useful when testing changes to OpenCode configuration, custom tools, or debugging agent behavior independently of the managed session.
+
+The system OpenCode instance is configured via `docker/opencode/opencode.json` and `docker/opencode/tools/`. Provider API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`) are available in the environment.
+
 ### What does NOT work
 
-- **`wrangler dev`** — The Cloudflare Worker dev server depends on `workerd`, which may have native library requirements. Use `pnpm typecheck` to validate worker changes instead.
-- **`wrangler d1 migrations apply --local`** — Same constraint. Write and review migration SQL directly; it gets applied during deployment.
+- **`wrangler d1 migrations apply --local`** — Write and review migration SQL directly; it gets applied during deployment.
 - **Docker** — Not available. Modal sandboxes are already containers; nested Docker (DinD) is not supported.
 - **`modal deploy`** — The Modal Python backend must be deployed from outside the sandbox (requires the `agent-ops` conda environment on the host).
 
 ### Recommended workflow
 
 1. **Frontend**: Run `cd packages/client && pnpm dev`, open `http://localhost:5173` in the VNC browser (port 6080) to preview changes live.
-2. **Worker**: Edit code, run `cd packages/worker && pnpm typecheck`. You can't run the worker locally, but typecheck catches most issues.
+2. **Worker**: Run `cd packages/worker && pnpm dev` to start the worker locally with `wrangler dev` on `:8787`. You can also point the frontend at it: `VITE_API_URL=http://localhost:8787/api pnpm dev`. Use `pnpm typecheck` to catch type errors.
 3. **Shared types**: Edit `packages/shared/src/`, then `pnpm typecheck` from root to verify all consumers compile.
-4. **Runner**: Edit `packages/runner/src/`, run `cd packages/runner && pnpm typecheck`. The live runner instance at `/runner` is managed by `start.sh` — don't restart it manually.
+4. **Runner**: Edit `packages/runner/src/`, run `cd packages/runner && pnpm typecheck`. The live runner instance is managed by `start.sh` — don't restart it manually.
 5. **Migrations**: Write SQL in `packages/worker/migrations/NNNN_name.sql`. Migrations are applied via `wrangler d1 migrations apply` from outside the sandbox or during `make deploy`.
 
 ### Testing against the deployed worker
