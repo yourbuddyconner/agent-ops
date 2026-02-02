@@ -321,6 +321,30 @@ Browser                   Worker (:8787)              GitHub/Google
 | `FRONTEND_URL` | Prod | Frontend URL for OAuth redirects |
 | `ENVIRONMENT` | No | `development` or `production` |
 
+## A Poem for Agent-Ops
+
+```
+In sandboxes where agents dwell,
+With Modal's magic, stories tell,
+Through WebSockets swift they speak,
+Solutions elegant they seek.
+
+Code-server, VNC, and TTYD,
+Tools assembled carefully,
+Cloudflare's edge keeps state alive,
+While Durable Objects thrive.
+
+From Hono routes to React views,
+TypeScript types in perfect hues,
+A monorepo built with care,
+Where pnpm workspaces share.
+
+So spin a sandbox, start a session,
+Let the agent learn its lesson,
+In this platform we have made,
+Where AI coding skills parade.
+```
+
 ## License
 
 MIT
