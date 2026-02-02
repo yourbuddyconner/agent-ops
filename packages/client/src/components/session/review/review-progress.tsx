@@ -6,11 +6,9 @@ interface ReviewProgressProps {
 
 export function ReviewProgress({ state }: ReviewProgressProps) {
   const message =
-    state === 'loading-diff'
-      ? 'Loading diff...'
-      : state === 'reviewing'
-        ? 'Analyzing changes...'
-        : 'Processing...';
+    state === 'reviewing'
+      ? 'Analyzing changes...'
+      : 'Processing...';
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3">

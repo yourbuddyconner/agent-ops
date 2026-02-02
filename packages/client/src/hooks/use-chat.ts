@@ -46,6 +46,29 @@ export interface ConnectedUser {
   avatarUrl?: string;
 }
 
+export interface ReviewResultData {
+  files: Array<{
+    path: string;
+    summary: string;
+    reviewOrder: number;
+    findings: Array<{
+      id: string;
+      file: string;
+      lineStart: number;
+      lineEnd: number;
+      severity: 'critical' | 'warning' | 'suggestion' | 'nitpick';
+      category: string;
+      title: string;
+      description: string;
+      suggestedFix?: string;
+    }>;
+    linesAdded: number;
+    linesDeleted: number;
+  }>;
+  overallSummary: string;
+  stats: { critical: number; warning: number; suggestion: number; nitpick: number };
+}
+
 interface ChatState {
   messages: Message[];
   status: SessionStatus;
@@ -62,6 +85,10 @@ interface ChatState {
   runnerConnected: boolean;
   sessionTitle?: string;
   childSessionEvents: ChildSessionEvent[];
+  reviewResult: ReviewResultData | null;
+  reviewError: string | null;
+  reviewLoading: boolean;
+  reviewDiffFiles: DiffFile[] | null;
 }
 
 interface WebSocketInitMessage {
@@ -191,6 +218,14 @@ interface WebSocketChildSessionMessage {
   title?: string;
 }
 
+interface WebSocketReviewResultMessage {
+  type: 'review-result';
+  requestId: string;
+  data?: ReviewResultData;
+  diffFiles?: DiffFile[];
+  error?: string;
+}
+
 interface WebSocketTitleMessage {
   type: 'title';
   title: string;
@@ -212,6 +247,7 @@ type WebSocketChatMessage =
   | WebSocketPrCreatedMessage
   | WebSocketFilesChangedMessage
   | WebSocketChildSessionMessage
+  | WebSocketReviewResultMessage
   | WebSocketTitleMessage
   | { type: 'pong' }
   | { type: 'user.joined'; userId: string }
@@ -241,6 +277,10 @@ export function useChat(sessionId: string) {
     runnerConnected: false,
     sessionTitle: undefined,
     childSessionEvents: [],
+    reviewResult: null,
+    reviewError: null,
+    reviewLoading: false,
+    reviewDiffFiles: null,
   };
 
   const [state, setState] = useState<ChatState>(initialState);
@@ -371,6 +411,10 @@ export function useChat(sessionId: string) {
           runnerConnected: !!message.data?.runnerConnected,
           sessionTitle: message.session.title,
           childSessionEvents: restoredChildEvents,
+          reviewResult: null,
+          reviewError: null,
+          reviewLoading: false,
+          reviewDiffFiles: null,
         });
         if (initModels.length > 0) autoSelectModel(initModels);
         appendLogEntry('init', `Session ${message.session.id.slice(0, 8)} initialized (${message.session.status})`);
@@ -655,6 +699,21 @@ export function useChat(sessionId: string) {
         break;
       }
 
+      case 'review-result': {
+        const reviewMsg = message as WebSocketReviewResultMessage;
+        setState((prev) => ({
+          ...prev,
+          reviewResult: reviewMsg.data ?? null,
+          reviewError: reviewMsg.error ?? null,
+          reviewLoading: false,
+          reviewDiffFiles: reviewMsg.diffFiles ?? null,
+        }));
+        appendLogEntry('review-result', reviewMsg.error
+          ? `Review error: ${reviewMsg.error}`
+          : `Review complete: ${reviewMsg.data?.files.length ?? 0} files`);
+        break;
+      }
+
       case 'pong':
         break;
 
@@ -717,6 +776,18 @@ export function useChat(sessionId: string) {
     if (!isConnected) return;
     setState((prev) => ({ ...prev, diffLoading: true, diffData: null }));
     send({ type: 'diff' });
+  }, [isConnected, send]);
+
+  const requestReview = useCallback(() => {
+    if (!isConnected) return;
+    setState((prev) => ({
+      ...prev,
+      reviewLoading: true,
+      reviewResult: null,
+      reviewError: null,
+      reviewDiffFiles: null,
+    }));
+    send({ type: 'review' });
   }, [isConnected, send]);
 
   const answerQuestion = useCallback(
@@ -791,5 +862,10 @@ export function useChat(sessionId: string) {
     runnerConnected: state.runnerConnected,
     sessionTitle: state.sessionTitle,
     childSessionEvents: state.childSessionEvents,
+    requestReview,
+    reviewResult: state.reviewResult,
+    reviewError: state.reviewError,
+    reviewLoading: state.reviewLoading,
+    reviewDiffFiles: state.reviewDiffFiles,
   };
 }

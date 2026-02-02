@@ -14,7 +14,7 @@ export function ReviewControls({
   onClearReview,
   isConnected,
 }: ReviewControlsProps) {
-  const isRunning = state === 'loading-diff' || state === 'reviewing';
+  const isRunning = state === 'reviewing';
 
   return (
     <div className="flex h-8 shrink-0 items-center gap-2 border-b border-neutral-200 bg-surface-0 px-3 dark:border-neutral-800 dark:bg-surface-0">

@@ -10,6 +10,7 @@ export type DOToRunnerMessage =
   | { type: "abort" }
   | { type: "revert"; messageId: string }
   | { type: "diff"; requestId: string }
+  | { type: "review"; requestId: string }
   | { type: "pong" }
   | { type: "spawn-child-result"; requestId: string; childSessionId?: string; error?: string }
   | { type: "session-message-result"; requestId: string; success?: boolean; error?: string }
@@ -47,7 +48,36 @@ export type RunnerToDOMessage =
   | { type: "session-messages"; requestId: string; targetSessionId: string; limit?: number; after?: string }
   | { type: "terminate-child"; requestId: string; childSessionId: string }
   | { type: "self-terminate" }
+  | { type: "review-result"; requestId: string; data?: ReviewResultData; diffFiles?: DiffFile[]; error?: string }
   | { type: "ping" };
+
+/** Structured review result data */
+export interface ReviewFinding {
+  id: string;
+  file: string;
+  lineStart: number;
+  lineEnd: number;
+  severity: "critical" | "warning" | "suggestion" | "nitpick";
+  category: string;
+  title: string;
+  description: string;
+  suggestedFix?: string;
+}
+
+export interface ReviewFileSummary {
+  path: string;
+  summary: string;
+  reviewOrder: number;
+  findings: ReviewFinding[];
+  linesAdded: number;
+  linesDeleted: number;
+}
+
+export interface ReviewResultData {
+  files: ReviewFileSummary[];
+  overallSummary: string;
+  stats: { critical: number; warning: number; suggestion: number; nitpick: number };
+}
 
 /** Model discovery types */
 export interface ProviderModels {

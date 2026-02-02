@@ -33,7 +33,7 @@ export function FindingCard({ finding, compact, onApply, onNavigate, onClose }: 
   return (
     <div
       className={cn(
-        'rounded border border-neutral-200 dark:border-neutral-700',
+        'min-w-0 overflow-hidden rounded border border-neutral-200 dark:border-neutral-700',
         finding.applied && 'opacity-60',
         compact ? 'p-2' : 'p-3'
       )}
@@ -77,19 +77,19 @@ export function FindingCard({ finding, compact, onApply, onNavigate, onClose }: 
       </p>
 
       {!compact && (
-        <p className="mt-1 font-sans text-[11px] leading-relaxed text-neutral-600 dark:text-neutral-400">
+        <p className="mt-1 break-words font-sans text-[11px] leading-relaxed text-neutral-600 dark:text-neutral-400">
           {finding.description}
         </p>
       )}
 
       {!compact && finding.suggestedFix && (
-        <pre className="mt-2 overflow-x-auto rounded bg-neutral-100 p-2 font-mono text-[10px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+        <pre className="mt-2 max-w-full overflow-x-auto rounded bg-neutral-100 p-2 font-mono text-[10px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
           {finding.suggestedFix}
         </pre>
       )}
 
       {!compact && (
-        <div className="mt-1 font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
+        <div className="mt-1 truncate font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
           {finding.file}:{finding.lineStart}
           {finding.lineEnd !== finding.lineStart && `-${finding.lineEnd}`}
         </div>

@@ -133,6 +133,11 @@ async function main() {
     await promptHandler.handleDiff(requestId);
   });
 
+  agentClient.onReview(async (requestId) => {
+    console.log(`[Runner] Received review request: ${requestId}`);
+    await promptHandler.handleReview(requestId);
+  });
+
   // Brief delay before first connection — the sandbox may boot before the Worker
   // finishes calling /start on the DO to store our runner token (race condition).
   console.log("[Runner] Waiting 3s for DO initialization...");

@@ -16,8 +16,9 @@
  * - permission.updated     — permission request created/updated
  */
 
+import { createTwoFilesPatch } from "diff";
 import { AgentClient } from "./agent-client.js";
-import type { AvailableModels, DiffFile } from "./types.js";
+import type { AvailableModels, DiffFile, ReviewFileSummary, ReviewResultData } from "./types.js";
 
 // OpenCode ToolState status values
 type ToolStatus = "pending" | "running" | "completed" | "error";
@@ -64,6 +65,128 @@ type OpenCodeEvent = {
 // Emergency fallback timeout — only fires if no idle/completion event arrives
 const EMERGENCY_TIMEOUT_MS = 60_000;
 
+// Review polling configuration
+const REVIEW_POLL_INTERVAL_MS = 500;
+const REVIEW_TIMEOUT_MS = 120_000;
+
+const REVIEW_PROMPT = `You are a code reviewer. Analyze the following diff and produce a structured JSON review.
+
+Return ONLY a fenced JSON block (\`\`\`json ... \`\`\`) with this exact structure:
+
+{
+  "overallSummary": "Brief summary of all changes",
+  "files": [
+    {
+      "path": "file/path.ts",
+      "summary": "What changed in this file",
+      "reviewOrder": 1,
+      "linesAdded": 10,
+      "linesDeleted": 5,
+      "findings": [
+        {
+          "id": "f1",
+          "file": "file/path.ts",
+          "lineStart": 10,
+          "lineEnd": 15,
+          "severity": "warning",
+          "category": "logic",
+          "title": "Short title",
+          "description": "Detailed description of the issue",
+          "suggestedFix": "Optional code or description of fix"
+        }
+      ]
+    }
+  ],
+  "stats": { "critical": 0, "warning": 1, "suggestion": 0, "nitpick": 0 }
+}
+
+Severity levels:
+- critical: Bugs, security issues, data loss risks
+- warning: Logic errors, performance problems, missing error handling
+- suggestion: Better approaches, readability improvements
+- nitpick: Style, naming, minor preferences
+
+Categories: logic, security, performance, error-handling, types, style, naming, documentation, testing, architecture
+
+IMPORTANT: Do NOT create duplicate findings. If the same issue applies to a range of lines, create ONE finding with lineStart/lineEnd spanning the full range. Never create multiple findings with the same title for adjacent or nearby lines.
+
+Review these changes:
+
+`;
+
+function parseReviewResponse(content: string): ReviewResultData | null {
+  // Extract JSON from fenced code block
+  const jsonMatch = content.match(/```json\s*([\s\S]*?)```/);
+  if (!jsonMatch) return null;
+
+  try {
+    const parsed = JSON.parse(jsonMatch[1].trim());
+
+    // Validate structure
+    if (!parsed.files || !Array.isArray(parsed.files) || !parsed.overallSummary) {
+      return null;
+    }
+
+    // Compute stats if missing
+    if (!parsed.stats) {
+      const stats = { critical: 0, warning: 0, suggestion: 0, nitpick: 0 };
+      for (const file of parsed.files) {
+        for (const finding of file.findings || []) {
+          if (finding.severity in stats) {
+            stats[finding.severity as keyof typeof stats]++;
+          }
+        }
+      }
+      parsed.stats = stats;
+    }
+
+    // Ensure all files have findings array, IDs on findings, and deduplicate
+    let idCounter = 0;
+    for (const file of parsed.files as ReviewFileSummary[]) {
+      file.findings = file.findings || [];
+      for (const finding of file.findings) {
+        if (!finding.id) {
+          finding.id = `rf-${++idCounter}`;
+        }
+        if (!finding.file) {
+          finding.file = file.path;
+        }
+      }
+
+      // Deduplicate: merge findings with the same title in the same file
+      const merged: typeof file.findings = [];
+      for (const finding of file.findings) {
+        const existing = merged.find(
+          (f) => f.title === finding.title && f.severity === finding.severity
+        );
+        if (existing) {
+          // Expand the line range to cover both
+          existing.lineStart = Math.min(existing.lineStart, finding.lineStart);
+          existing.lineEnd = Math.max(existing.lineEnd, finding.lineEnd);
+        } else {
+          merged.push(finding);
+        }
+      }
+      file.findings = merged;
+    }
+
+    // Recompute stats after deduplication
+    const recomputedStats = { critical: 0, warning: 0, suggestion: 0, nitpick: 0 };
+    for (const file of parsed.files) {
+      for (const finding of file.findings || []) {
+        if (finding.severity in recomputedStats) {
+          recomputedStats[finding.severity as keyof typeof recomputedStats]++;
+        }
+      }
+    }
+    parsed.stats = recomputedStats;
+
+    return parsed as ReviewResultData;
+  } catch {
+    return null;
+  }
+}
+
 export class PromptHandler {
   private opencodeUrl: string;
   private agentClient: AgentClient;
@@ -85,6 +208,10 @@ export class PromptHandler {
   // Message ID mapping: DO message IDs ↔ OpenCode message IDs
   private doToOcMessageId = new Map<string, string>();
   private ocToDOMessageId = new Map<string, string>();
+
+  // Ephemeral session tracking — resolved when the session becomes idle via SSE
+  private idleWaiters = new Map<string, () => void>();
+  private ephemeralContent = new Map<string, string>(); // accumulated text from SSE
 
   constructor(opencodeUrl: string, agentClient: AgentClient) {
     this.opencodeUrl = opencodeUrl;
@@ -178,9 +305,12 @@ export class PromptHandler {
 
   private async respondToPermission(permissionId: string, response: "once" | "always" | "reject"): Promise<void> {
     if (!this.sessionId) return;
+    await this.respondToPermissionOnSession(this.sessionId, permissionId, response);
+  }
 
+  private async respondToPermissionOnSession(sessionId: string, permissionId: string, response: "once" | "always" | "reject"): Promise<void> {
     try {
-      const url = `${this.opencodeUrl}/session/${this.sessionId}/permissions/${permissionId}`;
+      const url = `${this.opencodeUrl}/session/${sessionId}/permissions/${permissionId}`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -258,57 +388,156 @@ export class PromptHandler {
 
     console.log(`[PromptHandler] Fetching diff for request ${requestId}`);
     try {
-      const res = await fetch(`${this.opencodeUrl}/session/${this.sessionId}/diff`);
-      if (!res.ok) {
-        console.warn(`[PromptHandler] Diff response: ${res.status}`);
-        this.agentClient.sendDiff(requestId, []);
-        return;
-      }
-
-      // OpenCode returns FileDiff[]: { file, before, after, additions, deletions }
-      const data = await res.json() as Array<{
-        file: string;
-        before: string;
-        after: string;
-        additions: number;
-        deletions: number;
-      }>;
-
-      const files: DiffFile[] = data.map((entry) => {
-        // Derive status from content
-        const status: DiffFile["status"] =
-          !entry.before || entry.before === "" ? "added"
-          : !entry.after || entry.after === "" ? "deleted"
-          : "modified";
-
-        // Build a simple unified diff from before/after
-        const beforeLines = (entry.before || "").split("\n");
-        const afterLines = (entry.after || "").split("\n");
-        const diffLines: string[] = [
-          `--- a/${entry.file}`,
-          `+++ b/${entry.file}`,
-          `@@ -1,${beforeLines.length} +1,${afterLines.length} @@`,
-        ];
-        for (const line of beforeLines) {
-          if (line || beforeLines.length > 1) diffLines.push(`-${line}`);
-        }
-        for (const line of afterLines) {
-          if (line || afterLines.length > 1) diffLines.push(`+${line}`);
-        }
-
-        return {
-          path: entry.file,
-          status,
-          diff: diffLines.join("\n"),
-        };
-      });
-
+      const files = await this.fetchDiffFiles();
       console.log(`[PromptHandler] Diff: ${files.length} files`);
       this.agentClient.sendDiff(requestId, files);
     } catch (err) {
       console.error("[PromptHandler] Error fetching diff:", err);
       this.agentClient.sendDiff(requestId, []);
     }
+  }
+
+  async handleReview(requestId: string): Promise<void> {
+    console.log(`[PromptHandler] Starting review for request ${requestId}`);
+    try {
+      // 1. Fetch diff
+      const diffFiles = await this.fetchDiffFiles();
+      if (diffFiles.length === 0) {
+        this.agentClient.sendReviewResult(requestId, undefined, [], "No file changes to review.");
+        return;
+      }
+
+      // 2. Build review prompt
+      const diffText = diffFiles
+        .map((f) => `--- ${f.status.toUpperCase()}: ${f.path} ---\n${f.diff || "(no diff)"}`)
+        .join("\n\n");
+      const prompt = REVIEW_PROMPT + diffText;
+
+      // 3. Create ephemeral session and register for SSE content capture
+      const ephemeralId = await this.createEphemeralSession();
+      this.ephemeralContent.set(ephemeralId, "");
+      console.log(`[PromptHandler] Created ephemeral session ${ephemeralId} for review`);
+
+      try {
+        // 4. Register idle waiter BEFORE sending prompt (avoid race)
+        const idlePromise = this.pollUntilIdle(ephemeralId, REVIEW_TIMEOUT_MS);
+
+        // 5. Send review prompt
+        await this.sendPromptAsync(ephemeralId, prompt);
+
+        // 6. Wait until idle
+        await idlePromise;
+
+        // 7. Get accumulated content from SSE events
+        const content = this.ephemeralContent.get(ephemeralId) || "";
+        console.log(`[PromptHandler] Ephemeral session response: ${content.length} chars`);
+
+        if (!content) {
+          this.agentClient.sendReviewResult(requestId, undefined, diffFiles, "No response received from review session");
+          return;
+        }
+
+        const parsed = parseReviewResponse(content);
+        if (!parsed) {
+          console.log(`[PromptHandler] Failed to parse review response, first 500 chars: ${content.slice(0, 500)}`);
+          this.agentClient.sendReviewResult(requestId, undefined, diffFiles, "Failed to parse review response");
+          return;
+        }
+
+        console.log(`[PromptHandler] Review complete: ${parsed.files.length} files, ${parsed.stats.critical}C/${parsed.stats.warning}W/${parsed.stats.suggestion}S`);
+        this.agentClient.sendReviewResult(requestId, parsed, diffFiles);
+      } finally {
+        // 8. Always clean up
+        this.ephemeralContent.delete(ephemeralId);
+        this.idleWaiters.delete(ephemeralId);
+        await this.deleteSession(ephemeralId).catch((err) =>
+          console.warn(`[PromptHandler] Failed to delete ephemeral session ${ephemeralId}:`, err)
+        );
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error("[PromptHandler] Review error:", errorMsg);
+      this.agentClient.sendReviewResult(requestId, undefined, undefined, errorMsg);
+    }
+  }
+
+  private async fetchDiffFiles(): Promise<DiffFile[]> {
+    if (!this.sessionId) return [];
+
+    const res = await fetch(`${this.opencodeUrl}/session/${this.sessionId}/diff`);
+    if (!res.ok) {
+      console.warn(`[PromptHandler] Diff response: ${res.status}`);
+      return [];
+    }
+
+    const data = await res.json() as Array<{
+      file: string;
+      before: string;
+      after: string;
+      additions: number;
+      deletions: number;
+    }>;
+
+    return data.map((entry) => {
+      const status: DiffFile["status"] =
+        !entry.before || entry.before === "" ? "added"
+        : !entry.after || entry.after === "" ? "deleted"
+        : "modified";
+
+      const patch = createTwoFilesPatch(
+        `a/${entry.file}`,
+        `b/${entry.file}`,
+        entry.before || "",
+        entry.after || "",
+        undefined,
+        undefined,
+        { context: 3 },
+      );
+
+      return { path: entry.file, status, diff: patch };
+    });
+  }
+
+  private async createEphemeralSession(): Promise<string> {
+    const res = await fetch(`${this.opencodeUrl}/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`Failed to create ephemeral session: ${res.status} ${body}`);
+    }
+    const data = (await res.json()) as { id: string };
+    return data.id;
+  }
+
+  private async pollUntilIdle(sessionId: string, timeoutMs: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.idleWaiters.delete(sessionId);
+        reject(new Error(`Review timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.idleWaiters.set(sessionId, () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  private extractStatusType(props: Record<string, unknown>): string | undefined {
+    const rawStatus = props.status;
+    if (typeof rawStatus === "string") return rawStatus;
+    if (rawStatus && typeof rawStatus === "object") return (rawStatus as SessionStatus).type;
+    return undefined;
+  }
+
+  private async deleteSession(sessionId: string): Promise<void> {
+    const res = await fetch(`${this.opencodeUrl}/session/${sessionId}`, {
+      method: "DELETE",
+    });
+    console.log(`[PromptHandler] Delete ephemeral session ${sessionId}: ${res.status}`);
   }
 
   // ─── OpenCode HTTP API ───────────────────────────────────────────────
@@ -491,8 +720,53 @@ export class PromptHandler {
     const props = event.properties;
     if (!props) return;
 
+    // Check for ephemeral session events before filtering
+    // Session ID can be at top level or nested inside part/info objects
+    const part = props.part as Record<string, unknown> | undefined;
+    const info = props.info as Record<string, unknown> | undefined;
+    const eventSessionId = (
+      props.sessionID ?? props.session_id ??
+      part?.sessionID ?? info?.sessionID
+    ) as string | undefined;
+    if (eventSessionId && this.ephemeralContent.has(eventSessionId)) {
+      // Capture text deltas from ephemeral session SSE events
+      if (event.type === "message.part.updated") {
+        if (part?.type === "text") {
+          const delta = props.delta as string | undefined;
+          if (delta) {
+            const prev = this.ephemeralContent.get(eventSessionId) || "";
+            this.ephemeralContent.set(eventSessionId, prev + delta);
+          }
+        }
+      }
+
+      const isIdle =
+        event.type === "session.idle" ||
+        (event.type === "session.status" && this.extractStatusType(props) === "idle");
+      if (isIdle) {
+        const content = this.ephemeralContent.get(eventSessionId) || "";
+        console.log(`[PromptHandler] Ephemeral session ${eventSessionId} became idle (captured ${content.length} chars)`);
+        const resolve = this.idleWaiters.get(eventSessionId);
+        if (resolve) {
+          this.idleWaiters.delete(eventSessionId);
+          resolve();
+        }
+      }
+
+      // Auto-approve permissions for ephemeral sessions too
+      if ((event.type === "permission.asked" || event.type === "permission.updated") && eventSessionId !== this.sessionId) {
+        const permId = String(props.id ?? "");
+        if (permId) {
+          console.log(`[PromptHandler] Auto-approving permission for ephemeral session: ${permId}`);
+          this.respondToPermissionOnSession(eventSessionId, permId, "always");
+        }
+      }
+
+      // Don't process ephemeral session events through main handler
+      if (eventSessionId !== this.sessionId) return;
+    }
+
     // Filter to our session
-    const eventSessionId = (props.sessionID ?? props.session_id) as string | undefined;
     if (eventSessionId && eventSessionId !== this.sessionId) return;
 
     switch (event.type) {

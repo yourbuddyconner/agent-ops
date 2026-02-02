@@ -26,6 +26,6 @@ export interface ReviewSummary {
   stats: { critical: number; warning: number; suggestion: number; nitpick: number };
 }
 
-export type ReviewState = 'idle' | 'loading-diff' | 'reviewing' | 'complete' | 'error';
+export type ReviewState = 'idle' | 'reviewing' | 'complete' | 'error';
 
 export type SeverityFilter = 'all' | ReviewFinding['severity'];

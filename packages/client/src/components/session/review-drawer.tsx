@@ -19,11 +19,12 @@ interface ReviewDrawerProps {
 export function ReviewDrawer({ sessionId }: ReviewDrawerProps) {
   const { closeDrawer } = useDrawer();
   const {
-    messages,
     sendMessage,
-    requestDiff,
-    diffData,
-    diffLoading,
+    requestReview,
+    reviewResult,
+    reviewError,
+    reviewLoading,
+    reviewDiffFiles,
     isConnected,
   } = useChat(sessionId);
 
@@ -39,10 +40,11 @@ export function ReviewDrawer({ sessionId }: ReviewDrawerProps) {
     selectFile,
   } = useReview({
     sendMessage,
-    requestDiff,
-    messages,
-    diffData,
-    diffLoading,
+    requestReview,
+    reviewResult,
+    reviewError,
+    reviewLoading,
+    reviewDiffFiles,
     isConnected,
   });
 
@@ -58,7 +60,7 @@ export function ReviewDrawer({ sessionId }: ReviewDrawerProps) {
   };
 
   return (
-    <div className="flex h-full flex-col bg-neutral-50 dark:bg-neutral-900">
+    <div className="flex h-full min-w-0 flex-col overflow-hidden bg-neutral-50 dark:bg-neutral-900">
       {/* Header */}
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 bg-surface-1 px-2 dark:border-neutral-800 dark:bg-surface-1">
         <div className="flex items-center gap-2">
@@ -100,7 +102,7 @@ export function ReviewDrawer({ sessionId }: ReviewDrawerProps) {
         </div>
       )}
 
-      {(state === 'loading-diff' || state === 'reviewing') && (
+      {state === 'reviewing' && (
         <ReviewProgress state={state} />
       )}
 
@@ -127,7 +129,7 @@ export function ReviewDrawer({ sessionId }: ReviewDrawerProps) {
           </div>
 
           {/* Main area */}
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {/* Tab bar */}
             <div className="flex items-center gap-0.5 border-b border-neutral-200 bg-surface-1 px-2 py-1 dark:border-neutral-800 dark:bg-surface-1">
               <TabButton active={activeTab === 'diff'} onClick={() => setActiveTab('diff')}>

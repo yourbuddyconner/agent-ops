@@ -7,7 +7,7 @@
  * - Typed outbound/inbound message protocol
  */
 
-import type { AgentStatus, AvailableModels, DiffFile, DOToRunnerMessage, RunnerToDOMessage, ToolCallStatus } from "./types.js";
+import type { AgentStatus, AvailableModels, DiffFile, DOToRunnerMessage, ReviewResultData, RunnerToDOMessage, ToolCallStatus } from "./types.js";
 
 export interface PromptAuthor {
   gitName?: string;
@@ -38,6 +38,7 @@ export class AgentClient {
   private abortHandler: (() => void | Promise<void>) | null = null;
   private revertHandler: ((messageId: string) => void | Promise<void>) | null = null;
   private diffHandler: ((requestId: string) => void | Promise<void>) | null = null;
+  private reviewHandler: ((requestId: string) => void | Promise<void>) | null = null;
 
   private pendingRequests = new Map<string, {
     resolve: (value: any) => void;
@@ -177,6 +178,10 @@ export class AgentClient {
     this.send({ type: "files-changed", files });
   }
 
+  sendReviewResult(requestId: string, data?: ReviewResultData, diffFiles?: DiffFile[], error?: string): void {
+    this.send({ type: "review-result", requestId, data, diffFiles, error });
+  }
+
   sendChildSession(childSessionId: string, title?: string): void {
     this.send({ type: "child-session", childSessionId, title } as any);
   }
@@ -290,6 +295,10 @@ export class AgentClient {
     this.diffHandler = handler;
   }
 
+  onReview(handler: (requestId: string) => void | Promise<void>): void {
+    this.reviewHandler = handler;
+  }
+
   // ─── Keepalive ──────────────────────────────────────────────────────
 
   private startPing(): void {
@@ -358,6 +367,9 @@ export class AgentClient {
           break;
         case "diff":
           await this.diffHandler?.(msg.requestId);
+          break;
+        case "review":
+          await this.reviewHandler?.(msg.requestId);
           break;
         case "pong":
           // Keepalive response — no action needed

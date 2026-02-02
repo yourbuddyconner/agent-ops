@@ -6,7 +6,7 @@ import { decryptString } from '../lib/crypto.js';
 
 /** Messages sent by browser clients to the DO */
 interface ClientMessage {
-  type: 'prompt' | 'answer' | 'ping' | 'abort' | 'revert' | 'diff';
+  type: 'prompt' | 'answer' | 'ping' | 'abort' | 'revert' | 'diff' | 'review';
   content?: string;
   model?: string;
   questionId?: string;
@@ -23,7 +23,7 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate';
   prNumber?: number;
   targetSessionId?: string;
   interrupt?: boolean;
@@ -41,7 +41,7 @@ interface RunnerMessage {
   toolName?: string;
   args?: unknown;
   result?: unknown;
-  data?: string | { files?: { path: string; status: string; diff?: string }[] }; // base64 screenshot or diff payload
+  data?: string | { files?: { path: string; status: string; diff?: string }[] } | Record<string, unknown>; // base64 screenshot, diff payload, or review result
   description?: string;
   error?: string;
   status?: AgentStatus | ToolCallStatus;
@@ -65,17 +65,18 @@ interface RunnerMessage {
   labels?: string[];
   state?: string;
   childSessionId?: string;
+  diffFiles?: unknown;
 }
 
 /** Messages sent from DO to clients */
 interface ClientOutbound {
-  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title';
+  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'review-result' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title';
   [key: string]: unknown;
 }
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'terminate-child-result';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'terminate-child-result';
   messageId?: string;
   content?: string;
   model?: string;
@@ -659,6 +660,12 @@ export class SessionAgentDO {
       case 'diff':
         await this.handleDiff();
         break;
+
+      case 'review': {
+        const reviewRequestId = crypto.randomUUID();
+        this.sendToRunner({ type: 'review', requestId: reviewRequestId });
+        break;
+      }
     }
   }
 
@@ -1104,11 +1111,23 @@ export class SessionAgentDO {
       case 'diff':
         // Runner returned diff data — broadcast to clients
         // Runner sends { type, requestId, data: { files } } or { type, requestId, files }
-        const diffFiles = (typeof msg.data === 'object' && msg.data?.files) ? msg.data.files : (msg.files ?? []);
+        const diffPayload = typeof msg.data === 'object' && msg.data !== null ? msg.data as Record<string, unknown> : null;
+        const diffFiles = diffPayload?.files ?? msg.files ?? [];
         this.broadcastToClients({
           type: 'diff',
           requestId: msg.requestId,
           data: { files: diffFiles },
+        });
+        break;
+
+      case 'review-result':
+        // Runner returned structured review result — broadcast to clients (not stored in DB)
+        this.broadcastToClients({
+          type: 'review-result',
+          requestId: msg.requestId,
+          data: msg.data,
+          diffFiles: msg.diffFiles,
+          error: msg.error,
         });
         break;
 

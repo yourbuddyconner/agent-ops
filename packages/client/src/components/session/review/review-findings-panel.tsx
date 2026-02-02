@@ -27,7 +27,7 @@ export function ReviewFindingsPanel({
     filter === 'all' ? allFindings : allFindings.filter((f) => f.severity === filter);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       {/* Stats bar */}
       <div className="flex items-center gap-2 border-b border-neutral-200 px-3 py-1.5 dark:border-neutral-800">
         <FilterTab
@@ -75,7 +75,7 @@ export function ReviewFindingsPanel({
       </div>
 
       {/* Findings list */}
-      <div className="flex-1 overflow-y-auto p-3">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden p-3">
         {filtered.length === 0 ? (
           <div className="flex items-center justify-center py-8">
             <span className="font-mono text-[11px] text-neutral-400 dark:text-neutral-500">

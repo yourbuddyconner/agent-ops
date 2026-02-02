@@ -1,3 +1,5 @@
+import { useMemo } from 'react';
+import { diffLines } from 'diff';
 import { ToolCardShell, ToolCardSection } from './tool-card-shell';
 import { FileEditIcon } from './icons';
 import type { ToolCallData, EditArgs } from './types';
@@ -44,14 +46,7 @@ export function EditCard({ tool }: { tool: ToolCallData }) {
       {(oldStr || newStr) ? (
         <ToolCardSection>
           <div className="overflow-auto rounded bg-neutral-50 dark:bg-neutral-900/50" style={{ maxHeight: '320px' }}>
-            {oldStr && (
-              <div className="border-b border-neutral-200 dark:border-neutral-700/60">
-                <DiffBlock type="remove" content={oldStr} />
-              </div>
-            )}
-            {newStr && (
-              <DiffBlock type="add" content={newStr} />
-            )}
+            <UnifiedDiff oldStr={oldStr} newStr={newStr} />
           </div>
           {resultStr && (
             <p className="mt-1.5 font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
@@ -77,9 +72,24 @@ export function EditCard({ tool }: { tool: ToolCallData }) {
   );
 }
 
-function DiffBlock({ type, content }: { type: 'add' | 'remove'; content: string }) {
-  const lines = content.split('\n');
-  const isAdd = type === 'add';
+interface DiffLine {
+  type: 'add' | 'remove' | 'context';
+  content: string;
+}
+
+function UnifiedDiff({ oldStr, newStr }: { oldStr: string; newStr: string }) {
+  const lines = useMemo((): DiffLine[] => {
+    const changes = diffLines(oldStr, newStr);
+    const result: DiffLine[] = [];
+    for (const change of changes) {
+      const changeLines = change.value.replace(/\n$/, '').split('\n');
+      const type: DiffLine['type'] = change.added ? 'add' : change.removed ? 'remove' : 'context';
+      for (const line of changeLines) {
+        result.push({ type, content: line });
+      }
+    }
+    return result;
+  }, [oldStr, newStr]);
 
   return (
     <div className="min-w-fit font-mono text-[11px] leading-[1.6]">
@@ -87,15 +97,17 @@ function DiffBlock({ type, content }: { type: 'add' | 'remove'; content: string 
         <div
           key={i}
           className={
-            isAdd
+            line.type === 'add'
               ? 'bg-emerald-50/80 text-emerald-800 dark:bg-emerald-950/20 dark:text-emerald-300'
-              : 'bg-red-50/80 text-red-800 dark:bg-red-950/20 dark:text-red-300'
+              : line.type === 'remove'
+                ? 'bg-red-50/80 text-red-800 dark:bg-red-950/20 dark:text-red-300'
+                : 'text-neutral-500 dark:text-neutral-400'
           }
         >
           <span className="inline-block w-5 select-none text-center opacity-50">
-            {isAdd ? '+' : '-'}
+            {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
           </span>
-          <span className="whitespace-pre">{line}</span>
+          <span className="whitespace-pre">{line.content}</span>
         </div>
       ))}
     </div>

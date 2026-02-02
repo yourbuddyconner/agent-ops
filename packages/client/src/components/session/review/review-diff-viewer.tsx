@@ -27,7 +27,10 @@ export function ReviewDiffViewer({ diffFile, findings, onApplyFinding }: ReviewD
 
   // Map findings to line numbers for gutter markers
   const findingsByLine = new Map<number, ReviewFinding[]>();
+  // Track which line is the first in each finding's range (render card only there)
+  const findingFirstLine = new Map<string, number>();
   for (const finding of findings) {
+    findingFirstLine.set(finding.id, finding.lineStart);
     for (let line = finding.lineStart; line <= finding.lineEnd; line++) {
       const existing = findingsByLine.get(line) || [];
       existing.push(finding);
@@ -100,10 +103,10 @@ export function ReviewDiffViewer({ diffFile, findings, onApplyFinding }: ReviewD
                 </span>
                 <span className="flex-1">{line}</span>
               </div>
-              {/* Inline finding expansion */}
+              {/* Inline finding expansion — only on the first line of the finding's range */}
               {isExpanded &&
                 lineFindings!
-                  .filter((f) => f.id === expandedFinding)
+                  .filter((f) => f.id === expandedFinding && findingFirstLine.get(f.id) === currentLine)
                   .map((finding) => (
                     <div
                       key={finding.id}
