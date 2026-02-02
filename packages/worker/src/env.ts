@@ -24,6 +24,7 @@ export interface Env {
   // GitHub OAuth
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
+  GITHUB_WEBHOOK_SECRET?: string;
 
   // Google OAuth (Gmail, Calendar, Drive)
   GOOGLE_CLIENT_ID: string;

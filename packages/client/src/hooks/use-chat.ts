@@ -39,12 +39,19 @@ export interface ChildSessionEvent {
   timestamp: number;
 }
 
+export interface ConnectedUser {
+  id: string;
+  name?: string;
+  email?: string;
+  avatarUrl?: string;
+}
+
 interface ChatState {
   messages: Message[];
   status: SessionStatus;
   streamingContent: string;
   pendingQuestions: PendingQuestion[];
-  connectedUsers: string[];
+  connectedUsers: ConnectedUser[];
   logEntries: LogEntry[];
   isAgentThinking: boolean;
   agentStatus: AgentStatus;
@@ -69,11 +76,14 @@ interface WebSocketInitMessage {
       role: 'user' | 'assistant' | 'system' | 'tool';
       content: string;
       parts?: unknown;
+      authorId?: string;
+      authorEmail?: string;
+      authorName?: string;
       createdAt: number;
     }>;
   };
   data?: {
-    connectedUsers?: string[];
+    connectedUsers?: Array<{ id: string; name?: string; email?: string; avatarUrl?: string }> | string[];
     [key: string]: unknown;
   };
 }
@@ -85,6 +95,9 @@ interface WebSocketMessageMessage {
     role: 'user' | 'assistant' | 'system' | 'tool';
     content: string;
     parts?: unknown;
+    authorId?: string;
+    authorEmail?: string;
+    authorName?: string;
     createdAt: number;
   };
 }
@@ -324,6 +337,14 @@ export function useChat(sessionId: string) {
           }
         }
 
+        // Normalize connectedUsers — may be string[] (legacy) or ConnectedUser[]
+        const rawUsers = message.data?.connectedUsers;
+        const normalizedUsers: ConnectedUser[] = Array.isArray(rawUsers)
+          ? rawUsers.map((u: string | ConnectedUser) =>
+              typeof u === 'string' ? { id: u } : u
+            )
+          : [];
+
         setState({
           messages: message.session.messages.map((m) => ({
             id: m.id,
@@ -331,12 +352,15 @@ export function useChat(sessionId: string) {
             role: m.role,
             content: m.content,
             parts: m.parts,
+            authorId: m.authorId,
+            authorEmail: m.authorEmail,
+            authorName: m.authorName,
             createdAt: new Date(m.createdAt * 1000),
           })),
           status: message.session.status,
           streamingContent: '',
           pendingQuestions: [],
-          connectedUsers: Array.isArray(message.data?.connectedUsers) ? message.data.connectedUsers : [],
+          connectedUsers: normalizedUsers,
           logEntries: [],
           isAgentThinking: false,
           agentStatus: 'idle',
@@ -361,6 +385,9 @@ export function useChat(sessionId: string) {
           role: d.role,
           content: d.content,
           parts: d.parts,
+          authorId: d.authorId,
+          authorEmail: d.authorEmail,
+          authorName: d.authorName,
           createdAt: new Date(d.createdAt * 1000),
         };
         setState((prev) => {
@@ -419,7 +446,9 @@ export function useChat(sessionId: string) {
           }
           // Update connected users list if provided
           if (Array.isArray(data.connectedUsers)) {
-            nextUsers = data.connectedUsers as string[];
+            nextUsers = (data.connectedUsers as Array<string | ConnectedUser>).map(
+              (u: string | ConnectedUser) => typeof u === 'string' ? { id: u } : u
+            );
           }
 
           // Track runner connection state
@@ -631,15 +660,18 @@ export function useChat(sessionId: string) {
 
       case 'user.joined':
       case 'user.left': {
-        // These messages include connectedUsers array
-        const userMsg = msg as { connectedUsers?: string[]; userId?: string };
+        // These messages include connectedUsers array (may be enriched objects or string IDs)
+        const userMsg = msg as { connectedUsers?: Array<string | ConnectedUser>; userId?: string; userDetails?: { name?: string; email?: string; avatarUrl?: string } };
         if (Array.isArray(userMsg.connectedUsers)) {
           setState((prev) => ({
             ...prev,
-            connectedUsers: userMsg.connectedUsers as string[],
+            connectedUsers: userMsg.connectedUsers!.map((u: string | ConnectedUser) =>
+              typeof u === 'string' ? { id: u } : u
+            ),
           }));
         }
-        appendLogEntry(message.type, `User ${userMsg.userId ?? 'unknown'} ${message.type === 'user.joined' ? 'joined' : 'left'}`);
+        const displayName = userMsg.userDetails?.name || userMsg.userId || 'unknown';
+        appendLogEntry(message.type, `${displayName} ${message.type === 'user.joined' ? 'joined' : 'left'}`);
         break;
       }
     }

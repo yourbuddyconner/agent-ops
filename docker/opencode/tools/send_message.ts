@@ -12,6 +12,10 @@ export default tool({
     message: tool.schema
       .string()
       .describe("The message content to send as a prompt to the target session"),
+    interrupt: tool.schema
+      .boolean()
+      .optional()
+      .describe("If true, abort the target session's current work before delivering this message. Default: false (message is queued)."),
   },
   async execute(args) {
     try {
@@ -21,6 +25,7 @@ export default tool({
         body: JSON.stringify({
           sessionId: args.session_id,
           content: args.message,
+          interrupt: args.interrupt ?? false,
         }),
       })
 

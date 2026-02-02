@@ -2,7 +2,9 @@
 
 /** Messages sent from DO to Runner */
 export type DOToRunnerMessage =
-  | { type: "prompt"; messageId: string; content: string; model?: string }
+  | { type: "prompt"; messageId: string; content: string; model?: string;
+      authorId?: string; authorEmail?: string; authorName?: string;
+      gitName?: string; gitEmail?: string }
   | { type: "answer"; questionId: string; answer: string | boolean }
   | { type: "stop" }
   | { type: "abort" }
@@ -41,7 +43,7 @@ export type RunnerToDOMessage =
   | { type: "diff"; requestId: string; data: { files: DiffFile[] } }
   | { type: "files-changed"; files: Array<{ path: string; status: string; additions?: number; deletions?: number }> }
   | { type: "spawn-child"; requestId: string; task: string; workspace: string; repoUrl?: string; branch?: string; title?: string; sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string }
-  | { type: "session-message"; requestId: string; targetSessionId: string; content: string }
+  | { type: "session-message"; requestId: string; targetSessionId: string; content: string; interrupt?: boolean }
   | { type: "session-messages"; requestId: string; targetSessionId: string; limit?: number; after?: string }
   | { type: "terminate-child"; requestId: string; childSessionId: string }
   | { type: "self-terminate" }

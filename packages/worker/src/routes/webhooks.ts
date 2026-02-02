@@ -160,13 +160,36 @@ webhooksRouter.post('/github', async (c) => {
 
   const payload = await c.req.json();
 
-  // In production, verify the webhook signature
-  // const isValid = await verifyGitHubSignature(signature, payload, secret);
+  // Verify webhook signature if secret is configured
+  const webhookSecret = c.env.GITHUB_WEBHOOK_SECRET;
+  if (webhookSecret) {
+    const isValid = await verifyGitHubSignature(signature, payload, webhookSecret);
+    if (!isValid) {
+      return c.json({ error: 'Invalid signature' }, 401);
+    }
+  }
 
   console.log(`GitHub webhook: ${event} (${deliveryId})`);
 
-  // Find integrations that should receive this webhook
-  // For now, log and acknowledge
+  // Process PR lifecycle events for session git state tracking
+  if (event === 'pull_request') {
+    try {
+      await handlePullRequestWebhook(c.env, payload);
+    } catch (error) {
+      console.error('PR webhook handler error:', error);
+    }
+  }
+
+  // Process push events for commit tracking
+  if (event === 'push') {
+    try {
+      await handlePushWebhook(c.env, payload);
+    } catch (error) {
+      console.error('Push webhook handler error:', error);
+    }
+  }
+
+  // Forward to integration handler for general sync
   const handler = integrationRegistry.get('github');
   if (handler) {
     try {
@@ -178,6 +201,114 @@ webhooksRouter.post('/github', async (c) => {
 
   return c.json({ received: true, event, deliveryId });
 });
+
+/**
+ * Handle pull_request webhook events — updates session_git_state and notifies DOs.
+ */
+async function handlePullRequestWebhook(env: Env, payload: any): Promise<void> {
+  const action = payload.action; // opened, closed, merged, reopened, edited, synchronize
+  const pr = payload.pull_request;
+  if (!pr) return;
+
+  const repoFullName = payload.repository?.full_name;
+  const prNumber = pr.number;
+
+  if (!repoFullName || !prNumber) return;
+
+  // Find sessions linked to this PR (by source_repo_full_name + pr_number)
+  const rows = await env.DB.prepare(
+    `SELECT session_id FROM session_git_state
+     WHERE source_repo_full_name = ? AND pr_number = ?`
+  ).bind(repoFullName, prNumber).all<{ session_id: string }>();
+
+  if (!rows.results || rows.results.length === 0) return;
+
+  // Determine the new PR state
+  let prState: string;
+  if (pr.merged_at || action === 'closed' && pr.merged) {
+    prState = 'merged';
+  } else if (action === 'closed') {
+    prState = 'closed';
+  } else if (action === 'reopened' || action === 'opened') {
+    prState = pr.draft ? 'draft' : 'open';
+  } else {
+    prState = pr.draft ? 'draft' : (pr.state === 'open' ? 'open' : pr.state);
+  }
+
+  // Update all matching sessions
+  for (const row of rows.results) {
+    const sessionId = row.session_id;
+
+    await db.updateSessionGitState(env.DB, sessionId, {
+      prState: prState as any,
+      prTitle: pr.title,
+      prMergedAt: pr.merged_at || undefined,
+    });
+
+    // Notify the SessionAgent DO so it can broadcast to connected clients
+    try {
+      const doId = env.SESSIONS.idFromName(sessionId);
+      const stub = env.SESSIONS.get(doId);
+      await stub.fetch(new Request('https://session/webhook-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'git-state-update',
+          prState,
+          prTitle: pr.title,
+          prMergedAt: pr.merged_at || null,
+        }),
+      }));
+    } catch (err) {
+      console.error(`Failed to notify DO for session ${sessionId}:`, err);
+    }
+  }
+}
+
+/**
+ * Handle push webhook events — updates commit count for matching sessions.
+ */
+async function handlePushWebhook(env: Env, payload: any): Promise<void> {
+  const ref = payload.ref; // e.g., "refs/heads/feature/my-branch"
+  const repoFullName = payload.repository?.full_name;
+  const commitCount = payload.commits?.length ?? 0;
+
+  if (!ref || !repoFullName || commitCount === 0) return;
+
+  // Extract branch name from ref
+  const branch = ref.replace('refs/heads/', '');
+
+  // Find sessions matching this repo + branch
+  const rows = await env.DB.prepare(
+    `SELECT session_id, commit_count FROM session_git_state
+     WHERE source_repo_full_name = ? AND branch = ?`
+  ).bind(repoFullName, branch).all<{ session_id: string; commit_count: number }>();
+
+  if (!rows.results || rows.results.length === 0) return;
+
+  for (const row of rows.results) {
+    await db.updateSessionGitState(env.DB, row.session_id, {
+      commitCount: row.commit_count + commitCount,
+    });
+
+    // Notify the DO
+    try {
+      const doId = env.SESSIONS.idFromName(row.session_id);
+      const stub = env.SESSIONS.get(doId);
+      await stub.fetch(new Request('https://session/webhook-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'git-state-update',
+          commitCount: row.commit_count + commitCount,
+          branch,
+        }),
+      }));
+    } catch (err) {
+      console.error(`Failed to notify DO for session ${row.session_id}:`, err);
+    }
+  }
+}
 
 /**
  * POST /webhooks/notion

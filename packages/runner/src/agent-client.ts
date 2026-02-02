@@ -9,6 +9,13 @@
 
 import type { AgentStatus, AvailableModels, DiffFile, DOToRunnerMessage, RunnerToDOMessage, ToolCallStatus } from "./types.js";
 
+export interface PromptAuthor {
+  gitName?: string;
+  gitEmail?: string;
+  authorName?: string;
+  authorEmail?: string;
+}
+
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const PING_INTERVAL_MS = 30_000;
@@ -25,7 +32,7 @@ export class AgentClient {
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private closing = false;
 
-  private promptHandler: ((messageId: string, content: string, model?: string) => void | Promise<void>) | null = null;
+  private promptHandler: ((messageId: string, content: string, model?: string, author?: PromptAuthor) => void | Promise<void>) | null = null;
   private answerHandler: ((questionId: string, answer: string | boolean) => void | Promise<void>) | null = null;
   private stopHandler: (() => void) | null = null;
   private abortHandler: (() => void | Promise<void>) | null = null;
@@ -193,10 +200,10 @@ export class AgentClient {
     });
   }
 
-  requestSendMessage(targetSessionId: string, content: string): Promise<{ success: boolean }> {
+  requestSendMessage(targetSessionId: string, content: string, interrupt: boolean = false): Promise<{ success: boolean }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
-      this.send({ type: "session-message", requestId, targetSessionId, content });
+      this.send({ type: "session-message", requestId, targetSessionId, content, interrupt });
     });
   }
 
@@ -259,7 +266,7 @@ export class AgentClient {
 
   // ─── Inbound Handlers (DO → Runner) ─────────────────────────────────
 
-  onPrompt(handler: (messageId: string, content: string, model?: string) => void | Promise<void>): void {
+  onPrompt(handler: (messageId: string, content: string, model?: string, author?: PromptAuthor) => void | Promise<void>): void {
     this.promptHandler = handler;
   }
 
@@ -330,9 +337,13 @@ export class AgentClient {
 
     try {
       switch (msg.type) {
-        case "prompt":
-          await this.promptHandler?.(msg.messageId, msg.content, msg.model);
+        case "prompt": {
+          const author: PromptAuthor | undefined = (msg.gitName || msg.gitEmail || msg.authorName || msg.authorEmail)
+            ? { gitName: msg.gitName, gitEmail: msg.gitEmail, authorName: msg.authorName, authorEmail: msg.authorEmail }
+            : undefined;
+          await this.promptHandler?.(msg.messageId, msg.content, msg.model, author);
           break;
+        }
         case "answer":
           await this.answerHandler?.(msg.questionId, msg.answer);
           break;

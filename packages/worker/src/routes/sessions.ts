@@ -237,15 +237,7 @@ sessionsRouter.get('/:id', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, id);
-
-  if (!session) {
-    throw new NotFoundError('Session', id);
-  }
-
-  if (session.userId !== user.id) {
-    throw new NotFoundError('Session', id);
-  }
+  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
 
   // Get live status from DO
   const doId = c.env.SESSIONS.idFromName(id);
@@ -274,15 +266,7 @@ sessionsRouter.get('/:id/git-state', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, id);
-
-  if (!session) {
-    throw new NotFoundError('Session', id);
-  }
-
-  if (session.userId !== user.id) {
-    throw new NotFoundError('Session', id);
-  }
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
 
   const gitState = await db.getSessionGitState(c.env.DB, id);
 
@@ -298,15 +282,7 @@ sessionsRouter.get('/:id/sandbox-token', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, id);
-
-  if (!session) {
-    throw new NotFoundError('Session', id);
-  }
-
-  if (session.userId !== user.id) {
-    throw new NotFoundError('Session', id);
-  }
+  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
 
   // Don't attempt token generation for terminated sessions
   if (session.status === 'terminated' || session.status === 'error') {
@@ -361,15 +337,7 @@ sessionsRouter.post('/:id/messages', zValidator('json', sendMessageSchema), asyn
   const { id } = c.req.param();
   const body = c.req.valid('json');
 
-  const session = await db.getSession(c.env.DB, id);
-
-  if (!session) {
-    throw new NotFoundError('Session', id);
-  }
-
-  if (session.userId !== user.id) {
-    throw new NotFoundError('Session', id);
-  }
+  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'collaborator');
 
   if (session.status === 'terminated') {
     throw new ValidationError('Session has been terminated');
@@ -410,15 +378,7 @@ sessionsRouter.post('/:id/clear-queue', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, id);
-
-  if (!session) {
-    throw new NotFoundError('Session', id);
-  }
-
-  if (session.userId !== user.id) {
-    throw new NotFoundError('Session', id);
-  }
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'collaborator');
 
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
@@ -438,15 +398,7 @@ sessionsRouter.get('/:id/messages', async (c) => {
   const { id } = c.req.param();
   const { limit, after } = c.req.query();
 
-  const session = await db.getSession(c.env.DB, id);
-
-  if (!session) {
-    throw new NotFoundError('Session', id);
-  }
-
-  if (session.userId !== user.id) {
-    throw new NotFoundError('Session', id);
-  }
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
 
   const messages = await db.getSessionMessages(c.env.DB, id, {
     limit: limit ? parseInt(limit) : undefined,
@@ -470,10 +422,7 @@ sessionsRouter.get('/:id/ws', async (c) => {
 
   if (role === 'client') {
     const user = c.get('user');
-    const session = await db.getSession(c.env.DB, id);
-    if (!session || session.userId !== user.id) {
-      throw new NotFoundError('Session', id);
-    }
+    await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
   }
   // Runner auth is handled by the DO itself via token validation
 
@@ -492,15 +441,7 @@ sessionsRouter.get('/:id/events', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, id);
-
-  if (!session) {
-    throw new NotFoundError('Session', id);
-  }
-
-  if (session.userId !== user.id) {
-    throw new NotFoundError('Session', id);
-  }
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
 
   // Create SSE stream
   const { readable, writable } = new TransformStream();
@@ -542,15 +483,7 @@ sessionsRouter.post('/:id/hibernate', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, id);
-
-  if (!session) {
-    throw new NotFoundError('Session', id);
-  }
-
-  if (session.userId !== user.id) {
-    throw new NotFoundError('Session', id);
-  }
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'collaborator');
 
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
@@ -569,15 +502,7 @@ sessionsRouter.post('/:id/wake', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, id);
-
-  if (!session) {
-    throw new NotFoundError('Session', id);
-  }
-
-  if (session.userId !== user.id) {
-    throw new NotFoundError('Session', id);
-  }
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'collaborator');
 
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
@@ -666,9 +591,7 @@ sessionsRouter.get('/:id/children', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, id);
-  if (!session) throw new NotFoundError('Session', id);
-  if (session.userId !== user.id) throw new NotFoundError('Session', id);
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
 
   const children = await db.getChildSessions(c.env.DB, id);
   return c.json({ children });
@@ -682,9 +605,7 @@ sessionsRouter.get('/:id/files-changed', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, id);
-  if (!session) throw new NotFoundError('Session', id);
-  if (session.userId !== user.id) throw new NotFoundError('Session', id);
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
 
   const files = await db.getSessionFilesChanged(c.env.DB, id);
   return c.json({ files });
@@ -703,9 +624,7 @@ sessionsRouter.patch('/:id', zValidator('json', updateSessionSchema), async (c) 
   const { id } = c.req.param();
   const body = c.req.valid('json');
 
-  const session = await db.getSession(c.env.DB, id);
-  if (!session) throw new NotFoundError('Session', id);
-  if (session.userId !== user.id) throw new NotFoundError('Session', id);
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
 
   await db.updateSessionTitle(c.env.DB, id, body.title);
   return c.json({ success: true });
@@ -719,15 +638,7 @@ sessionsRouter.delete('/:id', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, id);
-
-  if (!session) {
-    throw new NotFoundError('Session', id);
-  }
-
-  if (session.userId !== user.id) {
-    throw new NotFoundError('Session', id);
-  }
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
 
   // Stop the SessionAgent DO (it handles sandbox termination internally)
   const doId = c.env.SESSIONS.idFromName(id);
@@ -739,4 +650,153 @@ sessionsRouter.delete('/:id', async (c) => {
   await db.updateSessionStatus(c.env.DB, id, 'terminated');
 
   return c.json({ success: true });
+});
+
+// ─── Participant Management Endpoints ─────────────────────────────────────
+
+/**
+ * GET /api/sessions/:id/participants
+ * List participants for a session (viewer+)
+ */
+sessionsRouter.get('/:id/participants', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
+
+  const participants = await db.getSessionParticipants(c.env.DB, id);
+
+  // Include the owner as a virtual participant
+  const ownerUser = await db.getUserById(c.env.DB, session.userId);
+  const allParticipants = [
+    {
+      id: `owner:${session.userId}`,
+      sessionId: id,
+      userId: session.userId,
+      role: 'owner' as const,
+      createdAt: session.createdAt,
+      userName: ownerUser?.name,
+      userEmail: ownerUser?.email,
+      userAvatarUrl: ownerUser?.avatarUrl,
+    },
+    ...participants.filter((p) => p.userId !== session.userId),
+  ];
+
+  return c.json({ participants: allParticipants });
+});
+
+const addParticipantSchema = z.object({
+  userId: z.string().optional(),
+  email: z.string().email().optional(),
+  role: z.enum(['collaborator', 'viewer']).default('collaborator'),
+}).refine((d) => d.userId || d.email, { message: 'userId or email required' });
+
+/**
+ * POST /api/sessions/:id/participants
+ * Add a participant to a session (owner only)
+ */
+sessionsRouter.post('/:id/participants', zValidator('json', addParticipantSchema), async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+  const body = c.req.valid('json');
+
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+
+  let targetUserId = body.userId;
+  if (!targetUserId && body.email) {
+    const targetUser = await db.findUserByEmail(c.env.DB, body.email);
+    if (!targetUser) {
+      throw new NotFoundError('User', body.email);
+    }
+    targetUserId = targetUser.id;
+  }
+
+  await db.addSessionParticipant(c.env.DB, id, targetUserId!, body.role, user.id);
+
+  return c.json({ success: true });
+});
+
+/**
+ * DELETE /api/sessions/:id/participants/:userId
+ * Remove a participant from a session (owner only)
+ */
+sessionsRouter.delete('/:id/participants/:userId', async (c) => {
+  const user = c.get('user');
+  const { id, userId: targetUserId } = c.req.param();
+
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+
+  await db.removeSessionParticipant(c.env.DB, id, targetUserId);
+
+  return c.json({ success: true });
+});
+
+// ─── Share Link Endpoints ─────────────────────────────────────────────────
+
+const createShareLinkSchema = z.object({
+  role: z.enum(['collaborator', 'viewer']).default('collaborator'),
+  expiresAt: z.string().datetime().optional(),
+  maxUses: z.number().int().positive().optional(),
+});
+
+/**
+ * POST /api/sessions/:id/share-link
+ * Create a share link for a session (owner only)
+ */
+sessionsRouter.post('/:id/share-link', zValidator('json', createShareLinkSchema), async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+  const body = c.req.valid('json');
+
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+
+  const link = await db.createShareLink(c.env.DB, id, body.role, user.id, body.expiresAt, body.maxUses);
+
+  return c.json({ shareLink: link }, 201);
+});
+
+/**
+ * GET /api/sessions/:id/share-links
+ * List share links for a session (owner only)
+ */
+sessionsRouter.get('/:id/share-links', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+
+  const links = await db.getSessionShareLinks(c.env.DB, id);
+
+  return c.json({ shareLinks: links });
+});
+
+/**
+ * DELETE /api/sessions/:id/share-link/:linkId
+ * Revoke a share link (owner only)
+ */
+sessionsRouter.delete('/:id/share-link/:linkId', async (c) => {
+  const user = c.get('user');
+  const { id, linkId } = c.req.param();
+
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+
+  await db.deactivateShareLink(c.env.DB, linkId);
+
+  return c.json({ success: true });
+});
+
+/**
+ * POST /api/sessions/join/:token
+ * Redeem a share link and join as a participant
+ */
+sessionsRouter.post('/join/:token', async (c) => {
+  const user = c.get('user');
+  const { token } = c.req.param();
+
+  const result = await db.redeemShareLink(c.env.DB, token, user.id);
+  if (!result) {
+    return c.json({ error: 'Invalid, expired, or exhausted share link' }, 400);
+  }
+
+  return c.json({ sessionId: result.sessionId, role: result.role });
 });

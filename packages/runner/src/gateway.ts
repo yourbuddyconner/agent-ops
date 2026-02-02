@@ -427,7 +427,7 @@ export interface GatewayCallbacks {
   onSpawnChild?: (params: SpawnChildParams) => Promise<{ childSessionId: string }>;
   onTerminateChild?: (childSessionId: string) => Promise<{ success: boolean }>;
   onSelfTerminate?: () => void;
-  onSendMessage?: (targetSessionId: string, content: string) => Promise<void>;
+  onSendMessage?: (targetSessionId: string, content: string, interrupt: boolean) => Promise<void>;
   onReadMessages?: (targetSessionId: string, limit?: number, after?: string) => Promise<MessageEntry[]>;
   onCreatePullRequest?: (params: CreatePullRequestParams) => Promise<CreatePullRequestResult>;
   onUpdatePullRequest?: (params: UpdatePullRequestParams) => Promise<UpdatePullRequestResult>;
@@ -521,11 +521,11 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json({ error: "Send message handler not configured" }, 500);
     }
     try {
-      const body = await c.req.json() as { sessionId?: string; content?: string };
+      const body = await c.req.json() as { sessionId?: string; content?: string; interrupt?: boolean };
       if (!body.sessionId || !body.content) {
         return c.json({ error: "Missing required fields: sessionId, content" }, 400);
       }
-      await callbacks.onSendMessage(body.sessionId, body.content);
+      await callbacks.onSendMessage(body.sessionId, body.content, body.interrupt ?? false);
       return c.json({ ok: true });
     } catch (err) {
       console.error("[Gateway] Send message error:", err);

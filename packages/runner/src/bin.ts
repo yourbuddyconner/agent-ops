@@ -82,8 +82,8 @@ async function main() {
     onSelfTerminate: () => {
       agentClient.requestSelfTerminate();
     },
-    onSendMessage: async (targetSessionId, content) => {
-      await agentClient.requestSendMessage(targetSessionId, content);
+    onSendMessage: async (targetSessionId, content, interrupt) => {
+      await agentClient.requestSendMessage(targetSessionId, content, interrupt);
     },
     onReadMessages: async (targetSessionId, limit, after) => {
       const result = await agentClient.requestReadMessages(targetSessionId, limit, after);
@@ -102,9 +102,9 @@ async function main() {
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient);
 
   // Register handlers
-  agentClient.onPrompt(async (messageId, content, model) => {
-    console.log(`[Runner] Received prompt: ${messageId}${model ? ` (model: ${model})` : ''}`);
-    await promptHandler.handlePrompt(messageId, content, model);
+  agentClient.onPrompt(async (messageId, content, model, author) => {
+    console.log(`[Runner] Received prompt: ${messageId}${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}`);
+    await promptHandler.handlePrompt(messageId, content, model, author);
   });
 
   agentClient.onAnswer(async (questionId, answer) => {

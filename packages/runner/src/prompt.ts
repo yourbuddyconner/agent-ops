@@ -107,9 +107,25 @@ export class PromptHandler {
     });
   }
 
-  async handlePrompt(messageId: string, content: string, model?: string): Promise<void> {
-    console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}`);
+  async handlePrompt(messageId: string, content: string, model?: string, author?: { gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }): Promise<void> {
+    console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}`);
     try {
+      // Set git config for author attribution before processing
+      if (author?.gitName || author?.authorName) {
+        const name = author.gitName || author.authorName;
+        const email = author.gitEmail || author.authorEmail;
+        try {
+          const nameProc = Bun.spawn(['git', 'config', '--global', 'user.name', name!]);
+          await nameProc.exited;
+          if (email) {
+            const emailProc = Bun.spawn(['git', 'config', '--global', 'user.email', email]);
+            await emailProc.exited;
+          }
+        } catch (err) {
+          console.warn('[PromptHandler] Failed to set git config:', err);
+        }
+      }
+
       // If there's a pending response from a previous prompt, finalize it first
       if (this.activeMessageId && this.hasActivity) {
         console.log(`[PromptHandler] Finalizing previous response before new prompt`);

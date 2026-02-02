@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary } from '@agent-ops/shared';
+import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionShareLink } from '@agent-ops/shared';
 
 /**
  * Database helper functions for D1
@@ -81,20 +81,25 @@ export async function getUserSessions(
   options: { limit?: number; cursor?: string; status?: string } = {}
 ): Promise<{ sessions: AgentSession[]; cursor?: string; hasMore: boolean }> {
   const limit = options.limit || 20;
-  let query = 'SELECT * FROM sessions WHERE user_id = ?';
-  const params: (string | number)[] = [userId];
+
+  // Include sessions owned by the user OR where they are a participant
+  let query = `
+    SELECT DISTINCT s.* FROM sessions s
+    LEFT JOIN session_participants sp ON sp.session_id = s.id AND sp.user_id = ?
+    WHERE (s.user_id = ? OR sp.user_id IS NOT NULL)`;
+  const params: (string | number)[] = [userId, userId];
 
   if (options.status) {
-    query += ' AND status = ?';
+    query += ' AND s.status = ?';
     params.push(options.status);
   }
 
   if (options.cursor) {
-    query += ' AND created_at < ?';
+    query += ' AND s.created_at < ?';
     params.push(options.cursor);
   }
 
-  query += ' ORDER BY created_at DESC LIMIT ?';
+  query += ' ORDER BY s.created_at DESC LIMIT ?';
   params.push(limit + 1);
 
   const stmt = db.prepare(query);
@@ -241,11 +246,11 @@ export async function getSyncLog(db: D1Database, id: string): Promise<SyncStatus
 // Message operations
 export async function saveMessage(
   db: D1Database,
-  data: { id: string; sessionId: string; role: string; content: string; toolCalls?: unknown[] }
+  data: { id: string; sessionId: string; role: string; content: string; toolCalls?: unknown[]; authorId?: string; authorEmail?: string; authorName?: string }
 ): Promise<void> {
   await db
-    .prepare('INSERT INTO messages (id, session_id, role, content, tool_calls) VALUES (?, ?, ?, ?, ?)')
-    .bind(data.id, data.sessionId, data.role, data.content, data.toolCalls ? JSON.stringify(data.toolCalls) : null)
+    .prepare('INSERT INTO messages (id, session_id, role, content, tool_calls, author_id, author_email, author_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(data.id, data.sessionId, data.role, data.content, data.toolCalls ? JSON.stringify(data.toolCalls) : null, data.authorId || null, data.authorEmail || null, data.authorName || null)
     .run();
 }
 
@@ -512,6 +517,7 @@ export async function getOrgSettings(db: D1Database): Promise<OrgSettings> {
       name: 'My Organization',
       domainGatingEnabled: false,
       emailAllowlistEnabled: false,
+      defaultSessionVisibility: 'private',
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -854,6 +860,264 @@ export async function getSessionFilesChanged(db: D1Database, sessionId: string):
   }));
 }
 
+// ─── Session Participant Operations ──────────────────────────────────────────
+
+export async function getSessionParticipants(db: D1Database, sessionId: string): Promise<SessionParticipant[]> {
+  const result = await db
+    .prepare(
+      `SELECT sp.*, u.name as user_name, u.email as user_email, u.avatar_url as user_avatar_url
+       FROM session_participants sp
+       JOIN users u ON u.id = sp.user_id
+       WHERE sp.session_id = ?
+       ORDER BY sp.created_at ASC`
+    )
+    .bind(sessionId)
+    .all();
+
+  return (result.results || []).map((row: any) => ({
+    id: row.id,
+    sessionId: row.session_id,
+    userId: row.user_id,
+    role: row.role as SessionParticipantRole,
+    addedBy: row.added_by || undefined,
+    createdAt: new Date(row.created_at),
+    userName: row.user_name || undefined,
+    userEmail: row.user_email || undefined,
+    userAvatarUrl: row.user_avatar_url || undefined,
+  }));
+}
+
+export async function addSessionParticipant(
+  db: D1Database,
+  sessionId: string,
+  userId: string,
+  role: SessionParticipantRole = 'collaborator',
+  addedBy?: string
+): Promise<void> {
+  const id = crypto.randomUUID();
+  await db
+    .prepare(
+      `INSERT INTO session_participants (id, session_id, user_id, role, added_by)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, user_id) DO NOTHING`
+    )
+    .bind(id, sessionId, userId, role, addedBy || null)
+    .run();
+}
+
+export async function removeSessionParticipant(db: D1Database, sessionId: string, userId: string): Promise<void> {
+  await db
+    .prepare('DELETE FROM session_participants WHERE session_id = ? AND user_id = ?')
+    .bind(sessionId, userId)
+    .run();
+}
+
+export async function getSessionParticipant(
+  db: D1Database,
+  sessionId: string,
+  userId: string
+): Promise<SessionParticipant | null> {
+  const row = await db
+    .prepare(
+      `SELECT sp.*, u.name as user_name, u.email as user_email, u.avatar_url as user_avatar_url
+       FROM session_participants sp
+       JOIN users u ON u.id = sp.user_id
+       WHERE sp.session_id = ? AND sp.user_id = ?`
+    )
+    .bind(sessionId, userId)
+    .first();
+
+  if (!row) return null;
+  return {
+    id: (row as any).id,
+    sessionId: (row as any).session_id,
+    userId: (row as any).user_id,
+    role: (row as any).role as SessionParticipantRole,
+    addedBy: (row as any).added_by || undefined,
+    createdAt: new Date((row as any).created_at),
+    userName: (row as any).user_name || undefined,
+    userEmail: (row as any).user_email || undefined,
+    userAvatarUrl: (row as any).user_avatar_url || undefined,
+  };
+}
+
+export async function isSessionParticipant(db: D1Database, sessionId: string, userId: string): Promise<boolean> {
+  const result = await db
+    .prepare('SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?')
+    .bind(sessionId, userId)
+    .first();
+  return !!result;
+}
+
+// ─── Session Share Link Operations ──────────────────────────────────────────
+
+export async function createShareLink(
+  db: D1Database,
+  sessionId: string,
+  role: SessionParticipantRole,
+  createdBy: string,
+  expiresAt?: string,
+  maxUses?: number
+): Promise<SessionShareLink> {
+  const id = crypto.randomUUID();
+  const token = generateShareToken();
+
+  await db
+    .prepare(
+      `INSERT INTO session_share_links (id, session_id, token, role, created_by, expires_at, max_uses)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(id, sessionId, token, role, createdBy, expiresAt || null, maxUses ?? null)
+    .run();
+
+  return {
+    id,
+    sessionId,
+    token,
+    role,
+    createdBy,
+    expiresAt: expiresAt ? new Date(expiresAt) : undefined,
+    maxUses,
+    useCount: 0,
+    active: true,
+    createdAt: new Date(),
+  };
+}
+
+function generateShareToken(): string {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export async function getShareLink(db: D1Database, token: string): Promise<SessionShareLink | null> {
+  const row = await db
+    .prepare("SELECT * FROM session_share_links WHERE token = ? AND active = 1")
+    .bind(token)
+    .first();
+
+  if (!row) return null;
+  return mapShareLink(row);
+}
+
+export async function getShareLinkById(db: D1Database, id: string): Promise<SessionShareLink | null> {
+  const row = await db
+    .prepare("SELECT * FROM session_share_links WHERE id = ?")
+    .bind(id)
+    .first();
+
+  if (!row) return null;
+  return mapShareLink(row);
+}
+
+export async function getSessionShareLinks(db: D1Database, sessionId: string): Promise<SessionShareLink[]> {
+  const result = await db
+    .prepare("SELECT * FROM session_share_links WHERE session_id = ? ORDER BY created_at DESC")
+    .bind(sessionId)
+    .all();
+
+  return (result.results || []).map(mapShareLink);
+}
+
+export async function redeemShareLink(
+  db: D1Database,
+  token: string,
+  userId: string
+): Promise<{ sessionId: string; role: SessionParticipantRole } | null> {
+  const link = await getShareLink(db, token);
+  if (!link) return null;
+
+  // Check expiry
+  if (link.expiresAt && new Date(link.expiresAt) < new Date()) return null;
+
+  // Check max uses
+  if (link.maxUses !== undefined && link.maxUses !== null && link.useCount >= link.maxUses) return null;
+
+  // Increment use count
+  await db
+    .prepare('UPDATE session_share_links SET use_count = use_count + 1 WHERE token = ?')
+    .bind(token)
+    .run();
+
+  // Add user as participant
+  await addSessionParticipant(db, link.sessionId, userId, link.role, link.createdBy);
+
+  return { sessionId: link.sessionId, role: link.role };
+}
+
+export async function deactivateShareLink(db: D1Database, id: string): Promise<void> {
+  await db
+    .prepare('UPDATE session_share_links SET active = 0 WHERE id = ?')
+    .bind(id)
+    .run();
+}
+
+function mapShareLink(row: any): SessionShareLink {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    token: row.token,
+    role: row.role as SessionParticipantRole,
+    createdBy: row.created_by,
+    expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
+    maxUses: row.max_uses ?? undefined,
+    useCount: row.use_count ?? 0,
+    active: !!row.active,
+    createdAt: new Date(row.created_at),
+  };
+}
+
+// ─── Session Access Helpers ─────────────────────────────────────────────────
+
+const ROLE_HIERARCHY: Record<string, number> = {
+  viewer: 0,
+  collaborator: 1,
+  owner: 2,
+};
+
+export function roleAtLeast(role: SessionParticipantRole, required: SessionParticipantRole): boolean {
+  return (ROLE_HIERARCHY[role] ?? -1) >= (ROLE_HIERARCHY[required] ?? 999);
+}
+
+/**
+ * Check if a user has access to a session with at least the given role.
+ * Returns the session if accessible, throws NotFoundError otherwise.
+ */
+export async function assertSessionAccess(
+  database: D1Database,
+  sessionId: string,
+  userId: string,
+  requiredRole: SessionParticipantRole = 'viewer'
+): Promise<AgentSession> {
+  const session = await getSession(database, sessionId);
+  if (!session) {
+    const { NotFoundError } = await import('@agent-ops/shared');
+    throw new NotFoundError('Session', sessionId);
+  }
+
+  // Owner always has access
+  if (session.userId === userId) return session;
+
+  // Check participant table
+  const participant = await getSessionParticipant(database, sessionId, userId);
+  if (participant && roleAtLeast(participant.role, requiredRole)) return session;
+
+  // Check org-wide visibility
+  try {
+    const orgSettings = await getOrgSettings(database);
+    const visibility = (orgSettings as any).defaultSessionVisibility || 'private';
+    if (visibility === 'org_joinable') return session;
+    if (visibility === 'org_visible' && requiredRole === 'viewer') return session;
+  } catch {
+    // org_settings column may not exist yet
+  }
+
+  const { NotFoundError } = await import('@agent-ops/shared');
+  throw new NotFoundError('Session', sessionId);
+}
+
 // Mapping helpers
 function mapSessionGitState(row: any): SessionGitState {
   return {
@@ -887,6 +1151,7 @@ function mapOrgSettings(row: any): OrgSettings {
     allowedEmails: row.allowed_emails || undefined,
     domainGatingEnabled: !!row.domain_gating_enabled,
     emailAllowlistEnabled: !!row.email_allowlist_enabled,
+    defaultSessionVisibility: row.default_session_visibility || 'private',
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
   };
@@ -943,6 +1208,9 @@ function mapMessage(row: any): Message {
     role: row.role,
     content: row.content,
     toolCalls: row.tool_calls ? JSON.parse(row.tool_calls) : undefined,
+    authorId: row.author_id || undefined,
+    authorEmail: row.author_email || undefined,
+    authorName: row.author_name || undefined,
     createdAt: new Date(row.created_at),
   };
 }

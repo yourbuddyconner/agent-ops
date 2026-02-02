@@ -26,6 +26,7 @@ interface RunnerMessage {
   type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate';
   prNumber?: number;
   targetSessionId?: string;
+  interrupt?: boolean;
   limit?: number;
   after?: string;
   task?: string;
@@ -89,6 +90,12 @@ interface RunnerOutbound {
   url?: string;
   title?: string;
   state?: string;
+  // Author attribution (multiplayer)
+  authorId?: string;
+  authorEmail?: string;
+  authorName?: string;
+  gitName?: string;
+  gitEmail?: string;
 }
 
 // ─── Durable SQLite Table Schemas ──────────────────────────────────────────
@@ -99,6 +106,9 @@ const SCHEMA_SQL = `
     role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
     content TEXT NOT NULL,
     parts TEXT, -- JSON array of structured parts (tool calls, etc.)
+    author_id TEXT,
+    author_email TEXT,
+    author_name TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
 
@@ -116,6 +126,9 @@ const SCHEMA_SQL = `
     id TEXT PRIMARY KEY,
     content TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'processing', 'completed')),
+    author_id TEXT,
+    author_email TEXT,
+    author_name TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
 
@@ -132,10 +145,20 @@ const SCHEMA_SQL = `
 
 // ─── SessionAgentDO ────────────────────────────────────────────────────────
 
+interface CachedUserDetails {
+  id: string;
+  email: string;
+  name?: string;
+  avatarUrl?: string;
+  gitName?: string;
+  gitEmail?: string;
+}
+
 export class SessionAgentDO {
   private ctx: DurableObjectState;
   private env: Env;
   private initialized = false;
+  private userDetailsCache = new Map<string, CachedUserDetails>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -176,13 +199,19 @@ export class SessionAgentDO {
         return this.handleFlushMetrics();
       case '/gc':
         return this.handleGarbageCollect();
+      case '/webhook-update':
+        return this.handleWebhookUpdate(request);
       case '/prompt': {
         // HTTP-based prompt submission (alternative to WebSocket)
-        const body = await request.json() as { content: string; model?: string };
+        const body = await request.json() as { content: string; model?: string; interrupt?: boolean };
         if (!body.content) {
           return new Response(JSON.stringify({ error: 'Missing content' }), { status: 400 });
         }
-        await this.handlePrompt(body.content, body.model);
+        if (body.interrupt) {
+          await this.handleInterruptPrompt(body.content, body.model);
+        } else {
+          await this.handlePrompt(body.content, body.model);
+        }
         return Response.json({ success: true });
       }
     }
@@ -228,14 +257,35 @@ export class SessionAgentDO {
       userId
     );
 
+    // Cache user details for author attribution (only fetch if not already cached)
+    if (!this.userDetailsCache.has(userId)) {
+      try {
+        const userRow = await this.env.DB.prepare(
+          'SELECT id, email, name, avatar_url, git_name, git_email FROM users WHERE id = ?'
+        ).bind(userId).first<{ id: string; email: string; name: string | null; avatar_url: string | null; git_name: string | null; git_email: string | null }>();
+        if (userRow) {
+          this.userDetailsCache.set(userId, {
+            id: userRow.id,
+            email: userRow.email,
+            name: userRow.name || undefined,
+            avatarUrl: userRow.avatar_url || undefined,
+            gitName: userRow.git_name || undefined,
+            gitEmail: userRow.git_email || undefined,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to fetch user details for cache:', err);
+      }
+    }
+
     // Send full session state as a single init message (prevents duplicates on reconnect)
     const messages = this.ctx.storage.sql
-      .exec('SELECT id, role, content, parts, created_at FROM messages ORDER BY created_at ASC')
+      .exec('SELECT id, role, content, parts, author_id, author_email, author_name, created_at FROM messages ORDER BY created_at ASC')
       .toArray();
 
     const status = this.getStateValue('status') || 'idle';
     const sandboxId = this.getStateValue('sandboxId');
-    const connectedUsers = this.getConnectedUserIds();
+    const connectedUsers = this.getConnectedUsersWithDetails();
     const sessionId = this.getStateValue('sessionId');
     const workspace = this.getStateValue('workspace') || '';
     const title = this.getStateValue('title');
@@ -255,6 +305,9 @@ export class SessionAgentDO {
           role: msg.role,
           content: msg.content,
           parts: msg.parts ? JSON.parse(msg.parts as string) : undefined,
+          authorId: msg.author_id || undefined,
+          authorEmail: msg.author_email || undefined,
+          authorName: msg.author_name || undefined,
           createdAt: msg.created_at,
         })),
       },
@@ -281,10 +334,12 @@ export class SessionAgentDO {
       }));
     }
 
-    // Notify other clients that a user joined
+    // Notify other clients that a user joined (with enriched user details)
+    const userDetails = this.userDetailsCache.get(userId);
     this.broadcastToClients({
       type: 'user.joined',
       userId,
+      userDetails: userDetails ? { name: userDetails.name, email: userDetails.email, avatarUrl: userDetails.avatarUrl } : undefined,
       connectedUsers,
     });
 
@@ -330,7 +385,7 @@ export class SessionAgentDO {
 
     // Check if there's a queued prompt to send immediately
     const queued = this.ctx.storage.sql
-      .exec("SELECT id, content FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
+      .exec("SELECT id, content, author_id, author_email, author_name FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
       .toArray();
 
     if (queued.length > 0) {
@@ -339,10 +394,20 @@ export class SessionAgentDO {
         "UPDATE prompt_queue SET status = 'processing' WHERE id = ?",
         prompt.id as string
       );
+      const authorId = prompt.author_id as string | null;
+      const authorDetails = authorId ? this.userDetailsCache.get(authorId) : undefined;
+      if (authorId) {
+        this.setStateValue('currentPromptAuthorId', authorId);
+      }
       server.send(JSON.stringify({
         type: 'prompt',
         messageId: prompt.id,
         content: prompt.content,
+        authorId: authorId || undefined,
+        authorEmail: prompt.author_email || undefined,
+        authorName: prompt.author_name || undefined,
+        gitName: authorDetails?.gitName,
+        gitEmail: authorDetails?.gitEmail,
       }));
       this.setStateValue('runnerBusy', 'true');
     } else {
@@ -441,18 +506,21 @@ export class SessionAgentDO {
           // Last connection for this user — remove from connected_users
           this.ctx.storage.sql.exec('DELETE FROM connected_users WHERE user_id = ?', userId);
 
-          const connectedUsers = this.getConnectedUserIds();
+          const connectedUsers = this.getConnectedUsersWithDetails();
           this.broadcastToClients({
             type: 'user.left',
             userId,
             connectedUsers,
           });
 
+          // Clean up user details cache if no longer connected
+          this.userDetailsCache.delete(userId);
+
           this.notifyEventBus({
             type: 'session.update',
             sessionId: this.getStateValue('sessionId'),
             userId,
-            data: { event: 'user.left', connectedUsers },
+            data: { event: 'user.left', connectedUsers: this.getConnectedUserIds() },
             timestamp: new Date().toISOString(),
           });
         }
@@ -544,13 +612,25 @@ export class SessionAgentDO {
 
   private async handleClientMessage(ws: WebSocket, msg: ClientMessage) {
     switch (msg.type) {
-      case 'prompt':
+      case 'prompt': {
         if (!msg.content) {
           ws.send(JSON.stringify({ type: 'error', message: 'Missing content' }));
           return;
         }
-        await this.handlePrompt(msg.content, msg.model);
+        // Extract userId from WebSocket tag for authorship tracking
+        const clientTag = this.ctx.getTags(ws).find((t: string) => t.startsWith('client:'));
+        const userId = clientTag?.replace('client:', '');
+        const userDetails = userId ? this.userDetailsCache.get(userId) : undefined;
+        const author = userDetails ? {
+          id: userDetails.id,
+          email: userDetails.email,
+          name: userDetails.name,
+          gitName: userDetails.gitName,
+          gitEmail: userDetails.gitEmail,
+        } : userId ? { id: userId, email: '', name: undefined, gitName: undefined, gitEmail: undefined } : undefined;
+        await this.handlePrompt(msg.content, msg.model, author);
         break;
+      }
 
       case 'answer':
         if (!msg.questionId || msg.answer === undefined) {
@@ -582,10 +662,19 @@ export class SessionAgentDO {
     }
   }
 
-  private async handlePrompt(content: string, model?: string) {
+  private async handlePrompt(
+    content: string,
+    model?: string,
+    author?: { id: string; email: string; name?: string; gitName?: string; gitEmail?: string }
+  ) {
     // Update idle tracking
     this.setStateValue('lastUserActivityAt', String(Date.now()));
     this.rescheduleIdleAlarm();
+
+    // Track the current prompt author for PR attribution (Part 6)
+    if (author?.id) {
+      this.setStateValue('currentPromptAuthorId', author.id);
+    }
 
     // If hibernated, auto-trigger wake before processing
     const currentStatus = this.getStateValue('status');
@@ -594,20 +683,24 @@ export class SessionAgentDO {
       this.ctx.waitUntil(this.performWake());
     }
 
-    // Store user message
+    // Store user message with author info
     const messageId = crypto.randomUUID();
     this.ctx.storage.sql.exec(
-      'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
-      messageId, 'user', content
+      'INSERT INTO messages (id, role, content, author_id, author_email, author_name) VALUES (?, ?, ?, ?, ?, ?)',
+      messageId, 'user', content,
+      author?.id || null, author?.email || null, author?.name || null
     );
 
-    // Broadcast user message to all clients
+    // Broadcast user message to all clients (includes author info)
     this.broadcastToClients({
       type: 'message',
       data: {
         id: messageId,
         role: 'user',
         content,
+        authorId: author?.id,
+        authorEmail: author?.email,
+        authorName: author?.name,
         createdAt: Math.floor(Date.now() / 1000),
       },
     });
@@ -617,10 +710,11 @@ export class SessionAgentDO {
     const runnerSockets = this.ctx.getWebSockets('runner');
 
     if (runnerSockets.length === 0) {
-      // No runner connected — queue the prompt
+      // No runner connected — queue the prompt with author info
       this.ctx.storage.sql.exec(
-        "INSERT INTO prompt_queue (id, content, status) VALUES (?, ?, 'queued')",
-        messageId, content
+        "INSERT INTO prompt_queue (id, content, status, author_id, author_email, author_name) VALUES (?, ?, 'queued', ?, ?, ?)",
+        messageId, content,
+        author?.id || null, author?.email || null, author?.name || null
       );
       this.broadcastToClients({
         type: 'status',
@@ -630,10 +724,11 @@ export class SessionAgentDO {
     }
 
     if (runnerBusy) {
-      // Runner is processing another prompt — queue
+      // Runner is processing another prompt — queue with author info
       this.ctx.storage.sql.exec(
-        "INSERT INTO prompt_queue (id, content, status) VALUES (?, ?, 'queued')",
-        messageId, content
+        "INSERT INTO prompt_queue (id, content, status, author_id, author_email, author_name) VALUES (?, ?, 'queued', ?, ?, ?)",
+        messageId, content,
+        author?.id || null, author?.email || null, author?.name || null
       );
       this.broadcastToClients({
         type: 'status',
@@ -642,13 +737,18 @@ export class SessionAgentDO {
       return;
     }
 
-    // Forward directly to runner
+    // Forward directly to runner with author info
     this.setStateValue('runnerBusy', 'true');
     this.sendToRunner({
       type: 'prompt',
       messageId,
       content,
       model,
+      authorId: author?.id,
+      authorEmail: author?.email,
+      authorName: author?.name,
+      gitName: author?.gitName,
+      gitEmail: author?.gitEmail,
     });
   }
 
@@ -701,6 +801,17 @@ export class SessionAgentDO {
       type: 'agentStatus',
       status: 'idle',
     });
+  }
+
+  private async handleInterruptPrompt(content: string, model?: string) {
+    const runnerBusy = this.getStateValue('runnerBusy') === 'true';
+    if (runnerBusy) {
+      // Abort current work (clears queue, sends abort to runner)
+      await this.handleAbort();
+    }
+    // Queue the new prompt — when the runner confirms abort, handlePromptComplete
+    // will drain the queue and send this prompt to the runner
+    await this.handlePrompt(content, model);
   }
 
   private async handleRevert(messageId: string) {
@@ -981,6 +1092,8 @@ export class SessionAgentDO {
           type: 'status',
           data: { runnerBusy: false, aborted: true },
         });
+        // Drain the queue — if prompts were queued after abort, process them now
+        await this.handlePromptComplete();
         break;
 
       case 'reverted':
@@ -1116,7 +1229,7 @@ export class SessionAgentDO {
         break;
 
       case 'session-message':
-        await this.handleSessionMessage(msg.requestId!, msg.targetSessionId!, msg.content!);
+        await this.handleSessionMessage(msg.requestId!, msg.targetSessionId!, msg.content!, msg.interrupt);
         break;
 
       case 'session-messages':
@@ -1271,7 +1384,7 @@ export class SessionAgentDO {
     }
   }
 
-  private async handleSessionMessage(requestId: string, targetSessionId: string, content: string) {
+  private async handleSessionMessage(requestId: string, targetSessionId: string, content: string, interrupt?: boolean) {
     try {
       const userId = this.getStateValue('userId')!;
 
@@ -1289,7 +1402,7 @@ export class SessionAgentDO {
       const resp = await targetDO.fetch(new Request('http://do/prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, interrupt: interrupt ?? false }),
       }));
 
       if (!resp.ok) {
@@ -1411,9 +1524,9 @@ export class SessionAgentDO {
       "UPDATE prompt_queue SET status = 'completed' WHERE status = 'processing'"
     );
 
-    // Check for next queued prompt
+    // Check for next queued prompt (includes author info)
     const next = this.ctx.storage.sql
-      .exec("SELECT id, content FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
+      .exec("SELECT id, content, author_id, author_email, author_name FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
       .toArray();
 
     if (next.length > 0) {
@@ -1422,10 +1535,25 @@ export class SessionAgentDO {
         "UPDATE prompt_queue SET status = 'processing' WHERE id = ?",
         prompt.id as string
       );
+
+      // Look up git details from cache for the prompt author
+      const authorId = prompt.author_id as string | null;
+      const authorDetails = authorId ? this.userDetailsCache.get(authorId) : undefined;
+
+      // Track current prompt author for PR attribution
+      if (authorId) {
+        this.setStateValue('currentPromptAuthorId', authorId);
+      }
+
       this.sendToRunner({
         type: 'prompt',
         messageId: prompt.id as string,
         content: prompt.content as string,
+        authorId: authorId || undefined,
+        authorEmail: (prompt.author_email as string) || undefined,
+        authorName: (prompt.author_name as string) || undefined,
+        gitName: authorDetails?.gitName,
+        gitEmail: authorDetails?.gitEmail,
       });
       this.broadcastToClients({
         type: 'status',
@@ -1830,13 +1958,57 @@ export class SessionAgentDO {
     }
   }
 
+  // ─── Webhook Update Handler ────────────────────────────────────────────
+
+  private async handleWebhookUpdate(request: Request): Promise<Response> {
+    try {
+      const body = await request.json() as {
+        type: string;
+        prState?: string;
+        prTitle?: string;
+        prMergedAt?: string | null;
+        commitCount?: number;
+        branch?: string;
+      };
+
+      // Broadcast git-state update to all connected clients
+      this.broadcastToClients({
+        type: 'git-state',
+        data: {
+          ...(body.prState !== undefined && { prState: body.prState }),
+          ...(body.prTitle !== undefined && { prTitle: body.prTitle }),
+          ...(body.prMergedAt !== undefined && { prMergedAt: body.prMergedAt }),
+          ...(body.commitCount !== undefined && { commitCount: body.commitCount }),
+          ...(body.branch !== undefined && { branch: body.branch }),
+        },
+      });
+
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    } catch (err) {
+      return new Response(JSON.stringify({ error: 'Invalid request' }), { status: 400 });
+    }
+  }
+
   // ─── GitHub API Helpers ──────────────────────────────────────────────
 
   /**
-   * Get the user's decrypted GitHub access token.
-   * Returns null if no token is stored.
+   * Get a decrypted GitHub access token for the session.
+   * Fallback chain:
+   *   1. Active prompt author's GitHub token (if they have one connected)
+   *   2. Session creator's GitHub token
+   *   3. null (no token available)
    */
   private async getGitHubToken(): Promise<string | null> {
+    // Try the current prompt author first (for multiplayer attribution)
+    const promptAuthorId = this.getStateValue('currentPromptAuthorId');
+    if (promptAuthorId) {
+      const authorToken = await getOAuthToken(this.env.DB, promptAuthorId, 'github');
+      if (authorToken) {
+        return decryptString(authorToken.encryptedAccessToken, this.env.ENCRYPTION_KEY);
+      }
+    }
+
+    // Fall back to session creator
     const userId = this.getStateValue('userId');
     if (!userId) return null;
 
@@ -2434,6 +2606,19 @@ export class SessionAgentDO {
       .exec('SELECT user_id FROM connected_users ORDER BY connected_at ASC')
       .toArray()
       .map((row) => row.user_id as string);
+  }
+
+  private getConnectedUsersWithDetails(): Array<{ id: string; name?: string; email?: string; avatarUrl?: string }> {
+    const userIds = this.getConnectedUserIds();
+    return userIds.map((id) => {
+      const details = this.userDetailsCache.get(id);
+      return {
+        id,
+        name: details?.name,
+        email: details?.email,
+        avatarUrl: details?.avatarUrl,
+      };
+    });
   }
 
   private notifyEventBus(event: {

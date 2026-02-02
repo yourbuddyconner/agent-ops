@@ -163,6 +163,9 @@ export interface Message {
   content: string;
   parts?: unknown;
   toolCalls?: ToolCall[];
+  authorId?: string;
+  authorEmail?: string;
+  authorName?: string;
   createdAt: Date;
 }
 
@@ -201,6 +204,37 @@ export interface User {
   updatedAt: Date;
 }
 
+// Session participant types (multiplayer)
+export type SessionParticipantRole = 'owner' | 'collaborator' | 'viewer';
+
+export interface SessionParticipant {
+  id: string;
+  sessionId: string;
+  userId: string;
+  role: SessionParticipantRole;
+  addedBy?: string;
+  createdAt: Date;
+  // Joined from users table:
+  userName?: string;
+  userEmail?: string;
+  userAvatarUrl?: string;
+}
+
+export interface SessionShareLink {
+  id: string;
+  sessionId: string;
+  token: string;
+  role: SessionParticipantRole;
+  createdBy: string;
+  expiresAt?: Date;
+  maxUses?: number;
+  useCount: number;
+  active: boolean;
+  createdAt: Date;
+}
+
+export type SessionVisibility = 'private' | 'org_visible' | 'org_joinable';
+
 export interface OrgSettings {
   id: string;
   name: string;
@@ -208,6 +242,7 @@ export interface OrgSettings {
   allowedEmails?: string;
   domainGatingEnabled: boolean;
   emailAllowlistEnabled: boolean;
+  defaultSessionVisibility: SessionVisibility;
   createdAt: Date;
   updatedAt: Date;
 }

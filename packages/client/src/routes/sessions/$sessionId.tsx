@@ -5,7 +5,7 @@ import { EditorDrawer } from '@/components/session/editor-drawer';
 import { FilesDrawer } from '@/components/session/files-drawer';
 import { ReviewDrawer } from '@/components/session/review-drawer';
 import { SessionMetadataSidebar } from '@/components/session/session-metadata-sidebar';
-import type { LogEntry } from '@/hooks/use-chat';
+import type { LogEntry, ConnectedUser } from '@/hooks/use-chat';
 
 type DrawerPanel = 'editor' | 'files' | 'review' | null;
 
@@ -75,8 +75,8 @@ export interface DrawerContextValue {
   setOverlay: (overlay: SessionOverlay) => void;
   sidebarOpen: boolean;
   toggleSidebar: () => void;
-  connectedUsers: string[];
-  setConnectedUsers: (users: string[]) => void;
+  connectedUsers: ConnectedUser[];
+  setConnectedUsers: (users: ConnectedUser[]) => void;
   selectedModel: string | undefined;
   setSelectedModel: (model: string | undefined) => void;
   openFile: (path: string) => void;
@@ -121,7 +121,7 @@ function SessionLayout() {
   const [activePanel, setActivePanel] = useState<DrawerPanel>(loadDrawerState);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [overlay, setOverlay] = useState<SessionOverlay>(null);
-  const [connectedUsers, setConnectedUsers] = useState<string[]>([]);
+  const [connectedUsers, setConnectedUsers] = useState<ConnectedUser[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | undefined>(undefined);
   const [pendingFilePath, setPendingFilePath] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => {
