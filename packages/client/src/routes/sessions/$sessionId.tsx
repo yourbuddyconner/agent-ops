@@ -3,10 +3,11 @@ import { createFileRoute, Outlet } from '@tanstack/react-router';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
 import { EditorDrawer } from '@/components/session/editor-drawer';
 import { FilesDrawer } from '@/components/session/files-drawer';
+import { ReviewDrawer } from '@/components/session/review-drawer';
 import { SessionMetadataSidebar } from '@/components/session/session-metadata-sidebar';
 import type { LogEntry } from '@/hooks/use-chat';
 
-type DrawerPanel = 'editor' | 'files' | null;
+type DrawerPanel = 'editor' | 'files' | 'review' | null;
 
 const DRAWER_STORAGE_KEY = 'agent-ops:drawer-panel';
 const LAYOUT_STORAGE_KEY = 'agent-ops:editor-layout';
@@ -15,7 +16,7 @@ const SIDEBAR_STORAGE_KEY = 'agent-ops:metadata-sidebar';
 function loadDrawerState(): DrawerPanel {
   try {
     const val = localStorage.getItem(DRAWER_STORAGE_KEY);
-    if (val === 'editor' || val === 'files') return val;
+    if (val === 'editor' || val === 'files' || val === 'review') return val;
   } catch {
     // ignore
   }
@@ -63,9 +64,11 @@ export interface DrawerContextValue {
   activePanel: DrawerPanel;
   openEditor: () => void;
   openFiles: () => void;
+  openReview: () => void;
   closeDrawer: () => void;
   toggleEditor: () => void;
   toggleFiles: () => void;
+  toggleReview: () => void;
   logEntries: LogEntry[];
   setLogEntries: (entries: LogEntry[]) => void;
   overlay: SessionOverlay;
@@ -85,9 +88,11 @@ const DrawerCtx = createContext<DrawerContextValue>({
   activePanel: null,
   openEditor: () => {},
   openFiles: () => {},
+  openReview: () => {},
   closeDrawer: () => {},
   toggleEditor: () => {},
   toggleFiles: () => {},
+  toggleReview: () => {},
   logEntries: [],
   setLogEntries: () => {},
   overlay: null,
@@ -136,6 +141,11 @@ function SessionLayout() {
     saveDrawerState('files');
   }, []);
 
+  const openReview = useCallback(() => {
+    setActivePanel('review');
+    saveDrawerState('review');
+  }, []);
+
   const closeDrawer = useCallback(() => {
     setActivePanel(null);
     saveDrawerState(null);
@@ -152,6 +162,14 @@ function SessionLayout() {
   const toggleFiles = useCallback(() => {
     setActivePanel((prev) => {
       const next = prev === 'files' ? null : 'files';
+      saveDrawerState(next);
+      return next;
+    });
+  }, []);
+
+  const toggleReview = useCallback(() => {
+    setActivePanel((prev) => {
+      const next = prev === 'review' ? null : 'review';
       saveDrawerState(next);
       return next;
     });
@@ -189,9 +207,11 @@ function SessionLayout() {
     activePanel,
     openEditor,
     openFiles,
+    openReview,
     closeDrawer,
     toggleEditor,
     toggleFiles,
+    toggleReview,
     logEntries,
     setLogEntries,
     overlay,
@@ -239,6 +259,9 @@ function SessionLayout() {
               )}
               {activePanel === 'files' && (
                 <FilesDrawer sessionId={sessionId} />
+              )}
+              {activePanel === 'review' && (
+                <ReviewDrawer sessionId={sessionId} />
               )}
             </Panel>
           </PanelGroup>

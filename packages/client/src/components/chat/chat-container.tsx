@@ -187,6 +187,10 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           <FilesIcon className="h-3 w-3" />
           Files
         </Button>
+        <Button variant="ghost" size="sm" onClick={drawer.toggleReview} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+          <ReviewIcon className="h-3 w-3" />
+          Review
+        </Button>
         {gitState?.prUrl && (
           <a href={gitState.prUrl} target="_blank" rel="noopener noreferrer">
             <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
@@ -370,6 +374,18 @@ function InfoIcon({ className }: { className?: string }) {
       <circle cx="12" cy="12" r="10" />
       <path d="M12 16v-4" />
       <path d="M12 8h.01" />
+    </svg>
+  );
+}
+
+function ReviewIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="16" y1="13" x2="8" y2="13" />
+      <line x1="16" y1="17" x2="8" y2="17" />
+      <polyline points="10 9 9 9 8 9" />
     </svg>
   );
 }
