@@ -22,7 +22,7 @@ interface SessionActionsMenuProps {
   align?: 'start' | 'center' | 'end';
 }
 
-const ACTIVE_STATUSES: SessionStatus[] = ['running', 'idle', 'initializing'];
+const ACTIVE_STATUSES: SessionStatus[] = ['running', 'idle', 'initializing', 'hibernated'];
 const HIBERNATABLE_STATUSES: SessionStatus[] = ['running'];
 const DELETABLE_STATUSES: SessionStatus[] = ['terminated', 'error'];
 

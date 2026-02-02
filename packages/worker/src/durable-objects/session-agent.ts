@@ -1810,7 +1810,7 @@ export class SessionAgentDO {
       try {
         const children = await getChildSessions(this.env.DB, sessionId);
         const activeChildren = children.filter(
-          (c) => c.status !== 'terminated' && c.status !== 'hibernated',
+          (c) => c.status !== 'terminated',
         );
         await Promise.allSettled(
           activeChildren.map(async (child) => {
