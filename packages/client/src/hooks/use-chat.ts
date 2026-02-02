@@ -212,7 +212,7 @@ export function useChat(sessionId: string) {
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
 
-  const [state, setState] = useState<ChatState>({
+  const initialState: ChatState = {
     messages: [],
     status: 'initializing',
     streamingContent: '',
@@ -228,7 +228,18 @@ export function useChat(sessionId: string) {
     runnerConnected: false,
     sessionTitle: undefined,
     childSessionEvents: [],
-  });
+  };
+
+  const [state, setState] = useState<ChatState>(initialState);
+
+  // Reset state when sessionId changes (e.g. navigating between parent/child sessions).
+  // Without this, stale messages from the previous session remain visible until the
+  // new WebSocket init message arrives.
+  const prevSessionIdRef = useRef(sessionId);
+  if (prevSessionIdRef.current !== sessionId) {
+    prevSessionIdRef.current = sessionId;
+    setState(initialState);
+  }
 
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     try {

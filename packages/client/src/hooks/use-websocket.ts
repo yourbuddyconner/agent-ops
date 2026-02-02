@@ -86,6 +86,11 @@ export function useWebSocket(url: string | null, options: UseWebSocketOptions = 
     };
 
     ws.onclose = () => {
+      // If a newer WebSocket has already replaced this one (e.g. session navigation
+      // triggered disconnect + reconnect), skip all handling to avoid clobbering the
+      // new connection's state and triggering a stale reconnect to the old URL.
+      if (wsRef.current !== null && wsRef.current !== ws) return;
+
       setStatus('disconnected');
       wsRef.current = null;
       onDisconnectRef.current?.();

@@ -17,6 +17,7 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
   const { data: gitState } = useSessionGitState(sessionId);
   const { data: childSessions } = useSessionChildren(sessionId);
   const { data: filesChanged } = useSessionFilesChanged(sessionId);
+  const { data: parentSession } = useSession(session?.parentSessionId ?? '', );
 
   const [elapsed, setElapsed] = useState(0);
 
@@ -136,6 +137,22 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
                 from {gitState.baseBranch}
               </span>
             )}
+          </SidebarSection>
+        )}
+
+        {/* Parent Session */}
+        {session?.parentSessionId && (
+          <SidebarSection label="Parent Session">
+            <Link
+              to="/sessions/$sessionId"
+              params={{ sessionId: session.parentSessionId }}
+              className="group/parent flex items-center gap-1.5 rounded-sm px-1.5 py-1 transition-colors hover:bg-surface-1 dark:hover:bg-surface-2"
+            >
+              <ArrowUpIcon className="h-2.5 w-2.5 shrink-0 text-neutral-400 dark:text-neutral-500" />
+              <span className="truncate font-mono text-[10px] text-neutral-600 transition-colors group-hover/parent:text-neutral-900 dark:text-neutral-400 dark:group-hover/parent:text-neutral-200">
+                {parentSession?.title || parentSession?.workspace || session.parentSessionId.slice(0, 8)}
+              </span>
+            </Link>
           </SidebarSection>
         )}
 
@@ -307,6 +324,15 @@ function PRStateBadge({ state }: { state: PRState | null }) {
     merged: 'default',
   };
   return <Badge variant={variants[state] ?? 'default'}>{state}</Badge>;
+}
+
+function ArrowUpIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="m5 12 7-7 7 7" />
+      <path d="M12 19V5" />
+    </svg>
+  );
 }
 
 function GitHubIcon({ className }: { className?: string }) {
