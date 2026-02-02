@@ -52,11 +52,44 @@ export function SessionTable() {
       }
       if (search) {
         const searchLower = search.toLowerCase();
-        return session.workspace?.toLowerCase().includes(searchLower);
+        return (
+          session.workspace?.toLowerCase().includes(searchLower) ||
+          session.title?.toLowerCase().includes(searchLower)
+        );
       }
       return true;
     });
   }, [sessions, search, statusFilter]);
+
+  // Build parent→children map and ordered render list
+  const orderedSessions = React.useMemo(() => {
+    const childrenByParent = new Map<string, AgentSession[]>();
+    const parentIds = new Set(filteredSessions.map((s) => s.id));
+
+    for (const session of filteredSessions) {
+      if (session.parentSessionId && parentIds.has(session.parentSessionId)) {
+        const children = childrenByParent.get(session.parentSessionId) ?? [];
+        children.push(session);
+        childrenByParent.set(session.parentSessionId, children);
+      }
+    }
+
+    const result: { session: AgentSession; isChild: boolean }[] = [];
+    for (const session of filteredSessions) {
+      // Skip children that will be rendered under their parent
+      if (session.parentSessionId && parentIds.has(session.parentSessionId)) {
+        continue;
+      }
+      result.push({ session, isChild: false });
+      const children = childrenByParent.get(session.id);
+      if (children) {
+        for (const child of children) {
+          result.push({ session: child, isChild: true });
+        }
+      }
+    }
+    return result;
+  }, [filteredSessions]);
 
   // Reset selection when filters change
   React.useEffect(() => {
@@ -190,10 +223,11 @@ export function SessionTable() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-200 dark:divide-neutral-700">
-                {filteredSessions.map((session) => (
+                {orderedSessions.map(({ session, isChild }) => (
                   <SessionRow
                     key={session.id}
                     session={session}
+                    isChild={isChild}
                     selected={selectedIds.has(session.id)}
                     onToggle={() => toggleOne(session.id)}
                     onNavigate={() =>
@@ -227,15 +261,19 @@ export function SessionTable() {
 
 function SessionRow({
   session,
+  isChild,
   selected,
   onToggle,
   onNavigate,
 }: {
   session: AgentSession;
+  isChild: boolean;
   selected: boolean;
   onToggle: () => void;
   onNavigate: () => void;
 }) {
+  const displayName = session.title || session.workspace;
+
   return (
     <tr
       className="cursor-pointer bg-white transition-colors hover:bg-neutral-50 dark:bg-neutral-900 dark:hover:bg-neutral-800/50"
@@ -245,11 +283,23 @@ function SessionRow({
         <Checkbox
           checked={selected}
           onChange={onToggle}
-          aria-label={`Select ${session.workspace}`}
+          aria-label={`Select ${displayName}`}
         />
       </td>
       <td className="px-3 py-3 font-medium text-neutral-900 dark:text-neutral-100">
-        {session.workspace}
+        <div className="flex items-center gap-2">
+          {isChild && (
+            <span className="text-neutral-400 dark:text-neutral-500 pl-4">
+              ↳
+            </span>
+          )}
+          <span>{displayName}</span>
+          {isChild && (
+            <span className="text-[11px] font-normal text-neutral-400 dark:text-neutral-500">
+              sub-session
+            </span>
+          )}
+        </div>
       </td>
       <td className="px-3 py-3">
         <Badge variant={STATUS_VARIANTS[session.status]}>{session.status}</Badge>

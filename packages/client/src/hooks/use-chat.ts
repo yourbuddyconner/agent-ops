@@ -286,6 +286,28 @@ export function useChat(sessionId: string) {
     switch (message.type) {
       case 'init': {
         const initModels = Array.isArray(message.data?.availableModels) ? message.data.availableModels as ProviderModels[] : [];
+
+        // Reconstruct child session events from stored spawn_session tool calls
+        const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+        const restoredChildEvents: ChildSessionEvent[] = [];
+        for (const m of message.session.messages) {
+          if (m.role === 'tool' && m.parts && typeof m.parts === 'object') {
+            const p = m.parts as Record<string, unknown>;
+            if (typeof p.toolName === 'string' && p.toolName === 'spawn_session' && typeof p.result === 'string') {
+              const match = p.result.match(/Child session spawned:\s*(\S+)/) || p.result.match(UUID_RE);
+              const childId = match ? (match[1] || match[0]) : null;
+              if (childId) {
+                const args = (p.args ?? {}) as Record<string, unknown>;
+                restoredChildEvents.push({
+                  childSessionId: childId,
+                  title: (args.title as string) || (args.workspace as string) || undefined,
+                  timestamp: m.createdAt * 1000,
+                });
+              }
+            }
+          }
+        }
+
         setState({
           messages: message.session.messages.map((m) => ({
             id: m.id,
@@ -308,7 +330,7 @@ export function useChat(sessionId: string) {
           diffLoading: false,
           runnerConnected: !!message.data?.runnerConnected,
           sessionTitle: message.session.title,
-          childSessionEvents: [],
+          childSessionEvents: restoredChildEvents,
         });
         if (initModels.length > 0) autoSelectModel(initModels);
         appendLogEntry('init', `Session ${message.session.id.slice(0, 8)} initialized (${message.session.status})`);
