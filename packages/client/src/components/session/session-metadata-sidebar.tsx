@@ -42,11 +42,12 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
 
   return (
     <div className={`flex h-full flex-col border-l border-border bg-surface-0 dark:bg-surface-0 ${compact ? 'w-[200px]' : 'w-[240px]'}`}>
-      <div className={`flex items-center border-b border-border ${compact ? 'px-2' : 'px-3'} py-1.5`}>
-        <span className="font-mono text-[9px] font-semibold uppercase tracking-[0.1em] leading-6 text-neutral-400 dark:text-neutral-500">
+      <div className={`flex h-10 shrink-0 items-center border-b border-border ${compact ? 'px-2' : 'px-3'}`}>
+        <span className="font-mono text-[9px] font-semibold uppercase tracking-[0.1em] text-neutral-400 dark:text-neutral-500">
           Session Info
         </span>
       </div>
+      <div className={`flex h-8 shrink-0 items-center border-b border-neutral-100 dark:border-neutral-800/50 ${compact ? 'px-2' : 'px-3'}`} />
 
       <div className={`flex-1 overflow-y-auto ${compact ? 'px-2 py-2 space-y-2' : 'px-3 py-2.5 space-y-3'}`}>
         {/* Connected Users */}

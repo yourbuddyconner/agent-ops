@@ -60,7 +60,7 @@ export function ReviewDrawer({ sessionId }: ReviewDrawerProps) {
   return (
     <div className="flex h-full flex-col bg-neutral-50 dark:bg-neutral-900">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-neutral-200 bg-surface-1 px-2 py-1 dark:border-neutral-800 dark:bg-surface-1">
+      <div className="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 bg-surface-1 px-2 dark:border-neutral-800 dark:bg-surface-1">
         <div className="flex items-center gap-2">
           <span className="px-2.5 py-1 font-mono text-[11px] font-medium text-neutral-900 dark:text-neutral-100">
             Review

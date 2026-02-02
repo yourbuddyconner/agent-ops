@@ -41,8 +41,23 @@ export function EditorDrawer({ sessionId, logEntries }: EditorDrawerProps) {
         </div>
       )}
 
+      {/* Header */}
+      <div className="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 bg-surface-1 px-2 dark:border-neutral-800 dark:bg-surface-1">
+        <span className="px-2.5 font-mono text-[11px] font-medium text-neutral-900 dark:text-neutral-100">
+          Editor
+        </span>
+        <button
+          type="button"
+          onClick={closeDrawer}
+          className="flex items-center gap-1.5 rounded px-2.5 py-1 font-mono text-[11px] font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+        >
+          <PanelCloseIcon className="h-3.5 w-3.5" />
+          Close Editor
+        </button>
+      </div>
+
       {/* Tab bar */}
-      <div className="flex items-center gap-0.5 border-b border-neutral-200 bg-surface-1 px-2 py-1 dark:border-neutral-800 dark:bg-surface-1">
+      <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-neutral-200 bg-surface-1 px-2 dark:border-neutral-800 dark:bg-surface-1">
         <TabButton active={activeTab === 'vscode'} onClick={() => setActiveTab('vscode')}>
           VS Code
         </TabButton>
@@ -55,14 +70,6 @@ export function EditorDrawer({ sessionId, logEntries }: EditorDrawerProps) {
         <TabButton active={activeTab === 'logs'} onClick={() => setActiveTab('logs')}>
           Logs
         </TabButton>
-        <button
-          type="button"
-          onClick={closeDrawer}
-          className="ml-auto flex items-center gap-1.5 rounded px-2.5 py-1 font-mono text-[11px] font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
-        >
-          <PanelCloseIcon className="h-3.5 w-3.5" />
-          Close Editor
-        </button>
       </div>
 
       {/* Panel content */}

@@ -126,7 +126,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   return (
     <div className="flex h-full flex-col">
       {/* Header — Title bar */}
-      <header className="flex items-center justify-between border-b border-border bg-surface-0 px-3 py-1.5 dark:bg-surface-0">
+      <header className="flex h-10 shrink-0 items-center justify-between border-b border-border bg-surface-0 px-3 dark:bg-surface-0">
         <div className="flex items-center gap-2 min-w-0">
           <Link to="/sessions">
             <Button variant="ghost" size="sm" className="h-6 px-1.5 text-neutral-400 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-200">
@@ -178,7 +178,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
       </header>
 
       {/* Action toolbar */}
-      <div className="flex items-center gap-0.5 border-b border-neutral-100 bg-surface-0 px-2 py-0.5 dark:border-neutral-800/50 dark:bg-surface-0">
+      <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-neutral-100 bg-surface-0 px-2 dark:border-neutral-800/50 dark:bg-surface-0">
         <Button variant="ghost" size="sm" onClick={drawer.toggleEditor} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
           <EditorIcon className="h-3 w-3" />
           Editor
