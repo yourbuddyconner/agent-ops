@@ -76,6 +76,12 @@ async function main() {
       agentClient.sendChildSession(result.childSessionId, params.title || params.workspace);
       return result;
     },
+    onTerminateChild: async (childSessionId) => {
+      return await agentClient.requestTerminateChild(childSessionId);
+    },
+    onSelfTerminate: () => {
+      agentClient.requestSelfTerminate();
+    },
     onSendMessage: async (targetSessionId, content) => {
       await agentClient.requestSendMessage(targetSessionId, content);
     },

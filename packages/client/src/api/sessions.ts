@@ -183,7 +183,14 @@ export function useSessionChildren(sessionId: string) {
       api.get<{ children: ChildSessionSummary[] }>(`/sessions/${sessionId}/children`),
     enabled: !!sessionId,
     select: (data) => data.children,
-    refetchInterval: 30_000,
+    refetchInterval: (query) => {
+      // Poll more aggressively when any child is still active
+      const children = query.state.data?.children;
+      const hasActive = children?.some(
+        (c) => c.status !== 'terminated' && c.status !== 'hibernated',
+      );
+      return hasActive ? 5_000 : 30_000;
+    },
   });
 }
 

@@ -425,6 +425,8 @@ export interface GitStateParams {
 export interface GatewayCallbacks {
   onImage?: (data: string, description: string) => void;
   onSpawnChild?: (params: SpawnChildParams) => Promise<{ childSessionId: string }>;
+  onTerminateChild?: (childSessionId: string) => Promise<{ success: boolean }>;
+  onSelfTerminate?: () => void;
   onSendMessage?: (targetSessionId: string, content: string) => Promise<void>;
   onReadMessages?: (targetSessionId: string, limit?: number, after?: string) => Promise<MessageEntry[]>;
   onCreatePullRequest?: (params: CreatePullRequestParams) => Promise<CreatePullRequestResult>;
@@ -480,6 +482,36 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] Spawn child error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/terminate-child", async (c) => {
+    if (!callbacks.onTerminateChild) {
+      return c.json({ error: "Terminate child handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as { childSessionId?: string };
+      if (!body.childSessionId) {
+        return c.json({ error: "Missing required field: childSessionId" }, 400);
+      }
+      const result = await callbacks.onTerminateChild(body.childSessionId);
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Terminate child error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/complete-session", async (c) => {
+    if (!callbacks.onSelfTerminate) {
+      return c.json({ error: "Self-terminate handler not configured" }, 500);
+    }
+    try {
+      callbacks.onSelfTerminate();
+      return c.json({ success: true });
+    } catch (err) {
+      console.error("[Gateway] Complete session error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });

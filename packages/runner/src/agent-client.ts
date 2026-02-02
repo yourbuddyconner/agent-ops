@@ -13,6 +13,7 @@ const MAX_RECONNECT_DELAY_MS = 30_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const PING_INTERVAL_MS = 30_000;
 const SPAWN_CHILD_TIMEOUT_MS = 60_000;
+const TERMINATE_CHILD_TIMEOUT_MS = 30_000;
 const MESSAGE_OP_TIMEOUT_MS = 15_000;
 const PR_OP_TIMEOUT_MS = 30_000;
 
@@ -210,6 +211,22 @@ export class AgentClient {
     });
   }
 
+  requestTerminateChild(childSessionId: string): Promise<{ success: boolean }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, TERMINATE_CHILD_TIMEOUT_MS, () => {
+      this.send({ type: "terminate-child", requestId, childSessionId });
+    });
+  }
+
+  requestSelfTerminate(): void {
+    this.send({ type: "self-terminate" });
+    // Disconnect and exit — the DO will handle sandbox termination
+    setTimeout(() => {
+      this.disconnect();
+      process.exit(0);
+    }, 500);
+  }
+
   private createPendingRequest<T>(requestId: string, timeoutMs: number, sendFn: () => void): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -372,6 +389,14 @@ export class AgentClient {
             this.rejectPendingRequest(msg.requestId, msg.error);
           } else {
             this.resolvePendingRequest(msg.requestId, { number: msg.number, url: msg.url, title: msg.title, state: msg.state });
+          }
+          break;
+
+        case "terminate-child-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { success: true });
           }
           break;
       }

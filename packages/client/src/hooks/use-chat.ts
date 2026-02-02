@@ -207,6 +207,11 @@ type WebSocketChatMessage =
 export function useChat(sessionId: string) {
   const queryClient = useQueryClient();
 
+  // Keep a ref to sessionId so WebSocket message handlers always read the current value
+  // without needing sessionId in their dependency arrays (which would cause reconnects).
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+
   const [state, setState] = useState<ChatState>({
     messages: [],
     status: 'initializing',
@@ -311,7 +316,7 @@ export function useChat(sessionId: string) {
         setState({
           messages: message.session.messages.map((m) => ({
             id: m.id,
-            sessionId,
+            sessionId: sessionIdRef.current,
             role: m.role,
             content: m.content,
             parts: m.parts,
@@ -341,7 +346,7 @@ export function useChat(sessionId: string) {
         const d = message.data;
         const msg: Message = {
           id: d.id,
-          sessionId,
+          sessionId: sessionIdRef.current,
           role: d.role,
           content: d.content,
           parts: d.parts,
@@ -474,7 +479,7 @@ export function useChat(sessionId: string) {
           : String(rawError);
         const errorMessage: Message = {
           id: errorMsg.messageId || crypto.randomUUID(),
-          sessionId,
+          sessionId: sessionIdRef.current,
           role: 'system',
           content: `Error: ${errorText}`,
           createdAt: new Date(),
@@ -528,7 +533,7 @@ export function useChat(sessionId: string) {
         const gitMsg = message as WebSocketGitStateMessage;
         // Update the git-state query cache with real-time data
         queryClient.setQueryData(
-          sessionKeys.gitState(sessionId),
+          sessionKeys.gitState(sessionIdRef.current),
           (old: { gitState: Record<string, unknown> | null } | undefined) => {
             const prev = old?.gitState ?? {};
             return {
@@ -548,7 +553,7 @@ export function useChat(sessionId: string) {
       case 'pr-created': {
         const prMsg = message as WebSocketPrCreatedMessage;
         queryClient.setQueryData(
-          sessionKeys.gitState(sessionId),
+          sessionKeys.gitState(sessionIdRef.current),
           (old: { gitState: Record<string, unknown> | null } | undefined) => {
             const prev = old?.gitState ?? {};
             return {
@@ -569,7 +574,7 @@ export function useChat(sessionId: string) {
       case 'files-changed': {
         const filesMsg = message as WebSocketFilesChangedMessage;
         // Update the files-changed query cache with real-time data
-        queryClient.invalidateQueries({ queryKey: sessionKeys.filesChanged(sessionId) });
+        queryClient.invalidateQueries({ queryKey: sessionKeys.filesChanged(sessionIdRef.current) });
         appendLogEntry('files-changed', `${filesMsg.files.length} files changed`);
         break;
       }
@@ -587,7 +592,7 @@ export function useChat(sessionId: string) {
             },
           ],
         }));
-        queryClient.invalidateQueries({ queryKey: sessionKeys.children(sessionId) });
+        queryClient.invalidateQueries({ queryKey: sessionKeys.children(sessionIdRef.current) });
         appendLogEntry('child-session', `Child session: ${childMsg.title || childMsg.childSessionId.slice(0, 8)}`);
         break;
       }
@@ -600,7 +605,7 @@ export function useChat(sessionId: string) {
         }));
         // Update session detail query cache with new title
         queryClient.setQueryData(
-          sessionKeys.detail(sessionId),
+          sessionKeys.detail(sessionIdRef.current),
           (old: { session: Record<string, unknown>; doStatus: Record<string, unknown> } | undefined) => {
             if (!old) return old;
             return { ...old, session: { ...old.session, title: titleMsg.title } };

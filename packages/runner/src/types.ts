@@ -13,7 +13,8 @@ export type DOToRunnerMessage =
   | { type: "session-message-result"; requestId: string; success?: boolean; error?: string }
   | { type: "session-messages-result"; requestId: string; messages?: Array<{ role: string; content: string; createdAt: string }>; error?: string }
   | { type: "create-pr-result"; requestId: string; number?: number; url?: string; title?: string; state?: string; error?: string }
-  | { type: "update-pr-result"; requestId: string; number?: number; url?: string; title?: string; state?: string; error?: string };
+  | { type: "update-pr-result"; requestId: string; number?: number; url?: string; title?: string; state?: string; error?: string }
+  | { type: "terminate-child-result"; requestId: string; success?: boolean; error?: string };
 
 /** Tool call status values */
 export type ToolCallStatus = "pending" | "running" | "completed" | "error";
@@ -42,6 +43,8 @@ export type RunnerToDOMessage =
   | { type: "spawn-child"; requestId: string; task: string; workspace: string; repoUrl?: string; branch?: string; title?: string; sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string }
   | { type: "session-message"; requestId: string; targetSessionId: string; content: string }
   | { type: "session-messages"; requestId: string; targetSessionId: string; limit?: number; after?: string }
+  | { type: "terminate-child"; requestId: string; childSessionId: string }
+  | { type: "self-terminate" }
   | { type: "ping" };
 
 /** Model discovery types */

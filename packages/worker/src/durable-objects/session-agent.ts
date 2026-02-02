@@ -1,5 +1,5 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionMessages, getSessionGitState, getOAuthToken } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionMessages, getSessionGitState, getOAuthToken, getChildSessions } from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
@@ -23,7 +23,7 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate';
   prNumber?: number;
   targetSessionId?: string;
   limit?: number;
@@ -63,6 +63,7 @@ interface RunnerMessage {
   sourceRepoFullName?: string;
   labels?: string[];
   state?: string;
+  childSessionId?: string;
 }
 
 /** Messages sent from DO to clients */
@@ -73,7 +74,7 @@ interface ClientOutbound {
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'terminate-child-result';
   messageId?: string;
   content?: string;
   model?: string;
@@ -1122,6 +1123,14 @@ export class SessionAgentDO {
         await this.handleSessionMessages(msg.requestId!, msg.targetSessionId!, msg.limit, msg.after);
         break;
 
+      case 'terminate-child':
+        await this.handleTerminateChild(msg.requestId!, msg.childSessionId!);
+        break;
+
+      case 'self-terminate':
+        await this.handleSelfTerminate();
+        break;
+
       case 'ping':
         // Keepalive from runner — respond with pong
         this.sendToRunner({ type: 'pong' });
@@ -1334,6 +1343,66 @@ export class SessionAgentDO {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  private async handleTerminateChild(requestId: string, childSessionId: string) {
+    try {
+      const sessionId = this.getStateValue('sessionId')!;
+      const userId = this.getStateValue('userId')!;
+
+      // Verify the child belongs to this parent session
+      const childSession = await getSession(this.env.DB, childSessionId);
+      if (!childSession || childSession.userId !== userId) {
+        this.sendToRunner({ type: 'terminate-child-result', requestId, error: 'Child session not found or access denied' });
+        return;
+      }
+      if (childSession.parentSessionId !== sessionId) {
+        this.sendToRunner({ type: 'terminate-child-result', requestId, error: 'Session is not a child of this session' });
+        return;
+      }
+
+      // Stop the child via its DO
+      const childDoId = this.env.SESSIONS.idFromName(childSessionId);
+      const childDO = this.env.SESSIONS.get(childDoId);
+      const resp = await childDO.fetch(new Request('http://do/stop', { method: 'POST' }));
+
+      if (!resp.ok) {
+        const errText = await resp.text();
+        this.sendToRunner({ type: 'terminate-child-result', requestId, error: `Child DO returned ${resp.status}: ${errText}` });
+        return;
+      }
+
+      this.sendToRunner({ type: 'terminate-child-result', requestId, success: true });
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to terminate child:', err);
+      this.sendToRunner({
+        type: 'terminate-child-result',
+        requestId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private async handleSelfTerminate() {
+    const sessionId = this.getStateValue('sessionId');
+    console.log(`[SessionAgentDO] Session ${sessionId} self-terminating (task complete)`);
+
+    // Reuse handleStop which handles sandbox teardown, cascade, etc.
+    // The reason is 'completed' instead of 'user_stopped' — update the event after
+    const response = await this.handleStop();
+
+    // Override the event reason to 'completed' in D1
+    // (handleStop already set status to 'terminated' and published session.completed with 'user_stopped')
+    // We re-publish with the correct reason
+    this.notifyEventBus({
+      type: 'session.completed',
+      sessionId: sessionId || undefined,
+      userId: this.getStateValue('userId') || undefined,
+      data: { sandboxId: this.getStateValue('sandboxId') || null, reason: 'completed' },
+      timestamp: new Date().toISOString(),
+    });
+
+    return response;
   }
 
   private async handlePromptComplete() {
@@ -1589,6 +1658,30 @@ export class SessionAgentDO {
       }
     }
 
+    // Cascade: terminate all active child sessions (best-effort)
+    if (sessionId) {
+      try {
+        const children = await getChildSessions(this.env.DB, sessionId);
+        const activeChildren = children.filter(
+          (c) => c.status !== 'terminated' && c.status !== 'hibernated',
+        );
+        await Promise.allSettled(
+          activeChildren.map(async (child) => {
+            try {
+              const childDoId = this.env.SESSIONS.idFromName(child.id);
+              const childDO = this.env.SESSIONS.get(childDoId);
+              await childDO.fetch(new Request('http://do/stop', { method: 'POST' }));
+              console.log(`[SessionAgentDO] Cascade-terminated child ${child.id}`);
+            } catch (err) {
+              console.error(`[SessionAgentDO] Failed to cascade-terminate child ${child.id}:`, err);
+            }
+          }),
+        );
+      } catch (err) {
+        console.error('[SessionAgentDO] Failed to fetch child sessions for cascade:', err);
+      }
+    }
+
     // Only terminate sandbox if it's actually running (not hibernated/hibernating)
     if (currentStatus !== 'hibernated' && currentStatus !== 'hibernating') {
       if (sandboxId && terminateUrl) {
@@ -1613,6 +1706,13 @@ export class SessionAgentDO {
     this.setStateValue('tunnelUrls', '');
     this.setStateValue('snapshotImageId', '');
     this.setStateValue('runnerBusy', 'false');
+
+    // Sync status to D1
+    if (sessionId) {
+      updateSessionStatus(this.env.DB, sessionId, 'terminated').catch((e) =>
+        console.error('[SessionAgentDO] Failed to sync terminated status to D1:', e),
+      );
+    }
 
     // Notify clients
     this.broadcastToClients({

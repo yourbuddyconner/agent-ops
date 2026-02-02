@@ -154,17 +154,17 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     const githubToken = await decryptString(oauthToken.encryptedAccessToken, c.env.ENCRYPTION_KEY);
 
     // Fetch git user info from the users table
-    const userRow = await c.env.DB.prepare('SELECT name, email, github_username FROM users WHERE id = ?')
+    const userRow = await c.env.DB.prepare('SELECT name, email, github_username, git_name, git_email FROM users WHERE id = ?')
       .bind(user.id)
-      .first<{ name: string | null; email: string | null; github_username: string | null }>();
+      .first<{ name: string | null; email: string | null; github_username: string | null; git_name: string | null; git_email: string | null }>();
 
     envVars.GITHUB_TOKEN = githubToken;
     envVars.REPO_URL = body.repoUrl;
     if (body.branch) {
       envVars.REPO_BRANCH = body.branch;
     }
-    envVars.GIT_USER_NAME = userRow?.name || userRow?.github_username || 'Agent Ops User';
-    envVars.GIT_USER_EMAIL = userRow?.email || user.email;
+    envVars.GIT_USER_NAME = userRow?.git_name || userRow?.name || userRow?.github_username || 'Agent Ops User';
+    envVars.GIT_USER_EMAIL = userRow?.git_email || userRow?.email || user.email;
   }
 
   // Fetch user's idle timeout preference
