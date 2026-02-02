@@ -2,6 +2,8 @@
 
 A hosted background coding agent platform. Users interact with an AI coding agent through a web UI or Slack. Each session runs in an isolated Modal sandbox with a full dev environment — VS Code, browser via VNC, terminal, and an OpenCode agent.
 
+> **Why do programmers prefer dark mode?** Because light attracts bugs.
+
 ## Architecture
 
 ```mermaid
