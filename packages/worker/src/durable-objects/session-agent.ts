@@ -62,6 +62,7 @@ interface RunnerMessage {
   sourceIssueNumber?: number;
   sourceRepoFullName?: string;
   labels?: string[];
+  state?: string;
 }
 
 /** Messages sent from DO to clients */
@@ -951,7 +952,7 @@ export class SessionAgentDO {
           prNumber: msg.prNumber!,
           title: msg.title,
           body: msg.body,
-          state: msg.status as string | undefined,
+          state: msg.state,
           labels: msg.labels,
         });
         break;
