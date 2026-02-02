@@ -65,9 +65,33 @@ async function main() {
   // Connect to SessionAgent DO
   const agentClient = new AgentClient(doUrl!, runnerToken!);
 
-  // Start auth gateway with image callback
-  startGateway(gatewayPort, (data, description) => {
-    agentClient.sendScreenshot(data, description);
+  // Start auth gateway with callbacks
+  startGateway(gatewayPort, {
+    onImage: (data, description) => {
+      agentClient.sendScreenshot(data, description);
+    },
+    onSpawnChild: async (params) => {
+      const result = await agentClient.requestSpawnChild(params);
+      // Notify clients of the new child session for UI updates
+      agentClient.sendChildSession(result.childSessionId, params.title || params.workspace);
+      return result;
+    },
+    onSendMessage: async (targetSessionId, content) => {
+      await agentClient.requestSendMessage(targetSessionId, content);
+    },
+    onReadMessages: async (targetSessionId, limit, after) => {
+      const result = await agentClient.requestReadMessages(targetSessionId, limit, after);
+      return result.messages;
+    },
+    onCreatePullRequest: async (params) => {
+      return await agentClient.requestCreatePullRequest(params);
+    },
+    onUpdatePullRequest: async (params) => {
+      return await agentClient.requestUpdatePullRequest(params);
+    },
+    onReportGitState: (params) => {
+      agentClient.sendGitState(params);
+    },
   });
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient);
 

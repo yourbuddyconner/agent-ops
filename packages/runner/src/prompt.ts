@@ -768,6 +768,11 @@ export class PromptHandler {
     // Notify client that agent is idle
     this.agentClient.sendAgentStatus("idle");
 
+    // Report files changed after each turn
+    this.reportFilesChanged().catch((err) =>
+      console.error("[PromptHandler] Error reporting files changed:", err)
+    );
+
     this.streamedContent = "";
     this.hasActivity = false;
     this.hadToolSinceLastText = false;
@@ -794,6 +799,38 @@ export class PromptHandler {
     if (this.responseTimeoutId) {
       clearTimeout(this.responseTimeoutId);
       this.responseTimeoutId = null;
+    }
+  }
+
+  private async reportFilesChanged(): Promise<void> {
+    if (!this.sessionId) return;
+    try {
+      const res = await fetch(`${this.opencodeUrl}/session/${this.sessionId}/diff`);
+      if (!res.ok) return;
+
+      const data = await res.json() as Array<{
+        file: string;
+        before: string;
+        after: string;
+        additions: number;
+        deletions: number;
+      }>;
+
+      if (data.length === 0) return;
+
+      const files = data.map((entry) => ({
+        path: entry.file,
+        status: !entry.before || entry.before === "" ? "added"
+          : !entry.after || entry.after === "" ? "deleted"
+          : "modified",
+        additions: entry.additions,
+        deletions: entry.deletions,
+      }));
+
+      console.log(`[PromptHandler] Files changed: ${files.length} files`);
+      this.agentClient.sendFilesChanged(files);
+    } catch (err) {
+      console.error("[PromptHandler] Error fetching files changed:", err);
     }
   }
 }

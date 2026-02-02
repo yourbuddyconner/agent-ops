@@ -152,6 +152,25 @@ export function SkillIcon({ className }: { className?: string }) {
   );
 }
 
+export function ForkIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="5" cy="3.5" r="1.5" />
+      <circle cx="11" cy="3.5" r="1.5" />
+      <circle cx="8" cy="12.5" r="1.5" />
+      <path d="M5 5v2a3 3 0 0 0 3 3m3-5v2a3 3 0 0 1-3 3" />
+    </svg>
+  );
+}
+
+export function MessageIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 2.5h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 3V3.5a1 1 0 0 1 1-1z" />
+    </svg>
+  );
+}
+
 export function ChevronIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">

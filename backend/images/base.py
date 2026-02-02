@@ -106,7 +106,7 @@ def get_base_image() -> modal.Image:
                 "DISPLAY": ":99",
                 "HOME": "/root",
                 # Force image rebuild on deploy (change this value to trigger rebuild)
-                "IMAGE_BUILD_VERSION": "2026-02-01-v46-bookworm",
+                "IMAGE_BUILD_VERSION": "2026-02-01-v47-bookworm",
                 "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
             }
         )

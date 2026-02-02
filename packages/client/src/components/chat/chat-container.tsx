@@ -6,7 +6,6 @@ import { useDrawer } from '@/routes/sessions/$sessionId';
 import { MessageList } from './message-list';
 import { ChatInput } from './chat-input';
 import { QuestionPrompt } from './question-prompt';
-import { DiffDialog } from './diff-dialog';
 import { SessionActionsMenu } from '@/components/sessions/session-actions-menu';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -39,9 +38,6 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     answerQuestion,
     abort,
     revertMessage,
-    requestDiff,
-    diffData,
-    diffLoading,
     runnerConnected,
     logEntries,
     sessionTitle,
@@ -63,7 +59,6 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     drawer.setSelectedModel(selectedModel);
   }, [selectedModel, drawer.setSelectedModel]);
 
-  const [showDiff, setShowDiff] = useState(false);
 
   // Editable title state
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -192,18 +187,6 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           <FilesIcon className="h-3 w-3" />
           Files
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            requestDiff();
-            setShowDiff(true);
-          }}
-          className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
-        >
-          <DiffIcon className="h-3 w-3" />
-          Changes
-        </Button>
         {gitState?.prUrl && (
           <a href={gitState.prUrl} target="_blank" rel="noopener noreferrer">
             <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
@@ -287,13 +270,6 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           />
         </>
       )}
-
-      <DiffDialog
-        open={showDiff}
-        onOpenChange={setShowDiff}
-        files={diffData}
-        loading={diffLoading}
-      />
     </div>
   );
 }
@@ -409,12 +385,3 @@ function PRIcon({ className }: { className?: string }) {
   );
 }
 
-function DiffIcon({ className }: { className?: string }) {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="M12 3v14" />
-      <path d="M5 10h14" />
-      <path d="M5 21h14" />
-    </svg>
-  );
-}

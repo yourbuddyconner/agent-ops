@@ -8,7 +8,12 @@ export type DOToRunnerMessage =
   | { type: "abort" }
   | { type: "revert"; messageId: string }
   | { type: "diff"; requestId: string }
-  | { type: "pong" };
+  | { type: "pong" }
+  | { type: "spawn-child-result"; requestId: string; childSessionId?: string; error?: string }
+  | { type: "session-message-result"; requestId: string; success?: boolean; error?: string }
+  | { type: "session-messages-result"; requestId: string; messages?: Array<{ role: string; content: string; createdAt: string }>; error?: string }
+  | { type: "create-pr-result"; requestId: string; number?: number; url?: string; title?: string; state?: string; error?: string }
+  | { type: "update-pr-result"; requestId: string; number?: number; url?: string; title?: string; state?: string; error?: string };
 
 /** Tool call status values */
 export type ToolCallStatus = "pending" | "running" | "completed" | "error";
@@ -26,11 +31,17 @@ export type RunnerToDOMessage =
   | { type: "error"; messageId: string; error: string }
   | { type: "complete" }
   | { type: "agentStatus"; status: AgentStatus; detail?: string }
-  | { type: "create-pr"; branch: string; title: string; body?: string; base?: string }
+  | { type: "create-pr"; requestId: string; branch: string; title: string; body?: string; base?: string }
+  | { type: "update-pr"; requestId: string; prNumber: number; title?: string; body?: string; state?: string; labels?: string[] }
+  | { type: "git-state"; branch?: string; baseBranch?: string; commitCount?: number }
   | { type: "models"; models: AvailableModels }
   | { type: "aborted" }
   | { type: "reverted"; messageIds: string[] }
   | { type: "diff"; requestId: string; data: { files: DiffFile[] } }
+  | { type: "files-changed"; files: Array<{ path: string; status: string; additions?: number; deletions?: number }> }
+  | { type: "spawn-child"; requestId: string; task: string; workspace: string; repoUrl?: string; branch?: string; title?: string; sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string }
+  | { type: "session-message"; requestId: string; targetSessionId: string; content: string }
+  | { type: "session-messages"; requestId: string; targetSessionId: string; limit?: number; after?: string }
   | { type: "ping" };
 
 /** Model discovery types */

@@ -12,6 +12,9 @@ import type { AgentStatus, AvailableModels, DiffFile, DOToRunnerMessage, RunnerT
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const PING_INTERVAL_MS = 30_000;
+const SPAWN_CHILD_TIMEOUT_MS = 60_000;
+const MESSAGE_OP_TIMEOUT_MS = 15_000;
+const PR_OP_TIMEOUT_MS = 30_000;
 
 export class AgentClient {
   private ws: WebSocket | null = null;
@@ -27,6 +30,12 @@ export class AgentClient {
   private abortHandler: (() => void | Promise<void>) | null = null;
   private revertHandler: ((messageId: string) => void | Promise<void>) | null = null;
   private diffHandler: ((requestId: string) => void | Promise<void>) | null = null;
+
+  private pendingRequests = new Map<string, {
+    resolve: (value: any) => void;
+    reject: (reason: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
 
   constructor(
     private doUrl: string,
@@ -122,8 +131,22 @@ export class AgentClient {
     this.send({ type: "agentStatus", status, detail });
   }
 
-  createPullRequest(params: { branch: string; title: string; body?: string; base?: string }): void {
-    this.send({ type: "create-pr", ...params });
+  requestCreatePullRequest(params: { branch: string; title: string; body?: string; base?: string }): Promise<{ number: number; url: string; title: string; state: string }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, PR_OP_TIMEOUT_MS, () => {
+      this.send({ type: "create-pr", requestId, ...params });
+    });
+  }
+
+  requestUpdatePullRequest(params: { prNumber: number; title?: string; body?: string; state?: string; labels?: string[] }): Promise<{ number: number; url: string; title: string; state: string }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, PR_OP_TIMEOUT_MS, () => {
+      this.send({ type: "update-pr", requestId, ...params });
+    });
+  }
+
+  sendGitState(params: { branch?: string; baseBranch?: string; commitCount?: number }): void {
+    this.send({ type: "git-state", ...params });
   }
 
   sendModels(models: AvailableModels): void {
@@ -140,6 +163,81 @@ export class AgentClient {
 
   sendDiff(requestId: string, files: DiffFile[]): void {
     this.send({ type: "diff", requestId, data: { files } });
+  }
+
+  sendFilesChanged(files: Array<{ path: string; status: string; additions?: number; deletions?: number }>): void {
+    this.send({ type: "files-changed", files });
+  }
+
+  sendChildSession(childSessionId: string, title?: string): void {
+    this.send({ type: "child-session", childSessionId, title } as any);
+  }
+
+  // ─── Request/Response (Runner → DO → Runner) ─────────────────────────
+
+  requestSpawnChild(params: {
+    task: string;
+    workspace: string;
+    repoUrl?: string;
+    branch?: string;
+    title?: string;
+    sourceType?: string;
+    sourcePrNumber?: number;
+    sourceIssueNumber?: number;
+    sourceRepoFullName?: string;
+  }): Promise<{ childSessionId: string }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, SPAWN_CHILD_TIMEOUT_MS, () => {
+      this.send({ type: "spawn-child", requestId, ...params });
+    });
+  }
+
+  requestSendMessage(targetSessionId: string, content: string): Promise<{ success: boolean }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "session-message", requestId, targetSessionId, content });
+    });
+  }
+
+  requestReadMessages(
+    targetSessionId: string,
+    limit?: number,
+    after?: string,
+  ): Promise<{ messages: Array<{ role: string; content: string; createdAt: string }> }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "session-messages", requestId, targetSessionId, limit, after });
+    });
+  }
+
+  private createPendingRequest<T>(requestId: string, timeoutMs: number, sendFn: () => void): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        reject(new Error(`Request ${requestId} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.pendingRequests.set(requestId, { resolve, reject, timer });
+      sendFn();
+    });
+  }
+
+  private resolvePendingRequest(requestId: string, value: any): void {
+    const pending = this.pendingRequests.get(requestId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingRequests.delete(requestId);
+      pending.resolve(value);
+    }
+  }
+
+  private rejectPendingRequest(requestId: string, error: string): void {
+    const pending = this.pendingRequests.get(requestId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingRequests.delete(requestId);
+      pending.reject(new Error(error));
+    }
   }
 
   // ─── Inbound Handlers (DO → Runner) ─────────────────────────────────
@@ -235,6 +333,46 @@ export class AgentClient {
           break;
         case "pong":
           // Keepalive response — no action needed
+          break;
+
+        case "spawn-child-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { childSessionId: msg.childSessionId });
+          }
+          break;
+
+        case "session-message-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { success: true });
+          }
+          break;
+
+        case "session-messages-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { messages: msg.messages ?? [] });
+          }
+          break;
+
+        case "create-pr-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { number: msg.number, url: msg.url, title: msg.title, state: msg.state });
+          }
+          break;
+
+        case "update-pr-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { number: msg.number, url: msg.url, title: msg.title, state: msg.state });
+          }
           break;
       }
     } catch (err) {

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useSession, useSessionGitState, useSessionChildren, useSessionFilesChanged } from '@/api/sessions';
+import { useDrawer } from '@/routes/sessions/$sessionId';
 import { Badge } from '@/components/ui/badge';
 import type { PRState, SessionFileChanged } from '@/api/types';
 
@@ -39,8 +40,8 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
 
   return (
     <div className={`flex h-full flex-col border-l border-border bg-surface-0 dark:bg-surface-0 ${compact ? 'w-[200px]' : 'w-[240px]'}`}>
-      <div className={`border-b border-border ${compact ? 'px-2 py-1' : 'px-3 py-1.5'}`}>
-        <span className="font-mono text-[9px] font-semibold uppercase tracking-[0.1em] text-neutral-400 dark:text-neutral-500">
+      <div className={`flex items-center border-b border-border ${compact ? 'px-2' : 'px-3'} py-1.5`}>
+        <span className="font-mono text-[9px] font-semibold uppercase tracking-[0.1em] leading-6 text-neutral-400 dark:text-neutral-500">
           Session Info
         </span>
       </div>
@@ -200,6 +201,7 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
 }
 
 function FileChangedItem({ file }: { file: SessionFileChanged }) {
+  const { openFile } = useDrawer();
   const statusColors: Record<string, string> = {
     added: 'text-emerald-600 dark:text-emerald-400',
     modified: 'text-amber-600 dark:text-amber-400',
@@ -210,7 +212,12 @@ function FileChangedItem({ file }: { file: SessionFileChanged }) {
   const fileName = file.filePath.split('/').pop() || file.filePath;
 
   return (
-    <div className="group/file flex items-center gap-1.5 rounded-sm px-1 py-[3px] transition-colors hover:bg-surface-1 dark:hover:bg-surface-2" title={file.filePath}>
+    <button
+      type="button"
+      onClick={() => openFile(file.filePath)}
+      className="group/file flex w-full items-center gap-1.5 rounded-sm px-1 py-[3px] text-left transition-colors hover:bg-surface-1 dark:hover:bg-surface-2 cursor-pointer"
+      title={file.filePath}
+    >
       <span className={`shrink-0 font-mono text-[9px] font-bold leading-none ${statusColors[file.status] ?? 'text-neutral-400'}`}>
         {file.status[0].toUpperCase()}
       </span>
@@ -224,7 +231,7 @@ function FileChangedItem({ file }: { file: SessionFileChanged }) {
           {file.deletions > 0 && <span className="text-red-500 dark:text-red-400">-{file.deletions}</span>}
         </span>
       )}
-    </div>
+    </button>
   );
 }
 

@@ -7,8 +7,9 @@ interface FilesDrawerProps {
 }
 
 export function FilesDrawer({ sessionId }: FilesDrawerProps) {
-  const { closeDrawer } = useDrawer();
+  const { closeDrawer, pendingFilePath, clearPendingFile } = useDrawer();
   const { data: session } = useSession(sessionId);
+  const initialFilePath = pendingFilePath;
   const isHibernated = session?.status === 'hibernated';
 
   return (
@@ -37,7 +38,7 @@ export function FilesDrawer({ sessionId }: FilesDrawerProps) {
         </div>
       ) : (
         <div className="flex-1 overflow-hidden p-4">
-          <FileBrowser sessionId={sessionId} />
+          <FileBrowser sessionId={sessionId} initialFilePath={initialFilePath} onFileConsumed={clearPendingFile} />
         </div>
       )}
     </div>

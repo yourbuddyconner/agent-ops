@@ -367,16 +367,77 @@ function getWSTarget(pathname: string): WSTarget | null {
 
 // ─── Server ──────────────────────────────────────────────────────────────
 
-// ─── Image Upload (localhost-only, no auth) ──────────────────────────────
+// ─── Internal API (localhost-only, no auth) ──────────────────────────────
 
-type OnImageCallback = (data: string, description: string) => void;
+export interface SpawnChildParams {
+  task: string;
+  workspace: string;
+  repoUrl?: string;
+  branch?: string;
+  title?: string;
+  sourceType?: string;
+  sourcePrNumber?: number;
+  sourceIssueNumber?: number;
+  sourceRepoFullName?: string;
+}
 
-export function startGateway(port: number, onImage?: OnImageCallback): void {
+export interface MessageEntry {
+  role: string;
+  content: string;
+  createdAt: string;
+}
+
+export interface CreatePullRequestParams {
+  branch: string;
+  title: string;
+  body?: string;
+  base?: string;
+}
+
+export interface CreatePullRequestResult {
+  number: number;
+  url: string;
+  title: string;
+  state: string;
+}
+
+export interface UpdatePullRequestParams {
+  prNumber: number;
+  title?: string;
+  body?: string;
+  state?: string;
+  labels?: string[];
+}
+
+export interface UpdatePullRequestResult {
+  number: number;
+  url: string;
+  title: string;
+  state: string;
+}
+
+export interface GitStateParams {
+  branch?: string;
+  baseBranch?: string;
+  commitCount?: number;
+}
+
+export interface GatewayCallbacks {
+  onImage?: (data: string, description: string) => void;
+  onSpawnChild?: (params: SpawnChildParams) => Promise<{ childSessionId: string }>;
+  onSendMessage?: (targetSessionId: string, content: string) => Promise<void>;
+  onReadMessages?: (targetSessionId: string, limit?: number, after?: string) => Promise<MessageEntry[]>;
+  onCreatePullRequest?: (params: CreatePullRequestParams) => Promise<CreatePullRequestResult>;
+  onUpdatePullRequest?: (params: UpdatePullRequestParams) => Promise<UpdatePullRequestResult>;
+  onReportGitState?: (params: GitStateParams) => void;
+}
+
+export function startGateway(port: number, callbacks: GatewayCallbacks): void {
   console.log(`[Gateway] Starting auth gateway on port ${port}`);
 
-  // Register the image upload route (unauthenticated — only reachable from within the sandbox)
+  // Image upload route (unauthenticated — only reachable from within the sandbox)
   app.post("/api/image", async (c) => {
-    if (!onImage) {
+    if (!callbacks.onImage) {
       return c.json({ error: "Image handler not configured" }, 500);
     }
 
@@ -386,11 +447,141 @@ export function startGateway(port: number, onImage?: OnImageCallback): void {
         return c.json({ error: "Missing 'data' field" }, 400);
       }
 
-      onImage(body.data, body.description || "Image");
+      callbacks.onImage(body.data, body.description || "Image");
       return c.json({ ok: true });
     } catch (err) {
       console.error("[Gateway] Image upload error:", err);
       return c.json({ error: "Invalid request body" }, 400);
+    }
+  });
+
+  // ─── Cross-Session API ─────────────────────────────────────────────
+
+  app.post("/api/spawn-child", async (c) => {
+    if (!callbacks.onSpawnChild) {
+      return c.json({ error: "Spawn child handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as { task?: string; workspace?: string; repoUrl?: string; branch?: string; title?: string; sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string };
+      if (!body.task || !body.workspace) {
+        return c.json({ error: "Missing required fields: task, workspace" }, 400);
+      }
+      const result = await callbacks.onSpawnChild({
+        task: body.task,
+        workspace: body.workspace,
+        repoUrl: body.repoUrl,
+        branch: body.branch,
+        title: body.title || body.workspace,
+        sourceType: body.sourceType,
+        sourcePrNumber: body.sourcePrNumber,
+        sourceIssueNumber: body.sourceIssueNumber,
+        sourceRepoFullName: body.sourceRepoFullName,
+      });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Spawn child error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/session-message", async (c) => {
+    if (!callbacks.onSendMessage) {
+      return c.json({ error: "Send message handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as { sessionId?: string; content?: string };
+      if (!body.sessionId || !body.content) {
+        return c.json({ error: "Missing required fields: sessionId, content" }, 400);
+      }
+      await callbacks.onSendMessage(body.sessionId, body.content);
+      return c.json({ ok: true });
+    } catch (err) {
+      console.error("[Gateway] Send message error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.get("/api/session-messages", async (c) => {
+    if (!callbacks.onReadMessages) {
+      return c.json({ error: "Read messages handler not configured" }, 500);
+    }
+    try {
+      const sessionId = c.req.query("sessionId");
+      if (!sessionId) {
+        return c.json({ error: "Missing required query param: sessionId" }, 400);
+      }
+      const limit = c.req.query("limit") ? parseInt(c.req.query("limit")!, 10) : undefined;
+      const after = c.req.query("after") || undefined;
+      const messages = await callbacks.onReadMessages(sessionId, limit, after);
+      return c.json({ messages });
+    } catch (err) {
+      console.error("[Gateway] Read messages error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // ─── GitHub Lifecycle API ─────────────────────────────────────────
+
+  app.post("/api/create-pull-request", async (c) => {
+    if (!callbacks.onCreatePullRequest) {
+      return c.json({ error: "Create pull request handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as { branch?: string; title?: string; body?: string; base?: string };
+      if (!body.branch || !body.title) {
+        return c.json({ error: "Missing required fields: branch, title" }, 400);
+      }
+      const result = await callbacks.onCreatePullRequest({
+        branch: body.branch,
+        title: body.title,
+        body: body.body,
+        base: body.base,
+      });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Create pull request error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/update-pull-request", async (c) => {
+    if (!callbacks.onUpdatePullRequest) {
+      return c.json({ error: "Update pull request handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as { pr_number?: number; title?: string; body?: string; state?: string; labels?: string[] };
+      if (!body.pr_number) {
+        return c.json({ error: "Missing required field: pr_number" }, 400);
+      }
+      const result = await callbacks.onUpdatePullRequest({
+        prNumber: body.pr_number,
+        title: body.title,
+        body: body.body,
+        state: body.state,
+        labels: body.labels,
+      });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Update pull request error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/git-state", async (c) => {
+    if (!callbacks.onReportGitState) {
+      return c.json({ error: "Report git state handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as { branch?: string; base_branch?: string; commit_count?: number };
+      callbacks.onReportGitState({
+        branch: body.branch,
+        baseBranch: body.base_branch,
+        commitCount: body.commit_count,
+      });
+      return c.json({ ok: true });
+    } catch (err) {
+      console.error("[Gateway] Report git state error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });
 

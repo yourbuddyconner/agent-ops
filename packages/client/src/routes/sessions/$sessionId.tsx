@@ -76,6 +76,9 @@ export interface DrawerContextValue {
   setConnectedUsers: (users: string[]) => void;
   selectedModel: string | undefined;
   setSelectedModel: (model: string | undefined) => void;
+  openFile: (path: string) => void;
+  pendingFilePath: string | null;
+  clearPendingFile: () => void;
 }
 
 const DrawerCtx = createContext<DrawerContextValue>({
@@ -95,6 +98,9 @@ const DrawerCtx = createContext<DrawerContextValue>({
   setConnectedUsers: () => {},
   selectedModel: undefined,
   setSelectedModel: () => {},
+  openFile: () => {},
+  pendingFilePath: null,
+  clearPendingFile: () => {},
 });
 
 export function useDrawer() {
@@ -112,6 +118,7 @@ function SessionLayout() {
   const [overlay, setOverlay] = useState<SessionOverlay>(null);
   const [connectedUsers, setConnectedUsers] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | undefined>(undefined);
+  const [pendingFilePath, setPendingFilePath] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     try {
       const val = localStorage.getItem(SIDEBAR_STORAGE_KEY);
@@ -158,6 +165,16 @@ function SessionLayout() {
     });
   }, []);
 
+  const openFile = useCallback((path: string) => {
+    setPendingFilePath(path);
+    setActivePanel('files');
+    saveDrawerState('files');
+  }, []);
+
+  const clearPendingFile = useCallback(() => {
+    setPendingFilePath(null);
+  }, []);
+
   // Auto-close sidebar when editor/files panel opens
   const prevActivePanel = useRef(activePanel);
   useEffect(() => {
@@ -185,6 +202,9 @@ function SessionLayout() {
     setConnectedUsers,
     selectedModel,
     setSelectedModel,
+    openFile,
+    pendingFilePath,
+    clearPendingFile,
   };
 
   const defaultLayout = loadSavedLayout();

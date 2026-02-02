@@ -1,5 +1,6 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionMessages, getSessionGitState, getOAuthToken } from '../lib/db.js';
+import { decryptString } from '../lib/crypto.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
 
@@ -22,7 +23,14 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages';
+  prNumber?: number;
+  targetSessionId?: string;
+  limit?: number;
+  after?: string;
+  task?: string;
+  workspace?: string;
+  repoUrl?: string;
   messageId?: string;
   content?: string;
   questionId?: string;
@@ -49,6 +57,11 @@ interface RunnerMessage {
   url?: string;
   baseBranch?: string;
   commitCount?: number;
+  sourceType?: string;
+  sourcePrNumber?: number;
+  sourceIssueNumber?: number;
+  sourceRepoFullName?: string;
+  labels?: string[];
 }
 
 /** Messages sent from DO to clients */
@@ -59,13 +72,21 @@ interface ClientOutbound {
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'pong';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result';
   messageId?: string;
   content?: string;
   model?: string;
   questionId?: string;
   answer?: string | boolean;
   requestId?: string;
+  childSessionId?: string;
+  success?: boolean;
+  error?: string;
+  messages?: Array<{ role: string; content: string; createdAt: string }>;
+  number?: number;
+  url?: string;
+  title?: string;
+  state?: string;
 }
 
 // ─── Durable SQLite Table Schemas ──────────────────────────────────────────
@@ -912,18 +933,27 @@ export class SessionAgentDO {
         break;
 
       case 'create-pr': {
-        // Runner requests PR creation — forward to worker API via EventBus notification
-        await this.handleCreatePR(msg as unknown as { type: 'create-pr'; branch: string; title: string; body?: string; base?: string });
-        // Also update git state with branch info
-        const sessionIdCpr = this.getStateValue('sessionId');
-        if (sessionIdCpr && msg.branch) {
-          updateSessionGitState(this.env.DB, sessionIdCpr, {
-            branch: msg.branch,
-            baseBranch: msg.base,
-          }).catch((err) =>
-            console.error('[SessionAgentDO] Failed to update git state from create-pr:', err),
-          );
-        }
+        // Runner requests PR creation — call GitHub API directly
+        await this.handleCreatePR({
+          requestId: msg.requestId,
+          branch: msg.branch!,
+          title: msg.title!,
+          body: msg.body,
+          base: msg.base,
+        });
+        break;
+      }
+
+      case 'update-pr': {
+        // Runner requests PR update — call GitHub API directly
+        await this.handleUpdatePR({
+          requestId: msg.requestId,
+          prNumber: msg.prNumber!,
+          title: msg.title,
+          body: msg.body,
+          state: msg.status as string | undefined,
+          labels: msg.labels,
+        });
         break;
       }
 
@@ -1069,10 +1099,239 @@ export class SessionAgentDO {
         break;
       }
 
+      case 'spawn-child':
+        await this.handleSpawnChild(msg.requestId!, {
+          task: msg.task!,
+          workspace: msg.workspace!,
+          repoUrl: msg.repoUrl,
+          branch: msg.branch,
+          title: msg.title,
+          sourceType: msg.sourceType,
+          sourcePrNumber: msg.sourcePrNumber,
+          sourceIssueNumber: msg.sourceIssueNumber,
+          sourceRepoFullName: msg.sourceRepoFullName,
+        });
+        break;
+
+      case 'session-message':
+        await this.handleSessionMessage(msg.requestId!, msg.targetSessionId!, msg.content!);
+        break;
+
+      case 'session-messages':
+        await this.handleSessionMessages(msg.requestId!, msg.targetSessionId!, msg.limit, msg.after);
+        break;
+
       case 'ping':
         // Keepalive from runner — respond with pong
         this.sendToRunner({ type: 'pong' });
         break;
+    }
+  }
+
+  // ─── Cross-Session Operations ─────────────────────────────────────────
+
+  private async handleSpawnChild(
+    requestId: string,
+    params: {
+      task: string; workspace: string; repoUrl?: string; branch?: string; title?: string;
+      sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string;
+    },
+  ) {
+    try {
+      const parentSessionId = this.getStateValue('sessionId')!;
+      const userId = this.getStateValue('userId')!;
+      const spawnRequestStr = this.getStateValue('spawnRequest');
+      const backendUrl = this.getStateValue('backendUrl');
+      const terminateUrl = this.getStateValue('terminateUrl');
+      const hibernateUrl = this.getStateValue('hibernateUrl');
+      const restoreUrl = this.getStateValue('restoreUrl');
+
+      if (!spawnRequestStr || !backendUrl) {
+        this.sendToRunner({ type: 'spawn-child-result', requestId, error: 'Session not configured for spawning children (missing spawnRequest or backendUrl)' });
+        return;
+      }
+
+      const parentSpawnRequest = JSON.parse(spawnRequestStr);
+
+      // Query parent's git state to use as defaults for the child
+      const parentGitState = await getSessionGitState(this.env.DB, parentSessionId);
+
+      // Merge: explicit params override parent defaults
+      const mergedRepoUrl = params.repoUrl || parentGitState?.sourceRepoUrl || undefined;
+      const mergedBranch = params.branch || parentGitState?.branch || undefined;
+      const mergedSourceType = params.sourceType || parentGitState?.sourceType || undefined;
+      const mergedSourcePrNumber = params.sourcePrNumber ?? parentGitState?.sourcePrNumber ?? undefined;
+      const mergedSourceIssueNumber = params.sourceIssueNumber ?? parentGitState?.sourceIssueNumber ?? undefined;
+      const mergedSourceRepoFullName = params.sourceRepoFullName || parentGitState?.sourceRepoFullName || undefined;
+
+      // Generate child session identifiers
+      const childSessionId = crypto.randomUUID();
+      const childRunnerToken = Array.from(crypto.getRandomValues(new Uint8Array(32)))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+
+      // Create child session in D1
+      await createSession(this.env.DB, {
+        id: childSessionId,
+        userId,
+        workspace: params.workspace,
+        title: params.title || params.workspace,
+        parentSessionId,
+      });
+
+      // Create git state for child (always create if we have any git context)
+      if (mergedRepoUrl || mergedSourceType) {
+        // Derive sourceRepoFullName from URL if not explicitly set
+        let derivedRepoFullName = mergedSourceRepoFullName;
+        if (!derivedRepoFullName && mergedRepoUrl) {
+          const match = mergedRepoUrl.match(/github\.com[/:]([^/]+\/[^/.]+)/);
+          if (match) derivedRepoFullName = match[1];
+        }
+
+        await createSessionGitState(this.env.DB, {
+          sessionId: childSessionId,
+          sourceType: (mergedSourceType as any) || 'branch',
+          sourceRepoUrl: mergedRepoUrl,
+          sourceRepoFullName: derivedRepoFullName,
+          branch: mergedBranch,
+          sourcePrNumber: mergedSourcePrNumber,
+          sourceIssueNumber: mergedSourceIssueNumber,
+        });
+      }
+
+      // Build child DO WebSocket URL
+      // Extract host from backendUrl or use the parent's DO WebSocket pattern
+      const parentDoWsUrl = parentSpawnRequest.doWsUrl as string;
+      // Replace parent sessionId with child sessionId in the URL
+      const childDoWsUrl = parentDoWsUrl.replace(parentSessionId, childSessionId);
+
+      // Build child spawn request, inheriting parent env vars
+      const childSpawnRequest = {
+        ...parentSpawnRequest,
+        sessionId: childSessionId,
+        doWsUrl: childDoWsUrl,
+        runnerToken: childRunnerToken,
+        workspace: params.workspace,
+      };
+
+      // Override repo-specific env vars if we have repo info (explicit or inherited)
+      if (mergedRepoUrl) {
+        childSpawnRequest.envVars = {
+          ...childSpawnRequest.envVars,
+          REPO_URL: mergedRepoUrl,
+        };
+        if (mergedBranch) {
+          childSpawnRequest.envVars.REPO_BRANCH = mergedBranch;
+        }
+      }
+
+      // Initialize child SessionAgentDO
+      const childDoId = this.env.SESSIONS.idFromName(childSessionId);
+      const childDO = this.env.SESSIONS.get(childDoId);
+
+      const idleTimeoutMsStr = this.getStateValue('idleTimeoutMs');
+      const idleTimeoutMs = idleTimeoutMsStr ? parseInt(idleTimeoutMsStr) : 900_000;
+
+      await childDO.fetch(new Request('http://do/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: childSessionId,
+          userId,
+          workspace: params.workspace,
+          runnerToken: childRunnerToken,
+          backendUrl,
+          terminateUrl: terminateUrl || undefined,
+          hibernateUrl: hibernateUrl || undefined,
+          restoreUrl: restoreUrl || undefined,
+          idleTimeoutMs,
+          spawnRequest: childSpawnRequest,
+          initialPrompt: params.task,
+        }),
+      }));
+
+      this.sendToRunner({ type: 'spawn-child-result', requestId, childSessionId });
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to spawn child:', err);
+      this.sendToRunner({
+        type: 'spawn-child-result',
+        requestId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private async handleSessionMessage(requestId: string, targetSessionId: string, content: string) {
+    try {
+      const userId = this.getStateValue('userId')!;
+
+      // Verify target session belongs to the same user
+      const targetSession = await getSession(this.env.DB, targetSessionId);
+      if (!targetSession || targetSession.userId !== userId) {
+        this.sendToRunner({ type: 'session-message-result', requestId, error: 'Session not found or access denied' });
+        return;
+      }
+
+      // Forward prompt to target DO
+      const targetDoId = this.env.SESSIONS.idFromName(targetSessionId);
+      const targetDO = this.env.SESSIONS.get(targetDoId);
+
+      const resp = await targetDO.fetch(new Request('http://do/prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      }));
+
+      if (!resp.ok) {
+        const errText = await resp.text();
+        this.sendToRunner({ type: 'session-message-result', requestId, error: `Target DO returned ${resp.status}: ${errText}` });
+        return;
+      }
+
+      this.sendToRunner({ type: 'session-message-result', requestId, success: true });
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to send message:', err);
+      this.sendToRunner({
+        type: 'session-message-result',
+        requestId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private async handleSessionMessages(requestId: string, targetSessionId: string, limit?: number, after?: string) {
+    try {
+      const userId = this.getStateValue('userId')!;
+
+      // Verify target session belongs to the same user
+      const targetSession = await getSession(this.env.DB, targetSessionId);
+      if (!targetSession || targetSession.userId !== userId) {
+        this.sendToRunner({ type: 'session-messages-result', requestId, error: 'Session not found or access denied' });
+        return;
+      }
+
+      // Query messages from D1
+      const messages = await getSessionMessages(this.env.DB, targetSessionId, {
+        limit: limit || 20,
+        after,
+      });
+
+      this.sendToRunner({
+        type: 'session-messages-result',
+        requestId,
+        messages: messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+          createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : String(m.createdAt),
+        })),
+      });
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to read messages:', err);
+      this.sendToRunner({
+        type: 'session-messages-result',
+        requestId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -1163,6 +1422,9 @@ export class SessionAgentDO {
     }
     if (body.idleTimeoutMs) {
       this.setStateValue('idleTimeoutMs', String(body.idleTimeoutMs));
+    }
+    if (body.backendUrl) {
+      this.setStateValue('backendUrl', body.backendUrl);
     }
     if (body.spawnRequest) {
       this.setStateValue('spawnRequest', JSON.stringify(body.spawnRequest));
@@ -1467,11 +1729,37 @@ export class SessionAgentDO {
     }
   }
 
+  // ─── GitHub API Helpers ──────────────────────────────────────────────
+
+  /**
+   * Get the user's decrypted GitHub access token.
+   * Returns null if no token is stored.
+   */
+  private async getGitHubToken(): Promise<string | null> {
+    const userId = this.getStateValue('userId');
+    if (!userId) return null;
+
+    const oauthToken = await getOAuthToken(this.env.DB, userId, 'github');
+    if (!oauthToken) return null;
+
+    return decryptString(oauthToken.encryptedAccessToken, this.env.ENCRYPTION_KEY);
+  }
+
+  /**
+   * Extract owner/repo from a GitHub URL (https or git@ format).
+   * Returns null if not a GitHub URL.
+   */
+  private extractOwnerRepo(repoUrl: string): { owner: string; repo: string } | null {
+    const match = repoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+    if (!match) return null;
+    return { owner: match[1], repo: match[2] };
+  }
+
   // ─── PR Creation ──────────────────────────────────────────────────────
 
-  private async handleCreatePR(msg: { branch: string; title: string; body?: string; base?: string }) {
+  private async handleCreatePR(msg: { requestId?: string; branch: string; title: string; body?: string; base?: string }) {
     const sessionId = this.getStateValue('sessionId');
-    const userId = this.getStateValue('userId');
+    const requestId = msg.requestId;
 
     // Notify clients that PR creation is in progress
     this.broadcastToClients({
@@ -1479,37 +1767,238 @@ export class SessionAgentDO {
       data: { prCreating: true, branch: msg.branch },
     });
 
-    // Notify EventBus so the worker can pick it up
-    this.notifyEventBus({
-      type: 'session.update',
-      sessionId: sessionId || undefined,
-      userId: userId || undefined,
-      data: {
-        event: 'create-pr',
-        branch: msg.branch,
-        title: msg.title,
-        body: msg.body,
-        base: msg.base,
-      },
-      timestamp: new Date().toISOString(),
-    });
+    try {
+      const githubToken = await this.getGitHubToken();
+      if (!githubToken) {
+        throw new Error('No GitHub token found — user must connect GitHub in settings');
+      }
 
-    // Store a system message about the PR request
-    const msgId = crypto.randomUUID();
-    this.ctx.storage.sql.exec(
-      'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
-      msgId, 'system', `PR creation requested: "${msg.title}" from branch ${msg.branch}`
-    );
+      // Get repo URL from git state
+      const gitState = sessionId ? await getSessionGitState(this.env.DB, sessionId) : null;
+      const repoUrl = gitState?.sourceRepoUrl;
+      if (!repoUrl) {
+        throw new Error('No repository URL found for this session');
+      }
 
-    this.broadcastToClients({
-      type: 'message',
-      data: {
-        id: msgId,
-        role: 'system',
-        content: `PR creation requested: "${msg.title}" from branch ${msg.branch}`,
-        createdAt: Math.floor(Date.now() / 1000),
-      },
-    });
+      const ownerRepo = this.extractOwnerRepo(repoUrl);
+      if (!ownerRepo) {
+        throw new Error(`Cannot extract owner/repo from URL: ${repoUrl}`);
+      }
+
+      // Determine base branch
+      let baseBranch = msg.base;
+      if (!baseBranch) {
+        // Fetch default branch from GitHub API
+        const repoResp = await fetch(`https://api.github.com/repos/${ownerRepo.owner}/${ownerRepo.repo}`, {
+          headers: {
+            'Authorization': `Bearer ${githubToken}`,
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'agent-ops',
+          },
+        });
+        if (repoResp.ok) {
+          const repoData = await repoResp.json() as { default_branch: string };
+          baseBranch = repoData.default_branch;
+        } else {
+          baseBranch = 'main'; // fallback
+        }
+      }
+
+      // Create PR via GitHub API
+      const createResp = await fetch(`https://api.github.com/repos/${ownerRepo.owner}/${ownerRepo.repo}/pulls`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${githubToken}`,
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'agent-ops',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          title: msg.title,
+          body: msg.body || '',
+          head: msg.branch,
+          base: baseBranch,
+        }),
+      });
+
+      if (!createResp.ok) {
+        const errBody = await createResp.text();
+        throw new Error(`GitHub API returned ${createResp.status}: ${errBody}`);
+      }
+
+      const prData = await createResp.json() as { number: number; html_url: string; title: string; state: string };
+
+      // Update D1 git state with PR info
+      if (sessionId) {
+        updateSessionGitState(this.env.DB, sessionId, {
+          branch: msg.branch,
+          baseBranch,
+          prNumber: prData.number,
+          prTitle: prData.title,
+          prUrl: prData.html_url,
+          prState: prData.state as any,
+          prCreatedAt: new Date().toISOString(),
+        }).catch((err) =>
+          console.error('[SessionAgentDO] Failed to update git state after PR creation:', err),
+        );
+      }
+
+      // Broadcast PR created to clients
+      this.broadcastToClients({
+        type: 'pr-created',
+        data: {
+          number: prData.number,
+          title: prData.title,
+          url: prData.html_url,
+          state: prData.state,
+        },
+      } as any);
+
+      // Send result back to runner
+      if (requestId) {
+        this.sendToRunner({
+          type: 'create-pr-result',
+          requestId,
+          number: prData.number,
+          url: prData.html_url,
+          title: prData.title,
+          state: prData.state,
+        });
+      }
+
+      console.log(`[SessionAgentDO] PR #${prData.number} created: ${prData.html_url}`);
+    } catch (err) {
+      const errorText = err instanceof Error ? err.message : String(err);
+      console.error('[SessionAgentDO] Failed to create PR:', errorText);
+
+      // Send error result back to runner
+      if (requestId) {
+        this.sendToRunner({
+          type: 'create-pr-result',
+          requestId,
+          error: errorText,
+        });
+      }
+
+      // Broadcast failure to clients
+      this.broadcastToClients({
+        type: 'status',
+        data: { prCreating: false, prError: errorText },
+      });
+    }
+  }
+
+  // ─── PR Update ────────────────────────────────────────────────────────
+
+  private async handleUpdatePR(msg: { requestId?: string; prNumber: number; title?: string; body?: string; state?: string; labels?: string[] }) {
+    const sessionId = this.getStateValue('sessionId');
+    const requestId = msg.requestId;
+
+    try {
+      const githubToken = await this.getGitHubToken();
+      if (!githubToken) {
+        throw new Error('No GitHub token found — user must connect GitHub in settings');
+      }
+
+      // Get repo URL from git state
+      const gitState = sessionId ? await getSessionGitState(this.env.DB, sessionId) : null;
+      const repoUrl = gitState?.sourceRepoUrl;
+      if (!repoUrl) {
+        throw new Error('No repository URL found for this session');
+      }
+
+      const ownerRepo = this.extractOwnerRepo(repoUrl);
+      if (!ownerRepo) {
+        throw new Error(`Cannot extract owner/repo from URL: ${repoUrl}`);
+      }
+
+      // Update PR via GitHub API
+      const updateBody: Record<string, unknown> = {};
+      if (msg.title !== undefined) updateBody.title = msg.title;
+      if (msg.body !== undefined) updateBody.body = msg.body;
+      if (msg.state !== undefined) updateBody.state = msg.state;
+
+      const patchResp = await fetch(`https://api.github.com/repos/${ownerRepo.owner}/${ownerRepo.repo}/pulls/${msg.prNumber}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${githubToken}`,
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'agent-ops',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updateBody),
+      });
+
+      if (!patchResp.ok) {
+        const errBody = await patchResp.text();
+        throw new Error(`GitHub API returned ${patchResp.status}: ${errBody}`);
+      }
+
+      const prData = await patchResp.json() as { number: number; html_url: string; title: string; state: string };
+
+      // If labels were provided, set them via issues API
+      if (msg.labels && msg.labels.length > 0) {
+        await fetch(`https://api.github.com/repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${msg.prNumber}/labels`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${githubToken}`,
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'agent-ops',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ labels: msg.labels }),
+        }).catch((err) =>
+          console.error('[SessionAgentDO] Failed to set labels:', err),
+        );
+      }
+
+      // Update D1 git state
+      if (sessionId) {
+        const gitUpdates: Record<string, unknown> = {
+          prTitle: prData.title,
+          prState: prData.state,
+        };
+        updateSessionGitState(this.env.DB, sessionId, gitUpdates as any).catch((err) =>
+          console.error('[SessionAgentDO] Failed to update git state after PR update:', err),
+        );
+      }
+
+      // Broadcast update to clients
+      this.broadcastToClients({
+        type: 'pr-created',
+        data: {
+          number: prData.number,
+          title: prData.title,
+          url: prData.html_url,
+          state: prData.state,
+        },
+      } as any);
+
+      // Send result back to runner
+      if (requestId) {
+        this.sendToRunner({
+          type: 'update-pr-result',
+          requestId,
+          number: prData.number,
+          url: prData.html_url,
+          title: prData.title,
+          state: prData.state,
+        });
+      }
+
+      console.log(`[SessionAgentDO] PR #${prData.number} updated: ${prData.html_url}`);
+    } catch (err) {
+      const errorText = err instanceof Error ? err.message : String(err);
+      console.error('[SessionAgentDO] Failed to update PR:', errorText);
+
+      if (requestId) {
+        this.sendToRunner({
+          type: 'update-pr-result',
+          requestId,
+          error: errorText,
+        });
+      }
+    }
   }
 
   // ─── Hibernate / Wake ──────────────────────────────────────────────────

@@ -12,6 +12,8 @@ import { WebFetchCard } from './webfetch-card';
 import { PatchCard } from './patch-card';
 import { LspCard } from './lsp-card';
 import { SkillCard } from './skill-card';
+import { SpawnSessionCard } from './spawn-session-card';
+import { SendMessageCard, ReadMessagesCard } from './session-message-card';
 import { GenericCard } from './generic-card';
 
 export type { ToolCallData, ToolCallStatus } from './types';
@@ -93,6 +95,15 @@ export function ToolCard({ tool }: { tool: ToolCallData }) {
     case 'skill':
     case 'load_skill':
       return <SkillCard tool={tool} />;
+
+    case 'spawn_session':
+      return <SpawnSessionCard tool={tool} />;
+
+    case 'send_message':
+      return <SendMessageCard tool={tool} />;
+
+    case 'read_messages':
+      return <ReadMessagesCard tool={tool} />;
   }
 
   // Fuzzy matches for tools with prefixes like "mcp__ide__" or "namespace.tool"
@@ -138,6 +149,15 @@ export function ToolCard({ tool }: { tool: ToolCallData }) {
       return <LspCard tool={tool} />;
     case 'skill':
       return <SkillCard tool={tool} />;
+    case 'spawn_session':
+    case 'spawnsession':
+      return <SpawnSessionCard tool={tool} />;
+    case 'send_message':
+    case 'sendmessage':
+      return <SendMessageCard tool={tool} />;
+    case 'read_messages':
+    case 'readmessages':
+      return <ReadMessagesCard tool={tool} />;
   }
 
   return <GenericCard tool={tool} />;

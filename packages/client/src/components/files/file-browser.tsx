@@ -6,13 +6,26 @@ import { SearchInput } from '@/components/ui/search-input';
 
 interface FileBrowserProps {
   sessionId: string;
+  initialFilePath?: string | null;
+  onFileConsumed?: () => void;
 }
 
-export function FileBrowser({ sessionId }: FileBrowserProps) {
+export function FileBrowser({ sessionId, initialFilePath, onFileConsumed }: FileBrowserProps) {
   const [currentPath, setCurrentPath] = React.useState('/');
   const [selectedFile, setSelectedFile] = React.useState<FileEntry | null>(null);
   const [expandedPaths, setExpandedPaths] = React.useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = React.useState('');
+
+  // Auto-select file when opened from sidebar
+  React.useEffect(() => {
+    if (initialFilePath) {
+      const name = initialFilePath.split('/').pop() || initialFilePath;
+      const dir = initialFilePath.substring(0, initialFilePath.lastIndexOf('/')) || '/';
+      setSelectedFile({ name, path: initialFilePath, type: 'file' });
+      setCurrentPath(dir);
+      onFileConsumed?.();
+    }
+  }, [initialFilePath]);
 
   const { data: fileList, isLoading: isLoadingFiles } = useFileList(sessionId, currentPath);
   const { data: searchResults, isLoading: isSearching } = useFileSearch(
