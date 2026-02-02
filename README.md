@@ -324,3 +324,37 @@ Browser                   Worker (:8787)              GitHub/Google
 ## License
 
 MIT
+
+---
+
+<details>
+<summary>🎉 You found the Easter egg! Click to reveal...</summary>
+
+```
+    _______________
+   /               \
+  /  AGENT OPS HQ  \
+ /___________________\
+        |  |
+        |  |
+   _____|  |_____
+  |  __________  |
+  | |          | |
+  | | > █      | |    "I'm in."
+  | |__________| |
+  |   _______ ___|
+  |  |       |   |
+  |  | BEEP  |   |    *hacker voice*
+  |  | BOOP  |   |
+  |__|_______|___|
+
+Fun fact: This entire platform was bootstrapped 
+by an AI agent... running inside its own platform.
+We've achieved agent-ception. 🤖
+
+Built with ☕ and an unhealthy amount of Durable Objects.
+```
+
+**Achievement Unlocked**: *README Completionist*
+
+</details>
