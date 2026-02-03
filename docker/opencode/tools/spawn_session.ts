@@ -43,6 +43,10 @@ export default tool({
       .describe("Repository full name as owner/repo (e.g. 'octocat/hello-world')"),
   },
   async execute(args) {
+    if (args.workspace.includes("/")) {
+      return `Error: workspace must be a short name (e.g. 'my-app'), not a file path. You provided: "${args.workspace}". Use just the repo name.`
+    }
+
     try {
       const res = await fetch("http://localhost:9000/api/spawn-child", {
         method: "POST",

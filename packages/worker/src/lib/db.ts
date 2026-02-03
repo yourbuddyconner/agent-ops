@@ -107,11 +107,13 @@ export async function getUserSessions(
   const rows = result.results || [];
 
   const hasMore = rows.length > limit;
-  const sessions = rows.slice(0, limit).map(mapSession);
+  const pageRows = rows.slice(0, limit);
+  const sessions = pageRows.map(mapSession);
 
   return {
     sessions,
-    cursor: hasMore ? sessions[sessions.length - 1].createdAt.toISOString() : undefined,
+    // Use the raw DB string (YYYY-MM-DD HH:MM:SS) so it matches SQLite's format
+    cursor: hasMore ? String((pageRows[pageRows.length - 1] as any).created_at) : undefined,
     hasMore,
   };
 }
