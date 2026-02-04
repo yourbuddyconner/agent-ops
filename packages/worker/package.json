@@ -15,9 +15,7 @@
   "dependencies": {
     "@agent-ops/shared": "workspace:*",
     "@hono/zod-validator": "^0.2.1",
-    "@opencode-ai/sdk": "^1.1.25",
     "hono": "^4.3.0",
-    "modal": "^0.6.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {

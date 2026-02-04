@@ -9,13 +9,11 @@ compatibility_flags = ["nodejs_compat"]
 # GITHUB_CLIENT_SECRET - GitHub OAuth app client secret
 
 [vars]
-ENVIRONMENT = "development"
 # ALLOWED_EMAILS - comma-separated email allowlist. Override via .dev.vars (local) or `wrangler secret put` (production)
 ALLOWED_EMAILS = "${ALLOWED_EMAILS}"
 # MODAL_BACKEND_URL - your Modal workspace URL template. Override via .dev.vars (local) or `wrangler secret put` (production)
 MODAL_BACKEND_URL = "${MODAL_BACKEND_URL}"
 # FRONTEND_URL - set via .dev.vars (local) or `wrangler secret put` (production)
-# SANDBOX_JWT_SECRET - set via `wrangler secret put SANDBOX_JWT_SECRET`
 
 # Durable Objects
 [[durable_objects.bindings]]

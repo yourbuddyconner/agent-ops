@@ -16,10 +16,8 @@
         health health-worker health-opencode \
         workflow-create workflow-list workflow-run workflow-delete \
         trigger-create trigger-list trigger-run \
-        demo demo-pr-review demo-alert-triage \
         release deploy deploy-worker deploy-modal deploy-client build-client \
         secrets-set secrets-list \
-        container-list container-create container-start container-stop container-delete \
         image-build image-push
 
 # Configuration
@@ -485,52 +483,6 @@ execution-get: ## Get execution details (EXECUTION_ID required)
 		-H "Authorization: Bearer $(API_TOKEN)" | jq .
 
 # ==========================================
-# Demo Workflows
-# ==========================================
-
-demo: ## Run all demo workflows
-	@echo "$(GREEN)Running demo workflows...$(NC)"
-	@make demo-pr-review
-	@make demo-alert-triage
-
-demo-pr-review: ## Demo: PR Review workflow
-	@echo "$(GREEN)Demo: PR Review Workflow$(NC)"
-	@echo "This would create and run a PR review workflow..."
-	@# Create workflow from example in spec
-	@echo "$(YELLOW)See WORKFLOW_PLUGIN_SPEC.md for PR review example$(NC)"
-
-demo-alert-triage: ## Demo: Alert Triage workflow
-	@echo "$(GREEN)Demo: Alert Triage Workflow$(NC)"
-	@echo "This would create and run an alert triage workflow..."
-	@# Create workflow from example in spec
-	@echo "$(YELLOW)See WORKFLOW_PLUGIN_SPEC.md for alert triage example$(NC)"
-
-# ==========================================
-# Plugin Development
-# ==========================================
-
-plugin-init: ## Initialize the workflow plugin structure
-	@echo "$(GREEN)Initializing workflow plugin...$(NC)"
-	@mkdir -p .opencode/plugins/workflow/engine
-	@mkdir -p .opencode/plugins/workflow/storage
-	@mkdir -p .opencode/plugins/workflow/tools
-	@mkdir -p .opencode/plugins/workflow/types
-	@mkdir -p .opencode/workflows
-	@echo "$(GREEN)✓ Plugin directories created$(NC)"
-	@echo "Add your workflow YAML files to .opencode/workflows/"
-
-plugin-validate: ## Validate workflow YAML files
-	@echo "$(GREEN)Validating workflow files...$(NC)"
-	@for file in .opencode/workflows/*.yaml .opencode/workflows/*.yml; do \
-		if [ -f "$$file" ]; then \
-			echo "Validating $$file..."; \
-			cat "$$file" | python3 -c "import sys, yaml; yaml.safe_load(sys.stdin)" 2>/dev/null \
-				&& echo "  $(GREEN)✓ Valid YAML$(NC)" \
-				|| echo "  $(RED)✗ Invalid YAML$(NC)"; \
-		fi; \
-	done 2>/dev/null || echo "$(YELLOW)No workflow files found$(NC)"
-
-# ==========================================
 # Full E2E Test Suite
 # ==========================================
 
@@ -606,7 +558,6 @@ release: ## Full idempotent release: install, build, push image, deploy worker +
 	@echo "Step 6/7: Running database migrations and seeding..."
 	@make _wrangler-config
 	@cd packages/worker && wrangler d1 migrations apply agent-ops-db --remote -c wrangler.deploy.toml
-	@cd packages/worker && wrangler d1 execute agent-ops-db --remote --file=scripts/seed-bootstrap.sql -c wrangler.deploy.toml
 	@rm -f packages/worker/wrangler.deploy.toml
 	@echo "$(GREEN)✓ Database migrated and seeded$(NC)"
 	@echo ""
@@ -621,10 +572,7 @@ release: ## Full idempotent release: install, build, push image, deploy worker +
 	@echo "$(YELLOW)OpenCode Image:$(NC) $(GHCR_REPO):$(VERSION)"
 	@echo "$(YELLOW)Set OPENCODE_IMAGE in Cloudflare to this value.$(NC)"
 	@echo ""
-	@echo "$(YELLOW)Bootstrap API Key:$(NC)"
-	@echo "sk_bootstrap_0000000000000000000000000000000000000000000000000000"
-	@echo ""
-	@echo "$(YELLOW)⚠ Create a new API key in the UI and revoke this one!$(NC)"
+	@echo "$(YELLOW)Sign in with GitHub to get started.$(NC)"
 
 deploy: deploy-worker deploy-modal deploy-client ## Deploy everything (worker + modal + client)
 	@echo ""
@@ -700,49 +648,3 @@ image-push: image-build ## Build and push OpenCode image to GHCR
 	@docker push $(GHCR_REPO):latest
 	@echo "$(GREEN)✓ Image pushed: $(GHCR_REPO):$(VERSION)$(NC)"
 
-# ==========================================
-# Container Management (Modal Sandboxes)
-# ==========================================
-
-container-list: ## List containers via API
-	@echo "$(GREEN)Listing containers...$(NC)"
-	@curl -sf $(WORKER_URL)/api/containers \
-		-H "Authorization: Bearer $(API_TOKEN)" | jq . 2>/dev/null || echo "$(RED)Failed to list containers$(NC)"
-
-container-create: ## Create a new container (NAME required)
-	@if [ -z "$(NAME)" ]; then \
-		echo "$(RED)Usage: make container-create NAME=<name> [SIZE=basic] [SLEEP=15]$(NC)"; \
-		exit 1; \
-	fi
-	@curl -sf -X POST $(WORKER_URL)/api/containers \
-		-H "Content-Type: application/json" \
-		-H "Authorization: Bearer $(API_TOKEN)" \
-		-d '{"name": "$(NAME)", "instanceSize": "$(or $(SIZE),basic)", "autoSleepMinutes": $(or $(SLEEP),15)}' \
-		| jq . 2>/dev/null && echo "$(GREEN)✓ Container created$(NC)"
-
-container-start: ## Start a container (CONTAINER_ID required)
-	@if [ -z "$(CONTAINER_ID)" ]; then \
-		echo "$(RED)Usage: make container-start CONTAINER_ID=<id>$(NC)"; \
-		exit 1; \
-	fi
-	@curl -sf -X POST $(WORKER_URL)/api/containers/$(CONTAINER_ID)/start \
-		-H "Authorization: Bearer $(API_TOKEN)" \
-		| jq . 2>/dev/null && echo "$(GREEN)✓ Container started$(NC)"
-
-container-stop: ## Stop a container (CONTAINER_ID required)
-	@if [ -z "$(CONTAINER_ID)" ]; then \
-		echo "$(RED)Usage: make container-stop CONTAINER_ID=<id>$(NC)"; \
-		exit 1; \
-	fi
-	@curl -sf -X POST $(WORKER_URL)/api/containers/$(CONTAINER_ID)/stop \
-		-H "Authorization: Bearer $(API_TOKEN)" \
-		| jq . 2>/dev/null && echo "$(GREEN)✓ Container stopped$(NC)"
-
-container-delete: ## Delete a container (CONTAINER_ID required)
-	@if [ -z "$(CONTAINER_ID)" ]; then \
-		echo "$(RED)Usage: make container-delete CONTAINER_ID=<id>$(NC)"; \
-		exit 1; \
-	fi
-	@curl -sf -X DELETE $(WORKER_URL)/api/containers/$(CONTAINER_ID) \
-		-H "Authorization: Bearer $(API_TOKEN)" \
-		&& echo "$(GREEN)✓ Container deleted$(NC)"

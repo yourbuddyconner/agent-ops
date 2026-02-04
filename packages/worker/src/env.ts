@@ -10,13 +10,10 @@ export interface Env {
   DB: D1Database;
   STORAGE: R2Bucket;
 
-  // Environment
-  ENVIRONMENT: 'development' | 'staging' | 'production';
-
   // Secrets (set via wrangler secret put)
   ENCRYPTION_KEY: string;
 
-  // LLM Provider API Keys (passed to sandboxes)
+  // LLM Provider API Keys (optional fallback; prefer org-level keys in DB)
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY?: string;
   GOOGLE_API_KEY?: string;
@@ -30,30 +27,14 @@ export interface Env {
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
 
-  // OpenCode (for container communication)
-  OPENCODE_SERVER_PASSWORD?: string;
-
-  // Modal (for sandbox management)
-  MODAL_TOKEN_ID: string;
-  MODAL_TOKEN_SECRET: string;
-  MODAL_APP_NAME: string;
-  OPENCODE_IMAGE: string;
-  WORKER_URL: string;
-
   // Modal Python backend URL
   MODAL_BACKEND_URL: string;
 
   // Frontend URL (for OAuth redirects)
   FRONTEND_URL: string;
 
-  // JWT secret for sandbox iframe authentication
-  SANDBOX_JWT_SECRET: string;
-
   // Email allowlist (comma-separated). If unset, all emails are allowed.
   ALLOWED_EMAILS?: string;
-
-  // Bootstrap admin email (first admin fallback)
-  ADMIN_EMAIL?: string;
 }
 
 // Type for Hono context variables
