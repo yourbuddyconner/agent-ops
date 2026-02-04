@@ -254,6 +254,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
               onRevert={revertMessage}
               childSessionEvents={childSessionEvents}
               childSessions={childSessions}
+              connectedUsers={connectedUsers}
             />
             {sessionStatus === 'hibernated' && (
               <div className="absolute inset-0 flex items-center justify-center bg-surface-0/60 dark:bg-surface-0/70 backdrop-blur-[2px] transition-opacity duration-500">

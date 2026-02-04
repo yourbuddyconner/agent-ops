@@ -7,7 +7,7 @@ import { MarkdownContent } from './markdown';
 import { ToolCard, type ToolCallData, type ToolCallStatus } from './tool-cards';
 import { ChildSessionInlineList } from './child-session-card';
 import { useDrawer } from '@/routes/sessions/$sessionId';
-import type { ChildSessionEvent } from '@/hooks/use-chat';
+import type { ChildSessionEvent, ConnectedUser } from '@/hooks/use-chat';
 import type { ChildSessionSummary } from '@/api/types';
 
 type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
@@ -21,6 +21,7 @@ interface MessageListProps {
   onRevert?: (messageId: string) => void;
   childSessionEvents?: ChildSessionEvent[];
   childSessions?: ChildSessionSummary[];
+  connectedUsers?: ConnectedUser[];
 }
 
 /**
@@ -61,7 +62,7 @@ function groupIntoTurns(messages: Message[]): MessageTurn[] {
   return turns;
 }
 
-export function MessageList({ messages, streamingContent, isAgentThinking, agentStatus, agentStatusDetail, onRevert, childSessionEvents, childSessions }: MessageListProps) {
+export function MessageList({ messages, streamingContent, isAgentThinking, agentStatus, agentStatusDetail, onRevert, childSessionEvents, childSessions, connectedUsers }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const { activePanel } = useDrawer();
   const compact = activePanel !== null;
@@ -102,7 +103,7 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
         {turns.map((turn) => {
           if (turn.type === 'standalone') {
             const msg = turn.messages[0];
-            return <MessageItem key={msg.id} message={msg} onRevert={onRevert} />;
+            return <MessageItem key={msg.id} message={msg} onRevert={onRevert} connectedUsers={connectedUsers} />;
           }
 
           // Assistant turn: render all tool + assistant messages in order within one block

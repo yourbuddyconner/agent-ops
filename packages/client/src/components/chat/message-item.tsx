@@ -1,15 +1,18 @@
 import type { Message } from '@/api/types';
+import type { ConnectedUser } from '@/hooks/use-chat';
 import { formatTime } from '@/lib/format';
 import { MarkdownContent } from './markdown';
 import { ToolCard, type ToolCallData, type ToolCallStatus } from './tool-cards';
 import { useDrawer } from '@/routes/sessions/$sessionId';
+import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 
 interface MessageItemProps {
   message: Message;
   onRevert?: (messageId: string) => void;
+  connectedUsers?: ConnectedUser[];
 }
 
-export function MessageItem({ message, onRevert }: MessageItemProps) {
+export function MessageItem({ message, onRevert, connectedUsers }: MessageItemProps) {
   const isUser = message.role === 'user';
   const isTool = message.role === 'tool';
   const isSystem = message.role === 'system';
@@ -22,11 +25,31 @@ export function MessageItem({ message, onRevert }: MessageItemProps) {
   // Extract structured tool data from parts (for tool messages)
   const toolData = isTool ? getToolCallFromParts(message.parts) : null;
 
-  // User messages: right-aligned bubble
+  // User messages: right-aligned bubble with author avatar
   if (isUser) {
+    // Resolve author avatar from connectedUsers or message fields
+    const authorName = message.authorName || message.authorEmail;
+    const connectedUser = message.authorId
+      ? connectedUsers?.find((u) => u.id === message.authorId)
+      : undefined;
+    const avatarUrl = connectedUser?.avatarUrl;
+    const initials = (authorName || '?')
+      .split(/[\s@]/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((s) => s[0].toUpperCase())
+      .join('');
+
     return (
-      <div className="group relative flex justify-end py-2.5 animate-fade-in">
+      <div className="group relative flex justify-end gap-2 py-2.5 animate-fade-in">
         <div className={compact ? 'max-w-[90%]' : 'max-w-[75%]'}>
+          {authorName && (
+            <div className="mb-1 flex items-center justify-end gap-1.5 px-1">
+              <span className="font-mono text-[10px] font-medium text-neutral-400 dark:text-neutral-500">
+                {message.authorName || message.authorEmail}
+              </span>
+            </div>
+          )}
           <div className="rounded-2xl rounded-br-md bg-neutral-900 px-4 py-2.5 text-white shadow-sm dark:bg-neutral-100 dark:text-neutral-900 dark:shadow-none [&_.markdown-body]:text-white/95 [&_.markdown-body]:dark:text-neutral-900">
             <MarkdownContent content={message.content} />
           </div>
@@ -45,6 +68,10 @@ export function MessageItem({ message, onRevert }: MessageItemProps) {
             )}
           </div>
         </div>
+        <Avatar className="mt-1 h-5 w-5 shrink-0">
+          {avatarUrl && <AvatarImage src={avatarUrl} alt={authorName || ''} />}
+          <AvatarFallback className="text-[8px]">{initials}</AvatarFallback>
+        </Avatar>
       </div>
     );
   }
