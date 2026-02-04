@@ -10,7 +10,7 @@ import { useDrawer } from '@/routes/sessions/$sessionId';
 import type { ChildSessionEvent, ConnectedUser } from '@/hooks/use-chat';
 import type { ChildSessionSummary } from '@/api/types';
 
-type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
+type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error' | 'queued';
 
 interface MessageListProps {
   messages: Message[];

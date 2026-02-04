@@ -102,7 +102,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   const isHibernateTransition = sessionStatus === 'hibernating' || sessionStatus === 'restoring';
   const isAwaitingRunner = wasHibernatingRef.current && sessionStatus === 'running' && !runnerConnected;
   const isDisabled = !isConnected || isTerminated;
-  const isAgentActive = isAgentThinking || agentStatus === 'thinking' || agentStatus === 'tool_calling' || agentStatus === 'streaming';
+  const isAgentActive = (isAgentThinking && agentStatus !== 'queued') || agentStatus === 'thinking' || agentStatus === 'tool_calling' || agentStatus === 'streaming';
 
   // Clear any stale overlay (no longer using layout-level transition overlays)
   useEffect(() => {

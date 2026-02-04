@@ -20,7 +20,7 @@ export interface LogEntry {
 
 const MAX_LOG_ENTRIES = 500;
 
-type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
+type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error' | 'queued';
 
 export interface ProviderModels {
   provider: string;
@@ -112,6 +112,9 @@ interface WebSocketInitMessage {
   };
   data?: {
     connectedUsers?: Array<{ id: string; name?: string; email?: string; avatarUrl?: string }> | string[];
+    runnerBusy?: boolean;
+    promptsQueued?: number;
+    runnerConnected?: boolean;
     [key: string]: unknown;
   };
 }
@@ -387,6 +390,11 @@ export function useChat(sessionId: string) {
             )
           : [];
 
+        // Determine if agent is actively working or has queued work
+        const hasQueuedWork = (message.data?.promptsQueued ?? 0) > 0;
+        const isRunnerBusy = !!message.data?.runnerBusy;
+        const agentWorking = hasQueuedWork || isRunnerBusy;
+
         setState({
           messages: message.session.messages.map((m) => ({
             id: m.id,
@@ -405,9 +413,9 @@ export function useChat(sessionId: string) {
           pendingQuestions: [],
           connectedUsers: normalizedUsers,
           logEntries: [],
-          isAgentThinking: false,
-          agentStatus: 'idle',
-          agentStatusDetail: undefined,
+          isAgentThinking: agentWorking,
+          agentStatus: hasQueuedWork ? 'queued' : isRunnerBusy ? 'thinking' : 'idle',
+          agentStatusDetail: hasQueuedWork ? 'Message queued — waking session...' : undefined,
           availableModels: initModels,
           diffData: null,
           diffLoading: false,
@@ -504,12 +512,23 @@ export function useChat(sessionId: string) {
             ? data.runnerConnected
             : prev.runnerConnected;
 
+          // When a prompt is queued (runner not ready), show queued indicator
+          let { isAgentThinking, agentStatus, agentStatusDetail } = prev;
+          if (data.promptQueued) {
+            isAgentThinking = true;
+            agentStatus = 'queued';
+            agentStatusDetail = 'Message queued — waking session...';
+          }
+
           return {
             ...prev,
             status: newStatus ?? prev.status,
             pendingQuestions: nextQuestions,
             connectedUsers: nextUsers,
             runnerConnected,
+            isAgentThinking,
+            agentStatus,
+            agentStatusDetail,
           };
         });
         appendLogEntry('status', newStatus ? `Status changed to ${newStatus}` : 'Status update');

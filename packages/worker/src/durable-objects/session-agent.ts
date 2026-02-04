@@ -323,6 +323,8 @@ export class SessionAgentDO {
       data: {
         sandboxRunning: !!sandboxId,
         runnerConnected: this.ctx.getWebSockets('runner').length > 0,
+        runnerBusy: this.getStateValue('runnerBusy') === 'true',
+        promptsQueued: this.getQueueLength(),
         connectedClients: this.getClientSockets().length + 1,
         connectedUsers,
         availableModels,

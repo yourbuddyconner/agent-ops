@@ -1,4 +1,4 @@
-type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
+type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error' | 'queued';
 
 interface ThinkingIndicatorProps {
   status?: AgentStatus;
@@ -11,6 +11,7 @@ const STATUS_LABELS: Record<AgentStatus, string> = {
   tool_calling: 'Running tool',
   streaming: 'Writing',
   error: 'Error',
+  queued: 'Queued',
 };
 
 export function ThinkingIndicator({ status = 'thinking', detail }: ThinkingIndicatorProps) {
