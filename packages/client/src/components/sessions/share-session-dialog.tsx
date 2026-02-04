@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -19,8 +19,9 @@ import {
   useCreateShareLink,
   useRevokeShareLink,
 } from '@/api/sessions';
+import { useOrgUsers } from '@/api/admin';
 import { toastSuccess, toastError } from '@/hooks/use-toast';
-import type { SessionParticipant, SessionShareLink } from '@/api/types';
+import type { SessionParticipant, SessionShareLink, User } from '@/api/types';
 
 interface ShareSessionDialogProps {
   sessionId: string;
@@ -183,17 +184,48 @@ function ShareLinkRow({ link, sessionId }: { link: SessionShareLink; sessionId: 
 
 function PeopleTab({ sessionId, isOwner }: { sessionId: string; isOwner: boolean }) {
   const { data: participants, isLoading } = useSessionParticipants(sessionId);
+  const { data: orgUsers } = useOrgUsers();
   const addParticipant = useAddParticipant();
-  const [email, setEmail] = useState('');
+  const [search, setSearch] = useState('');
+  const [showDropdown, setShowDropdown] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const handleAdd = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = email.trim();
-    if (!trimmed) return;
+  // Filter org members: exclude already-added participants, match by name/email
+  const suggestions = useMemo(() => {
+    if (!orgUsers || !search.trim()) return [];
+    const participantUserIds = new Set(participants?.map((p) => p.userId) ?? []);
+    const query = search.toLowerCase();
+    return (orgUsers as User[]).filter((u) => {
+      if (participantUserIds.has(u.id)) return false;
+      const name = (u.name || '').toLowerCase();
+      const email = (u.email || '').toLowerCase();
+      return name.includes(query) || email.includes(query);
+    });
+  }, [orgUsers, search, participants]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(e.target as Node) &&
+        inputRef.current &&
+        !inputRef.current.contains(e.target as Node)
+      ) {
+        setShowDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  const handleSelect = async (user: User) => {
     try {
-      await addParticipant.mutateAsync({ sessionId, email: trimmed, role: 'collaborator' });
-      setEmail('');
-      toastSuccess('Added', `${trimmed} has been added`);
+      await addParticipant.mutateAsync({ sessionId, email: user.email, role: 'collaborator' });
+      setSearch('');
+      setShowDropdown(false);
+      toastSuccess('Added', `${user.name || user.email} has been added`);
     } catch {
       toastError('Failed', 'Could not add participant');
     }
@@ -202,18 +234,40 @@ function PeopleTab({ sessionId, isOwner }: { sessionId: string; isOwner: boolean
   return (
     <div className="space-y-3">
       {isOwner && (
-        <form onSubmit={handleAdd} className="flex gap-2">
+        <div className="relative">
           <Input
-            placeholder="Email address"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            type="email"
+            ref={inputRef}
+            placeholder="Search by name..."
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setShowDropdown(true);
+            }}
+            onFocus={() => { if (search.trim()) setShowDropdown(true); }}
             className="h-8 text-sm dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 dark:placeholder:text-neutral-500"
           />
-          <Button size="sm" type="submit" disabled={addParticipant.isPending || !email.trim()} className="h-8 shrink-0">
-            Add
-          </Button>
-        </form>
+          {showDropdown && search.trim() && (
+            <div
+              ref={dropdownRef}
+              className="absolute left-0 right-0 top-9 z-10 max-h-48 overflow-y-auto rounded-md border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-800"
+            >
+              {suggestions.length > 0 ? (
+                suggestions.map((user) => (
+                  <MemberSuggestionRow
+                    key={user.id}
+                    user={user}
+                    onSelect={handleSelect}
+                    disabled={addParticipant.isPending}
+                  />
+                ))
+              ) : (
+                <p className="px-3 py-2 text-xs text-neutral-400 dark:text-neutral-500">
+                  No matching members found.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
       )}
       {isLoading ? (
         <p className="text-center text-xs text-neutral-400">Loading...</p>
@@ -234,6 +288,47 @@ function PeopleTab({ sessionId, isOwner }: { sessionId: string; isOwner: boolean
         </p>
       )}
     </div>
+  );
+}
+
+function MemberSuggestionRow({
+  user,
+  onSelect,
+  disabled,
+}: {
+  user: User;
+  onSelect: (user: User) => void;
+  disabled: boolean;
+}) {
+  const initials = (user.name || user.email || '?')
+    .split(/[\s@]/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0].toUpperCase())
+    .join('');
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onSelect(user)}
+      className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-neutral-50 disabled:opacity-50 dark:hover:bg-neutral-700/50"
+    >
+      <Avatar className="h-5 w-5">
+        {user.avatarUrl && <AvatarImage src={user.avatarUrl} alt={user.name || ''} />}
+        <AvatarFallback className="text-[8px]">{initials}</AvatarFallback>
+      </Avatar>
+      <div className="min-w-0 flex-1">
+        <span className="block truncate text-sm text-neutral-900 dark:text-neutral-100">
+          {user.name || user.email}
+        </span>
+        {user.name && (
+          <span className="block truncate text-xs text-neutral-400 dark:text-neutral-500">
+            {user.email}
+          </span>
+        )}
+      </div>
+    </button>
   );
 }
 
