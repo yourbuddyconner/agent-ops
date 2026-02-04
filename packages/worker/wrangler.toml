@@ -10,8 +10,10 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "development"
-ALLOWED_EMAILS = "me@connerswann.me"
-MODAL_BACKEND_URL = "https://yourbuddyconner--{label}.modal.run"
+# ALLOWED_EMAILS - comma-separated email allowlist. Override via .dev.vars (local) or `wrangler secret put` (production)
+ALLOWED_EMAILS = "${ALLOWED_EMAILS}"
+# MODAL_BACKEND_URL - your Modal workspace URL template. Override via .dev.vars (local) or `wrangler secret put` (production)
+MODAL_BACKEND_URL = "${MODAL_BACKEND_URL}"
 # FRONTEND_URL - set via .dev.vars (local) or `wrangler secret put` (production)
 # SANDBOX_JWT_SECRET - set via `wrangler secret put SANDBOX_JWT_SECRET`
 
@@ -37,12 +39,14 @@ new_sqlite_classes = ["SessionAgentDO"]
 [[d1_databases]]
 binding = "DB"
 database_name = "agent-ops-db"
-database_id = "312aaa6b-3670-4628-b612-2f6c7d30e42e" # Replace with actual ID after creation
+# database_id - get this from `wrangler d1 create <name>`, set D1_DATABASE_ID in .env.deploy
+database_id = "${D1_DATABASE_ID}"
 
 # R2 Bucket
 [[r2_buckets]]
 binding = "STORAGE"
-bucket_name = "agent-ops-storage"
+# bucket_name - create with `wrangler r2 bucket create <name>`, set R2_BUCKET_NAME in .env.deploy
+bucket_name = "${R2_BUCKET_NAME}"
 
 # Cron Triggers for scheduled syncs
 [triggers]

@@ -107,13 +107,18 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (event, env, ctx) 
 
   console.log(`Found ${integrations.results?.length || 0} integrations to sync`);
 
-  // Trigger syncs (in a real implementation, you'd queue these)
+  // Trigger syncs by calling back into this worker's own fetch handler
   for (const integration of integrations.results || []) {
     ctx.waitUntil(
-      fetch(`https://agent-ops.workers.dev/api/integrations/${integration.id}/sync`, {
-        method: 'POST',
-        headers: { 'X-Internal-Cron': 'true' },
-      }).catch((err) => console.error(`Failed to trigger sync for ${integration.id}:`, err))
+      Promise.resolve(
+        app.fetch(
+          new Request(`https://localhost/api/integrations/${integration.id}/sync`, {
+            method: 'POST',
+            headers: { 'X-Internal-Cron': 'true' },
+          }),
+          env
+        )
+      ).catch((err: unknown) => console.error(`Failed to trigger sync for ${integration.id}:`, err))
     );
   }
 };

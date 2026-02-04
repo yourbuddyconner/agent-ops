@@ -129,6 +129,19 @@ agent-ops/
 └── .beans/                    # Task tracking
 ```
 
+## First-Time Setup
+
+1. Copy the deployment config template:
+   ```bash
+   cp .env.deploy.example .env.deploy
+   ```
+2. Edit `.env.deploy` with your Cloudflare Worker URL, D1 database ID, Modal workspace, etc.
+3. Copy the secrets template:
+   ```bash
+   cp .env.example .env
+   ```
+4. Fill in API keys and secrets in `.env`
+
 ## Quick Start
 
 ```bash
@@ -174,10 +187,11 @@ make release              # Full release (install, typecheck, build, push image,
 
 ### Modal Backend Deployment
 
-Modal deployment requires the `agent-ops` conda environment and runs from the project root:
+Modal deployment runs from the project root:
 
 ```bash
-~/anaconda3/envs/agent-ops/bin/modal deploy backend/app.py
+make deploy-modal
+# Or directly: modal deploy backend/app.py
 ```
 
 To force a sandbox image rebuild after changing `docker/` or `packages/runner/`:
@@ -198,7 +212,7 @@ Authentication uses GitHub OAuth (primary) and optionally Google OAuth.
    | Field | Dev | Production |
    |-------|-----|------------|
    | Homepage URL | `http://localhost:5173` | `https://your-domain.com` |
-   | Callback URL | `http://localhost:8787/auth/github/callback` | `https://agent-ops.conner-7e8.workers.dev/auth/github/callback` |
+   | Callback URL | `http://localhost:8787/auth/github/callback` | `https://<your-worker>.workers.dev/auth/github/callback` |
 
 3. Copy the **Client ID** and generate a **Client Secret**
 

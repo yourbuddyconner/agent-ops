@@ -4,12 +4,17 @@ node_modules/
 # Build outputs
 dist/
 .wrangler/
+wrangler.deploy.toml
 
 # Environment files
 .env
 .env.local
 .env.*.local
+.env.deploy
 .dev.vars
+
+# Client production env (generated from .env.deploy at build time)
+packages/client/.env.production
 
 # IDE
 .idea/

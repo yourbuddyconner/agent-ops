@@ -132,11 +132,12 @@ make deploy             # Deploy worker to Cloudflare
 
 ### Modal Backend Deployment
 
-Modal deployment requires the `agent-ops` conda environment and must be run from the project root:
+Modal deployment requires the Modal CLI and must be run from the project root:
 
 ```bash
 # Deploy Modal backend (from project root)
-~/anaconda3/envs/agent-ops/bin/modal deploy backend/app.py
+make deploy-modal
+# Or directly: modal deploy backend/app.py
 ```
 
 **Path resolution gotchas:**
@@ -166,7 +167,7 @@ The sandbox image is cached. To force a rebuild after changing `docker/start.sh`
    ```python
    "IMAGE_BUILD_VERSION": "2026-01-28-v7",  # increment this
    ```
-2. Redeploy: `~/anaconda3/envs/agent-ops/bin/modal deploy backend/app.py`
+2. Redeploy: `make deploy-modal`
 3. Create a new session (existing sandboxes won't update)
 
 ## Developing Inside a Sandbox
@@ -224,11 +225,11 @@ The system OpenCode instance is configured via `docker/opencode/opencode.json` a
 
 ### Testing against the deployed worker
 
-The production worker is at `https://agent-ops.conner-7e8.workers.dev`. To run the frontend against it:
+The production worker URL is configured in `.env.deploy` as `WORKER_PROD_URL`. To run the frontend against it:
 
 ```bash
 cd packages/client
-VITE_API_URL=https://agent-ops.conner-7e8.workers.dev/api pnpm dev
+VITE_API_URL=<your-worker-url>/api pnpm dev
 ```
 
 You can also `curl` the deployed API directly for testing routes.

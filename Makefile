@@ -24,8 +24,18 @@
 
 # Configuration
 # =============
+# Source deployment config if it exists (copy .env.deploy.example to .env.deploy)
+-include .env.deploy
+
 WORKER_URL ?= http://localhost:8787
-WORKER_PROD_URL ?= https://agent-ops.conner-7e8.workers.dev
+WORKER_PROD_URL ?= https://your-worker.your-subdomain.workers.dev
+PAGES_PROJECT_NAME ?= agent-ops-client
+MODAL_WORKSPACE ?= your-modal-workspace
+MODAL_DEPLOY_CMD ?= modal deploy
+D1_DATABASE_ID ?= your-d1-database-id
+R2_BUCKET_NAME ?= agent-ops-storage
+ALLOWED_EMAILS ?=
+MODAL_BACKEND_URL ?=
 OPENCODE_URL ?= http://localhost:4096
 # GHCR image for Modal sandboxes
 GHCR_REPO ?= ghcr.io/$(shell git config --get remote.origin.url | sed -n 's/.*github.com[:/]\([^/]*\/[^/.]*\).*/\1/p' | tr '[:upper:]' '[:lower:]')/opencode
@@ -588,16 +598,20 @@ release: ## Full idempotent release: install, build, push image, deploy worker +
 	@echo "$(GREEN)✓ Client built$(NC)"
 	@echo ""
 	@echo "Step 5/7: Deploying Worker..."
-	@cd packages/worker && wrangler deploy
+	@make _wrangler-config
+	@cd packages/worker && wrangler deploy -c wrangler.deploy.toml
+	@rm -f packages/worker/wrangler.deploy.toml
 	@echo "$(GREEN)✓ Worker deployed$(NC)"
 	@echo ""
 	@echo "Step 6/7: Running database migrations and seeding..."
-	@cd packages/worker && wrangler d1 migrations apply agent-ops-db --remote
-	@cd packages/worker && wrangler d1 execute agent-ops-db --remote --file=scripts/seed-bootstrap.sql
+	@make _wrangler-config
+	@cd packages/worker && wrangler d1 migrations apply agent-ops-db --remote -c wrangler.deploy.toml
+	@cd packages/worker && wrangler d1 execute agent-ops-db --remote --file=scripts/seed-bootstrap.sql -c wrangler.deploy.toml
+	@rm -f packages/worker/wrangler.deploy.toml
 	@echo "$(GREEN)✓ Database migrated and seeded$(NC)"
 	@echo ""
 	@echo "Step 7/7: Deploying Client..."
-	@cd packages/client && wrangler pages deploy dist --project-name=agent-ops-client
+	@cd packages/client && wrangler pages deploy dist --project-name=$(PAGES_PROJECT_NAME)
 	@echo "$(GREEN)✓ Client deployed$(NC)"
 	@echo ""
 	@echo "$(GREEN)========================================$(NC)"
@@ -617,23 +631,31 @@ deploy: deploy-worker deploy-modal deploy-client ## Deploy everything (worker + 
 	@echo "$(GREEN)========================================$(NC)"
 	@echo "$(GREEN)All deployments complete!$(NC)"
 	@echo "$(GREEN)========================================$(NC)"
-	@echo "Worker:  https://agent-ops.conner-7e8.workers.dev"
-	@echo "Client:  https://agent-ops-client.pages.dev"
-	@echo "Modal:   https://modal.com/apps/yourbuddyconner/main/deployed/agent-ops-backend"
+	@echo "Worker:  $(WORKER_PROD_URL)"
+	@echo "Client:  https://$(PAGES_PROJECT_NAME).pages.dev"
+	@echo "Modal:   https://modal.com/apps/$(MODAL_WORKSPACE)/main/deployed/agent-ops-backend"
 
-deploy-worker: ## Deploy Cloudflare Worker
+deploy-worker: _wrangler-config ## Deploy Cloudflare Worker
 	@echo "$(GREEN)Deploying Worker...$(NC)"
-	cd packages/worker && wrangler deploy
+	cd packages/worker && wrangler deploy -c wrangler.deploy.toml
+	@rm -f packages/worker/wrangler.deploy.toml
 	@echo "$(GREEN)✓ Worker deployed$(NC)"
+
+_wrangler-config: ## Generate wrangler.deploy.toml from .env.deploy values
+	@sed -e 's|$${D1_DATABASE_ID}|$(D1_DATABASE_ID)|g' \
+		-e 's|$${R2_BUCKET_NAME}|$(R2_BUCKET_NAME)|g' \
+		-e 's|$${ALLOWED_EMAILS}|$(ALLOWED_EMAILS)|g' \
+		-e 's|$${MODAL_BACKEND_URL}|$(MODAL_BACKEND_URL)|g' \
+		packages/worker/wrangler.toml > packages/worker/wrangler.deploy.toml
 
 deploy-modal: ## Deploy Modal backend (includes runner)
 	@echo "$(GREEN)Deploying Modal backend...$(NC)"
-	$(HOME)/anaconda3/envs/agent-ops/bin/modal deploy backend/app.py
+	$(MODAL_DEPLOY_CMD) backend/app.py
 	@echo "$(GREEN)✓ Modal backend deployed$(NC)"
 
 deploy-client: build-client ## Deploy client to Cloudflare Pages
 	@echo "$(GREEN)Deploying client to Cloudflare Pages...$(NC)"
-	cd packages/client && wrangler pages deploy dist --project-name=agent-ops-client
+	cd packages/client && wrangler pages deploy dist --project-name=$(PAGES_PROJECT_NAME)
 	@echo "$(GREEN)✓ Client deployed$(NC)"
 
 build-client: ## Build client for production
