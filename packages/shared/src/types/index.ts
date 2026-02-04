@@ -320,6 +320,7 @@ export interface DashboardActiveSession {
 
 export interface DashboardStatsResponse {
   hero: DashboardHeroStats;
+  userHero: DashboardHeroStats;
   delta: DashboardDelta;
   activity: DashboardDayActivity[];
   topRepos: DashboardTopRepo[];

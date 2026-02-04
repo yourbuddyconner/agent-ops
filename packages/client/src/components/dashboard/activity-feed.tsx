@@ -20,8 +20,8 @@ const statusVariant: Record<string, 'default' | 'success' | 'warning' | 'error' 
 
 export function ActivityFeed({ sessions }: ActivityFeedProps) {
   return (
-    <div className="animate-stagger-in rounded-lg border border-neutral-200/80 bg-white shadow-[0_1px_2px_0_rgb(0_0_0/0.04)]" style={{ animationDelay: '280ms' }}>
-      <div className="border-b border-neutral-100 px-5 py-3.5">
+    <div className="animate-stagger-in rounded-lg border border-neutral-200/80 bg-white shadow-[0_1px_2px_0_rgb(0_0_0/0.04)] dark:border-neutral-800 dark:bg-surface-1 dark:shadow-none" style={{ animationDelay: '280ms' }}>
+      <div className="border-b border-neutral-100 dark:border-neutral-800 px-5 py-3.5">
         <h3 className="label-mono text-neutral-400">Recent Sessions</h3>
       </div>
       {sessions.length === 0 ? (
@@ -29,7 +29,7 @@ export function ActivityFeed({ sessions }: ActivityFeedProps) {
           No sessions yet
         </div>
       ) : (
-        <div className="divide-y divide-neutral-100/80">
+        <div className="divide-y divide-neutral-100/80 dark:divide-neutral-800">
           {sessions.map((s) => (
             <Link
               key={s.id}
@@ -38,7 +38,7 @@ export function ActivityFeed({ sessions }: ActivityFeedProps) {
               className="group flex items-center gap-4 px-5 py-3 transition-colors hover:bg-surface-1"
             >
               <div className="min-w-0 flex-1">
-                <p className="truncate text-[13px] font-medium text-neutral-900 group-hover:text-accent transition-colors">
+                <p className="truncate text-[13px] font-medium text-neutral-900 dark:text-neutral-100 group-hover:text-accent transition-colors">
                   {s.workspace || 'Untitled Session'}
                 </p>
                 <p className="mt-0.5 font-mono text-2xs text-neutral-400">

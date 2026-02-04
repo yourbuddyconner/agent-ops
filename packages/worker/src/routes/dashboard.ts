@@ -59,15 +59,38 @@ dashboardRouter.get('/stats', async (c) => {
     await backfillUnflushedSessions(c.env, unflushedIds);
   }
 
+  type AggRow = {
+    total_sessions: number;
+    active_sessions: number;
+    unique_repos: number;
+    total_messages: number;
+    total_tool_calls: number;
+    total_duration: number;
+  };
+
   const [
-    aggregateResult,
+    orgAggregateResult,
+    userAggregateResult,
     prevPeriodResult,
     activityResult,
     topReposResult,
     recentSessionsResult,
     activeSessionsResult,
   ] = await Promise.all([
-    // Aggregate stats for current period
+    // Org-wide aggregate stats for current period
+    c.env.DB.prepare(`
+      SELECT
+        COUNT(*) as total_sessions,
+        SUM(CASE WHEN status IN ('running', 'idle', 'initializing') THEN 1 ELSE 0 END) as active_sessions,
+        COUNT(DISTINCT workspace) as unique_repos,
+        COALESCE(SUM(message_count), 0) as total_messages,
+        COALESCE(SUM(tool_call_count), 0) as total_tool_calls,
+        COALESCE(SUM(active_seconds), 0) as total_duration
+      FROM sessions
+      WHERE created_at >= ?
+    `).bind(periodStartStr).first<AggRow>(),
+
+    // Per-user aggregate stats for current period
     c.env.DB.prepare(`
       SELECT
         COUNT(*) as total_sessions,
@@ -78,25 +101,18 @@ dashboardRouter.get('/stats', async (c) => {
         COALESCE(SUM(active_seconds), 0) as total_duration
       FROM sessions
       WHERE user_id = ? AND created_at >= ?
-    `).bind(user.id, periodStartStr).first<{
-      total_sessions: number;
-      active_sessions: number;
-      unique_repos: number;
-      total_messages: number;
-      total_tool_calls: number;
-      total_duration: number;
-    }>(),
+    `).bind(user.id, periodStartStr).first<AggRow>(),
 
-    // Previous period aggregates (for delta)
+    // Previous period aggregates (org-wide for delta)
     c.env.DB.prepare(`
       SELECT
         COUNT(*) as count,
         COALESCE(SUM(message_count), 0) as messages
       FROM sessions
-      WHERE user_id = ? AND created_at >= ? AND created_at < ?
-    `).bind(user.id, prevPeriodStartStr, periodStartStr).first<{ count: number; messages: number }>(),
+      WHERE created_at >= ? AND created_at < ?
+    `).bind(prevPeriodStartStr, periodStartStr).first<{ count: number; messages: number }>(),
 
-    // Daily activity with message counts
+    // Daily activity with message counts (org-wide)
     c.env.DB.prepare(`
       WITH RECURSIVE dates(date) AS (
         SELECT date(?, '-' || ? || ' days')
@@ -110,70 +126,73 @@ dashboardRouter.get('/stats', async (c) => {
       FROM dates d
       LEFT JOIN (
         SELECT date(created_at) as day, COUNT(*) as cnt, COALESCE(SUM(message_count), 0) as msgs
-        FROM sessions WHERE user_id = ? AND created_at >= ?
+        FROM sessions WHERE created_at >= ?
         GROUP BY day
       ) sc ON sc.day = d.date
       ORDER BY d.date
-    `).bind(periodStartStr, Math.max(1, Math.ceil(periodHours / 24)), user.id, periodStartStr).all(),
+    `).bind(periodStartStr, Math.max(1, Math.ceil(periodHours / 24)), periodStartStr).all(),
 
-    // Top repos by session count with message totals
+    // Top repos by session count with message totals (org-wide)
     c.env.DB.prepare(`
       SELECT
         workspace,
         COUNT(*) as session_count,
         COALESCE(SUM(message_count), 0) as message_count
       FROM sessions
-      WHERE user_id = ? AND created_at >= ?
+      WHERE created_at >= ?
       GROUP BY workspace
       ORDER BY session_count DESC
       LIMIT 8
-    `).bind(user.id, periodStartStr).all(),
+    `).bind(periodStartStr).all(),
 
-    // Recent sessions
+    // Recent sessions (org-wide)
     c.env.DB.prepare(`
       SELECT
         id, workspace, status, message_count, tool_call_count,
         active_seconds as duration_seconds,
         created_at, last_active_at, error_message
       FROM sessions
-      WHERE user_id = ?
       ORDER BY created_at DESC
       LIMIT 10
-    `).bind(user.id).all(),
+    `).all(),
 
-    // Currently active sessions
+    // Currently active sessions (org-wide)
     c.env.DB.prepare(`
       SELECT id, workspace, status, created_at, last_active_at
       FROM sessions
-      WHERE user_id = ? AND status IN ('running', 'idle', 'initializing', 'restoring')
+      WHERE status IN ('running', 'idle', 'initializing', 'restoring')
       ORDER BY last_active_at DESC
-    `).bind(user.id).all(),
+    `).all(),
   ]);
 
-  const agg = aggregateResult!;
-  const totalSessions = agg.total_sessions;
-  const totalMessages = agg.total_messages;
-  const totalToolCalls = agg.total_tool_calls;
-  const totalDuration = agg.total_duration;
-  const avgDuration = totalSessions > 0 ? Math.floor(totalDuration / totalSessions) : 0;
-
-  const prevSessions = prevPeriodResult?.count ?? 0;
-  const prevMessages = prevPeriodResult?.messages ?? 0;
-  const sessionDelta = prevSessions > 0 ? Math.round(((totalSessions - prevSessions) / prevSessions) * 100) : 0;
-  const messageDelta = prevMessages > 0 ? Math.round(((totalMessages - prevMessages) / prevMessages) * 100) : 0;
-
-  const response: DashboardStatsResponse = {
-    hero: {
+  function buildHero(agg: AggRow) {
+    const totalSessions = agg.total_sessions;
+    const totalToolCalls = agg.total_tool_calls;
+    const totalDuration = agg.total_duration;
+    return {
       totalSessions,
       activeSessions: agg.active_sessions,
-      totalMessages,
+      totalMessages: agg.total_messages,
       uniqueRepos: agg.unique_repos,
       totalToolCalls,
       totalSessionDurationSeconds: totalDuration,
-      avgSessionDurationSeconds: avgDuration,
+      avgSessionDurationSeconds: totalSessions > 0 ? Math.floor(totalDuration / totalSessions) : 0,
       estimatedLinesChanged: totalToolCalls * 15,
       sessionHours: Math.round((totalDuration / 3600) * 10) / 10,
-    },
+    };
+  }
+
+  const orgAgg = orgAggregateResult!;
+  const userAgg = userAggregateResult!;
+
+  const prevSessions = prevPeriodResult?.count ?? 0;
+  const prevMessages = prevPeriodResult?.messages ?? 0;
+  const sessionDelta = prevSessions > 0 ? Math.round(((orgAgg.total_sessions - prevSessions) / prevSessions) * 100) : 0;
+  const messageDelta = prevMessages > 0 ? Math.round(((orgAgg.total_messages - prevMessages) / prevMessages) * 100) : 0;
+
+  const response: DashboardStatsResponse = {
+    hero: buildHero(orgAgg),
+    userHero: buildHero(userAgg),
     delta: {
       sessions: sessionDelta,
       messages: messageDelta,

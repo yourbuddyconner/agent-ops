@@ -1,5 +1,6 @@
 import { useNavigate } from '@tanstack/react-router';
 import { useAuthStore } from '@/stores/auth';
+import { useTheme } from '@/hooks/use-theme';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   DropdownMenu,
@@ -12,6 +13,7 @@ import {
 export function Header() {
   const navigate = useNavigate();
   const { user, clearAuth } = useAuthStore();
+  const { theme, setTheme, isDark } = useTheme();
 
   const handleSignOut = () => {
     clearAuth();
@@ -30,6 +32,32 @@ export function Header() {
   return (
     <header className="flex h-12 items-center justify-between border-b border-neutral-200 bg-surface-0 px-4 dark:border-neutral-800 dark:bg-surface-0">
       <div />
+
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => {
+            if (theme === 'system') {
+              setTheme(isDark ? 'light' : 'dark');
+            } else if (theme === 'dark') {
+              setTheme('light');
+            } else {
+              setTheme('dark');
+            }
+          }}
+          className="flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-surface-2 hover:text-neutral-600 dark:hover:text-neutral-300"
+          title={`Theme: ${theme}`}
+        >
+          {isDark ? (
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="7.5" cy="7.5" r="3" />
+              <path d="M7.5 1.5v1M7.5 12.5v1M1.5 7.5h1M12.5 7.5h1M3.26 3.26l.7.7M11.04 11.04l.7.7M11.04 3.26l-.7.7M3.26 11.04l-.7.7" />
+            </svg>
+          ) : (
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13.5 8.5a6 6 0 1 1-7-7 4.5 4.5 0 0 0 7 7z" />
+            </svg>
+          )}
+        </button>
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -53,6 +81,7 @@ export function Header() {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      </div>
     </header>
   );
 }

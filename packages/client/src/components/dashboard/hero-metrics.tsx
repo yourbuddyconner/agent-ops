@@ -3,6 +3,7 @@ import { HeroMetricCard } from './hero-metric-card';
 
 interface HeroMetricsProps {
   hero: DashboardHeroStats;
+  userHero: DashboardHeroStats;
   delta: DashboardDelta;
 }
 
@@ -42,13 +43,14 @@ function ClockIcon() {
   );
 }
 
-export function HeroMetrics({ hero, delta }: HeroMetricsProps) {
+export function HeroMetrics({ hero, userHero, delta }: HeroMetricsProps) {
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <HeroMetricCard
         icon={<SessionsIcon />}
         label="Sessions"
         value={hero.totalSessions.toLocaleString()}
+        userValue={userHero.totalSessions.toLocaleString()}
         delta={delta.sessions}
         index={0}
       />
@@ -56,6 +58,7 @@ export function HeroMetrics({ hero, delta }: HeroMetricsProps) {
         icon={<MessagesIcon />}
         label="Messages"
         value={hero.totalMessages.toLocaleString()}
+        userValue={userHero.totalMessages.toLocaleString()}
         delta={delta.messages}
         index={1}
       />
@@ -63,12 +66,14 @@ export function HeroMetrics({ hero, delta }: HeroMetricsProps) {
         icon={<ReposIcon />}
         label="Repositories"
         value={hero.uniqueRepos.toLocaleString()}
+        userValue={userHero.uniqueRepos.toLocaleString()}
         index={2}
       />
       <HeroMetricCard
         icon={<ClockIcon />}
         label="Session Hours"
         value={hero.sessionHours > 0 ? `${hero.sessionHours}h` : '0h'}
+        userValue={userHero.sessionHours > 0 ? `${userHero.sessionHours}h` : '0h'}
         tooltip="Total wall-clock time across all sessions"
         index={3}
       />

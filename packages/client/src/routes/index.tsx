@@ -23,12 +23,12 @@ function DashboardPage() {
     <PageContainer>
       <PageHeader
         title="Dashboard"
-        description="Overview of your AI agent activity"
+        description="Overview of your team's AI agent activity"
         actions={<PeriodSelector value={period} onChange={setPeriod} />}
       />
 
       {isError && (
-        <div className="mb-6 rounded-lg bg-red-50 p-4 text-sm text-red-600">
+        <div className="mb-6 rounded-lg bg-red-50 p-4 text-sm text-red-600 dark:bg-red-950/30 dark:text-red-400">
           Failed to load dashboard data
         </div>
       )}
@@ -38,7 +38,7 @@ function DashboardPage() {
       ) : (
         <div className="space-y-6">
           <LiveSessionsBanner sessions={data.activeSessions} />
-          <HeroMetrics hero={data.hero} delta={data.delta} />
+          <HeroMetrics hero={data.hero} userHero={data.userHero} delta={data.delta} />
           <ActivityChart data={data.activity} />
           <div className="grid gap-6 lg:grid-cols-5">
             <div className="lg:col-span-3">

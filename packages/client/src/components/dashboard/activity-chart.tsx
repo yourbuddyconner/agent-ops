@@ -22,13 +22,13 @@ function formatDateLabel(dateStr: string): string {
 function CustomTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ name: string; value: number; color: string }>; label?: string }) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="rounded-lg border border-neutral-200/80 bg-white px-3 py-2.5 shadow-[0_4px_12px_-4px_rgb(0_0_0/0.1)]">
+    <div className="rounded-lg border border-neutral-200/80 bg-white px-3 py-2.5 shadow-[0_4px_12px_-4px_rgb(0_0_0/0.1)] dark:border-neutral-700 dark:bg-surface-2">
       <p className="mb-1.5 font-mono text-2xs text-neutral-400">{formatDateLabel(String(label))}</p>
       {payload.map((entry) => (
         <div key={entry.name} className="flex items-center gap-2">
           <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: entry.color }} />
-          <span className="text-xs text-neutral-500">{entry.name}</span>
-          <span className="ml-auto font-mono text-xs font-medium tabular-nums text-neutral-900">{entry.value}</span>
+          <span className="text-xs text-neutral-500 dark:text-neutral-400">{entry.name}</span>
+          <span className="ml-auto font-mono text-xs font-medium tabular-nums text-neutral-900 dark:text-neutral-100">{entry.value}</span>
         </div>
       ))}
     </div>
@@ -52,7 +52,7 @@ function CustomLegend({ payload }: { payload?: Array<{ value: string; color: str
 export function ActivityChart({ data }: ActivityChartProps) {
   if (data.length === 0) {
     return (
-      <div className="rounded-lg border border-neutral-200/80 bg-white p-6 shadow-[0_1px_2px_0_rgb(0_0_0/0.04)]">
+      <div className="rounded-lg border border-neutral-200/80 bg-white p-6 shadow-[0_1px_2px_0_rgb(0_0_0/0.04)] dark:border-neutral-800 dark:bg-surface-1 dark:shadow-none">
         <h3 className="label-mono text-neutral-400 mb-4">Activity</h3>
         <div className="flex h-[240px] items-center justify-center text-[13px] text-neutral-300">
           No activity data for this period
@@ -62,7 +62,7 @@ export function ActivityChart({ data }: ActivityChartProps) {
   }
 
   return (
-    <div className="animate-stagger-in rounded-lg border border-neutral-200/80 bg-white p-6 shadow-[0_1px_2px_0_rgb(0_0_0/0.04)]" style={{ animationDelay: '200ms' }}>
+    <div className="animate-stagger-in rounded-lg border border-neutral-200/80 bg-white p-6 shadow-[0_1px_2px_0_rgb(0_0_0/0.04)] dark:border-neutral-800 dark:bg-surface-1 dark:shadow-none" style={{ animationDelay: '200ms' }}>
       <h3 className="label-mono text-neutral-400 mb-4">Activity</h3>
       <ResponsiveContainer width="100%" height={260}>
         <AreaChart data={data} margin={{ top: 4, right: -16, left: -20, bottom: 0 }}>

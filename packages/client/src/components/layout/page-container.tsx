@@ -21,7 +21,7 @@ export function PageHeader({ title, description, actions }: PageHeaderProps) {
   return (
     <div className="mb-6 flex items-start justify-between">
       <div>
-        <h1 className="text-2xl font-semibold text-neutral-900 text-balance">
+        <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100 text-balance">
           {title}
         </h1>
         {description && (

@@ -40,7 +40,7 @@ export function AdoptionCard({ periodDays = 30 }: AdoptionCardProps) {
 
   if (isLoading) {
     return (
-      <div className="rounded-lg border border-neutral-200/80 bg-white p-5 shadow-[0_1px_2px_0_rgb(0_0_0/0.04)] animate-stagger-in">
+      <div className="rounded-lg border border-neutral-200/80 bg-white p-5 shadow-[0_1px_2px_0_rgb(0_0_0/0.04)] animate-stagger-in dark:border-neutral-800 dark:bg-surface-1 dark:shadow-none">
         <div className="mb-4 flex items-center gap-2">
           <span className="flex h-6 w-6 items-center justify-center rounded-md bg-surface-1 text-neutral-400">
             <PRIcon />
@@ -49,7 +49,7 @@ export function AdoptionCard({ periodDays = 30 }: AdoptionCardProps) {
         </div>
         <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-5 w-full animate-pulse rounded bg-neutral-100" />
+            <div key={i} className="h-5 w-full animate-pulse rounded bg-neutral-100 dark:bg-neutral-800" />
           ))}
         </div>
       </div>
@@ -59,7 +59,7 @@ export function AdoptionCard({ periodDays = 30 }: AdoptionCardProps) {
   if (!data) return null;
 
   return (
-    <div className="rounded-lg border border-neutral-200/80 bg-white p-5 shadow-[0_1px_2px_0_rgb(0_0_0/0.04)] transition-shadow hover:shadow-[0_2px_8px_-2px_rgb(0_0_0/0.08)] animate-stagger-in">
+    <div className="rounded-lg border border-neutral-200/80 bg-white p-5 shadow-[0_1px_2px_0_rgb(0_0_0/0.04)] transition-shadow hover:shadow-[0_2px_8px_-2px_rgb(0_0_0/0.08)] animate-stagger-in dark:border-neutral-800 dark:bg-surface-1 dark:shadow-none">
       <div className="mb-4 flex items-center gap-2">
         <span className="flex h-6 w-6 items-center justify-center rounded-md bg-surface-1 text-neutral-400">
           <PRIcon />
@@ -107,7 +107,7 @@ function AdoptionRow({
         <span className="font-mono text-[12px] text-neutral-500">{label}</span>
       </div>
       <div className="flex items-baseline gap-1.5">
-        <span className="font-mono text-[14px] font-semibold tabular-nums text-neutral-900">
+        <span className="font-mono text-[14px] font-semibold tabular-nums text-neutral-900 dark:text-neutral-100">
           {value.toLocaleString()}
         </span>
         {suffix && (

@@ -4,15 +4,16 @@ interface HeroMetricCardProps {
   icon: React.ReactNode;
   label: string;
   value: string;
+  userValue?: string;
   delta?: number;
   tooltip?: string;
   index?: number;
 }
 
-export function HeroMetricCard({ icon, label, value, delta, tooltip, index = 0 }: HeroMetricCardProps) {
+export function HeroMetricCard({ icon, label, value, userValue, delta, tooltip, index = 0 }: HeroMetricCardProps) {
   return (
     <div
-      className="group relative rounded-lg border border-neutral-200/80 bg-white p-5 shadow-[0_1px_2px_0_rgb(0_0_0/0.04)] transition-shadow hover:shadow-[0_2px_8px_-2px_rgb(0_0_0/0.08)] animate-stagger-in"
+      className="group relative rounded-lg border border-neutral-200/80 bg-white p-5 shadow-[0_1px_2px_0_rgb(0_0_0/0.04)] transition-shadow hover:shadow-[0_2px_8px_-2px_rgb(0_0_0/0.08)] animate-stagger-in dark:border-neutral-800 dark:bg-surface-1 dark:shadow-none"
       style={{ animationDelay: `${index * 60}ms` }}
       title={tooltip}
     >
@@ -23,9 +24,14 @@ export function HeroMetricCard({ icon, label, value, delta, tooltip, index = 0 }
         <span className="label-mono text-neutral-400">{label}</span>
       </div>
       <div className="mt-3 flex items-baseline gap-2.5">
-        <span className="text-[28px] font-semibold leading-none tabular-nums tracking-tight text-neutral-900 animate-number-in" style={{ animationDelay: `${index * 60 + 120}ms` }}>
+        <span className="text-[28px] font-semibold leading-none tabular-nums tracking-tight text-neutral-900 dark:text-neutral-100 animate-number-in" style={{ animationDelay: `${index * 60 + 120}ms` }}>
           {value}
         </span>
+        {userValue !== undefined && (
+          <span className="font-mono text-[11px] text-neutral-400 dark:text-neutral-500">
+            You: {userValue}
+          </span>
+        )}
         {delta !== undefined && delta !== 0 && (
           <span
             className={cn(
