@@ -187,11 +187,11 @@ make release              # Full release (install, typecheck, build, push image,
 
 ### Modal Backend Deployment
 
-Modal deployment runs from the project root:
+Modal deployment uses `uv` to manage the Python environment and runs from the project root:
 
 ```bash
 make deploy-modal
-# Or directly: modal deploy backend/app.py
+# Or directly: uv run --project backend modal deploy backend/app.py
 ```
 
 To force a sandbox image rebuild after changing `docker/` or `packages/runner/`:

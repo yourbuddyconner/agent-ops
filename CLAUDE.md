@@ -132,12 +132,12 @@ make deploy             # Deploy worker to Cloudflare
 
 ### Modal Backend Deployment
 
-Modal deployment requires the Modal CLI and must be run from the project root:
+Modal deployment uses `uv` to manage the Python environment and must be run from the project root:
 
 ```bash
 # Deploy Modal backend (from project root)
 make deploy-modal
-# Or directly: modal deploy backend/app.py
+# Or directly: uv run --project backend modal deploy backend/app.py
 ```
 
 **Path resolution gotchas:**
@@ -213,7 +213,7 @@ The system OpenCode instance is configured via `docker/opencode/opencode.json` a
 
 - **`wrangler d1 migrations apply --local`** — Write and review migration SQL directly; it gets applied during deployment.
 - **Docker** — Not available. Modal sandboxes are already containers; nested Docker (DinD) is not supported.
-- **`modal deploy`** — The Modal Python backend must be deployed from outside the sandbox (requires the `agent-ops` conda environment on the host).
+- **`modal deploy`** — The Modal Python backend must be deployed from outside the sandbox (requires `uv` on the host).
 
 ### Recommended workflow
 

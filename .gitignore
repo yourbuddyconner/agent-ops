@@ -25,6 +25,7 @@ packages/client/.env.production
 # Python
 __pycache__/
 *.pyc
+.venv/
 
 # OS
 .DS_Store
