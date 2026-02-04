@@ -104,19 +104,10 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   const isDisabled = !isConnected || isTerminated;
   const isAgentActive = isAgentThinking || agentStatus === 'thinking' || agentStatus === 'tool_calling' || agentStatus === 'streaming';
 
-  // Sync transition overlays to layout level
+  // Clear any stale overlay (no longer using layout-level transition overlays)
   useEffect(() => {
-    if (isHibernateTransition || isAwaitingRunner) {
-      const message = sessionStatus === 'hibernating'
-        ? 'Hibernating session...'
-        : isAwaitingRunner
-          ? 'Connecting to agent...'
-          : 'Restoring session...';
-      drawer.setOverlay({ type: 'transition', message });
-    } else {
-      drawer.setOverlay(null);
-    }
-  }, [sessionStatus, isHibernateTransition, isAwaitingRunner, drawer.setOverlay]);
+    drawer.setOverlay(null);
+  }, [drawer.setOverlay]);
 
   // Global Escape key handler for abort
   useEffect(() => {
@@ -171,7 +162,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             status={sessionStatus}
             errorMessage={session?.errorMessage}
           />
-          <ConnectionStatusDot status={connectionStatus} />
+          <SessionStatusIndicator sessionStatus={sessionStatus} connectionStatus={connectionStatus} />
         </div>
         <div className="flex items-center gap-0.5">
           <Button
@@ -256,16 +247,6 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
               childSessions={childSessions}
               connectedUsers={connectedUsers}
             />
-            {sessionStatus === 'hibernated' && (
-              <div className="absolute inset-0 flex items-center justify-center bg-surface-0/60 dark:bg-surface-0/70 backdrop-blur-[2px] transition-opacity duration-500">
-                <div className="flex flex-col items-center gap-1.5">
-                  <div className="h-1 w-1 rounded-full bg-neutral-300 animate-pulse-dot dark:bg-neutral-600" />
-                  <span className="font-mono text-[11px] tracking-wide text-neutral-400 dark:text-neutral-500">
-                    begin typing to wake
-                  </span>
-                </div>
-              </div>
-            )}
           </div>
           {pendingQuestions.map((q) => (
             <QuestionPrompt
@@ -319,19 +300,66 @@ function SessionStatusBadge({ status, errorMessage }: { status: string; errorMes
   return <Badge variant={variants[status] ?? 'default'} title={errorMessage}>{status}</Badge>;
 }
 
-function ConnectionStatusDot({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    connecting: 'bg-amber-400',
-    connected: 'bg-emerald-500',
-    disconnected: 'bg-neutral-300 dark:bg-neutral-600',
-    error: 'bg-red-400',
-  };
+function SessionStatusIndicator({ sessionStatus, connectionStatus }: { sessionStatus: string; connectionStatus: string }) {
+  // Determine color and animation based on session state
+  const isTransitioning = sessionStatus === 'hibernating' || sessionStatus === 'restoring' || sessionStatus === 'initializing';
+  const isRunning = sessionStatus === 'running' || sessionStatus === 'idle';
+  const isSleeping = sessionStatus === 'hibernated';
+  const isTerminated = sessionStatus === 'terminated';
+  const isError = sessionStatus === 'error' || connectionStatus === 'error';
+  const isDisconnected = connectionStatus === 'disconnected' || connectionStatus === 'connecting';
+
+  let color = 'bg-neutral-300 dark:bg-neutral-600';
+  let title = sessionStatus;
+  let pulse = false;
+  let spin = false;
+
+  if (isError) {
+    color = 'bg-red-400';
+    title = 'Error';
+  } else if (isTerminated) {
+    color = 'bg-neutral-300 dark:bg-neutral-600';
+    title = 'Terminated';
+  } else if (isTransitioning) {
+    color = 'bg-amber-400';
+    title = sessionStatus === 'initializing' ? 'Starting...' : sessionStatus === 'hibernating' ? 'Hibernating...' : 'Waking...';
+    spin = true;
+  } else if (isSleeping) {
+    color = 'bg-neutral-400 dark:bg-neutral-500';
+    title = 'Hibernated';
+    pulse = true;
+  } else if (isDisconnected) {
+    color = 'bg-amber-400';
+    title = 'Reconnecting...';
+    spin = true;
+  } else if (isRunning) {
+    color = 'bg-emerald-500';
+    title = 'Live';
+    pulse = true;
+  }
 
   return (
-    <div className="relative flex items-center justify-center" title={status === 'connected' ? 'Live' : status}>
-      <div className={`h-1.5 w-1.5 rounded-full ${colors[status] ?? 'bg-neutral-300'}`} />
-      {status === 'connected' && (
-        <div className="absolute h-2.5 w-2.5 rounded-full border border-emerald-500/30 animate-ping" style={{ animationDuration: '2s' }} />
+    <div className="relative flex items-center justify-center" title={title}>
+      <div className={`h-1.5 w-1.5 rounded-full ${color} ${spin ? 'animate-spin-slow' : ''}`} />
+      {pulse && !spin && (
+        <div
+          className={`absolute h-2.5 w-2.5 rounded-full border ${
+            isRunning
+              ? 'border-emerald-500/30'
+              : 'border-neutral-400/20 dark:border-neutral-500/20'
+          } animate-ping`}
+          style={{ animationDuration: isRunning ? '2s' : '3s' }}
+        />
+      )}
+      {spin && (
+        <div className="absolute h-3 w-3">
+          <div
+            className={`h-full w-full rounded-full border border-transparent ${
+              isTransitioning ? 'border-t-amber-400/60' : 'border-t-amber-400/60'
+            } animate-spin`}
+            style={{ animationDuration: '1s' }}
+          />
+        </div>
       )}
     </div>
   );
