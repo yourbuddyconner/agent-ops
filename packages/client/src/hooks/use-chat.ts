@@ -106,6 +106,7 @@ interface WebSocketInitMessage {
       authorId?: string;
       authorEmail?: string;
       authorName?: string;
+      authorAvatarUrl?: string;
       createdAt: number;
     }>;
   };
@@ -125,6 +126,7 @@ interface WebSocketMessageMessage {
     authorId?: string;
     authorEmail?: string;
     authorName?: string;
+    authorAvatarUrl?: string;
     createdAt: number;
   };
 }
@@ -395,6 +397,7 @@ export function useChat(sessionId: string) {
             authorId: m.authorId,
             authorEmail: m.authorEmail,
             authorName: m.authorName,
+            authorAvatarUrl: m.authorAvatarUrl,
             createdAt: new Date(m.createdAt * 1000),
           })),
           status: message.session.status,
@@ -432,6 +435,7 @@ export function useChat(sessionId: string) {
           authorId: d.authorId,
           authorEmail: d.authorEmail,
           authorName: d.authorName,
+          authorAvatarUrl: d.authorAvatarUrl,
           createdAt: new Date(d.createdAt * 1000),
         };
         setState((prev) => {

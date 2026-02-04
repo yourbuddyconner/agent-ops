@@ -27,12 +27,12 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
 
   // User messages: right-aligned bubble with author avatar
   if (isUser) {
-    // Resolve author avatar from connectedUsers or message fields
     const authorName = message.authorName || message.authorEmail;
+    // Prefer persisted avatar URL from message; fall back to connected user cache
     const connectedUser = message.authorId
       ? connectedUsers?.find((u) => u.id === message.authorId)
       : undefined;
-    const avatarUrl = connectedUser?.avatarUrl;
+    const avatarUrl = message.authorAvatarUrl || connectedUser?.avatarUrl;
     const initials = (authorName || '?')
       .split(/[\s@]/)
       .filter(Boolean)

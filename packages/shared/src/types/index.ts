@@ -166,6 +166,7 @@ export interface Message {
   authorId?: string;
   authorEmail?: string;
   authorName?: string;
+  authorAvatarUrl?: string;
   createdAt: Date;
 }
 

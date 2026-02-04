@@ -110,6 +110,7 @@ const SCHEMA_SQL = `
     author_id TEXT,
     author_email TEXT,
     author_name TEXT,
+    author_avatar_url TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
 
@@ -130,6 +131,7 @@ const SCHEMA_SQL = `
     author_id TEXT,
     author_email TEXT,
     author_name TEXT,
+    author_avatar_url TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
 
@@ -168,6 +170,11 @@ export class SessionAgentDO {
     // Run schema migration on construction (blockConcurrencyWhile ensures it completes before any request)
     this.ctx.blockConcurrencyWhile(async () => {
       this.ctx.storage.sql.exec(SCHEMA_SQL);
+
+      // Migrate existing DOs: add author_avatar_url columns if missing
+      try { this.ctx.storage.sql.exec('ALTER TABLE messages ADD COLUMN author_avatar_url TEXT'); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN author_avatar_url TEXT'); } catch { /* already exists */ }
+
       this.initialized = true;
     });
   }
@@ -281,7 +288,7 @@ export class SessionAgentDO {
 
     // Send full session state as a single init message (prevents duplicates on reconnect)
     const messages = this.ctx.storage.sql
-      .exec('SELECT id, role, content, parts, author_id, author_email, author_name, created_at FROM messages ORDER BY created_at ASC')
+      .exec('SELECT id, role, content, parts, author_id, author_email, author_name, author_avatar_url, created_at FROM messages ORDER BY created_at ASC')
       .toArray();
 
     const status = this.getStateValue('status') || 'idle';
@@ -309,6 +316,7 @@ export class SessionAgentDO {
           authorId: msg.author_id || undefined,
           authorEmail: msg.author_email || undefined,
           authorName: msg.author_name || undefined,
+          authorAvatarUrl: msg.author_avatar_url || undefined,
           createdAt: msg.created_at,
         })),
       },
@@ -626,9 +634,10 @@ export class SessionAgentDO {
           id: userDetails.id,
           email: userDetails.email,
           name: userDetails.name,
+          avatarUrl: userDetails.avatarUrl,
           gitName: userDetails.gitName,
           gitEmail: userDetails.gitEmail,
-        } : userId ? { id: userId, email: '', name: undefined, gitName: undefined, gitEmail: undefined } : undefined;
+        } : userId ? { id: userId, email: '', name: undefined, avatarUrl: undefined, gitName: undefined, gitEmail: undefined } : undefined;
         await this.handlePrompt(msg.content, msg.model, author);
         break;
       }
@@ -672,7 +681,7 @@ export class SessionAgentDO {
   private async handlePrompt(
     content: string,
     model?: string,
-    author?: { id: string; email: string; name?: string; gitName?: string; gitEmail?: string }
+    author?: { id: string; email: string; name?: string; avatarUrl?: string; gitName?: string; gitEmail?: string }
   ) {
     // Update idle tracking
     this.setStateValue('lastUserActivityAt', String(Date.now()));
@@ -693,9 +702,9 @@ export class SessionAgentDO {
     // Store user message with author info
     const messageId = crypto.randomUUID();
     this.ctx.storage.sql.exec(
-      'INSERT INTO messages (id, role, content, author_id, author_email, author_name) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO messages (id, role, content, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
       messageId, 'user', content,
-      author?.id || null, author?.email || null, author?.name || null
+      author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null
     );
 
     // Broadcast user message to all clients (includes author info)
@@ -708,6 +717,7 @@ export class SessionAgentDO {
         authorId: author?.id,
         authorEmail: author?.email,
         authorName: author?.name,
+        authorAvatarUrl: author?.avatarUrl,
         createdAt: Math.floor(Date.now() / 1000),
       },
     });
@@ -719,9 +729,9 @@ export class SessionAgentDO {
     if (runnerSockets.length === 0) {
       // No runner connected — queue the prompt with author info
       this.ctx.storage.sql.exec(
-        "INSERT INTO prompt_queue (id, content, status, author_id, author_email, author_name) VALUES (?, ?, 'queued', ?, ?, ?)",
+        "INSERT INTO prompt_queue (id, content, status, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, 'queued', ?, ?, ?, ?)",
         messageId, content,
-        author?.id || null, author?.email || null, author?.name || null
+        author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null
       );
       this.broadcastToClients({
         type: 'status',
@@ -733,9 +743,9 @@ export class SessionAgentDO {
     if (runnerBusy) {
       // Runner is processing another prompt — queue with author info
       this.ctx.storage.sql.exec(
-        "INSERT INTO prompt_queue (id, content, status, author_id, author_email, author_name) VALUES (?, ?, 'queued', ?, ?, ?)",
+        "INSERT INTO prompt_queue (id, content, status, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, 'queued', ?, ?, ?, ?)",
         messageId, content,
-        author?.id || null, author?.email || null, author?.name || null
+        author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null
       );
       this.broadcastToClients({
         type: 'status',
