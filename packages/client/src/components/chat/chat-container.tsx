@@ -7,9 +7,11 @@ import { MessageList } from './message-list';
 import { ChatInput } from './chat-input';
 import { QuestionPrompt } from './question-prompt';
 import { SessionActionsMenu } from '@/components/sessions/session-actions-menu';
+import { ShareSessionDialog } from '@/components/sessions/share-session-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useAuthStore } from '@/stores/auth';
 
 interface ChatContainerProps {
   sessionId: string;
@@ -59,6 +61,11 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     drawer.setSelectedModel(selectedModel);
   }, [selectedModel, drawer.setSelectedModel]);
 
+
+  // Share dialog state
+  const [shareOpen, setShareOpen] = useState(false);
+  const authUser = useAuthStore((s) => s.user);
+  const isOwner = session?.userId === authUser?.id;
 
   // Editable title state
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -167,6 +174,21 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           <ConnectionStatusDot status={connectionStatus} />
         </div>
         <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShareOpen(true)}
+            className="h-6 gap-1 px-1.5 text-neutral-400 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-200"
+            title="Share session"
+          >
+            <ShareIcon className="h-3.5 w-3.5" />
+          </Button>
+          <ShareSessionDialog
+            sessionId={sessionId}
+            open={shareOpen}
+            onOpenChange={setShareOpen}
+            isOwner={isOwner}
+          />
           {session && (
             <SessionActionsMenu
               session={{ id: sessionId, workspace: session.workspace, status: sessionStatus }}
@@ -397,6 +419,16 @@ function PRIcon({ className }: { className?: string }) {
       <circle cx="6" cy="6" r="3" />
       <path d="M13 6h3a2 2 0 0 1 2 2v7" />
       <line x1="6" x2="6" y1="9" y2="21" />
+    </svg>
+  );
+}
+
+function ShareIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+      <polyline points="16 6 12 2 8 6" />
+      <line x1="12" x2="12" y1="2" y2="15" />
     </svg>
   );
 }

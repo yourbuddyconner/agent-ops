@@ -24,6 +24,7 @@ import { Route as InviteCodeRouteImport } from './routes/invite/$code'
 import { Route as IntegrationsCallbackRouteImport } from './routes/integrations/callback'
 import { Route as AuthCallbackRouteImport } from './routes/auth/callback'
 import { Route as SessionsSessionIdIndexRouteImport } from './routes/sessions/$sessionId/index'
+import { Route as SessionsJoinTokenRouteImport } from './routes/sessions/join/$token'
 
 const OnboardingRoute = OnboardingRouteImport.update({
   id: '/onboarding',
@@ -100,6 +101,11 @@ const SessionsSessionIdIndexRoute = SessionsSessionIdIndexRouteImport.update({
   path: '/',
   getParentRoute: () => SessionsSessionIdRoute,
 } as any)
+const SessionsJoinTokenRoute = SessionsJoinTokenRouteImport.update({
+  id: '/sessions/join/$token',
+  path: '/sessions/join/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -116,6 +122,7 @@ export interface FileRoutesByFullPath {
   '/sessions/': typeof SessionsIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/workflows/': typeof WorkflowsIndexRoute
+  '/sessions/join/$token': typeof SessionsJoinTokenRoute
   '/sessions/$sessionId/': typeof SessionsSessionIdIndexRoute
 }
 export interface FileRoutesByTo {
@@ -132,6 +139,7 @@ export interface FileRoutesByTo {
   '/sessions': typeof SessionsIndexRoute
   '/settings': typeof SettingsIndexRoute
   '/workflows': typeof WorkflowsIndexRoute
+  '/sessions/join/$token': typeof SessionsJoinTokenRoute
   '/sessions/$sessionId': typeof SessionsSessionIdIndexRoute
 }
 export interface FileRoutesById {
@@ -150,6 +158,7 @@ export interface FileRoutesById {
   '/sessions/': typeof SessionsIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/workflows/': typeof WorkflowsIndexRoute
+  '/sessions/join/$token': typeof SessionsJoinTokenRoute
   '/sessions/$sessionId/': typeof SessionsSessionIdIndexRoute
 }
 export interface FileRouteTypes {
@@ -169,6 +178,7 @@ export interface FileRouteTypes {
     | '/sessions/'
     | '/settings/'
     | '/workflows/'
+    | '/sessions/join/$token'
     | '/sessions/$sessionId/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -185,6 +195,7 @@ export interface FileRouteTypes {
     | '/sessions'
     | '/settings'
     | '/workflows'
+    | '/sessions/join/$token'
     | '/sessions/$sessionId'
   id:
     | '__root__'
@@ -202,6 +213,7 @@ export interface FileRouteTypes {
     | '/sessions/'
     | '/settings/'
     | '/workflows/'
+    | '/sessions/join/$token'
     | '/sessions/$sessionId/'
   fileRoutesById: FileRoutesById
 }
@@ -220,6 +232,7 @@ export interface RootRouteChildren {
   SessionsIndexRoute: typeof SessionsIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
   WorkflowsIndexRoute: typeof WorkflowsIndexRoute
+  SessionsJoinTokenRoute: typeof SessionsJoinTokenRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -329,6 +342,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SessionsSessionIdIndexRouteImport
       parentRoute: typeof SessionsSessionIdRoute
     }
+    '/sessions/join/$token': {
+      id: '/sessions/join/$token'
+      path: '/sessions/join/$token'
+      fullPath: '/sessions/join/$token'
+      preLoaderRoute: typeof SessionsJoinTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -358,6 +378,7 @@ const rootRouteChildren: RootRouteChildren = {
   SessionsIndexRoute: SessionsIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,
   WorkflowsIndexRoute: WorkflowsIndexRoute,
+  SessionsJoinTokenRoute: SessionsJoinTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

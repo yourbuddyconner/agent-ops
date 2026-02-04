@@ -8,6 +8,9 @@ import type {
   SessionGitState,
   SessionFileChanged,
   ChildSessionSummary,
+  SessionParticipant,
+  SessionParticipantRole,
+  SessionShareLink,
 } from './types';
 
 export const sessionKeys = {
@@ -21,6 +24,8 @@ export const sessionKeys = {
   gitState: (id: string) => [...sessionKeys.detail(id), 'git-state'] as const,
   children: (id: string) => [...sessionKeys.detail(id), 'children'] as const,
   filesChanged: (id: string) => [...sessionKeys.detail(id), 'files-changed'] as const,
+  participants: (id: string) => [...sessionKeys.detail(id), 'participants'] as const,
+  shareLinks: (id: string) => [...sessionKeys.detail(id), 'share-links'] as const,
 };
 
 export function useSessions(cursor?: string) {
@@ -214,6 +219,99 @@ export function useUpdateSessionTitle() {
     onSuccess: (_, { sessionId }) => {
       queryClient.invalidateQueries({ queryKey: sessionKeys.detail(sessionId) });
     },
+  });
+}
+
+// --- Sharing & Participants ---
+
+export function useSessionParticipants(sessionId: string) {
+  return useQuery({
+    queryKey: sessionKeys.participants(sessionId),
+    queryFn: () =>
+      api.get<{ participants: SessionParticipant[] }>(`/sessions/${sessionId}/participants`),
+    enabled: !!sessionId,
+    select: (data) => data.participants,
+  });
+}
+
+export function useAddParticipant() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      email,
+      role,
+    }: {
+      sessionId: string;
+      email: string;
+      role?: SessionParticipantRole;
+    }) => api.post<{ success: boolean }>(`/sessions/${sessionId}/participants`, { email, role }),
+    onSuccess: (_, { sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: sessionKeys.participants(sessionId) });
+    },
+  });
+}
+
+export function useRemoveParticipant() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ sessionId, userId }: { sessionId: string; userId: string }) =>
+      api.delete<{ success: boolean }>(`/sessions/${sessionId}/participants/${userId}`),
+    onSuccess: (_, { sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: sessionKeys.participants(sessionId) });
+    },
+  });
+}
+
+export function useSessionShareLinks(sessionId: string) {
+  return useQuery({
+    queryKey: sessionKeys.shareLinks(sessionId),
+    queryFn: () =>
+      api.get<{ shareLinks: SessionShareLink[] }>(`/sessions/${sessionId}/share-links`),
+    enabled: !!sessionId,
+    select: (data) => data.shareLinks,
+  });
+}
+
+export function useCreateShareLink() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      role,
+      expiresAt,
+      maxUses,
+    }: {
+      sessionId: string;
+      role?: SessionParticipantRole;
+      expiresAt?: string;
+      maxUses?: number;
+    }) => api.post<{ shareLink: SessionShareLink }>(`/sessions/${sessionId}/share-link`, { role, expiresAt, maxUses }),
+    onSuccess: (_, { sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: sessionKeys.shareLinks(sessionId) });
+    },
+  });
+}
+
+export function useRevokeShareLink() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ sessionId, linkId }: { sessionId: string; linkId: string }) =>
+      api.delete<{ success: boolean }>(`/sessions/${sessionId}/share-link/${linkId}`),
+    onSuccess: (_, { sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: sessionKeys.shareLinks(sessionId) });
+    },
+  });
+}
+
+export function useJoinSession() {
+  return useMutation({
+    mutationFn: (token: string) =>
+      api.post<{ sessionId: string; role: SessionParticipantRole }>(`/sessions/join/${token}`),
   });
 }
 
