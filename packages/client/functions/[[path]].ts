@@ -37,6 +37,8 @@ interface OGMeta {
 const SESSION_ID_PATTERN = /^\/sessions\/([a-f0-9-]{36})\/?$/;
 // Match /sessions/join/:token
 const SESSION_JOIN_PATTERN = /^\/sessions\/join\/([^/]+)\/?$/;
+// Match /invite/:code
+const INVITE_PATTERN = /^\/invite\/([^/]+)\/?$/;
 
 export const onRequest: PagesFunction<PagesEnv> = async (context) => {
   const { request, next, env } = context;
@@ -50,11 +52,12 @@ export const onRequest: PagesFunction<PagesEnv> = async (context) => {
   const url = new URL(request.url);
   const path = url.pathname;
 
-  // Only intercept session URLs for bots
+  // Only intercept known OG-eligible URLs for bots
   const sessionIdMatch = path.match(SESSION_ID_PATTERN);
   const joinMatch = path.match(SESSION_JOIN_PATTERN);
+  const inviteMatch = path.match(INVITE_PATTERN);
 
-  if (!sessionIdMatch && !joinMatch) {
+  if (!sessionIdMatch && !joinMatch && !inviteMatch) {
     return next();
   }
 
@@ -67,8 +70,10 @@ export const onRequest: PagesFunction<PagesEnv> = async (context) => {
     let metaUrl: string;
     if (sessionIdMatch) {
       metaUrl = `${workerUrl}/og/meta/session/${sessionIdMatch[1]}`;
+    } else if (joinMatch) {
+      metaUrl = `${workerUrl}/og/meta/session-token/${joinMatch[1]}`;
     } else {
-      metaUrl = `${workerUrl}/og/meta/session-token/${joinMatch![1]}`;
+      metaUrl = `${workerUrl}/og/meta/invite/${inviteMatch![1]}`;
     }
 
     const metaResponse = await fetch(metaUrl, {

@@ -18,7 +18,6 @@ MODAL_BACKEND_URL = "${MODAL_BACKEND_URL}"
 # Define replacements for libraries that reference Node globals
 [define]
 "process.env.NODE_ENV" = "\"production\""
-"process.env.SATORI_STANDALONE" = "\"0\""
 
 # Durable Objects
 [[durable_objects.bindings]]

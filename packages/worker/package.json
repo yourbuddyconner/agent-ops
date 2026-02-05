@@ -14,10 +14,10 @@
   },
   "dependencies": {
     "@agent-ops/shared": "workspace:*",
+    "@cf-wasm/resvg": "^0.3.3",
+    "@cf-wasm/satori": "^0.3.3",
     "@hono/zod-validator": "^0.2.1",
-    "@resvg/resvg-wasm": "^2.6.2",
     "hono": "^4.3.0",
-    "satori": "^0.19.1",
     "zod": "^3.22.4"
   },
   "devDependencies": {
