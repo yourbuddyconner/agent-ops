@@ -40,7 +40,6 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     answerQuestion,
     abort,
     revertMessage,
-    runnerConnected,
     logEntries,
     sessionTitle,
     childSessionEvents,
