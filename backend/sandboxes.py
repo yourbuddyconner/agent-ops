@@ -54,23 +54,20 @@ class SandboxManager:
         """Create a new Modal sandbox for a session."""
         image = self._get_image(config.image_type)
 
-        # Build secrets dict — must include all env vars the sandbox needs
-        # LLM API keys (ANTHROPIC_API_KEY, etc.) are passed via config.env_vars
-        # from the Worker, not from Modal function env.
-        secrets_dict: dict[str, str] = {
+        # Start with caller-provided env vars (LLM keys, repo config, etc.)
+        secrets_dict: dict[str, str] = dict(config.env_vars) if config.env_vars else {}
+
+        # Core secrets are set last so env_vars cannot override them
+        secrets_dict.update({
             "DO_WS_URL": config.do_ws_url,
             "RUNNER_TOKEN": config.runner_token,
             "SESSION_ID": config.session_id,
             "JWT_SECRET": config.jwt_secret,
             "OPENCODE_SERVER_PASSWORD": get_secret("OPENCODE_SERVER_PASSWORD"),
-        }
+        })
 
         # Strip empty values so Modal doesn't set blank env vars
         secrets_dict = {k: v for k, v in secrets_dict.items() if v}
-
-        # Merge any additional env vars (caller overrides)
-        if config.env_vars:
-            secrets_dict.update(config.env_vars)
 
         sandbox = await modal.Sandbox.create.aio(
             "/bin/bash", "/start.sh",
@@ -139,17 +136,16 @@ class SandboxManager:
         """Restore a sandbox from a filesystem snapshot image."""
         image = modal.Image.from_id(snapshot_image_id)
 
-        secrets_dict: dict[str, str] = {
+        secrets_dict: dict[str, str] = dict(config.env_vars) if config.env_vars else {}
+
+        secrets_dict.update({
             "DO_WS_URL": config.do_ws_url,
             "RUNNER_TOKEN": config.runner_token,
             "SESSION_ID": config.session_id,
             "JWT_SECRET": config.jwt_secret,
             "OPENCODE_SERVER_PASSWORD": get_secret("OPENCODE_SERVER_PASSWORD"),
-        }
+        })
         secrets_dict = {k: v for k, v in secrets_dict.items() if v}
-
-        if config.env_vars:
-            secrets_dict.update(config.env_vars)
 
         sandbox = await modal.Sandbox.create.aio(
             "/bin/bash", "/start.sh",
