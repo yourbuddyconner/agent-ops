@@ -15,6 +15,7 @@ import { webhooksRouter } from './routes/webhooks.js';
 import { agentRouter } from './routes/agent.js';
 import { authRouter } from './routes/auth.js';
 import { oauthRouter } from './routes/oauth.js';
+import { ogRouter } from './routes/og.js';
 import { apiKeysRouter } from './routes/api-keys.js';
 import { workflowsRouter } from './routes/workflows.js';
 import { triggersRouter } from './routes/triggers.js';
@@ -70,6 +71,9 @@ app.route('/webhooks', webhooksRouter);
 
 // OAuth routes (no auth required — handles login flow)
 app.route('/auth', oauthRouter);
+
+// OG meta/image routes (public, no auth required)
+app.route('/og', ogRouter);
 
 // Public invite validation (no auth required)
 app.route('/invites', invitesRouter);
