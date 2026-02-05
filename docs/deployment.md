@@ -73,13 +73,15 @@ Copy `.env.deploy.example` to `.env.deploy` and fill in your values:
 
 ```bash
 WORKER_PROD_URL=https://agent-ops.your-subdomain.workers.dev
-PAGES_PROJECT_NAME=agent-ops-client
+PAGES_PROJECT_NAME=my-agent-ops                # Must be globally unique on Cloudflare Pages
 MODAL_WORKSPACE=your-modal-workspace
 MODAL_BACKEND_URL=https://your-modal-workspace--{label}.modal.run
 D1_DATABASE_ID=<id-from-step-2>
 R2_BUCKET_NAME=agent-ops-storage
 ALLOWED_EMAILS=you@example.com
 ```
+
+`PAGES_PROJECT_NAME` must be unique across all of Cloudflare Pages -- pick something like `agent-ops-yourname`. The project is created automatically on first deploy.
 
 `MODAL_BACKEND_URL` uses `{label}` as a placeholder -- the Makefile substitutes endpoint names at deploy time. Use the format `https://<workspace>--{label}.modal.run`.
 
@@ -94,7 +96,7 @@ cd packages/worker
 npx wrangler secret put ENCRYPTION_KEY        # Any string, 32+ characters
 npx wrangler secret put GITHUB_CLIENT_ID      # From your GitHub OAuth app
 npx wrangler secret put GITHUB_CLIENT_SECRET   # From your GitHub OAuth app
-npx wrangler secret put FRONTEND_URL           # Your Pages URL, e.g. https://agent-ops-client.pages.dev
+npx wrangler secret put FRONTEND_URL           # Your Pages URL, e.g. https://my-agent-ops.pages.dev
 
 # Optional
 npx wrangler secret put GOOGLE_CLIENT_ID       # Google OAuth
