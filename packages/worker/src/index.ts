@@ -39,7 +39,17 @@ app.use('*', secureHeaders());
 app.use(
   '*',
   cors({
-    origin: (origin) => origin, // Allow all origins in dev, restrict in prod
+    origin: (origin, c) => {
+      const frontendUrl = (c.env as Env).FRONTEND_URL;
+      const allowed = [frontendUrl, 'http://localhost:5173', 'http://localhost:4173'].filter(Boolean);
+      if (allowed.includes(origin)) return origin;
+      // Allow Cloudflare Pages preview deployments (e.g. abc123.my-agent-ops.pages.dev)
+      if (frontendUrl) {
+        const pagesHost = new URL(frontendUrl).hostname; // my-agent-ops.pages.dev
+        if (origin.endsWith(`.${pagesHost}`) && origin.startsWith('https://')) return origin;
+      }
+      return '';
+    },
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization'],
     exposeHeaders: ['X-Request-Id'],
