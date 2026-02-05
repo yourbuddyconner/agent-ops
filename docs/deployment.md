@@ -4,12 +4,27 @@ From zero to deployed in 4 steps. You need accounts on three services, a handful
 
 ## Prerequisites
 
-Install these tools locally:
+Install these tools locally. Commands below are for macOS with [Homebrew](https://brew.sh/) -- adjust for your platform.
 
-- [Node.js 22+](https://nodejs.org/) and [pnpm](https://pnpm.io/)
-- [uv](https://docs.astral.sh/uv/) (Python package manager, for Modal backend)
-- [Docker](https://www.docker.com/) (for building sandbox images)
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (`npm i -g wrangler`)
+```bash
+# Node.js 22+
+brew install node@22
+
+# pnpm
+brew install pnpm
+
+# uv (Python package manager, used for Modal backend)
+brew install uv
+
+# Docker
+brew install --cask docker    # then open Docker.app to finish setup
+
+# Wrangler CLI (Cloudflare)
+npm install -g wrangler
+
+# Modal CLI
+uv tool install modal
+```
 
 ## Step 1: Create Accounts
 
