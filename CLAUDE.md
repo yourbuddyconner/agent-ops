@@ -127,8 +127,22 @@ pnpm typecheck          # All packages
 cd packages/worker && pnpm typecheck  # Single package
 
 # Deploy
-make deploy             # Deploy worker to Cloudflare
+make deploy             # Deploy worker + modal + client (includes migrations)
 ```
+
+### Applying D1 Migrations to Production
+
+`make deploy` includes the migration step, but if you need to apply migrations separately (e.g. after a deploy that already ran, or to apply a new migration without a full redeploy):
+
+```bash
+# Generate the deploy wrangler config (substitutes env vars), run migration, clean up
+make _wrangler-config && \
+  cd packages/worker && \
+  npx wrangler d1 migrations apply agent-ops-db --remote -c wrangler.deploy.toml && \
+  rm -f wrangler.deploy.toml
+```
+
+**Why this is needed:** The production `wrangler.toml` uses `${VAR}` placeholders for secrets. `make _wrangler-config` generates `wrangler.deploy.toml` with real values from `.env.deploy`. The plain `wrangler d1 migrations apply` command will fail with a validation error if you use the base `wrangler.toml` directly.
 
 ### Modal Backend Deployment
 
@@ -325,7 +339,7 @@ Do NOT delete these until their replacements are built and working. Delete as pa
 4. Add API routes to `packages/worker/src/routes/<name>.ts`
 5. Mount in `packages/worker/src/index.ts`
 6. Add React Query hooks in `packages/client/src/api/<name>.ts`
-7. Run `make db-migrate`
+7. Run `make db-migrate` (local) or apply to production via the deploy migration workflow above
 
 ### Adding a new Durable Object
 
