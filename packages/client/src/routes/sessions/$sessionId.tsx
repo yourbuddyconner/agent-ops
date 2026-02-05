@@ -4,10 +4,11 @@ import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'reac
 import { EditorDrawer } from '@/components/session/editor-drawer';
 import { FilesDrawer } from '@/components/session/files-drawer';
 import { ReviewDrawer } from '@/components/session/review-drawer';
+import { LogsPanel } from '@/components/panels/logs-panel';
 import { SessionMetadataSidebar } from '@/components/session/session-metadata-sidebar';
 import type { LogEntry, ConnectedUser } from '@/hooks/use-chat';
 
-type DrawerPanel = 'editor' | 'files' | 'review' | null;
+type DrawerPanel = 'editor' | 'files' | 'review' | 'logs' | null;
 
 const DRAWER_STORAGE_KEY = 'agent-ops:drawer-panel';
 const LAYOUT_STORAGE_KEY = 'agent-ops:editor-layout';
@@ -16,7 +17,7 @@ const SIDEBAR_STORAGE_KEY = 'agent-ops:metadata-sidebar';
 function loadDrawerState(): DrawerPanel {
   try {
     const val = localStorage.getItem(DRAWER_STORAGE_KEY);
-    if (val === 'editor' || val === 'files' || val === 'review') return val;
+    if (val === 'editor' || val === 'files' || val === 'review' || val === 'logs') return val;
   } catch {
     // ignore
   }
@@ -65,10 +66,12 @@ export interface DrawerContextValue {
   openEditor: () => void;
   openFiles: () => void;
   openReview: () => void;
+  openLogs: () => void;
   closeDrawer: () => void;
   toggleEditor: () => void;
   toggleFiles: () => void;
   toggleReview: () => void;
+  toggleLogs: () => void;
   logEntries: LogEntry[];
   setLogEntries: (entries: LogEntry[]) => void;
   overlay: SessionOverlay;
@@ -89,10 +92,12 @@ const DrawerCtx = createContext<DrawerContextValue>({
   openEditor: () => {},
   openFiles: () => {},
   openReview: () => {},
+  openLogs: () => {},
   closeDrawer: () => {},
   toggleEditor: () => {},
   toggleFiles: () => {},
   toggleReview: () => {},
+  toggleLogs: () => {},
   logEntries: [],
   setLogEntries: () => {},
   overlay: null,
@@ -146,6 +151,11 @@ function SessionLayout() {
     saveDrawerState('review');
   }, []);
 
+  const openLogs = useCallback(() => {
+    setActivePanel('logs');
+    saveDrawerState('logs');
+  }, []);
+
   const closeDrawer = useCallback(() => {
     setActivePanel(null);
     saveDrawerState(null);
@@ -175,6 +185,14 @@ function SessionLayout() {
     });
   }, []);
 
+  const toggleLogs = useCallback(() => {
+    setActivePanel((prev) => {
+      const next = prev === 'logs' ? null : 'logs';
+      saveDrawerState(next);
+      return next;
+    });
+  }, []);
+
   const toggleSidebar = useCallback(() => {
     setSidebarOpen((prev) => {
       const next = !prev;
@@ -199,10 +217,12 @@ function SessionLayout() {
     openEditor,
     openFiles,
     openReview,
+    openLogs,
     closeDrawer,
     toggleEditor,
     toggleFiles,
     toggleReview,
+    toggleLogs,
     logEntries,
     setLogEntries,
     overlay,
@@ -244,13 +264,16 @@ function SessionLayout() {
                 )}
                 <div className="flex-1 min-w-0">
                   {activePanel === 'editor' && (
-                    <EditorDrawer sessionId={sessionId} logEntries={logEntries} />
+                    <EditorDrawer sessionId={sessionId} />
                   )}
                   {activePanel === 'files' && (
                     <FilesDrawer sessionId={sessionId} />
                   )}
                   {activePanel === 'review' && (
                     <ReviewDrawer sessionId={sessionId} />
+                  )}
+                  {activePanel === 'logs' && (
+                    <LogsDrawerWrapper logEntries={logEntries} onClose={closeDrawer} />
                   )}
                 </div>
               </div>
@@ -280,6 +303,26 @@ function SessionLayout() {
         )}
       </div>
     </DrawerCtx.Provider>
+  );
+}
+
+function LogsDrawerWrapper({ logEntries, onClose }: { logEntries: LogEntry[]; onClose: () => void }) {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 bg-surface-1 px-2 dark:border-neutral-800 dark:bg-surface-1">
+        <span className="px-2.5 font-mono text-[11px] font-medium text-neutral-900 dark:text-neutral-100">
+          Logs
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex items-center gap-1.5 rounded px-2.5 py-1 font-mono text-[11px] font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+        >
+          Close
+        </button>
+      </div>
+      <LogsPanel entries={logEntries} className="flex-1" />
+    </div>
   );
 }
 

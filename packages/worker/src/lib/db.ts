@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionShareLink } from '@agent-ops/shared';
+import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionShareLink, AuditLogEntry } from '@agent-ops/shared';
 
 /**
  * Database helper functions for D1
@@ -1118,6 +1118,41 @@ export async function assertSessionAccess(
 
   const { NotFoundError } = await import('@agent-ops/shared');
   throw new NotFoundError('Session', sessionId);
+}
+
+// Session audit log queries
+export async function getSessionAuditLog(
+  db: D1Database,
+  sessionId: string,
+  options: { limit?: number; after?: string; eventType?: string } = {}
+): Promise<AuditLogEntry[]> {
+  const limit = options.limit || 200;
+  let query = 'SELECT * FROM session_audit_log WHERE session_id = ?';
+  const params: (string | number)[] = [sessionId];
+
+  if (options.after) {
+    query += ' AND created_at > ?';
+    params.push(options.after);
+  }
+
+  if (options.eventType) {
+    query += ' AND event_type = ?';
+    params.push(options.eventType);
+  }
+
+  query += ' ORDER BY created_at ASC LIMIT ?';
+  params.push(limit);
+
+  const result = await db.prepare(query).bind(...params).all();
+  return (result.results || []).map((row: any) => ({
+    id: row.id,
+    sessionId: row.session_id,
+    eventType: row.event_type,
+    summary: row.summary,
+    actorId: row.actor_id || undefined,
+    metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+    createdAt: row.created_at,
+  }));
 }
 
 // Mapping helpers

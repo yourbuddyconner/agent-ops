@@ -115,6 +115,13 @@ interface WebSocketInitMessage {
     runnerBusy?: boolean;
     promptsQueued?: number;
     runnerConnected?: boolean;
+    auditLog?: Array<{
+      eventType: string;
+      summary: string;
+      actorId?: string;
+      metadata?: Record<string, unknown>;
+      createdAt: string;
+    }>;
     [key: string]: unknown;
   };
 }
@@ -236,6 +243,17 @@ interface WebSocketTitleMessage {
   title: string;
 }
 
+interface WebSocketAuditLogMessage {
+  type: 'audit_log';
+  entry: {
+    eventType: string;
+    summary: string;
+    actorId?: string;
+    metadata?: Record<string, unknown>;
+    createdAt: string;
+  };
+}
+
 type WebSocketChatMessage =
   | WebSocketInitMessage
   | WebSocketMessageMessage
@@ -254,6 +272,7 @@ type WebSocketChatMessage =
   | WebSocketChildSessionMessage
   | WebSocketReviewResultMessage
   | WebSocketTitleMessage
+  | WebSocketAuditLogMessage
   | { type: 'pong' }
   | { type: 'user.joined'; userId: string }
   | { type: 'user.left'; userId: string };
@@ -341,19 +360,6 @@ export function useChat(sessionId: string) {
 
   const logIdRef = useRef(0);
 
-  const appendLogEntry = useCallback((type: string, summary: string) => {
-    const entry: LogEntry = {
-      id: String(++logIdRef.current),
-      timestamp: Date.now(),
-      type,
-      summary,
-    };
-    setState((prev) => ({
-      ...prev,
-      logEntries: [...prev.logEntries.slice(-MAX_LOG_ENTRIES + 1), entry],
-    }));
-  }, []);
-
   const handleMessage = useCallback((msg: { type: string; [key: string]: unknown }) => {
     const message = msg as WebSocketChatMessage;
 
@@ -395,6 +401,16 @@ export function useChat(sessionId: string) {
         const isRunnerBusy = !!message.data?.runnerBusy;
         const agentWorking = hasQueuedWork || isRunnerBusy;
 
+        // Seed log entries from server-side audit log
+        const rawAuditLog = message.data?.auditLog ?? [];
+        const seededLogEntries: LogEntry[] = rawAuditLog.map((entry, idx) => ({
+          id: `audit-${idx}`,
+          timestamp: new Date(entry.createdAt).getTime(),
+          type: entry.eventType,
+          summary: entry.summary,
+        }));
+        logIdRef.current = seededLogEntries.length;
+
         setState({
           messages: message.session.messages.map((m) => ({
             id: m.id,
@@ -412,7 +428,7 @@ export function useChat(sessionId: string) {
           streamingContent: '',
           pendingQuestions: [],
           connectedUsers: normalizedUsers,
-          logEntries: [],
+          logEntries: seededLogEntries,
           isAgentThinking: agentWorking,
           agentStatus: hasQueuedWork ? 'queued' : isRunnerBusy ? 'thinking' : 'idle',
           agentStatusDetail: hasQueuedWork ? 'Message queued — waking session...' : undefined,
@@ -428,7 +444,6 @@ export function useChat(sessionId: string) {
           reviewDiffFiles: null,
         });
         if (initModels.length > 0) autoSelectModel(initModels);
-        appendLogEntry('init', `Session ${message.session.id.slice(0, 8)} initialized (${message.session.status})`);
         break;
       }
 
@@ -463,7 +478,6 @@ export function useChat(sessionId: string) {
               : {}),
           };
         });
-        appendLogEntry('message', `${d.role}: ${d.content.slice(0, 80)}${d.content.length > 80 ? '...' : ''}`);
         break;
       }
 
@@ -531,7 +545,6 @@ export function useChat(sessionId: string) {
             agentStatusDetail,
           };
         });
-        appendLogEntry('status', newStatus ? `Status changed to ${newStatus}` : 'Status update');
         break;
       }
 
@@ -561,7 +574,6 @@ export function useChat(sessionId: string) {
             },
           ],
         }));
-        appendLogEntry('question', message.text.slice(0, 80));
         break;
 
       case 'agentStatus': {
@@ -573,7 +585,6 @@ export function useChat(sessionId: string) {
           // Also update isAgentThinking for backward compatibility
           isAgentThinking: statusMsg.status !== 'idle',
         }));
-        appendLogEntry('agentStatus', `${statusMsg.status}${statusMsg.detail ? `: ${statusMsg.detail}` : ''}`);
         break;
       }
 
@@ -599,7 +610,6 @@ export function useChat(sessionId: string) {
           agentStatus: 'error',
           agentStatusDetail: errorText,
         }));
-        appendLogEntry('error', errorText.slice(0, 80));
         break;
       }
 
@@ -610,7 +620,6 @@ export function useChat(sessionId: string) {
           availableModels: modelsMsg.models,
         }));
         autoSelectModel(modelsMsg.models);
-        appendLogEntry('models', `Received ${modelsMsg.models.reduce((n, p) => n + p.models.length, 0)} models`);
         break;
       }
 
@@ -621,7 +630,6 @@ export function useChat(sessionId: string) {
           ...prev,
           messages: prev.messages.filter((m) => !removedSet.has(m.id)),
         }));
-        appendLogEntry('revert', `Removed ${removedMsg.messageIds.length} messages`);
         break;
       }
 
@@ -632,7 +640,6 @@ export function useChat(sessionId: string) {
           diffData: diffMsg.data.files,
           diffLoading: false,
         }));
-        appendLogEntry('diff', `Received diff with ${diffMsg.data.files.length} files`);
         break;
       }
 
@@ -653,7 +660,6 @@ export function useChat(sessionId: string) {
             };
           }
         );
-        appendLogEntry('git-state', `Branch: ${gitMsg.data.branch ?? '?'}, commits: ${gitMsg.data.commitCount ?? '?'}`);
         break;
       }
 
@@ -674,15 +680,11 @@ export function useChat(sessionId: string) {
             };
           }
         );
-        appendLogEntry('pr-created', `PR #${prMsg.data.number}: ${prMsg.data.title}`);
         break;
       }
 
       case 'files-changed': {
-        const filesMsg = message as WebSocketFilesChangedMessage;
-        // Update the files-changed query cache with real-time data
         queryClient.invalidateQueries({ queryKey: sessionKeys.filesChanged(sessionIdRef.current) });
-        appendLogEntry('files-changed', `${filesMsg.files.length} files changed`);
         break;
       }
 
@@ -700,7 +702,6 @@ export function useChat(sessionId: string) {
           ],
         }));
         queryClient.invalidateQueries({ queryKey: sessionKeys.children(sessionIdRef.current) });
-        appendLogEntry('child-session', `Child session: ${childMsg.title || childMsg.childSessionId.slice(0, 8)}`);
         break;
       }
 
@@ -718,7 +719,6 @@ export function useChat(sessionId: string) {
             return { ...old, session: { ...old.session, title: titleMsg.title } };
           }
         );
-        appendLogEntry('title', `Title: ${titleMsg.title}`);
         break;
       }
 
@@ -731,9 +731,21 @@ export function useChat(sessionId: string) {
           reviewLoading: false,
           reviewDiffFiles: reviewMsg.diffFiles ?? null,
         }));
-        appendLogEntry('review-result', reviewMsg.error
-          ? `Review error: ${reviewMsg.error}`
-          : `Review complete: ${reviewMsg.data?.files.length ?? 0} files`);
+        break;
+      }
+
+      case 'audit_log': {
+        const auditMsg = message as WebSocketAuditLogMessage;
+        const entry: LogEntry = {
+          id: String(++logIdRef.current),
+          timestamp: new Date(auditMsg.entry.createdAt).getTime(),
+          type: auditMsg.entry.eventType,
+          summary: auditMsg.entry.summary,
+        };
+        setState((prev) => ({
+          ...prev,
+          logEntries: [...prev.logEntries.slice(-MAX_LOG_ENTRIES + 1), entry],
+        }));
         break;
       }
 
@@ -742,8 +754,8 @@ export function useChat(sessionId: string) {
 
       case 'user.joined':
       case 'user.left': {
-        // These messages include connectedUsers array (may be enriched objects or string IDs)
-        const userMsg = msg as { connectedUsers?: Array<string | ConnectedUser>; userId?: string; userDetails?: { name?: string; email?: string; avatarUrl?: string } };
+        const userMsg = msg as { connectedUsers?: Array<string | ConnectedUser> };
+
         if (Array.isArray(userMsg.connectedUsers)) {
           setState((prev) => ({
             ...prev,
@@ -752,8 +764,6 @@ export function useChat(sessionId: string) {
             ),
           }));
         }
-        const displayName = userMsg.userDetails?.name || userMsg.userId || 'unknown';
-        appendLogEntry(message.type, `${displayName} ${message.type === 'user.joined' ? 'joined' : 'left'}`);
         break;
       }
     }

@@ -573,3 +573,30 @@ export namespace GoogleCalendar {
     calendarIds?: string[];
   }
 }
+
+// Audit log types
+export type AuditLogEventType =
+  | 'session.started'
+  | 'session.terminated'
+  | 'session.hibernated'
+  | 'session.restored'
+  | 'user.prompt'
+  | 'user.abort'
+  | 'user.answer'
+  | 'user.joined'
+  | 'user.left'
+  | 'agent.tool_call'
+  | 'agent.tool_completed'
+  | 'agent.error'
+  | 'agent.turn_complete'
+  | 'git.pr_created';
+
+export interface AuditLogEntry {
+  id: string;
+  sessionId: string;
+  eventType: AuditLogEventType;
+  summary: string;
+  actorId?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}

@@ -70,7 +70,7 @@ interface RunnerMessage {
 
 /** Messages sent from DO to clients */
 interface ClientOutbound {
-  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'review-result' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title';
+  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'review-result' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'audit_log';
   [key: string]: unknown;
 }
 
@@ -143,6 +143,16 @@ const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS connected_users (
     user_id TEXT PRIMARY KEY,
     connected_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+
+  CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    actor_id TEXT,
+    metadata TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    flushed INTEGER NOT NULL DEFAULT 0
   );
 `;
 
@@ -293,13 +303,18 @@ export class SessionAgentDO {
 
     const status = this.getStateValue('status') || 'idle';
     const sandboxId = this.getStateValue('sandboxId');
-    const connectedUsers = this.getConnectedUsersWithDetails();
+    const connectedUsers = await this.getConnectedUsersWithDetails();
     const sessionId = this.getStateValue('sessionId');
     const workspace = this.getStateValue('workspace') || '';
     const title = this.getStateValue('title');
 
     const availableModelsRaw = this.getStateValue('availableModels');
     const availableModels = availableModelsRaw ? JSON.parse(availableModelsRaw) : undefined;
+
+    // Load audit log for late joiners
+    const auditLogRows = this.ctx.storage.sql
+      .exec('SELECT event_type, summary, actor_id, metadata, created_at FROM audit_log ORDER BY id ASC')
+      .toArray();
 
     server.send(JSON.stringify({
       type: 'init',
@@ -328,6 +343,13 @@ export class SessionAgentDO {
         connectedClients: this.getClientSockets().length + 1,
         connectedUsers,
         availableModels,
+        auditLog: auditLogRows.map((row) => ({
+          eventType: row.event_type,
+          summary: row.summary,
+          actorId: row.actor_id || undefined,
+          metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
+          createdAt: row.created_at,
+        })),
       },
     }));
 
@@ -353,6 +375,8 @@ export class SessionAgentDO {
       userDetails: userDetails ? { name: userDetails.name, email: userDetails.email, avatarUrl: userDetails.avatarUrl } : undefined,
       connectedUsers,
     });
+
+    this.appendAuditLog('user.joined', `${userDetails?.name || userDetails?.email || userId} joined`, userId);
 
     // Notify EventBus
     this.notifyEventBus({
@@ -517,12 +541,19 @@ export class SessionAgentDO {
           // Last connection for this user — remove from connected_users
           this.ctx.storage.sql.exec('DELETE FROM connected_users WHERE user_id = ?', userId);
 
-          const connectedUsers = this.getConnectedUsersWithDetails();
+          // Grab user details before cleaning up the cache
+          const departingUserDetails = this.userDetailsCache.get(userId);
+          const connectedUsers = await this.getConnectedUsersWithDetails();
           this.broadcastToClients({
             type: 'user.left',
             userId,
+            userDetails: departingUserDetails
+              ? { name: departingUserDetails.name, email: departingUserDetails.email, avatarUrl: departingUserDetails.avatarUrl }
+              : undefined,
             connectedUsers,
           });
+
+          this.appendAuditLog('user.left', `${departingUserDetails?.name || departingUserDetails?.email || userId} left`, userId);
 
           // Clean up user details cache if no longer connected
           this.userDetailsCache.delete(userId);
@@ -724,6 +755,8 @@ export class SessionAgentDO {
       },
     });
 
+    this.appendAuditLog('user.prompt', content.slice(0, 120), author?.id);
+
     // Check if runner is busy
     const runnerBusy = this.getStateValue('runnerBusy') === 'true';
     const runnerSockets = this.ctx.getWebSockets('runner');
@@ -799,6 +832,8 @@ export class SessionAgentDO {
       data: { questionAnswered: questionId, answer: String(answer) },
     });
 
+    this.appendAuditLog('user.answer', `Answered question: ${String(answer).slice(0, 80)}`, undefined, { questionId });
+
     // Notify EventBus
     this.notifyEventBus({
       type: 'question.answered',
@@ -820,6 +855,8 @@ export class SessionAgentDO {
       type: 'agentStatus',
       status: 'idle',
     });
+
+    this.appendAuditLog('user.abort', 'User aborted agent');
   }
 
   private async handleInterruptPrompt(content: string, model?: string) {
@@ -950,6 +987,7 @@ export class SessionAgentDO {
               createdAt: Math.floor(Date.now() / 1000),
             },
           });
+          this.appendAuditLog('agent.tool_call', `${msg.toolName || 'unknown'}`, undefined, { toolId, toolName: msg.toolName });
         } else {
           // Update existing row and broadcast as message.updated
           this.ctx.storage.sql.exec(
@@ -966,6 +1004,9 @@ export class SessionAgentDO {
               createdAt: Math.floor(Date.now() / 1000),
             },
           });
+          if (toolStatus === 'completed' || toolStatus === 'error') {
+            this.appendAuditLog('agent.tool_completed', `${msg.toolName || 'unknown'} ${toolStatus}`, undefined, { toolId, toolName: msg.toolName, status: toolStatus });
+          }
         }
         break;
       }
@@ -1036,6 +1077,8 @@ export class SessionAgentDO {
           messageId: errId,
           error: msg.error || msg.content,
         });
+        this.appendAuditLog('agent.error', errorText.slice(0, 120));
+
         // Publish session.errored to EventBus
         this.notifyEventBus({
           type: 'session.errored',
@@ -1192,6 +1235,7 @@ export class SessionAgentDO {
             state: msg.status || 'open',
           },
         } as any);
+        this.appendAuditLog('git.pr_created', `PR #${msg.number}: ${msg.title || ''}`, undefined, { prNumber: msg.number, prUrl: msg.url });
         break;
       }
 
@@ -1550,6 +1594,8 @@ export class SessionAgentDO {
   }
 
   private async handlePromptComplete() {
+    this.appendAuditLog('agent.turn_complete', 'Agent turn completed');
+
     // Mark any processing prompt_queue entries as completed
     this.ctx.storage.sql.exec(
       "UPDATE prompt_queue SET status = 'completed' WHERE status = 'processing'"
@@ -1698,6 +1744,8 @@ export class SessionAgentDO {
       data: { workspace: body.workspace, sandboxId: body.sandboxId },
       timestamp: new Date().toISOString(),
     });
+
+    this.appendAuditLog('session.started', `Session started for ${body.workspace}`, body.userId);
 
     return Response.json({
       success: true,
@@ -1878,6 +1926,8 @@ export class SessionAgentDO {
       type: 'status',
       data: { status: 'terminated', sandboxRunning: false },
     });
+
+    this.appendAuditLog('session.terminated', 'Session terminated');
 
     // Publish session.completed to EventBus
     this.notifyEventBus({
@@ -2431,6 +2481,7 @@ export class SessionAgentDO {
         );
       }
 
+      this.appendAuditLog('session.hibernated', 'Session hibernated');
       console.log(`[SessionAgentDO] Session ${sessionId} hibernated, snapshot: ${result.snapshotImageId}`);
     } catch (err) {
       console.error(`[SessionAgentDO] Failed to hibernate session ${sessionId}:`, err);
@@ -2528,6 +2579,7 @@ export class SessionAgentDO {
         },
       });
 
+      this.appendAuditLog('session.restored', 'Session restored from hibernation');
       console.log(`[SessionAgentDO] Session ${sessionId} restored, new sandbox: ${result.sandboxId}`);
     } catch (err) {
       console.error(`[SessionAgentDO] Failed to restore session ${sessionId}:`, err);
@@ -2639,8 +2691,32 @@ export class SessionAgentDO {
       .map((row) => row.user_id as string);
   }
 
-  private getConnectedUsersWithDetails(): Array<{ id: string; name?: string; email?: string; avatarUrl?: string }> {
+  private async getConnectedUsersWithDetails(): Promise<Array<{ id: string; name?: string; email?: string; avatarUrl?: string }>> {
     const userIds = this.getConnectedUserIds();
+
+    // Backfill cache for any users missing after hibernation
+    const uncachedIds = userIds.filter((id) => !this.userDetailsCache.has(id));
+    if (uncachedIds.length > 0) {
+      try {
+        const placeholders = uncachedIds.map(() => '?').join(',');
+        const rows = await this.env.DB.prepare(
+          `SELECT id, email, name, avatar_url, git_name, git_email FROM users WHERE id IN (${placeholders})`
+        ).bind(...uncachedIds).all<{ id: string; email: string; name: string | null; avatar_url: string | null; git_name: string | null; git_email: string | null }>();
+        for (const row of rows.results) {
+          this.userDetailsCache.set(row.id, {
+            id: row.id,
+            email: row.email,
+            name: row.name || undefined,
+            avatarUrl: row.avatar_url || undefined,
+            gitName: row.git_name || undefined,
+            gitEmail: row.git_email || undefined,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to backfill user details cache:', err);
+      }
+    }
+
     return userIds.map((id) => {
       const details = this.userDetailsCache.get(id);
       return {
@@ -2744,9 +2820,66 @@ export class SessionAgentDO {
       if (status === 'running') {
         await this.flushActiveSeconds();
       }
+
+      // Flush unflushed audit log entries to D1
+      const unflushed = this.ctx.storage.sql
+        .exec('SELECT id, event_type, summary, actor_id, metadata, created_at FROM audit_log WHERE flushed = 0 ORDER BY id ASC LIMIT 50')
+        .toArray();
+
+      if (unflushed.length > 0) {
+        const stmts = unflushed.map((row) =>
+          this.env.DB.prepare(
+            'INSERT INTO session_audit_log (id, session_id, event_type, summary, actor_id, metadata, created_at, flushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))'
+          ).bind(
+            `${sessionId}:${row.id}`,
+            sessionId,
+            row.event_type as string,
+            row.summary as string,
+            (row.actor_id as string) || null,
+            (row.metadata as string) || null,
+            row.created_at as string,
+          )
+        );
+        try {
+          await this.env.DB.batch(stmts);
+          // Mark as flushed
+          const flushedIds = unflushed.map((r) => r.id as number);
+          const placeholders = flushedIds.map(() => '?').join(',');
+          this.ctx.storage.sql.exec(
+            `UPDATE audit_log SET flushed = 1 WHERE id IN (${placeholders})`,
+            ...flushedIds,
+          );
+        } catch (flushErr) {
+          console.error('[SessionAgentDO] Failed to flush audit log to D1:', flushErr);
+        }
+      }
     } catch (err) {
       console.error('[SessionAgentDO] Failed to flush metrics:', err);
     }
+  }
+
+  private appendAuditLog(
+    eventType: string,
+    summary: string,
+    actorId?: string,
+    metadata?: Record<string, unknown>,
+  ): void {
+    const metadataJson = metadata ? JSON.stringify(metadata) : null;
+    this.ctx.storage.sql.exec(
+      'INSERT INTO audit_log (event_type, summary, actor_id, metadata) VALUES (?, ?, ?, ?)',
+      eventType, summary, actorId || null, metadataJson,
+    );
+    // Broadcast to connected clients in real-time
+    this.broadcastToClients({
+      type: 'audit_log',
+      entry: {
+        eventType,
+        summary,
+        actorId: actorId || undefined,
+        metadata: metadata || undefined,
+        createdAt: new Date().toISOString(),
+      },
+    });
   }
 
   private sendToRunner(message: RunnerOutbound): void {

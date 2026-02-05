@@ -192,6 +192,10 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           <ReviewIcon className="h-3 w-3" />
           Review
         </Button>
+        <Button variant="ghost" size="sm" onClick={drawer.toggleLogs} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+          <LogsIcon className="h-3 w-3" />
+          Logs
+        </Button>
         {gitState?.prUrl && (
           <a href={gitState.prUrl} target="_blank" rel="noopener noreferrer">
             <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
@@ -436,6 +440,22 @@ function PRIcon({ className }: { className?: string }) {
       <circle cx="6" cy="6" r="3" />
       <path d="M13 6h3a2 2 0 0 1 2 2v7" />
       <line x1="6" x2="6" y1="9" y2="21" />
+    </svg>
+  );
+}
+
+function LogsIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M13 12h8" />
+      <path d="M13 18h8" />
+      <path d="M13 6h8" />
+      <path d="M3 12h1" />
+      <path d="M3 18h1" />
+      <path d="M3 6h1" />
+      <path d="M8 12h1" />
+      <path d="M8 18h1" />
+      <path d="M8 6h1" />
     </svg>
   );
 }

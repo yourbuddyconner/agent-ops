@@ -60,7 +60,7 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
                   className="inline-flex items-center gap-1.5 rounded-full border border-neutral-100 bg-surface-1/50 px-2 py-px font-mono text-[10px] text-neutral-500 dark:border-neutral-800 dark:bg-surface-2/50 dark:text-neutral-400"
                 >
                   <span className="h-1 w-1 rounded-full bg-emerald-500" />
-                  {user.name || user.id.slice(0, 8)}
+                  {user.name || user.email || user.id.slice(0, 8)}
                 </span>
               ))}
             </div>

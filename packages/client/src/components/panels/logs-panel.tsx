@@ -8,12 +8,21 @@ interface LogsPanelProps {
 }
 
 const TYPE_COLORS: Record<string, string> = {
-  init: 'text-blue-500',
-  message: 'text-green-500',
-  status: 'text-amber-500',
-  question: 'text-purple-500',
+  // Server-side audit log event types (dot-separated)
+  'session.started': 'text-blue-500',
+  'session.terminated': 'text-red-400',
+  'session.hibernated': 'text-amber-500',
+  'session.restored': 'text-blue-400',
+  'user.prompt': 'text-green-500',
+  'user.abort': 'text-rose-400',
+  'user.answer': 'text-purple-500',
   'user.joined': 'text-cyan-500',
   'user.left': 'text-neutral-400',
+  'agent.tool_call': 'text-orange-500',
+  'agent.tool_completed': 'text-orange-400',
+  'agent.error': 'text-red-500',
+  'agent.turn_complete': 'text-indigo-500',
+  'git.pr_created': 'text-emerald-400',
 };
 
 function formatTimestamp(ts: number): string {
@@ -63,7 +72,7 @@ export function LogsPanel({ entries, className }: LogsPanelProps) {
             <span className="shrink-0 tabular-nums text-neutral-500">
               {formatTimestamp(entry.timestamp)}
             </span>
-            <span className={cn('shrink-0 w-20', TYPE_COLORS[entry.type] ?? 'text-neutral-400')}>
+            <span className={cn('shrink-0 w-32', TYPE_COLORS[entry.type] ?? 'text-neutral-400')}>
               {entry.type}
             </span>
             <span className="min-w-0 truncate text-neutral-300">

@@ -2,18 +2,15 @@ import { useState } from 'react';
 import { useSession, useSessionToken } from '@/api/sessions';
 import { useDrawer } from '@/routes/sessions/$sessionId';
 import { VSCodePanel, VNCPanel, TerminalPanel } from '@/components/panels';
-import { LogsPanel } from '@/components/panels/logs-panel';
 import { cn } from '@/lib/cn';
-import type { LogEntry } from '@/hooks/use-chat';
 
-type EditorTab = 'vscode' | 'desktop' | 'terminal' | 'logs';
+type EditorTab = 'vscode' | 'desktop' | 'terminal';
 
 interface EditorDrawerProps {
   sessionId: string;
-  logEntries: LogEntry[];
 }
 
-export function EditorDrawer({ sessionId, logEntries }: EditorDrawerProps) {
+export function EditorDrawer({ sessionId }: EditorDrawerProps) {
   const { data: session, isLoading: sessionLoading } = useSession(sessionId);
   const { data: tokenData, isLoading: tokenLoading, isError: tokenError } = useSessionToken(sessionId);
   const { closeDrawer } = useDrawer();
@@ -67,9 +64,6 @@ export function EditorDrawer({ sessionId, logEntries }: EditorDrawerProps) {
         <TabButton active={activeTab === 'terminal'} onClick={() => setActiveTab('terminal')}>
           Terminal
         </TabButton>
-        <TabButton active={activeTab === 'logs'} onClick={() => setActiveTab('logs')}>
-          Logs
-        </TabButton>
       </div>
 
       {/* Panel content */}
@@ -100,9 +94,6 @@ export function EditorDrawer({ sessionId, logEntries }: EditorDrawerProps) {
             statusMessage={hibernateMessage}
             className="h-full w-full"
           />
-        </div>
-        <div className={cn('absolute inset-0', activeTab !== 'logs' && 'invisible')}>
-          <LogsPanel entries={logEntries} className="h-full w-full" />
         </div>
       </div>
     </div>
