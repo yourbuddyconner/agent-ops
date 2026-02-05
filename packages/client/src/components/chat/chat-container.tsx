@@ -88,19 +88,8 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     setIsEditingTitle(false);
   }, [editTitleValue, sessionTitle, session?.title, sessionId, updateTitle]);
 
-  // Track whether we've seen a hibernate transition in this page session
-  const wasHibernatingRef = useRef(false);
-  if (sessionStatus === 'hibernating' || sessionStatus === 'restoring' || sessionStatus === 'hibernated') {
-    wasHibernatingRef.current = true;
-  }
-  if (runnerConnected) {
-    wasHibernatingRef.current = false;
-  }
-
   const isLoading = connectionStatus === 'connecting';
   const isTerminated = sessionStatus === 'terminated';
-  const isHibernateTransition = sessionStatus === 'hibernating' || sessionStatus === 'restoring';
-  const isAwaitingRunner = wasHibernatingRef.current && sessionStatus === 'running' && !runnerConnected;
   const isDisabled = !isConnected || isTerminated;
   const isAgentActive = (isAgentThinking && agentStatus !== 'queued') || agentStatus === 'thinking' || agentStatus === 'tool_calling' || agentStatus === 'streaming';
 
@@ -261,7 +250,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           <ChatInput
             onSend={sendMessage}
             disabled={isDisabled}
-            sendDisabled={isHibernateTransition || isAwaitingRunner}
+            sendDisabled={false}
             placeholder={
               isDisabled
                 ? 'Session is not available'
