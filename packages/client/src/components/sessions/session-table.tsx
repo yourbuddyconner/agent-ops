@@ -1,12 +1,14 @@
 import * as React from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { useInfiniteSessions } from '@/api/sessions';
-import type { AgentSession, SessionStatus } from '@/api/types';
+import type { AgentSession, SessionStatus, SessionOwnershipFilter } from '@/api/types';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { SearchInput } from '@/components/ui/search-input';
 import { LoadMoreButton } from '@/components/ui/load-more-button';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { SessionActionsMenu } from './session-actions-menu';
 import { BulkDeleteDialog } from './bulk-delete-dialog';
 import { formatRelativeTime } from '@/lib/format';
@@ -17,6 +19,12 @@ const STATUS_OPTIONS: { value: SessionStatus | 'all'; label: string }[] = [
   { value: 'idle', label: 'Idle' },
   { value: 'terminated', label: 'Terminated' },
   { value: 'error', label: 'Error' },
+];
+
+const OWNERSHIP_OPTIONS: { value: SessionOwnershipFilter; label: string }[] = [
+  { value: 'all', label: 'All Sessions' },
+  { value: 'mine', label: 'My Sessions' },
+  { value: 'shared', label: 'Shared with Me' },
 ];
 
 const STATUS_VARIANTS: Record<
@@ -36,11 +44,12 @@ const STATUS_VARIANTS: Record<
 export function SessionTable() {
   const [search, setSearch] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState<SessionStatus | 'all'>('all');
+  const [ownershipFilter, setOwnershipFilter] = React.useState<SessionOwnershipFilter>('all');
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   const navigate = useNavigate();
 
-  const { data, isLoading, error, fetchNextPage, isFetchingNextPage } = useInfiniteSessions();
+  const { data, isLoading, error, fetchNextPage, isFetchingNextPage } = useInfiniteSessions(ownershipFilter);
 
   const sessions = data?.sessions ?? [];
   const hasMore = data?.hasMore ?? false;
@@ -94,7 +103,7 @@ export function SessionTable() {
   // Reset selection when filters change
   React.useEffect(() => {
     setSelectedIds(new Set());
-  }, [search, statusFilter]);
+  }, [search, statusFilter, ownershipFilter]);
 
   const allVisibleSelected =
     filteredSessions.length > 0 &&
@@ -138,22 +147,39 @@ export function SessionTable() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="w-full sm:max-w-xs">
-          <SearchInput
-            value={search}
-            onChange={setSearch}
-            placeholder="Search sessions..."
-          />
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="w-full sm:max-w-xs">
+            <SearchInput
+              value={search}
+              onChange={setSearch}
+              placeholder="Search sessions..."
+            />
+          </div>
+          <div className="flex gap-2">
+            {STATUS_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                onClick={() => setStatusFilter(option.value)}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  statusFilter === option.value
+                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                    : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="flex gap-2">
-          {STATUS_OPTIONS.map((option) => (
+          {OWNERSHIP_OPTIONS.map((option) => (
             <button
               key={option.value}
-              onClick={() => setStatusFilter(option.value)}
+              onClick={() => setOwnershipFilter(option.value)}
               className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                statusFilter === option.value
-                  ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                ownershipFilter === option.value
+                  ? 'bg-violet-600 text-white dark:bg-violet-500'
                   : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700'
               }`}
             >
@@ -213,6 +239,12 @@ export function SessionTable() {
                   <th className="px-3 py-3 text-left font-medium text-neutral-500 dark:text-neutral-400">
                     Workspace
                   </th>
+                  <th className="hidden px-3 py-3 text-left font-medium text-neutral-500 dark:text-neutral-400 lg:table-cell">
+                    Creator
+                  </th>
+                  <th className="hidden px-3 py-3 text-left font-medium text-neutral-500 dark:text-neutral-400 sm:table-cell">
+                    Participants
+                  </th>
                   <th className="px-3 py-3 text-left font-medium text-neutral-500 dark:text-neutral-400">
                     Status
                   </th>
@@ -259,6 +291,20 @@ export function SessionTable() {
   );
 }
 
+function getInitials(name?: string, email?: string): string {
+  if (name) {
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.slice(0, 2).toUpperCase();
+  }
+  if (email) {
+    return email.slice(0, 2).toUpperCase();
+  }
+  return '??';
+}
+
 function SessionRow({
   session,
   isChild,
@@ -273,6 +319,10 @@ function SessionRow({
   onNavigate: () => void;
 }) {
   const displayName = session.title || session.workspace;
+  const ownerInitials = getInitials(session.ownerName, session.ownerEmail);
+  const ownerDisplayName = session.ownerName || session.ownerEmail || 'Unknown';
+  const participantCount = session.participantCount ?? 0;
+  const participants = session.participants ?? [];
 
   return (
     <tr
@@ -300,6 +350,76 @@ function SessionRow({
             </span>
           )}
         </div>
+      </td>
+      <td className="hidden px-3 py-3 lg:table-cell">
+        <div className="flex items-center gap-2">
+          <Avatar className="h-6 w-6">
+            {session.ownerAvatarUrl && (
+              <AvatarImage src={session.ownerAvatarUrl} alt={ownerDisplayName} />
+            )}
+            <AvatarFallback className="text-[10px]">{ownerInitials}</AvatarFallback>
+          </Avatar>
+          <span className="text-sm text-neutral-600 dark:text-neutral-400 truncate max-w-[120px]">
+            {session.isOwner ? 'You' : ownerDisplayName}
+          </span>
+        </div>
+      </td>
+      <td className="hidden px-3 py-3 sm:table-cell">
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex items-center gap-1.5 cursor-default">
+                {participantCount > 0 ? (
+                  <>
+                    <div className="flex -space-x-1.5">
+                      {participants.slice(0, 3).map((p) => (
+                        <Avatar key={p.userId} className="h-5 w-5 ring-2 ring-white dark:ring-neutral-900">
+                          {p.avatarUrl && <AvatarImage src={p.avatarUrl} alt={p.name || p.email} />}
+                          <AvatarFallback className="text-[8px]">
+                            {getInitials(p.name, p.email)}
+                          </AvatarFallback>
+                        </Avatar>
+                      ))}
+                      {participantCount > 3 && (
+                        <div className="flex h-5 w-5 items-center justify-center rounded-full bg-neutral-200 text-[9px] font-medium text-neutral-600 ring-2 ring-white dark:bg-neutral-700 dark:text-neutral-300 dark:ring-neutral-900">
+                          +{participantCount - 3}
+                        </div>
+                      )}
+                    </div>
+                    <span className="text-xs text-neutral-500 dark:text-neutral-400">
+                      {participantCount}
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-xs text-neutral-400 dark:text-neutral-500">—</span>
+                )}
+              </div>
+            </TooltipTrigger>
+            {participantCount > 0 && (
+              <TooltipContent side="bottom" className="max-w-xs">
+                <div className="space-y-1.5 py-1">
+                  <div className="text-[11px] font-medium text-neutral-400 uppercase tracking-wide">
+                    Participants ({participantCount})
+                  </div>
+                  {participants.map((p) => (
+                    <div key={p.userId} className="flex items-center gap-2">
+                      <Avatar className="h-5 w-5">
+                        {p.avatarUrl && <AvatarImage src={p.avatarUrl} alt={p.name || p.email} />}
+                        <AvatarFallback className="text-[8px]">
+                          {getInitials(p.name, p.email)}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="flex flex-col">
+                        <span className="text-xs font-medium">{p.name || p.email}</span>
+                        <span className="text-[10px] text-neutral-400">{p.role}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </TooltipContent>
+            )}
+          </Tooltip>
+        </TooltipProvider>
       </td>
       <td className="px-3 py-3">
         <Badge variant={STATUS_VARIANTS[session.status]}>{session.status}</Badge>
@@ -330,6 +450,12 @@ function SessionTableSkeleton() {
             <th className="px-3 py-3 text-left">
               <Skeleton className="h-4 w-20" />
             </th>
+            <th className="hidden px-3 py-3 text-left lg:table-cell">
+              <Skeleton className="h-4 w-16" />
+            </th>
+            <th className="hidden px-3 py-3 text-left sm:table-cell">
+              <Skeleton className="h-4 w-20" />
+            </th>
             <th className="px-3 py-3 text-left">
               <Skeleton className="h-4 w-14" />
             </th>
@@ -347,6 +473,18 @@ function SessionTableSkeleton() {
               </td>
               <td className="px-3 py-3">
                 <Skeleton className="h-4 w-32" />
+              </td>
+              <td className="hidden px-3 py-3 lg:table-cell">
+                <div className="flex items-center gap-2">
+                  <Skeleton className="h-6 w-6 rounded-full" />
+                  <Skeleton className="h-4 w-20" />
+                </div>
+              </td>
+              <td className="hidden px-3 py-3 sm:table-cell">
+                <div className="flex items-center gap-1">
+                  <Skeleton className="h-5 w-5 rounded-full" />
+                  <Skeleton className="h-4 w-4" />
+                </div>
               </td>
               <td className="px-3 py-3">
                 <Skeleton className="h-5 w-16 rounded-full" />

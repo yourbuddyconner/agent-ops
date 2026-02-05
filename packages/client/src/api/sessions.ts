@@ -11,6 +11,7 @@ import type {
   SessionParticipant,
   SessionParticipantRole,
   SessionShareLink,
+  SessionOwnershipFilter,
 } from './types';
 
 export const sessionKeys = {
@@ -18,7 +19,7 @@ export const sessionKeys = {
   lists: () => [...sessionKeys.all, 'list'] as const,
   list: (filters?: { cursor?: string }) =>
     [...sessionKeys.lists(), filters] as const,
-  infinite: () => [...sessionKeys.all, 'infinite'] as const,
+  infinite: (ownership?: SessionOwnershipFilter) => [...sessionKeys.all, 'infinite', ownership ?? 'all'] as const,
   details: () => [...sessionKeys.all, 'detail'] as const,
   detail: (id: string) => [...sessionKeys.details(), id] as const,
   gitState: (id: string) => [...sessionKeys.detail(id), 'git-state'] as const,
@@ -38,13 +39,16 @@ export function useSessions(cursor?: string) {
   });
 }
 
-export function useInfiniteSessions() {
+export function useInfiniteSessions(ownership?: SessionOwnershipFilter) {
   return useInfiniteQuery({
-    queryKey: sessionKeys.infinite(),
-    queryFn: ({ pageParam }) =>
-      api.get<ListSessionsResponse>(
-        `/sessions${pageParam ? `?cursor=${pageParam}` : ''}`
-      ),
+    queryKey: sessionKeys.infinite(ownership),
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams();
+      if (pageParam) params.set('cursor', pageParam);
+      if (ownership && ownership !== 'all') params.set('ownership', ownership);
+      const qs = params.toString();
+      return api.get<ListSessionsResponse>(`/sessions${qs ? `?${qs}` : ''}`);
+    },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.cursor,
     select: (data) => ({

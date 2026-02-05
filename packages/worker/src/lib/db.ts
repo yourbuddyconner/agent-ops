@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionShareLink, AuditLogEntry } from '@agent-ops/shared';
+import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionParticipantSummary, SessionShareLink, AuditLogEntry } from '@agent-ops/shared';
 
 /**
  * Database helper functions for D1
@@ -75,19 +75,43 @@ export async function getSession(db: D1Database, id: string): Promise<AgentSessi
   return row ? mapSession(row) : null;
 }
 
+export type SessionOwnershipFilter = 'all' | 'mine' | 'shared';
+
 export async function getUserSessions(
   db: D1Database,
   userId: string,
-  options: { limit?: number; cursor?: string; status?: string } = {}
+  options: { limit?: number; cursor?: string; status?: string; ownership?: SessionOwnershipFilter } = {}
 ): Promise<{ sessions: AgentSession[]; cursor?: string; hasMore: boolean }> {
   const limit = options.limit || 20;
+  const ownership = options.ownership || 'all';
 
-  // Include sessions owned by the user OR where they are a participant
+  // Build the base query with owner info joined
   let query = `
-    SELECT DISTINCT s.* FROM sessions s
+    SELECT DISTINCT
+      s.*,
+      owner.name as owner_name,
+      owner.email as owner_email,
+      owner.avatar_url as owner_avatar_url,
+      (SELECT COUNT(*) FROM session_participants sp2 WHERE sp2.session_id = s.id) as participant_count
+    FROM sessions s
+    JOIN users owner ON owner.id = s.user_id
     LEFT JOIN session_participants sp ON sp.session_id = s.id AND sp.user_id = ?
-    WHERE (s.user_id = ? OR sp.user_id IS NOT NULL)`;
-  const params: (string | number)[] = [userId, userId];
+    WHERE `;
+
+  const params: (string | number)[] = [userId];
+
+  // Apply ownership filter
+  if (ownership === 'mine') {
+    query += 's.user_id = ?';
+    params.push(userId);
+  } else if (ownership === 'shared') {
+    query += 's.user_id != ? AND sp.user_id IS NOT NULL';
+    params.push(userId);
+  } else {
+    // 'all' - owned by user OR user is a participant
+    query += '(s.user_id = ? OR sp.user_id IS NOT NULL)';
+    params.push(userId);
+  }
 
   if (options.status) {
     query += ' AND s.status = ?';
@@ -108,13 +132,71 @@ export async function getUserSessions(
 
   const hasMore = rows.length > limit;
   const pageRows = rows.slice(0, limit);
-  const sessions = pageRows.map(mapSession);
+
+  // Fetch participants for all sessions in batch
+  const sessionIds = pageRows.map((row: any) => row.id);
+  const participantsBySession = await getParticipantsForSessions(db, sessionIds);
+
+  const sessions = pageRows.map((row: any) => mapSessionWithOwner(row, userId, participantsBySession.get(row.id) || []));
 
   return {
     sessions,
     // Use the raw DB string (YYYY-MM-DD HH:MM:SS) so it matches SQLite's format
     cursor: hasMore ? String((pageRows[pageRows.length - 1] as any).created_at) : undefined,
     hasMore,
+  };
+}
+
+async function getParticipantsForSessions(
+  db: D1Database,
+  sessionIds: string[]
+): Promise<Map<string, SessionParticipantSummary[]>> {
+  if (sessionIds.length === 0) return new Map();
+
+  const placeholders = sessionIds.map(() => '?').join(', ');
+  const result = await db
+    .prepare(
+      `SELECT sp.session_id, sp.user_id, sp.role, u.name, u.email, u.avatar_url
+       FROM session_participants sp
+       JOIN users u ON u.id = sp.user_id
+       WHERE sp.session_id IN (${placeholders})
+       ORDER BY sp.created_at ASC`
+    )
+    .bind(...sessionIds)
+    .all();
+
+  const map = new Map<string, SessionParticipantSummary[]>();
+  for (const row of result.results || []) {
+    const r = row as any;
+    const sessionId = r.session_id;
+    if (!map.has(sessionId)) {
+      map.set(sessionId, []);
+    }
+    map.get(sessionId)!.push({
+      userId: r.user_id,
+      name: r.name || undefined,
+      email: r.email || undefined,
+      avatarUrl: r.avatar_url || undefined,
+      role: r.role as SessionParticipantRole,
+    });
+  }
+  return map;
+}
+
+function mapSessionWithOwner(
+  row: any,
+  currentUserId: string,
+  participants: SessionParticipantSummary[]
+): AgentSession {
+  const base = mapSession(row);
+  return {
+    ...base,
+    ownerName: row.owner_name || undefined,
+    ownerEmail: row.owner_email || undefined,
+    ownerAvatarUrl: row.owner_avatar_url || undefined,
+    participantCount: row.participant_count ?? 0,
+    participants,
+    isOwner: row.user_id === currentUserId,
   };
 }
 

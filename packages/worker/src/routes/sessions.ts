@@ -61,12 +61,13 @@ function generateRunnerToken(): string {
  */
 sessionsRouter.get('/', async (c) => {
   const user = c.get('user');
-  const { limit, cursor, status } = c.req.query();
+  const { limit, cursor, status, ownership } = c.req.query();
 
   const result = await db.getUserSessions(c.env.DB, user.id, {
     limit: limit ? parseInt(limit) : undefined,
     cursor,
     status,
+    ownership: ownership as db.SessionOwnershipFilter | undefined,
   });
 
   return c.json(result);

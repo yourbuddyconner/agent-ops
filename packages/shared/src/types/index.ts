@@ -139,6 +139,15 @@ export interface ChildSessionSummary {
 // Session types
 export type SessionStatus = 'initializing' | 'running' | 'idle' | 'hibernating' | 'hibernated' | 'restoring' | 'terminated' | 'error';
 
+// Lightweight participant info for list views
+export interface SessionParticipantSummary {
+  userId: string;
+  name?: string;
+  email?: string;
+  avatarUrl?: string;
+  role: SessionParticipantRole;
+}
+
 export interface AgentSession {
   id: string;
   userId: string;
@@ -154,6 +163,15 @@ export interface AgentSession {
   errorMessage?: string;
   createdAt: Date;
   lastActiveAt: Date;
+  // Owner info (populated in list views)
+  ownerName?: string;
+  ownerEmail?: string;
+  ownerAvatarUrl?: string;
+  // Participant summary (populated in list views)
+  participantCount?: number;
+  participants?: SessionParticipantSummary[];
+  // Convenience flag for current user
+  isOwner?: boolean;
 }
 
 export interface Message {
@@ -365,6 +383,8 @@ export interface Attachment {
   data: string;
   mimeType?: string;
 }
+
+export type SessionOwnershipFilter = 'all' | 'mine' | 'shared';
 
 export interface ListSessionsResponse {
   sessions: AgentSession[];
