@@ -15,6 +15,11 @@ ALLOWED_EMAILS = "${ALLOWED_EMAILS}"
 MODAL_BACKEND_URL = "${MODAL_BACKEND_URL}"
 # FRONTEND_URL - set via .dev.vars (local) or `wrangler secret put` (production)
 
+# Define replacements for libraries that reference Node globals
+[define]
+"process.env.NODE_ENV" = "\"production\""
+"process.env.SATORI_STANDALONE" = "\"0\""
+
 # Durable Objects
 [[durable_objects.bindings]]
 name = "API_KEYS"
