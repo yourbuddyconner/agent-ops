@@ -78,6 +78,14 @@ if [ -n "${REPO_URL:-}" ]; then
     if [ -n "${REPO_BRANCH:-}" ]; then
       echo "- Branch: ${REPO_BRANCH}"
     fi
+    if [ -n "${CLONE_DIR:-}" ]; then
+      echo "- Working directory: ${WORK_DIR}"
+      if [ -d "${CLONE_DIR}/.git" ]; then
+        echo "- Repo already cloned: yes"
+      else
+        echo "- Repo already cloned: no"
+      fi
+    fi
     echo ""
     echo "Use this repository as the primary source of truth for this session."
   } > "${WORK_DIR}/.agent-ops/persona/00-repo-context.md"
