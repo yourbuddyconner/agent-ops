@@ -18,6 +18,8 @@ import {
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/cn';
+import { PersonaPicker } from '@/components/personas/persona-picker';
+import { useOrgRepos } from '@/api/org-repos';
 import type { SessionStatus, CreateSessionResponse } from '@/api/types';
 
 interface CreateSessionDialogProps {
@@ -188,6 +190,9 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
   const [sourceType, setSourceType] = useState<SessionSourceType | undefined>(undefined);
   const [initialPrompt, setInitialPrompt] = useState<string | undefined>(undefined);
 
+  // Persona state
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string | undefined>(undefined);
+
   // Progress state
   const [sessionResult, setSessionResult] = useState<CreateSessionResponse | null>(null);
   const [apiDone, setApiDone] = useState(false);
@@ -196,6 +201,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
 
   // Queries
   const { data: reposData, isLoading: reposLoading } = useRepos();
+  const { data: orgRepos } = useOrgRepos();
   const validateRepo = useValidateRepo(repoMode === 'url' ? repoUrl : '');
 
   // PR/Issue queries — derive owner/repo from selected repo
@@ -275,6 +281,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
     setSelectedIssue(null);
     setSourceType(undefined);
     setInitialPrompt(undefined);
+    setSelectedPersonaId(undefined);
     createSession.reset();
   }, [createSession]);
 
@@ -293,6 +300,11 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
       setWorkspace(repo.name);
     }
     setBranch('');
+    // Auto-select default persona for this repo if one exists
+    const orgRepo = orgRepos?.find((r) => r.fullName === repo.fullName);
+    if (orgRepo?.personaId) {
+      setSelectedPersonaId(orgRepo.personaId);
+    }
   };
 
   const handleClearRepo = () => {
@@ -320,6 +332,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
       sourceIssueNumber?: number;
       sourceRepoFullName?: string;
       initialPrompt?: string;
+      personaId?: string;
     } = {
       workspace: workspace.trim(),
     };
@@ -337,6 +350,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
     if (selectedPR) request.sourcePrNumber = selectedPR.number;
     if (selectedIssue) request.sourceIssueNumber = selectedIssue.number;
     if (initialPrompt) request.initialPrompt = initialPrompt;
+    if (selectedPersonaId) request.personaId = selectedPersonaId;
 
     try {
       const result = await createSession.mutateAsync(request);
@@ -778,6 +792,15 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
                   />
                 </div>
               )}
+
+              {/* Persona picker */}
+              <div>
+                <label className="mb-2 block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                  Agent Persona
+                  <span className="ml-1 text-xs font-normal text-neutral-400">(optional)</span>
+                </label>
+                <PersonaPicker value={selectedPersonaId} onChange={setSelectedPersonaId} />
+              </div>
 
               {/* Workspace input */}
               <div>

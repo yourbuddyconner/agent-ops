@@ -16,7 +16,10 @@ import {
   useUpdateUserRole,
   useRemoveUser,
 } from '@/api/admin';
+import { useOrgRepos, useCreateOrgRepo, useDeleteOrgRepo, useSetRepoPersonaDefault } from '@/api/org-repos';
+import { usePersonas } from '@/api/personas';
 import type { UserRole } from '@agent-ops/shared';
+import { Input } from '@/components/ui/input';
 
 export const Route = createFileRoute('/settings/admin')({
   component: AdminSettingsPage,
@@ -52,6 +55,7 @@ function AdminSettingsPage() {
 
       <div className="space-y-6">
         <OrgNameSection />
+        <OrgReposSection />
         <LLMKeysSection />
         <AccessControlSection />
         <InvitesSection />
@@ -109,6 +113,116 @@ function OrgNameSection() {
           </Button>
           {saved && <span className="text-sm text-green-600 dark:text-green-400">Saved</span>}
         </div>
+      </div>
+    </Section>
+  );
+}
+
+// --- Org Repositories ---
+
+function OrgReposSection() {
+  const { data: repos, isLoading } = useOrgRepos();
+  const { data: personas } = usePersonas();
+  const createRepo = useCreateOrgRepo();
+  const deleteRepo = useDeleteOrgRepo();
+  const setDefault = useSetRepoPersonaDefault();
+  const [fullName, setFullName] = React.useState('');
+
+  function handleAdd(e: React.FormEvent) {
+    e.preventDefault();
+    if (!fullName.trim() || !fullName.includes('/')) return;
+    createRepo.mutate(
+      { fullName: fullName.trim() },
+      { onSuccess: () => setFullName('') }
+    );
+  }
+
+  return (
+    <Section title="Org Repositories">
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Known repositories for your organization. You can assign a default persona to each repo.
+        </p>
+
+        <form onSubmit={handleAdd} className="flex items-end gap-3">
+          <div className="flex-1">
+            <label htmlFor="repo-name" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+              Add repository
+            </label>
+            <Input
+              id="repo-name"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              placeholder="owner/repo"
+            />
+          </div>
+          <Button type="submit" disabled={!fullName.includes('/') || createRepo.isPending}>
+            {createRepo.isPending ? 'Adding...' : 'Add'}
+          </Button>
+        </form>
+
+        {createRepo.isError && (
+          <p className="text-sm text-red-600 dark:text-red-400">
+            Failed to add repository.
+          </p>
+        )}
+
+        {isLoading ? (
+          <div className="space-y-2">
+            {[1, 2].map((i) => (
+              <div key={i} className="h-10 animate-pulse rounded-md bg-neutral-100 dark:bg-neutral-700" />
+            ))}
+          </div>
+        ) : repos && repos.length > 0 ? (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-neutral-200 dark:border-neutral-700">
+                <th className="pb-2 text-left font-medium text-neutral-500 dark:text-neutral-400">Repository</th>
+                <th className="pb-2 text-left font-medium text-neutral-500 dark:text-neutral-400">Language</th>
+                <th className="pb-2 text-left font-medium text-neutral-500 dark:text-neutral-400">Default Persona</th>
+                <th className="pb-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {repos.map((repo) => (
+                <tr key={repo.id} className="border-b border-neutral-100 dark:border-neutral-700/50">
+                  <td className="py-2 text-neutral-900 dark:text-neutral-100">{repo.fullName}</td>
+                  <td className="py-2 text-neutral-500 dark:text-neutral-400">{repo.language || '-'}</td>
+                  <td className="py-2">
+                    <select
+                      value={repo.personaId || ''}
+                      onChange={(e) =>
+                        setDefault.mutate({
+                          repoId: repo.id,
+                          personaId: e.target.value || null,
+                        })
+                      }
+                      className="rounded border border-neutral-200 bg-transparent px-2 py-1 text-sm dark:border-neutral-700"
+                    >
+                      <option value="">None</option>
+                      {personas?.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.icon ? `${p.icon} ` : ''}{p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="py-2 text-right">
+                    <Button
+                      variant="secondary"
+                      onClick={() => deleteRepo.mutate(repo.id)}
+                      disabled={deleteRepo.isPending}
+                    >
+                      Remove
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="text-sm text-neutral-500 dark:text-neutral-400">No repositories added yet.</p>
+        )}
       </div>
     </Section>
   );

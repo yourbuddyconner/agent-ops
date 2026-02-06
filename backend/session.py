@@ -20,6 +20,7 @@ class CreateSessionRequest:
     jwt_secret: str
     idle_timeout_seconds: int = 900
     env_vars: dict[str, str] | None = None
+    persona_files: list[dict] | None = None
 
 
 @dataclass
@@ -46,6 +47,7 @@ class SessionManager:
             image_type=req.image_type,
             idle_timeout_seconds=req.idle_timeout_seconds,
             env_vars=req.env_vars,
+            persona_files=req.persona_files,
         )
 
         result: SandboxResult = await self.sandbox_manager.create_sandbox(config)
@@ -78,6 +80,7 @@ class SessionManager:
             image_type=req.image_type,
             idle_timeout_seconds=req.idle_timeout_seconds,
             env_vars=req.env_vars,
+            persona_files=req.persona_files,
         )
 
         result: SandboxResult = await self.sandbox_manager.restore_sandbox(config, snapshot_image_id)

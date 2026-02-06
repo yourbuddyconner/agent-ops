@@ -170,6 +170,9 @@ export interface AgentSession {
   // Participant summary (populated in list views)
   participantCount?: number;
   participants?: SessionParticipantSummary[];
+  // Persona info
+  personaId?: string;
+  personaName?: string;
   // Convenience flag for current user
   isOwner?: boolean;
 }
@@ -364,6 +367,7 @@ export interface CreateSessionRequest {
   sourceIssueNumber?: number;
   sourceRepoFullName?: string;
   initialPrompt?: string;
+  personaId?: string;
 }
 
 export interface CreateSessionResponse {
@@ -592,6 +596,55 @@ export namespace GoogleCalendar {
     syncEvents: boolean;
     calendarIds?: string[];
   }
+}
+
+// Org repository types
+export interface OrgRepository {
+  id: string;
+  orgId: string;
+  provider: string;
+  owner: string;
+  name: string;
+  fullName: string;
+  description?: string;
+  defaultBranch: string;
+  language?: string;
+  topics?: string[];
+  enabled: boolean;
+  personaId?: string;
+  personaName?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Agent persona types
+export type PersonaVisibility = 'private' | 'shared';
+
+export interface AgentPersona {
+  id: string;
+  orgId: string;
+  name: string;
+  slug: string;
+  description?: string;
+  icon?: string;
+  visibility: PersonaVisibility;
+  isDefault: boolean;
+  createdBy: string;
+  creatorName?: string;
+  files?: AgentPersonaFile[];
+  fileCount?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentPersonaFile {
+  id: string;
+  personaId: string;
+  filename: string;
+  content: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // Audit log types

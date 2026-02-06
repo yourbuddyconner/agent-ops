@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionParticipantSummary, SessionShareLink, AuditLogEntry } from '@agent-ops/shared';
+import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionParticipantSummary, SessionShareLink, AuditLogEntry, OrgRepository, AgentPersona, AgentPersonaFile, PersonaVisibility } from '@agent-ops/shared';
 
 /**
  * Database helper functions for D1
@@ -38,11 +38,11 @@ export async function getOrCreateUser(
 // Session operations
 export async function createSession(
   db: D1Database,
-  data: { id: string; userId: string; workspace: string; title?: string; parentSessionId?: string; containerId?: string; metadata?: Record<string, unknown> }
+  data: { id: string; userId: string; workspace: string; title?: string; parentSessionId?: string; containerId?: string; metadata?: Record<string, unknown>; personaId?: string }
 ): Promise<AgentSession> {
   await db
     .prepare(
-      'INSERT INTO sessions (id, user_id, workspace, status, container_id, metadata, title, parent_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO sessions (id, user_id, workspace, status, container_id, metadata, title, parent_session_id, persona_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )
     .bind(
       data.id,
@@ -52,7 +52,8 @@ export async function createSession(
       data.containerId || null,
       data.metadata ? JSON.stringify(data.metadata) : null,
       data.title || null,
-      data.parentSessionId || null
+      data.parentSessionId || null,
+      data.personaId || null
     )
     .run();
 
@@ -65,6 +66,7 @@ export async function createSession(
     parentSessionId: data.parentSessionId,
     containerId: data.containerId,
     metadata: data.metadata,
+    personaId: data.personaId,
     createdAt: new Date(),
     lastActiveAt: new Date(),
   };
@@ -92,9 +94,11 @@ export async function getUserSessions(
       owner.name as owner_name,
       owner.email as owner_email,
       owner.avatar_url as owner_avatar_url,
+      ap.name as persona_name,
       (SELECT COUNT(*) FROM session_participants sp2 WHERE sp2.session_id = s.id) as participant_count
     FROM sessions s
     JOIN users owner ON owner.id = s.user_id
+    LEFT JOIN agent_personas ap ON ap.id = s.persona_id
     LEFT JOIN session_participants sp ON sp.session_id = s.id AND sp.user_id = ?
     WHERE `;
 
@@ -1237,6 +1241,299 @@ export async function getSessionAuditLog(
   }));
 }
 
+// ─── Org Repository Operations ──────────────────────────────────────────
+
+export async function createOrgRepository(
+  db: D1Database,
+  data: { id: string; fullName: string; description?: string; defaultBranch?: string; language?: string }
+): Promise<OrgRepository> {
+  const parts = data.fullName.split('/');
+  const owner = parts[0];
+  const name = parts[1];
+
+  await db
+    .prepare(
+      `INSERT INTO org_repositories (id, owner, name, full_name, description, default_branch, language)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(data.id, owner, name, data.fullName, data.description || null, data.defaultBranch || 'main', data.language || null)
+    .run();
+
+  return mapOrgRepository({
+    id: data.id,
+    org_id: 'default',
+    provider: 'github',
+    owner,
+    name,
+    full_name: data.fullName,
+    description: data.description || null,
+    default_branch: data.defaultBranch || 'main',
+    language: data.language || null,
+    topics: null,
+    enabled: 1,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+}
+
+export async function listOrgRepositories(db: D1Database, orgId: string = 'default'): Promise<OrgRepository[]> {
+  const result = await db
+    .prepare(
+      `SELECT r.*, d.persona_id, ap.name as persona_name
+       FROM org_repositories r
+       LEFT JOIN org_repo_persona_defaults d ON d.org_repo_id = r.id
+       LEFT JOIN agent_personas ap ON ap.id = d.persona_id
+       WHERE r.org_id = ? AND r.enabled = 1
+       ORDER BY r.full_name ASC`
+    )
+    .bind(orgId)
+    .all();
+
+  return (result.results || []).map(mapOrgRepository);
+}
+
+export async function getOrgRepository(db: D1Database, id: string): Promise<OrgRepository | null> {
+  const row = await db.prepare('SELECT * FROM org_repositories WHERE id = ?').bind(id).first();
+  return row ? mapOrgRepository(row) : null;
+}
+
+export async function updateOrgRepository(
+  db: D1Database,
+  id: string,
+  updates: Partial<Pick<OrgRepository, 'description' | 'defaultBranch' | 'language' | 'enabled'>>
+): Promise<void> {
+  const sets: string[] = [];
+  const params: (string | number | null)[] = [];
+
+  if (updates.description !== undefined) { sets.push('description = ?'); params.push(updates.description || null); }
+  if (updates.defaultBranch !== undefined) { sets.push('default_branch = ?'); params.push(updates.defaultBranch); }
+  if (updates.language !== undefined) { sets.push('language = ?'); params.push(updates.language || null); }
+  if (updates.enabled !== undefined) { sets.push('enabled = ?'); params.push(updates.enabled ? 1 : 0); }
+
+  if (sets.length === 0) return;
+
+  sets.push("updated_at = datetime('now')");
+  await db.prepare(`UPDATE org_repositories SET ${sets.join(', ')} WHERE id = ?`).bind(...params, id).run();
+}
+
+export async function deleteOrgRepository(db: D1Database, id: string): Promise<void> {
+  await db.prepare('DELETE FROM org_repositories WHERE id = ?').bind(id).run();
+}
+
+function mapOrgRepository(row: any): OrgRepository {
+  return {
+    id: row.id,
+    orgId: row.org_id,
+    provider: row.provider,
+    owner: row.owner,
+    name: row.name,
+    fullName: row.full_name,
+    description: row.description || undefined,
+    defaultBranch: row.default_branch || 'main',
+    language: row.language || undefined,
+    topics: row.topics ? JSON.parse(row.topics) : undefined,
+    enabled: !!row.enabled,
+    personaId: row.persona_id || undefined,
+    personaName: row.persona_name || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+// ─── Persona Operations ─────────────────────────────────────────────────
+
+export async function createPersona(
+  db: D1Database,
+  data: { id: string; name: string; slug: string; description?: string; icon?: string; visibility?: PersonaVisibility; isDefault?: boolean; createdBy: string }
+): Promise<AgentPersona> {
+  // If setting as default, clear existing defaults first
+  if (data.isDefault) {
+    await db.prepare("UPDATE agent_personas SET is_default = 0 WHERE org_id = 'default' AND is_default = 1").run();
+  }
+
+  await db
+    .prepare(
+      `INSERT INTO agent_personas (id, name, slug, description, icon, visibility, is_default, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(
+      data.id,
+      data.name,
+      data.slug,
+      data.description || null,
+      data.icon || null,
+      data.visibility || 'shared',
+      data.isDefault ? 1 : 0,
+      data.createdBy
+    )
+    .run();
+
+  return {
+    id: data.id,
+    orgId: 'default',
+    name: data.name,
+    slug: data.slug,
+    description: data.description,
+    icon: data.icon,
+    visibility: data.visibility || 'shared',
+    isDefault: !!data.isDefault,
+    createdBy: data.createdBy,
+    fileCount: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export async function listPersonas(db: D1Database, userId: string, orgId: string = 'default'): Promise<AgentPersona[]> {
+  const result = await db
+    .prepare(
+      `SELECT p.*, u.name as creator_name,
+              (SELECT COUNT(*) FROM agent_persona_files f WHERE f.persona_id = p.id) as file_count
+       FROM agent_personas p
+       LEFT JOIN users u ON u.id = p.created_by
+       WHERE p.org_id = ?
+         AND (p.visibility = 'shared' OR p.created_by = ?)
+       ORDER BY p.is_default DESC, p.name ASC`
+    )
+    .bind(orgId, userId)
+    .all();
+
+  return (result.results || []).map(mapPersona);
+}
+
+export async function getPersonaWithFiles(db: D1Database, id: string): Promise<AgentPersona | null> {
+  const row = await db
+    .prepare(
+      `SELECT p.*, u.name as creator_name
+       FROM agent_personas p
+       LEFT JOIN users u ON u.id = p.created_by
+       WHERE p.id = ?`
+    )
+    .bind(id)
+    .first();
+
+  if (!row) return null;
+
+  const filesResult = await db
+    .prepare('SELECT * FROM agent_persona_files WHERE persona_id = ? ORDER BY sort_order ASC, filename ASC')
+    .bind(id)
+    .all();
+
+  const persona = mapPersona(row);
+  persona.files = (filesResult.results || []).map(mapPersonaFile);
+  return persona;
+}
+
+export async function updatePersona(
+  db: D1Database,
+  id: string,
+  updates: Partial<Pick<AgentPersona, 'name' | 'slug' | 'description' | 'icon' | 'visibility' | 'isDefault'>>
+): Promise<void> {
+  const sets: string[] = [];
+  const params: (string | number | null)[] = [];
+
+  if (updates.name !== undefined) { sets.push('name = ?'); params.push(updates.name); }
+  if (updates.slug !== undefined) { sets.push('slug = ?'); params.push(updates.slug); }
+  if (updates.description !== undefined) { sets.push('description = ?'); params.push(updates.description || null); }
+  if (updates.icon !== undefined) { sets.push('icon = ?'); params.push(updates.icon || null); }
+  if (updates.visibility !== undefined) { sets.push('visibility = ?'); params.push(updates.visibility); }
+  if (updates.isDefault !== undefined) {
+    if (updates.isDefault) {
+      await db.prepare("UPDATE agent_personas SET is_default = 0 WHERE org_id = 'default' AND is_default = 1").run();
+    }
+    sets.push('is_default = ?');
+    params.push(updates.isDefault ? 1 : 0);
+  }
+
+  if (sets.length === 0) return;
+
+  sets.push("updated_at = datetime('now')");
+  await db.prepare(`UPDATE agent_personas SET ${sets.join(', ')} WHERE id = ?`).bind(...params, id).run();
+}
+
+export async function deletePersona(db: D1Database, id: string): Promise<void> {
+  await db.prepare('DELETE FROM agent_personas WHERE id = ?').bind(id).run();
+}
+
+function mapPersona(row: any): AgentPersona {
+  return {
+    id: row.id,
+    orgId: row.org_id,
+    name: row.name,
+    slug: row.slug,
+    description: row.description || undefined,
+    icon: row.icon || undefined,
+    visibility: row.visibility as PersonaVisibility,
+    isDefault: !!row.is_default,
+    createdBy: row.created_by,
+    creatorName: row.creator_name || undefined,
+    fileCount: row.file_count ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapPersonaFile(row: any): AgentPersonaFile {
+  return {
+    id: row.id,
+    personaId: row.persona_id,
+    filename: row.filename,
+    content: row.content,
+    sortOrder: row.sort_order ?? 0,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+// ─── Persona File Operations ────────────────────────────────────────────
+
+export async function upsertPersonaFile(
+  db: D1Database,
+  data: { id: string; personaId: string; filename: string; content: string; sortOrder?: number }
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO agent_persona_files (id, persona_id, filename, content, sort_order)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(persona_id, filename) DO UPDATE SET
+         content = excluded.content,
+         sort_order = excluded.sort_order,
+         updated_at = datetime('now')`
+    )
+    .bind(data.id, data.personaId, data.filename, data.content, data.sortOrder ?? 0)
+    .run();
+}
+
+export async function deletePersonaFile(db: D1Database, id: string): Promise<void> {
+  await db.prepare('DELETE FROM agent_persona_files WHERE id = ?').bind(id).run();
+}
+
+// ─── Repo-Persona Default Operations ────────────────────────────────────
+
+export async function setRepoPersonaDefault(db: D1Database, orgRepoId: string, personaId: string): Promise<void> {
+  const id = crypto.randomUUID();
+  await db
+    .prepare(
+      `INSERT INTO org_repo_persona_defaults (id, org_repo_id, persona_id)
+       VALUES (?, ?, ?)
+       ON CONFLICT(org_repo_id) DO UPDATE SET persona_id = excluded.persona_id`
+    )
+    .bind(id, orgRepoId, personaId)
+    .run();
+}
+
+export async function getRepoPersonaDefault(db: D1Database, orgRepoId: string): Promise<string | null> {
+  const row = await db
+    .prepare('SELECT persona_id FROM org_repo_persona_defaults WHERE org_repo_id = ?')
+    .bind(orgRepoId)
+    .first<{ persona_id: string }>();
+  return row?.persona_id || null;
+}
+
+export async function deleteRepoPersonaDefault(db: D1Database, orgRepoId: string): Promise<void> {
+  await db.prepare('DELETE FROM org_repo_persona_defaults WHERE org_repo_id = ?').bind(orgRepoId).run();
+}
+
 // Mapping helpers
 function mapSessionGitState(row: any): SessionGitState {
   return {
@@ -1301,6 +1598,8 @@ function mapSession(row: any): AgentSession {
     containerId: row.container_id || undefined,
     metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
     errorMessage: row.error_message || undefined,
+    personaId: row.persona_id || undefined,
+    personaName: row.persona_name || undefined,
     createdAt: new Date(row.created_at),
     lastActiveAt: new Date(row.last_active_at),
   };

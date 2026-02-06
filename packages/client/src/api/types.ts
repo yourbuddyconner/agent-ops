@@ -38,6 +38,10 @@ export type {
   SessionShareLink,
   SessionVisibility,
   SessionOwnershipFilter,
+  OrgRepository,
+  AgentPersona,
+  AgentPersonaFile,
+  PersonaVisibility,
 } from '@agent-ops/shared';
 
 export type { GitHub, Gmail, GoogleCalendar } from '@agent-ops/shared';

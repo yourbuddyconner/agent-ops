@@ -1,0 +1,260 @@
+import { Hono } from 'hono';
+import { z } from 'zod';
+import { zValidator } from '@hono/zod-validator';
+import { ForbiddenError } from '@agent-ops/shared';
+import type { Env, Variables } from '../env.js';
+import * as db from '../lib/db.js';
+
+export const personasRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+const createPersonaSchema = z.object({
+  name: z.string().min(1).max(100),
+  slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, 'Slug must be lowercase alphanumeric with dashes'),
+  description: z.string().max(500).optional(),
+  icon: z.string().max(10).optional(),
+  visibility: z.enum(['private', 'shared']).default('shared'),
+  isDefault: z.boolean().optional(),
+  files: z
+    .array(
+      z.object({
+        filename: z.string().min(1).max(100),
+        content: z.string().min(1),
+        sortOrder: z.number().int().min(0).default(0),
+      })
+    )
+    .optional(),
+});
+
+/**
+ * GET /api/personas
+ * List visible personas (all shared + user's own private).
+ */
+personasRouter.get('/', async (c) => {
+  const user = c.get('user');
+  const personas = await db.listPersonas(c.env.DB, user.id);
+  return c.json({ personas });
+});
+
+/**
+ * GET /api/personas/:id
+ * Get persona with files.
+ */
+personasRouter.get('/:id', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
+  // Check visibility
+  if (persona.visibility === 'private' && persona.createdBy !== user.id) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
+  return c.json({ persona });
+});
+
+/**
+ * POST /api/personas
+ * Create a persona (with optional inline files).
+ */
+personasRouter.post('/', zValidator('json', createPersonaSchema), async (c) => {
+  const user = c.get('user');
+  const body = c.req.valid('json');
+
+  // Only admins can set is_default
+  if (body.isDefault && user.role !== 'admin') {
+    throw new ForbiddenError('Only admins can set a default persona');
+  }
+
+  const personaId = crypto.randomUUID();
+
+  const persona = await db.createPersona(c.env.DB, {
+    id: personaId,
+    name: body.name,
+    slug: body.slug,
+    description: body.description,
+    icon: body.icon,
+    visibility: body.visibility,
+    isDefault: body.isDefault,
+    createdBy: user.id,
+  });
+
+  // Create inline files if provided
+  if (body.files?.length) {
+    for (const file of body.files) {
+      await db.upsertPersonaFile(c.env.DB, {
+        id: crypto.randomUUID(),
+        personaId,
+        filename: file.filename,
+        content: file.content,
+        sortOrder: file.sortOrder,
+      });
+    }
+  }
+
+  return c.json({ persona }, 201);
+});
+
+const updatePersonaSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/).optional(),
+  description: z.string().max(500).optional(),
+  icon: z.string().max(10).optional(),
+  visibility: z.enum(['private', 'shared']).optional(),
+  isDefault: z.boolean().optional(),
+});
+
+/**
+ * PUT /api/personas/:id
+ * Update persona (creator or admin only).
+ */
+personasRouter.put('/:id', zValidator('json', updatePersonaSchema), async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+  const body = c.req.valid('json');
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
+  // Only creator or admin can edit
+  if (persona.createdBy !== user.id && user.role !== 'admin') {
+    throw new ForbiddenError('Only the creator or an admin can edit this persona');
+  }
+
+  // Only admins can set is_default
+  if (body.isDefault !== undefined && user.role !== 'admin') {
+    throw new ForbiddenError('Only admins can set a default persona');
+  }
+
+  await db.updatePersona(c.env.DB, id, body);
+  return c.json({ ok: true });
+});
+
+/**
+ * DELETE /api/personas/:id
+ * Delete persona (creator or admin only).
+ */
+personasRouter.delete('/:id', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
+  if (persona.createdBy !== user.id && user.role !== 'admin') {
+    throw new ForbiddenError('Only the creator or an admin can delete this persona');
+  }
+
+  await db.deletePersona(c.env.DB, id);
+  return c.json({ ok: true });
+});
+
+const bulkFilesSchema = z.array(
+  z.object({
+    filename: z.string().min(1).max(100),
+    content: z.string().min(1),
+    sortOrder: z.number().int().min(0).default(0),
+  })
+);
+
+/**
+ * PUT /api/personas/:id/files
+ * Bulk replace persona files.
+ */
+personasRouter.put('/:id/files', zValidator('json', bulkFilesSchema), async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+  const files = c.req.valid('json');
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
+  if (persona.createdBy !== user.id && user.role !== 'admin') {
+    throw new ForbiddenError('Only the creator or an admin can edit this persona');
+  }
+
+  // Delete existing files
+  if (persona.files?.length) {
+    for (const f of persona.files) {
+      await db.deletePersonaFile(c.env.DB, f.id);
+    }
+  }
+
+  // Insert new files
+  for (const file of files) {
+    await db.upsertPersonaFile(c.env.DB, {
+      id: crypto.randomUUID(),
+      personaId: id,
+      filename: file.filename,
+      content: file.content,
+      sortOrder: file.sortOrder,
+    });
+  }
+
+  return c.json({ ok: true });
+});
+
+const singleFileSchema = z.object({
+  filename: z.string().min(1).max(100),
+  content: z.string().min(1),
+  sortOrder: z.number().int().min(0).default(0),
+});
+
+/**
+ * POST /api/personas/:id/files
+ * Add/update a single file.
+ */
+personasRouter.post('/:id/files', zValidator('json', singleFileSchema), async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+  const body = c.req.valid('json');
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
+  if (persona.createdBy !== user.id && user.role !== 'admin') {
+    throw new ForbiddenError('Only the creator or an admin can edit this persona');
+  }
+
+  await db.upsertPersonaFile(c.env.DB, {
+    id: crypto.randomUUID(),
+    personaId: id,
+    filename: body.filename,
+    content: body.content,
+    sortOrder: body.sortOrder,
+  });
+
+  return c.json({ ok: true });
+});
+
+/**
+ * DELETE /api/personas/:id/files/:fileId
+ * Delete a persona file.
+ */
+personasRouter.delete('/:id/files/:fileId', async (c) => {
+  const user = c.get('user');
+  const { id, fileId } = c.req.param();
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
+  if (persona.createdBy !== user.id && user.role !== 'admin') {
+    throw new ForbiddenError('Only the creator or an admin can edit this persona');
+  }
+
+  await db.deletePersonaFile(c.env.DB, fileId);
+  return c.json({ ok: true });
+});

@@ -60,6 +60,21 @@ if [ -n "${REPO_URL:-}" ]; then
   WORK_DIR="${CLONE_DIR}"
 fi
 
+# ─── Persona Files Injection ─────────────────────────────────────────
+if [ -n "${PERSONA_FILES_JSON:-}" ]; then
+  echo "[start.sh] Injecting persona files"
+  mkdir -p "${WORK_DIR}/.agent-ops/persona"
+  echo "$PERSONA_FILES_JSON" | jq -c '.[]' | while read file_json; do
+    SORT_ORDER=$(echo "$file_json" | jq -r '.sortOrder // 0')
+    FILENAME=$(echo "$file_json" | jq -r '.filename')
+    CONTENT=$(echo "$file_json" | jq -r '.content')
+    PADDED=$(printf "%02d" "$SORT_ORDER")
+    echo "$CONTENT" > "${WORK_DIR}/.agent-ops/persona/${PADDED}-${FILENAME}"
+  done
+  echo "[start.sh] Persona files written to ${WORK_DIR}/.agent-ops/persona/"
+  ls -la "${WORK_DIR}/.agent-ops/persona/"
+fi
+
 # ─── code-server (VS Code) ────────────────────────────────────────────
 # Started after clone so it opens the correct folder
 

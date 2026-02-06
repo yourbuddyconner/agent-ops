@@ -28,6 +28,7 @@ const createSessionSchema = z.object({
   sourceIssueNumber: z.number().int().positive().optional(),
   sourceRepoFullName: z.string().optional(),
   initialPrompt: z.string().max(100000).optional(),
+  personaId: z.string().uuid().optional(),
 });
 
 const sendMessageSchema = z.object({
@@ -89,6 +90,26 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
   // Ensure user exists in DB
   await db.getOrCreateUser(c.env.DB, { id: user.id, email: user.email });
 
+  // If persona requested, fetch and validate access
+  let personaFiles: { filename: string; content: string; sortOrder: number }[] | undefined;
+  if (body.personaId) {
+    const persona = await db.getPersonaWithFiles(c.env.DB, body.personaId);
+    if (!persona) {
+      return c.json({ error: 'Persona not found' }, 404);
+    }
+    // Validate user can see this persona
+    if (persona.visibility === 'private' && persona.createdBy !== user.id) {
+      return c.json({ error: 'Persona not found' }, 404);
+    }
+    if (persona.files?.length) {
+      personaFiles = persona.files.map((f) => ({
+        filename: f.filename,
+        content: f.content,
+        sortOrder: f.sortOrder,
+      }));
+    }
+  }
+
   // Create session record
   const session = await db.createSession(c.env.DB, {
     id: sessionId,
@@ -97,6 +118,7 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     title: body.title,
     parentSessionId: body.parentSessionId,
     metadata: body.config,
+    personaId: body.personaId,
   });
 
   // Create git state record
@@ -188,6 +210,7 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     jwtSecret: c.env.ENCRYPTION_KEY,
     idleTimeoutSeconds,
     envVars,
+    personaFiles,
   };
 
   try {
