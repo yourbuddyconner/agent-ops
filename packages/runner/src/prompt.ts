@@ -1112,11 +1112,16 @@ export class PromptHandler {
 
       // wait_for_event: forcibly end the turn so the agent actually stops
       if (toolName === "wait_for_event") {
-        console.log(`[PromptHandler] wait_for_event completed — finalizing turn`);
+        console.log(`[PromptHandler] wait_for_event completed — aborting OpenCode and finalizing turn`);
         this.finalizeResponse(true);
         // Ensure DO clears runnerBusy even if no other events arrive
         this.agentClient.sendAgentStatus("idle");
         this.idleNotified = true;
+        // Abort OpenCode generation so it fully yields
+        if (this.sessionId) {
+          fetch(`${this.opencodeUrl}/session/${this.sessionId}/abort`, { method: "POST" })
+            .catch((err) => console.error("[PromptHandler] Error aborting after wait_for_event:", err));
+        }
       }
 
     } else if (currentStatus === "error") {
