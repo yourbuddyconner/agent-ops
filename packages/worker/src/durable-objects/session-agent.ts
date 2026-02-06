@@ -1861,6 +1861,12 @@ export class SessionAgentDO {
       initialPrompt?: string;
     };
 
+    // Clear old session data (messages, queue, audit log) for a fresh start.
+    // This is important for well-known DOs (orchestrators) that get reused.
+    this.ctx.storage.sql.exec('DELETE FROM messages');
+    this.ctx.storage.sql.exec('DELETE FROM prompt_queue');
+    this.ctx.storage.sql.exec('DELETE FROM audit_log');
+
     // Store session state in durable SQLite
     this.setStateValue('sessionId', body.sessionId);
     this.setStateValue('userId', body.userId);
@@ -1868,6 +1874,11 @@ export class SessionAgentDO {
     this.setStateValue('runnerToken', body.runnerToken);
     this.setStateValue('status', 'initializing');
     this.setStateValue('runnerBusy', 'false');
+
+    // Clear stale state from previous lifecycle
+    this.setStateValue('sandboxId', '');
+    this.setStateValue('tunnelUrls', '');
+    this.setStateValue('runningStartedAt', '');
 
     if (body.sandboxId) {
       this.setStateValue('sandboxId', body.sandboxId);
