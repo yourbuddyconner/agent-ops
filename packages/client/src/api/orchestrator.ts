@@ -6,6 +6,7 @@ export const orchestratorKeys = {
   all: ['orchestrator'] as const,
   info: () => [...orchestratorKeys.all, 'info'] as const,
   identity: () => [...orchestratorKeys.all, 'identity'] as const,
+  checkHandle: (handle: string) => [...orchestratorKeys.all, 'check-handle', handle] as const,
   memories: (filters?: { category?: string }) => [...orchestratorKeys.all, 'memories', filters] as const,
 };
 
@@ -41,6 +42,18 @@ export function useCreateOrchestrator() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: orchestratorKeys.all });
     },
+  });
+}
+
+export function useCheckHandle(handle: string) {
+  return useQuery({
+    queryKey: orchestratorKeys.checkHandle(handle),
+    queryFn: () =>
+      api.get<{ available: boolean; handle: string }>(
+        `/me/orchestrator/check-handle?handle=${encodeURIComponent(handle)}`
+      ),
+    enabled: handle.length >= 2,
+    staleTime: 10_000,
   });
 }
 

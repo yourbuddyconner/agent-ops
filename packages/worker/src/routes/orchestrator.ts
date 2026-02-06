@@ -226,6 +226,22 @@ orchestratorRouter.put('/orchestrator/identity', zValidator('json', updateIdenti
   return c.json({ identity: updated });
 });
 
+/**
+ * GET /api/me/orchestrator/check-handle?handle=foo
+ * Returns whether a handle is available.
+ */
+orchestratorRouter.get('/orchestrator/check-handle', async (c) => {
+  const handle = c.req.query('handle');
+  if (!handle) {
+    return c.json({ error: 'handle query param required' }, 400);
+  }
+  const existing = await db.getOrchestratorIdentityByHandle(c.env.DB, handle);
+  // If the handle belongs to the current user, it's still "available" to them
+  const user = c.get('user');
+  const available = !existing || existing.userId === user.id;
+  return c.json({ available, handle });
+});
+
 // ─── Memory Routes ──────────────────────────────────────────────────────
 
 /**

@@ -2,11 +2,20 @@ import * as React from 'react';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
 import { Button } from '@/components/ui/button';
-import { useCreateOrchestrator } from '@/api/orchestrator';
+import { useCreateOrchestrator, useCheckHandle } from '@/api/orchestrator';
 
 export const Route = createFileRoute('/orchestrator-setup')({
   component: OrchestratorSetupPage,
 });
+
+function useDebounced(value: string, delayMs: number) {
+  const [debounced, setDebounced] = React.useState(value);
+  React.useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(id);
+  }, [value, delayMs]);
+  return debounced;
+}
 
 function OrchestratorSetupPage() {
   const navigate = useNavigate();
@@ -16,8 +25,13 @@ function OrchestratorSetupPage() {
   const [handle, setHandle] = React.useState('');
   const [customInstructions, setCustomInstructions] = React.useState('');
 
+  const debouncedHandle = useDebounced(handle, 400);
+  const handleCheck = useCheckHandle(debouncedHandle);
+  const handleTaken = debouncedHandle.length >= 2 && handleCheck.data?.available === false;
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (handleTaken) return;
 
     createOrchestrator.mutate(
       {
@@ -88,12 +102,26 @@ function OrchestratorSetupPage() {
                       )
                     }
                     placeholder="jarvis"
-                    className="block w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
+                    className={`block w-full rounded-md border bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-1 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 ${
+                      handleTaken
+                        ? 'border-red-400 focus:border-red-500 focus:ring-red-500 dark:border-red-500 dark:focus:border-red-400 dark:focus:ring-red-400'
+                        : 'border-neutral-300 focus:border-neutral-500 focus:ring-neutral-500 dark:border-neutral-600 dark:focus:border-neutral-400 dark:focus:ring-neutral-400'
+                    }`}
                   />
                 </div>
-                <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
-                  Lowercase letters, numbers, dashes, and underscores only
-                </p>
+                {handleTaken ? (
+                  <p className="mt-1 text-xs text-red-500 dark:text-red-400">
+                    Handle @{debouncedHandle} is already taken
+                  </p>
+                ) : debouncedHandle.length >= 2 && handleCheck.data?.available ? (
+                  <p className="mt-1 text-xs text-green-600 dark:text-green-400">
+                    @{debouncedHandle} is available
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+                    Lowercase letters, numbers, dashes, and underscores only
+                  </p>
+                )}
               </div>
 
               <div>
@@ -123,7 +151,7 @@ function OrchestratorSetupPage() {
 
           <Button
             type="submit"
-            disabled={!name || !handle || createOrchestrator.isPending}
+            disabled={!name || !handle || handleTaken || createOrchestrator.isPending}
             className="w-full"
           >
             {createOrchestrator.isPending ? 'Creating...' : 'Create Orchestrator'}
