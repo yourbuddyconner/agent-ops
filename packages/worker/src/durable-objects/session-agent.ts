@@ -2474,6 +2474,24 @@ export class SessionAgentDO {
       // Fetch recent messages from the target DO's local SQLite (not D1)
       const recentMessages = await this.fetchMessagesFromDO(targetSessionId, 10);
 
+      // Fetch live runner/sandbox status from target DO
+      let liveStatus: { runnerConnected?: boolean; runnerBusy?: boolean; queuedPrompts?: number; sandboxId?: string | null; status?: string } | null = null;
+      try {
+        const doId = this.env.SESSIONS.idFromName(targetSessionId);
+        const targetDO = this.env.SESSIONS.get(doId);
+        const statusRes = await targetDO.fetch(new Request('http://do/status'));
+        if (statusRes.ok) {
+          liveStatus = await statusRes.json() as any;
+        }
+      } catch (err) {
+        console.warn('[SessionAgentDO] Failed to fetch live status for session:', targetSessionId, err);
+      }
+
+      const runnerBusy = liveStatus?.runnerBusy ?? false;
+      const queuedPrompts = liveStatus?.queuedPrompts ?? 0;
+      const runnerConnected = liveStatus?.runnerConnected ?? false;
+      const agentStatus = runnerBusy || queuedPrompts > 0 ? 'working' : 'idle';
+
       this.sendToRunner({
         type: 'get-session-status-result',
         requestId,
@@ -2484,6 +2502,10 @@ export class SessionAgentDO {
           title: session.title,
           createdAt: session.createdAt instanceof Date ? session.createdAt.toISOString() : String(session.createdAt),
           lastActiveAt: session.lastActiveAt instanceof Date ? session.lastActiveAt.toISOString() : String(session.lastActiveAt),
+          runnerConnected,
+          runnerBusy,
+          queuedPrompts,
+          agentStatus,
           recentMessages,
         },
       } as any);
