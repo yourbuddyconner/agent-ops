@@ -205,6 +205,7 @@ oauthRouter.get('/github/callback', async (c) => {
 
     // If email is null (private), fetch from /user/emails
     let email = profile.email;
+    let primaryVisibility: 'public' | 'private' | null | undefined;
     if (!email) {
       const emailsRes = await fetch('https://api.github.com/user/emails', {
         headers: {
@@ -219,9 +220,12 @@ oauthRouter.get('/github/callback', async (c) => {
           email: string;
           primary: boolean;
           verified: boolean;
+          visibility?: 'public' | 'private' | null;
         }>;
         const primary = emails.find((e) => e.primary && e.verified);
-        email = primary?.email || emails.find((e) => e.verified)?.email || null;
+        const fallback = emails.find((e) => e.verified);
+        primaryVisibility = primary?.visibility ?? fallback?.visibility;
+        email = primary?.email || fallback?.email || null;
       }
     }
 
@@ -283,16 +287,20 @@ oauthRouter.get('/github/callback', async (c) => {
       avatarUrl: profile.avatar_url,
     });
 
-    // Auto-populate git config if not already set
-    if (!user.gitName || !user.gitEmail) {
-      const gitName = user.gitName || profile.name || profile.login;
-      // If the user's email is private on GitHub, use the noreply address
-      const gitEmail = user.gitEmail || (
-        profile.email === null
-          ? `${profile.id}+${profile.login}@users.noreply.github.com`
-          : email
-      );
-      await db.updateUserProfile(c.env.DB, user.id, { gitName, gitEmail });
+    // Auto-populate git config if not already set (or still using a private email)
+    const shouldUseNoReply = profile.email === null || (primaryVisibility && primaryVisibility !== 'public');
+    const inferredGitName = profile.name || profile.login;
+    const inferredGitEmail = shouldUseNoReply
+      ? `${profile.id}+${profile.login}@users.noreply.github.com`
+      : email;
+    const shouldUpdateGitName = !user.gitName;
+    const shouldUpdateGitEmail = !user.gitEmail
+      || (shouldUseNoReply && (user.gitEmail === user.email || user.gitEmail === email));
+    if (shouldUpdateGitName || shouldUpdateGitEmail) {
+      await db.updateUserProfile(c.env.DB, user.id, {
+        gitName: shouldUpdateGitName ? inferredGitName : user.gitName,
+        gitEmail: shouldUpdateGitEmail ? inferredGitEmail : user.gitEmail,
+      });
     }
 
     // Encrypt and store OAuth token
