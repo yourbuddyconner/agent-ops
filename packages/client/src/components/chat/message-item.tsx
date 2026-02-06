@@ -18,6 +18,9 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
   const isSystem = message.role === 'system';
   const { activePanel } = useDrawer();
   const compact = activePanel !== null;
+  const systemParts = isSystem && message.parts && typeof message.parts === 'object'
+    ? (message.parts as Record<string, unknown>)
+    : null;
 
   // Extract base64 screenshot parts if present
   const screenshotParts = getScreenshotParts(message.parts);
@@ -114,15 +117,25 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
 
   // System messages: styled with avatar + label
   if (isSystem) {
+    const systemTitle = (systemParts?.systemTitle as string) || 'System';
+    const systemAvatarUrl = systemParts?.systemAvatarUrl as string | undefined;
+    const systemInitials = systemTitle
+      .split(/[\s@]/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((s) => s[0].toUpperCase())
+      .join('');
+
     return (
       <div className="group relative flex gap-2 py-2.5 animate-fade-in">
         <Avatar className="mt-1 h-5 w-5 shrink-0">
-          <AvatarFallback className="text-[8px]">SYS</AvatarFallback>
+          {systemAvatarUrl && <AvatarImage src={systemAvatarUrl} alt={systemTitle} />}
+          <AvatarFallback className="text-[8px]">{systemInitials || 'SYS'}</AvatarFallback>
         </Avatar>
         <div className={compact ? 'max-w-[90%]' : 'max-w-[75%]'}>
           <div className="mb-1 flex items-center gap-1.5 px-1">
             <span className="font-mono text-[10px] font-medium text-neutral-500 dark:text-neutral-400">
-              System
+              {systemTitle}
             </span>
             <span className="font-mono text-[9px] tabular-nums text-neutral-300 dark:text-neutral-600">
               {formatTime(message.createdAt)}

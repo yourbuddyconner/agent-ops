@@ -313,6 +313,14 @@ export class SessionAgentDO {
         }
         return Response.json({ success: true });
       }
+      case '/system-message': {
+        const body = await request.json() as { content: string; parts?: Record<string, unknown> };
+        if (!body.content) {
+          return new Response(JSON.stringify({ error: 'Missing content' }), { status: 400 });
+        }
+        await this.handleSystemMessage(body.content, body.parts);
+        return Response.json({ success: true });
+      }
     }
 
     // Proxy to sandbox
@@ -2967,16 +2975,51 @@ export class SessionAgentDO {
       const session = await getSession(this.env.DB, sessionId);
       const parentSessionId = session?.parentSessionId;
       if (!parentSessionId) return;
+      const childTitle = session?.title || session?.workspace || `Child ${sessionId.slice(0, 8)}`;
       const parentDoId = this.env.SESSIONS.idFromName(parentSessionId);
       const parentDO = this.env.SESSIONS.get(parentDoId);
-      await parentDO.fetch(new Request('http://do/prompt', {
+      await parentDO.fetch(new Request('http://do/system-message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({
+          content,
+          parts: {
+            systemTitle: childTitle,
+            systemAvatarKey: 'child-session',
+          },
+        }),
       }));
     } catch (err) {
       console.error('[SessionAgentDO] Failed to notify parent session:', err);
     }
+  }
+
+  private async handleSystemMessage(content: string, parts?: Record<string, unknown>) {
+    const messageId = crypto.randomUUID();
+    const serializedParts = parts ? JSON.stringify(parts) : null;
+
+    if (serializedParts) {
+      this.ctx.storage.sql.exec(
+        'INSERT INTO messages (id, role, content, parts) VALUES (?, ?, ?, ?)',
+        messageId, 'system', content, serializedParts
+      );
+    } else {
+      this.ctx.storage.sql.exec(
+        'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
+        messageId, 'system', content
+      );
+    }
+
+    this.broadcastToClients({
+      type: 'message',
+      data: {
+        id: messageId,
+        role: 'system',
+        content,
+        parts: parts || undefined,
+        createdAt: Math.floor(Date.now() / 1000),
+      },
+    });
   }
 
   private async sendNextQueuedPrompt(): Promise<boolean> {
