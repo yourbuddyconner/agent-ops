@@ -11,10 +11,12 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { TerminateSessionDialog } from './terminate-session-dialog';
+import { RefreshOrchestratorDialog } from './refresh-orchestrator-dialog';
 import { DeleteSessionDialog } from './delete-session-dialog';
 
 interface SessionActionsMenuProps {
   session: { id: string; workspace: string; status: SessionStatus };
+  isOrchestrator?: boolean;
   trigger?: React.ReactNode;
   showOpen?: boolean;
   showEditorLink?: boolean;
@@ -28,13 +30,14 @@ const DELETABLE_STATUSES: SessionStatus[] = ['terminated', 'error'];
 
 export function SessionActionsMenu({
   session,
+  isOrchestrator = false,
   trigger,
   showOpen = false,
   showEditorLink = false,
   onActionComplete,
   align = 'end',
 }: SessionActionsMenuProps) {
-  const [dialog, setDialog] = useState<'terminate' | 'delete' | null>(null);
+  const [dialog, setDialog] = useState<'terminate' | 'refresh' | 'delete' | null>(null);
   const hibernateMutation = useHibernateSession();
 
   const canTerminate = ACTIVE_STATUSES.includes(session.status);
@@ -82,7 +85,12 @@ export function SessionActionsMenu({
               {hibernateMutation.isPending ? 'Hibernating...' : 'Hibernate Session'}
             </DropdownMenuItem>
           )}
-          {canTerminate && (
+          {canTerminate && isOrchestrator && (
+            <DropdownMenuItem onClick={() => setDialog('refresh')}>
+              Refresh Orchestrator
+            </DropdownMenuItem>
+          )}
+          {canTerminate && !isOrchestrator && (
             <DropdownMenuItem
               onClick={() => setDialog('terminate')}
               className="text-red-600 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"
@@ -107,6 +115,11 @@ export function SessionActionsMenu({
         open={dialog === 'terminate'}
         onOpenChange={(open) => !open && setDialog(null)}
         onTerminated={onActionComplete}
+      />
+      <RefreshOrchestratorDialog
+        sessionId={session.id}
+        open={dialog === 'refresh'}
+        onOpenChange={(open) => !open && setDialog(null)}
       />
       <DeleteSessionDialog
         sessionId={session.id}

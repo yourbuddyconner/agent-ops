@@ -171,6 +171,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           {session && (
             <SessionActionsMenu
               session={{ id: sessionId, workspace: session.workspace, status: sessionStatus }}
+              isOrchestrator={session.isOrchestrator}
               showOpen={false}
               showEditorLink={false}
             />
