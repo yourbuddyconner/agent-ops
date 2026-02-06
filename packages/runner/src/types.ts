@@ -59,7 +59,7 @@ export type RunnerToDOMessage =
   | { type: "memory-read"; requestId: string; category?: string; query?: string; limit?: number }
   | { type: "memory-write"; requestId: string; content: string; category: string }
   | { type: "memory-delete"; requestId: string; memoryId: string }
-  | { type: "list-repos"; requestId: string }
+  | { type: "list-repos"; requestId: string; source?: string }
   | { type: "list-personas"; requestId: string }
   | { type: "get-session-status"; requestId: string; targetSessionId: string };
 

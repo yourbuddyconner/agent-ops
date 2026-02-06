@@ -107,8 +107,8 @@ async function main() {
     onMemoryDelete: async (memoryId) => {
       return await agentClient.requestMemoryDelete(memoryId);
     },
-    onListRepos: async () => {
-      return await agentClient.requestListRepos();
+    onListRepos: async (source) => {
+      return await agentClient.requestListRepos(source);
     },
     onListPersonas: async () => {
       return await agentClient.requestListPersonas();

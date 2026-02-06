@@ -71,6 +71,7 @@ interface RunnerMessage {
   query?: string;
   memoryId?: string;
   relevance?: number;
+  source?: string;
 }
 
 /** Messages sent from DO to clients */
@@ -1344,7 +1345,7 @@ export class SessionAgentDO {
         break;
 
       case 'list-repos':
-        await this.handleListRepos(msg.requestId!);
+        await this.handleListRepos(msg.requestId!, msg.source);
         break;
 
       case 'list-personas':
@@ -1676,10 +1677,43 @@ export class SessionAgentDO {
     }
   }
 
-  private async handleListRepos(requestId: string) {
+  private async handleListRepos(requestId: string, source?: string) {
     try {
-      const repos = await listOrgRepositories(this.env.DB);
-      this.sendToRunner({ type: 'list-repos-result', requestId, repos } as any);
+      if (source === 'github') {
+        const githubToken = await this.getGitHubToken();
+        if (!githubToken) {
+          this.sendToRunner({ type: 'list-repos-result', requestId, error: 'No GitHub token found — user must connect GitHub in settings' } as any);
+          return;
+        }
+        // Fetch user's repos from GitHub API (up to 100, sorted by last push)
+        const res = await fetch('https://api.github.com/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member', {
+          headers: {
+            'Authorization': `Bearer ${githubToken}`,
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'agent-ops',
+          },
+        });
+        if (!res.ok) {
+          const errText = await res.text();
+          this.sendToRunner({ type: 'list-repos-result', requestId, error: `GitHub API error (${res.status}): ${errText}` } as any);
+          return;
+        }
+        const ghRepos = await res.json() as { full_name: string; html_url: string; clone_url: string; description: string | null; language: string | null; default_branch: string; private: boolean; pushed_at: string }[];
+        const repos = ghRepos.map(r => ({
+          fullName: r.full_name,
+          url: r.clone_url,
+          htmlUrl: r.html_url,
+          description: r.description,
+          language: r.language,
+          defaultBranch: r.default_branch,
+          visibility: r.private ? 'private' : 'public',
+          lastPushed: r.pushed_at,
+        }));
+        this.sendToRunner({ type: 'list-repos-result', requestId, repos } as any);
+      } else {
+        const repos = await listOrgRepositories(this.env.DB);
+        this.sendToRunner({ type: 'list-repos-result', requestId, repos } as any);
+      }
     } catch (err) {
       console.error('[SessionAgentDO] Failed to list repos:', err);
       this.sendToRunner({ type: 'list-repos-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);

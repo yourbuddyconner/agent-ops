@@ -251,10 +251,10 @@ export class AgentClient {
     });
   }
 
-  requestListRepos(): Promise<{ repos: unknown[] }> {
+  requestListRepos(source?: string): Promise<{ repos: unknown[] }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
-      this.send({ type: "list-repos", requestId });
+      this.send({ type: "list-repos", requestId, source });
     });
   }
 

@@ -441,7 +441,7 @@ export interface GatewayCallbacks {
   onMemoryRead?: (params: MemoryReadParams) => Promise<{ memories: unknown[] }>;
   onMemoryWrite?: (content: string, category: string) => Promise<{ memory: unknown; success: boolean }>;
   onMemoryDelete?: (memoryId: string) => Promise<{ success: boolean }>;
-  onListRepos?: () => Promise<{ repos: unknown[] }>;
+  onListRepos?: (source?: string) => Promise<{ repos: unknown[] }>;
   onListPersonas?: () => Promise<{ personas: unknown[] }>;
   onGetSessionStatus?: (targetSessionId: string) => Promise<{ sessionStatus: unknown }>;
 }
@@ -683,7 +683,8 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json({ error: "List repos handler not configured" }, 500);
     }
     try {
-      const result = await callbacks.onListRepos();
+      const source = c.req.query("source") || undefined;
+      const result = await callbacks.onListRepos(source);
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] List repos error:", err);
