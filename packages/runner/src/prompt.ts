@@ -333,7 +333,18 @@ export class PromptHandler {
       this.agentClient.sendAgentStatus("thinking");
 
       // Send message async (fire-and-forget)
-      await this.sendPromptAsync(this.sessionId, content, effectiveModel);
+      try {
+        await this.sendPromptAsync(this.sessionId, content, effectiveModel);
+      } catch (err) {
+        if (this.isSessionGone(err)) {
+          console.warn("[PromptHandler] OpenCode session missing; recreating session and retrying prompt");
+          this.sessionId = await this.createSession();
+          await this.startEventStream();
+          await this.sendPromptAsync(this.sessionId, content, effectiveModel);
+        } else {
+          throw err;
+        }
+      }
       console.log(`[PromptHandler] Prompt ${messageId} sent to OpenCode${effectiveModel ? ` (model: ${effectiveModel})` : ''}`);
 
       // Response will arrive via SSE events — don't block here
@@ -740,8 +751,18 @@ export class PromptHandler {
 
     if (!res.ok && res.status !== 204) {
       const body = await res.text().catch(() => "");
-      throw new Error(`OpenCode prompt_async failed: ${res.status} — ${body}`);
+      const error = new Error(`OpenCode prompt_async failed: ${res.status} — ${body}`);
+      (error as { status?: number }).status = res.status;
+      throw error;
     }
+  }
+
+  private isSessionGone(err: unknown): boolean {
+    if (!err || typeof err !== "object") return false;
+    const maybeStatus = (err as { status?: number }).status;
+    if (maybeStatus === 404 || maybeStatus === 410) return true;
+    const msg = err instanceof Error ? err.message : String(err);
+    return /session.*(not found|missing|gone)/i.test(msg) || /404/.test(msg);
   }
 
   // ─── SSE Event Stream ─────────────────────────────────────────────────
@@ -1091,13 +1112,11 @@ export class PromptHandler {
 
       // wait_for_event: forcibly end the turn so the agent actually stops
       if (toolName === "wait_for_event") {
-        console.log(`[PromptHandler] wait_for_event completed — aborting OpenCode and finalizing turn`);
-        this.finalizeResponse();
-        // Abort OpenCode generation so it doesn't keep producing output
-        if (this.sessionId) {
-          fetch(`${this.opencodeUrl}/session/${this.sessionId}/abort`, { method: "POST" })
-            .catch((err) => console.error("[PromptHandler] Error aborting after wait_for_event:", err));
-        }
+        console.log(`[PromptHandler] wait_for_event completed — finalizing turn`);
+        this.finalizeResponse(true);
+        // Ensure DO clears runnerBusy even if no other events arrive
+        this.agentClient.sendAgentStatus("idle");
+        this.idleNotified = true;
       }
 
     } else if (currentStatus === "error") {
@@ -1168,9 +1187,9 @@ export class PromptHandler {
     }
   }
 
-  private finalizeResponse(): void {
-    if (!this.activeMessageId || !this.hasActivity) {
-      console.log(`[PromptHandler] finalizeResponse: skipping (activeMessageId: ${this.activeMessageId ? 'yes' : 'no'}, hasActivity: ${this.hasActivity})`);
+  private finalizeResponse(force = false): void {
+    if (!this.activeMessageId || (!this.hasActivity && !force)) {
+      console.log(`[PromptHandler] finalizeResponse: skipping (activeMessageId: ${this.activeMessageId ? 'yes' : 'no'}, hasActivity: ${this.hasActivity}, force: ${force})`);
       return;
     }
 
