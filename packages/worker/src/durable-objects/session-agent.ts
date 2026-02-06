@@ -267,8 +267,18 @@ export class SessionAgentDO {
     switch (url.pathname) {
       case '/start':
         return this.handleStart(request);
-      case '/stop':
-        return this.handleStop();
+      case '/stop': {
+        let reason: string | undefined;
+        if (request.method === 'POST') {
+          try {
+            const body = await request.json() as { reason?: string };
+            if (body?.reason) reason = body.reason;
+          } catch {
+            // ignore missing/invalid body
+          }
+        }
+        return this.handleStop(reason);
+      }
       case '/status':
         return this.handleStatus();
       case '/wake':
@@ -1894,7 +1904,11 @@ export class SessionAgentDO {
       // Stop the child via its DO
       const childDoId = this.env.SESSIONS.idFromName(childSessionId);
       const childDO = this.env.SESSIONS.get(childDoId);
-      const resp = await childDO.fetch(new Request('http://do/stop', { method: 'POST' }));
+      const resp = await childDO.fetch(new Request('http://do/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'parent_stopped' }),
+      }));
 
       if (!resp.ok) {
         const errText = await resp.text();
@@ -2782,7 +2796,7 @@ export class SessionAgentDO {
     }
   }
 
-  private async handleStop(reason: 'user_stopped' | 'completed' = 'user_stopped'): Promise<Response> {
+  private async handleStop(reason: string = 'user_stopped'): Promise<Response> {
     const sandboxId = this.getStateValue('sandboxId');
     const sessionId = this.getStateValue('sessionId');
     const terminateUrl = this.getStateValue('terminateUrl');
@@ -2820,7 +2834,11 @@ export class SessionAgentDO {
             try {
               const childDoId = this.env.SESSIONS.idFromName(child.id);
               const childDO = this.env.SESSIONS.get(childDoId);
-              await childDO.fetch(new Request('http://do/stop', { method: 'POST' }));
+              await childDO.fetch(new Request('http://do/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason: 'parent_stopped' }),
+              }));
               console.log(`[SessionAgentDO] Cascade-terminated child ${child.id}`);
             } catch (err) {
               console.error(`[SessionAgentDO] Failed to cascade-terminate child ${child.id}:`, err);

@@ -640,7 +640,11 @@ sessionsRouter.post('/bulk-delete', zValidator('json', bulkDeleteSchema), async 
       const sessionDO = c.env.SESSIONS.get(doId);
 
       try {
-        await sessionDO.fetch(new Request('http://do/stop', { method: 'POST' }));
+        await sessionDO.fetch(new Request('http://do/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: 'bulk_delete' }),
+        }));
       } catch (err) {
         // Stopping may fail if already terminated — continue to GC
       }
@@ -754,7 +758,11 @@ sessionsRouter.delete('/:id', async (c) => {
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
 
-  await sessionDO.fetch(new Request('http://do/stop', { method: 'POST' }));
+  await sessionDO.fetch(new Request('http://do/stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: 'user_stopped' }),
+  }));
 
   // Update DB status
   await db.updateSessionStatus(c.env.DB, id, 'terminated');
