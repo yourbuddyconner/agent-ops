@@ -51,6 +51,7 @@ async def create_session(request: dict) -> dict:
         jwt_secret=request["jwtSecret"],
         idle_timeout_seconds=request.get("idleTimeoutSeconds", 900),
         env_vars=request.get("envVars"),
+        persona_files=request.get("personaFiles"),
     )
 
     result = await session_manager.create(req)
@@ -132,6 +133,7 @@ async def restore_session(request: dict) -> dict:
         jwt_secret=request["jwtSecret"],
         idle_timeout_seconds=request.get("idleTimeoutSeconds", 900),
         env_vars=request.get("envVars"),
+        persona_files=request.get("personaFiles"),
     )
 
     result = await session_manager.restore(req, request["snapshotImageId"])

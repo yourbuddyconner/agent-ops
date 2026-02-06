@@ -64,12 +64,16 @@ fi
 if [ -n "${PERSONA_FILES_JSON:-}" ]; then
   echo "[start.sh] Injecting persona files"
   mkdir -p "${WORK_DIR}/.agent-ops/persona"
-  echo "$PERSONA_FILES_JSON" | jq -c '.[]' | while read file_json; do
-    SORT_ORDER=$(echo "$file_json" | jq -r '.sortOrder // 0')
-    FILENAME=$(echo "$file_json" | jq -r '.filename')
-    CONTENT=$(echo "$file_json" | jq -r '.content')
+  # Use printf to avoid echo interpreting escape sequences in JSON content.
+  # Use jq to extract each file, then write content with printf to preserve
+  # multi-line markdown and special characters.
+  FILE_COUNT=$(printf '%s' "$PERSONA_FILES_JSON" | jq 'length')
+  for i in $(seq 0 $(( FILE_COUNT - 1 ))); do
+    SORT_ORDER=$(printf '%s' "$PERSONA_FILES_JSON" | jq -r ".[$i].sortOrder // 0")
+    FILENAME=$(printf '%s' "$PERSONA_FILES_JSON" | jq -r ".[$i].filename")
     PADDED=$(printf "%02d" "$SORT_ORDER")
-    echo "$CONTENT" > "${WORK_DIR}/.agent-ops/persona/${PADDED}-${FILENAME}"
+    printf '%s' "$PERSONA_FILES_JSON" | jq -r ".[$i].content" > "${WORK_DIR}/.agent-ops/persona/${PADDED}-${FILENAME}"
+    echo "[start.sh]   Wrote ${PADDED}-${FILENAME}"
   done
   echo "[start.sh] Persona files written to ${WORK_DIR}/.agent-ops/persona/"
   ls -la "${WORK_DIR}/.agent-ops/persona/"

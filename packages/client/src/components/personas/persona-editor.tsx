@@ -42,9 +42,10 @@ export function PersonaEditor({ open, onOpenChange, persona, onSave, isSaving }:
   const [description, setDescription] = React.useState('');
   const [icon, setIcon] = React.useState('');
   const [visibility, setVisibility] = React.useState<PersonaVisibility>('shared');
+  const [instructions, setInstructions] = React.useState('');
   const [files, setFiles] = React.useState<{ filename: string; content: string; sortOrder: number }[]>([]);
 
-  // Populate form when editing
+  // Populate form when editing — separate the primary instructions.md from additional files
   React.useEffect(() => {
     if (persona) {
       setName(persona.name);
@@ -53,12 +54,17 @@ export function PersonaEditor({ open, onOpenChange, persona, onSave, isSaving }:
       setDescription(persona.description || '');
       setIcon(persona.icon || '');
       setVisibility(persona.visibility);
+      const allFiles = persona.files ?? [];
+      const primary = allFiles.find((f) => f.filename === 'instructions.md');
+      setInstructions(primary?.content || '');
       setFiles(
-        persona.files?.map((f) => ({
-          filename: f.filename,
-          content: f.content,
-          sortOrder: f.sortOrder,
-        })) || []
+        allFiles
+          .filter((f) => f.filename !== 'instructions.md')
+          .map((f) => ({
+            filename: f.filename,
+            content: f.content,
+            sortOrder: f.sortOrder,
+          }))
       );
     } else {
       setName('');
@@ -67,6 +73,7 @@ export function PersonaEditor({ open, onOpenChange, persona, onSave, isSaving }:
       setDescription('');
       setIcon('');
       setVisibility('shared');
+      setInstructions('');
       setFiles([]);
     }
   }, [persona, open]);
@@ -92,7 +99,14 @@ export function PersonaEditor({ open, onOpenChange, persona, onSave, isSaving }:
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSave({ name, slug, description, icon, visibility, files });
+    // Merge the instructions textarea as instructions.md (sort order 0) with any additional files
+    const allFiles = [
+      ...(instructions.trim()
+        ? [{ filename: 'instructions.md', content: instructions, sortOrder: 0 }]
+        : []),
+      ...files,
+    ];
+    onSave({ name, slug, description, icon, visibility, files: allFiles });
   };
 
   return (
@@ -144,7 +158,7 @@ export function PersonaEditor({ open, onOpenChange, persona, onSave, isSaving }:
                   setSlugManual(true);
                 }}
                 placeholder="code-reviewer"
-                pattern="^[a-z0-9-]+$"
+                pattern="^[a-z0-9\-]+$"
                 required
               />
               <p className="mt-1 text-xs text-neutral-400">Lowercase letters, numbers, and dashes only</p>
@@ -194,11 +208,28 @@ export function PersonaEditor({ open, onOpenChange, persona, onSave, isSaving }:
               </p>
             </div>
 
-            {/* Files section */}
+            {/* Instructions textarea */}
+            <div>
+              <label className="mb-1 block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                Instructions
+              </label>
+              <textarea
+                value={instructions}
+                onChange={(e) => setInstructions(e.target.value)}
+                placeholder="Write persona instructions in markdown...&#10;&#10;Example: You are a code reviewer. Focus on security, performance, and readability."
+                rows={6}
+                className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+              />
+              <p className="mt-1 text-xs text-neutral-400">
+                Markdown instructions injected as the primary persona file
+              </p>
+            </div>
+
+            {/* Additional files section */}
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                  Instruction Files
+                  Additional Files
                 </label>
                 <Button type="button" variant="secondary" onClick={addFile}>
                   Add File
@@ -207,7 +238,7 @@ export function PersonaEditor({ open, onOpenChange, persona, onSave, isSaving }:
 
               {files.length === 0 ? (
                 <p className="rounded-md border border-dashed border-neutral-200 px-4 py-6 text-center text-sm text-neutral-400 dark:border-neutral-700">
-                  No instruction files yet. Add a file to define persona behavior.
+                  No additional files. Use this for supplementary instructions or reference material.
                 </p>
               ) : (
                 <div className="space-y-3">
