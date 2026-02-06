@@ -15,6 +15,12 @@ export default tool({
       .describe(
         "Brief note about what you're waiting for (e.g. 'Waiting for child session to complete')",
       ),
+    session_ids: tool.schema
+      .array(tool.schema.string())
+      .optional()
+      .describe(
+        "Optional list of child session IDs to monitor. If omitted, all child sessions are monitored.",
+      ),
   },
   async execute(args) {
     const sessionId = process.env.SESSION_ID
@@ -28,6 +34,7 @@ export default tool({
     const pollIntervalMs = 2000
     const terminalStatuses = new Set(["terminated", "error", "hibernated"])
     let lastSnapshot = new Map<string, string>()
+    let initialized = false
 
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -42,32 +49,21 @@ export default tool({
         const data = (await res.json()) as {
           children?: Array<{ id: string; title?: string; status: string }>
         }
-        const children = data.children ?? []
+        const allChildren = data.children ?? []
+        const children = args.session_ids?.length
+          ? allChildren.filter((c) => args.session_ids!.includes(c.id))
+          : allChildren
         const current = new Map<string, string>(
           children.map((c) => [c.id, c.status]),
         )
 
-        // Trigger immediately if any child is already in a terminal state.
-        for (const child of children) {
-          if (terminalStatuses.has(child.status)) {
-            const message = `Child session event: ${child.id} is ${child.status}.`
-            await fetch("http://localhost:9000/api/session-message", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ sessionId, content: message }),
-            })
-            return (
-              `Yielding control.${args.reason ? " Reason: " + args.reason : ""} ` +
-              "Your turn is now over — do NOT call any more tools or generate further output."
-            )
-          }
-        }
-
-        if (lastSnapshot.size > 0) {
+        if (initialized) {
           // New child spawned
-          for (const [id] of current) {
+          for (const [id, status] of current) {
             if (!lastSnapshot.has(id)) {
-              const message = `Child session event: ${id} started.`
+              const message = terminalStatuses.has(status)
+                ? `Child session event: ${id} is ${status}.`
+                : `Child session event: ${id} started.`
               await fetch("http://localhost:9000/api/session-message", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -96,9 +92,27 @@ export default tool({
               )
             }
           }
+
+          // Terminal transitions (non-terminal -> terminal)
+          for (const [id, status] of current) {
+            const prev = lastSnapshot.get(id)
+            if (prev && !terminalStatuses.has(prev) && terminalStatuses.has(status)) {
+              const message = `Child session event: ${id} is ${status}.`
+              await fetch("http://localhost:9000/api/session-message", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sessionId, content: message }),
+              })
+              return (
+                `Yielding control.${args.reason ? " Reason: " + args.reason : ""} ` +
+                "Your turn is now over — do NOT call any more tools or generate further output."
+              )
+            }
+          }
         }
 
         lastSnapshot = current
+        initialized = true
       } catch {
         // Ignore transient failures and keep waiting
       }
