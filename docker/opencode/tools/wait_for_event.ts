@@ -21,6 +21,18 @@ export default tool({
       .describe(
         "Optional list of child session IDs to monitor. If omitted, all child sessions are monitored.",
       ),
+    notify_on: tool.schema
+      .enum(["terminal", "status_change", "started"])
+      .optional()
+      .describe(
+        "Which events should wake you. 'terminal' (default) only fires when a child reaches a terminal status.",
+      ),
+    statuses: tool.schema
+      .array(tool.schema.string())
+      .optional()
+      .describe(
+        "Optional list of statuses to trigger on (e.g. ['terminated','error']). Overrides notify_on.",
+      ),
   },
   async execute(args) {
     const sessionId = process.env.SESSION_ID
@@ -33,6 +45,8 @@ export default tool({
 
     const pollIntervalMs = 2000
     const terminalStatuses = new Set(["terminated", "error", "hibernated"])
+    const notifyOn = args.notify_on || "terminal"
+    const statusFilter = args.statuses?.length ? new Set(args.statuses) : null
     let lastSnapshot = new Map<string, string>()
     let initialized = false
 
@@ -59,44 +73,51 @@ export default tool({
 
         if (initialized) {
           // New child spawned
-          for (const [id, status] of current) {
-            if (!lastSnapshot.has(id)) {
-              const message = terminalStatuses.has(status)
-                ? `Child session event: ${id} is ${status}.`
-                : `Child session event: ${id} started.`
-              await fetch("http://localhost:9000/api/session-message", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sessionId, content: message }),
-              })
-              return (
-                `Yielding control.${args.reason ? " Reason: " + args.reason : ""} ` +
-                "Your turn is now over — do NOT call any more tools or generate further output."
-              )
+          if (notifyOn === "started") {
+            for (const [id, status] of current) {
+              if (!lastSnapshot.has(id)) {
+                const message = terminalStatuses.has(status)
+                  ? `Child session event: ${id} is ${status}.`
+                  : `Child session event: ${id} started.`
+                await fetch("http://localhost:9000/api/session-message", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ sessionId, content: message }),
+                })
+                return (
+                  `Yielding control.${args.reason ? " Reason: " + args.reason : ""} ` +
+                  "Your turn is now over — do NOT call any more tools or generate further output."
+                )
+              }
             }
           }
 
-          // Status changes
-          for (const [id, status] of current) {
-            const prev = lastSnapshot.get(id)
-            if (prev && prev !== status) {
-              const message = `Child session event: ${id} changed status from ${prev} to ${status}.`
-              await fetch("http://localhost:9000/api/session-message", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sessionId, content: message }),
-              })
-              return (
-                `Yielding control.${args.reason ? " Reason: " + args.reason : ""} ` +
-                "Your turn is now over — do NOT call any more tools or generate further output."
-              )
+          // Status changes (explicit opt-in)
+          if (notifyOn === "status_change") {
+            for (const [id, status] of current) {
+              const prev = lastSnapshot.get(id)
+              if (prev && prev !== status) {
+                if (statusFilter && !statusFilter.has(status)) continue
+                const message = `Child session event: ${id} changed status from ${prev} to ${status}.`
+                await fetch("http://localhost:9000/api/session-message", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ sessionId, content: message }),
+                })
+                return (
+                  `Yielding control.${args.reason ? " Reason: " + args.reason : ""} ` +
+                  "Your turn is now over — do NOT call any more tools or generate further output."
+                )
+              }
             }
           }
 
-          // Terminal transitions (non-terminal -> terminal)
+          // Terminal transitions (non-terminal -> terminal) or filtered statuses
           for (const [id, status] of current) {
             const prev = lastSnapshot.get(id)
-            if (prev && !terminalStatuses.has(prev) && terminalStatuses.has(status)) {
+            const isTerminal = terminalStatuses.has(status)
+            const matchesFilter = statusFilter ? statusFilter.has(status) : false
+            if (prev && prev !== status && (matchesFilter || (notifyOn === "terminal" && !terminalStatuses.has(prev) && isTerminal))) {
               const message = `Child session event: ${id} is ${status}.`
               await fetch("http://localhost:9000/api/session-message", {
                 method: "POST",
