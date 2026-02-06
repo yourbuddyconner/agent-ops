@@ -28,7 +28,8 @@ export type DOToRunnerMessage =
   | { type: "list-personas-result"; requestId: string; personas?: unknown[]; error?: string }
   | { type: "get-session-status-result"; requestId: string; sessionStatus?: unknown; error?: string }
   | { type: "list-child-sessions-result"; requestId: string; children?: unknown[]; error?: string }
-  | { type: "forward-messages-result"; requestId: string; count?: number; sourceSessionId?: string; error?: string };
+  | { type: "forward-messages-result"; requestId: string; count?: number; sourceSessionId?: string; error?: string }
+  | { type: "read-repo-file-result"; requestId: string; content?: string; encoding?: string; truncated?: boolean; path?: string; repo?: string; ref?: string; error?: string };
 
 /** Tool call status values */
 export type ToolCallStatus = "pending" | "running" | "completed" | "error";
@@ -71,6 +72,7 @@ export type RunnerToDOMessage =
   | { type: "get-session-status"; requestId: string; targetSessionId: string }
   | { type: "list-child-sessions"; requestId: string }
   | { type: "forward-messages"; requestId: string; targetSessionId: string; limit?: number; after?: string }
+  | { type: "read-repo-file"; requestId: string; owner?: string; repo?: string; repoUrl?: string; path: string; ref?: string }
   | { type: "model-switched"; messageId: string; fromModel: string; toModel: string; reason: string };
 
 /** Structured review result data */

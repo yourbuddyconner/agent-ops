@@ -23,7 +23,7 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'model-switched';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'model-switched';
   prNumber?: number;
   targetSessionId?: string;
   interrupt?: boolean;
@@ -81,6 +81,11 @@ interface RunnerMessage {
   toModel?: string;
   reason?: string;
   model?: string;
+  owner?: string;
+  repo?: string;
+  repoUrl?: string;
+  path?: string;
+  ref?: string;
 }
 
 /** Messages sent from DO to clients */
@@ -91,7 +96,7 @@ interface ClientOutbound {
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result';
   messageId?: string;
   content?: string;
   model?: string;
@@ -125,6 +130,12 @@ interface RunnerOutbound {
   sourceSessionId?: string;
   // Model failover
   modelPreferences?: string[];
+  content?: string;
+  encoding?: string;
+  truncated?: boolean;
+  path?: string;
+  repo?: string;
+  ref?: string;
 }
 
 // ─── Durable SQLite Table Schemas ──────────────────────────────────────────
@@ -1471,6 +1482,15 @@ export class SessionAgentDO {
       case 'list-child-sessions':
         await this.handleListChildSessions(msg.requestId!);
         break;
+      case 'read-repo-file':
+        await this.handleReadRepoFile(msg.requestId!, {
+          owner: msg.owner,
+          repo: msg.repo,
+          repoUrl: msg.repoUrl,
+          path: msg.path,
+          ref: msg.ref,
+        });
+        break;
 
       case 'forward-messages':
         await this.handleForwardMessages(msg.requestId!, msg.targetSessionId!, msg.limit, msg.after);
@@ -2353,6 +2373,106 @@ export class SessionAgentDO {
     } catch (err) {
       console.error('[SessionAgentDO] Failed to list child sessions:', err);
       this.sendToRunner({ type: 'list-child-sessions-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleReadRepoFile(
+    requestId: string,
+    params: { owner?: string; repo?: string; repoUrl?: string; path?: string; ref?: string },
+  ) {
+    try {
+      const githubToken = await this.getGitHubToken();
+      if (!githubToken) {
+        this.sendToRunner({ type: 'read-repo-file-result', requestId, error: 'No GitHub token found — user must connect GitHub in settings' } as any);
+        return;
+      }
+
+      if (!params.path) {
+        this.sendToRunner({ type: 'read-repo-file-result', requestId, error: 'Missing file path' } as any);
+        return;
+      }
+
+      let owner = params.owner;
+      let repo = params.repo;
+      if (params.repoUrl) {
+        const ownerRepo = this.extractOwnerRepo(params.repoUrl);
+        if (ownerRepo) {
+          owner = ownerRepo.owner;
+          repo = ownerRepo.repo;
+        }
+      }
+      if (!owner || !repo) {
+        // Allow repo in "owner/repo" format if passed in repo
+        if (repo && repo.includes('/')) {
+          const [o, r] = repo.split('/');
+          owner = owner || o;
+          repo = r;
+        }
+      }
+
+      if (!owner || !repo) {
+        const resolved = await this.resolveOwnerRepo(owner, repo);
+        owner = resolved.owner;
+        repo = resolved.repo;
+      }
+
+      const encodedPath = params.path.split('/').map(encodeURIComponent).join('/');
+      const url = new URL(`https://api.github.com/repos/${owner}/${repo}/contents/${encodedPath}`);
+      if (params.ref) url.searchParams.set('ref', params.ref);
+
+      const res = await fetch(url.toString(), {
+        headers: {
+          'Authorization': `Bearer ${githubToken}`,
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'agent-ops',
+        },
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        this.sendToRunner({ type: 'read-repo-file-result', requestId, error: `GitHub API error (${res.status}): ${errText}` } as any);
+        return;
+      }
+
+      const data = await res.json() as {
+        type: 'file' | 'dir';
+        encoding?: string;
+        content?: string;
+        path?: string;
+        size?: number;
+      };
+
+      if (data.type === 'dir') {
+        this.sendToRunner({ type: 'read-repo-file-result', requestId, error: `Path is a directory: ${params.path}` } as any);
+        return;
+      }
+
+      const encoding = data.encoding || 'base64';
+      let content = data.content || '';
+      if (encoding === 'base64' && content) {
+        content = atob(content.replace(/\n/g, ''));
+      }
+
+      const MAX_CHARS = 200_000;
+      let truncated = false;
+      if (content.length > MAX_CHARS) {
+        content = content.slice(0, MAX_CHARS);
+        truncated = true;
+      }
+
+      this.sendToRunner({
+        type: 'read-repo-file-result',
+        requestId,
+        content,
+        encoding,
+        truncated,
+        path: data.path || params.path,
+        repo: `${owner}/${repo}`,
+        ref: params.ref,
+      } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to read repo file:', err);
+      this.sendToRunner({ type: 'read-repo-file-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
     }
   }
 

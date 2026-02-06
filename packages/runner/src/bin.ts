@@ -128,6 +128,9 @@ async function main() {
     onForwardMessages: async (targetSessionId, limit, after) => {
       return await agentClient.requestForwardMessages(targetSessionId, limit, after);
     },
+    onReadRepoFile: async (params) => {
+      return await agentClient.requestReadRepoFile(params);
+    },
   });
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient);
 

@@ -464,6 +464,7 @@ export interface GatewayCallbacks {
   onGetSessionStatus?: (targetSessionId: string) => Promise<{ sessionStatus: unknown }>;
   onListChildSessions?: () => Promise<{ children: unknown[] }>;
   onForwardMessages?: (targetSessionId: string, limit?: number, after?: string) => Promise<{ count: number; sourceSessionId: string }>;
+  onReadRepoFile?: (params: { owner?: string; repo?: string; repoUrl?: string; path: string; ref?: string }) => Promise<{ content: string; encoding?: string; truncated?: boolean; path?: string; repo?: string; ref?: string }>;
 }
 
 export function startGateway(port: number, callbacks: GatewayCallbacks): void {
@@ -838,6 +839,29 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] Forward messages error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/read-repo-file", async (c) => {
+    if (!callbacks.onReadRepoFile) {
+      return c.json({ error: "Read repo file handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as { owner?: string; repo?: string; repoUrl?: string; path?: string; ref?: string };
+      if (!body.path) {
+        return c.json({ error: "Missing required field: path" }, 400);
+      }
+      const result = await callbacks.onReadRepoFile({
+        owner: body.owner,
+        repo: body.repo,
+        repoUrl: body.repoUrl,
+        path: body.path,
+        ref: body.ref,
+      });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Read repo file error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });

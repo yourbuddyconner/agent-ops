@@ -305,6 +305,13 @@ export class AgentClient {
     });
   }
 
+  requestReadRepoFile(params: { owner?: string; repo?: string; repoUrl?: string; path: string; ref?: string }): Promise<{ content: string; encoding?: string; truncated?: boolean; path?: string; repo?: string; ref?: string }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "read-repo-file", requestId, ...params });
+    });
+  }
+
   requestSelfTerminate(): void {
     this.send({ type: "self-terminate" });
     // Disconnect and exit — the DO will handle sandbox termination
@@ -575,6 +582,20 @@ export class AgentClient {
             this.rejectPendingRequest(msg.requestId, msg.error);
           } else {
             this.resolvePendingRequest(msg.requestId, { count: msg.count, sourceSessionId: msg.sourceSessionId });
+          }
+          break;
+        case "read-repo-file-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, {
+              content: msg.content ?? "",
+              encoding: msg.encoding,
+              truncated: msg.truncated,
+              path: msg.path,
+              repo: msg.repo,
+              ref: msg.ref,
+            });
           }
           break;
       }
