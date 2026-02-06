@@ -40,6 +40,8 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
     return `${s}s`;
   };
 
+  const activeChildren = (childSessions ?? []).filter((c) => c.status !== 'terminated' && c.status !== 'error');
+
   return (
     <div className={`flex h-full flex-col border-l border-border bg-surface-0 dark:bg-surface-0 ${compact ? 'w-[200px]' : 'w-[240px]'}`}>
       <div className={`flex h-10 shrink-0 items-center border-b border-border ${compact ? 'px-2' : 'px-3'}`}>
@@ -158,11 +160,11 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
           </SidebarSection>
         )}
 
-        {/* Child Sessions */}
-        {childSessions && childSessions.length > 0 && (
-          <SidebarSection label={`Sub-agents (${childSessions.length})`}>
+        {/* Child Sessions (hide terminated/error) */}
+        {activeChildren.length > 0 && (
+          <SidebarSection label={`Sub-agents (${activeChildren.length})`}>
             <div className="space-y-px">
-              {childSessions.map((child) => (
+              {activeChildren.map((child) => (
                 <Link
                   key={child.id}
                   to="/sessions/$sessionId"
@@ -254,7 +256,7 @@ function FileChangedItem({ file }: { file: SessionFileChanged }) {
   );
 }
 
-function StatusDot({ status }: { status: string }) {
+export function StatusDot({ status }: { status: string }) {
   const colors: Record<string, string> = {
     running: 'bg-emerald-400',
     initializing: 'bg-amber-400',
@@ -269,7 +271,7 @@ function StatusDot({ status }: { status: string }) {
   );
 }
 
-function SidebarSection({ label, children }: { label: string; children: React.ReactNode }) {
+export function SidebarSection({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
       <span className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-[0.08em] text-neutral-400 dark:text-neutral-500">
@@ -280,7 +282,7 @@ function SidebarSection({ label, children }: { label: string; children: React.Re
   );
 }
 
-function StatItem({ label, value }: { label: string; value: number | string }) {
+export function StatItem({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="flex items-baseline justify-between">
       <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500">{label}</span>

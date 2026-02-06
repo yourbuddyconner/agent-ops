@@ -550,13 +550,13 @@ export async function getUserById(db: D1Database, userId: string): Promise<User 
 export async function updateUserProfile(
   db: D1Database,
   userId: string,
-  data: { name?: string; gitName?: string; gitEmail?: string; onboardingCompleted?: boolean; idleTimeoutSeconds?: number }
+  data: { name?: string; gitName?: string; gitEmail?: string; onboardingCompleted?: boolean; idleTimeoutSeconds?: number; modelPreferences?: string[] }
 ): Promise<User | null> {
   await db
     .prepare(
-      "UPDATE users SET name = COALESCE(?, name), git_name = ?, git_email = ?, onboarding_completed = COALESCE(?, onboarding_completed), idle_timeout_seconds = COALESCE(?, idle_timeout_seconds), updated_at = datetime('now') WHERE id = ?"
+      "UPDATE users SET name = COALESCE(?, name), git_name = ?, git_email = ?, onboarding_completed = COALESCE(?, onboarding_completed), idle_timeout_seconds = COALESCE(?, idle_timeout_seconds), model_preferences = COALESCE(?, model_preferences), updated_at = datetime('now') WHERE id = ?"
     )
-    .bind(data.name ?? null, data.gitName ?? null, data.gitEmail ?? null, data.onboardingCompleted !== undefined ? (data.onboardingCompleted ? 1 : 0) : null, data.idleTimeoutSeconds ?? null, userId)
+    .bind(data.name ?? null, data.gitName ?? null, data.gitEmail ?? null, data.onboardingCompleted !== undefined ? (data.onboardingCompleted ? 1 : 0) : null, data.idleTimeoutSeconds ?? null, data.modelPreferences !== undefined ? JSON.stringify(data.modelPreferences) : null, userId)
     .run();
 
   return getUserById(db, userId);
@@ -1624,24 +1624,61 @@ export async function listOrchestratorMemories(
   options: { category?: string; query?: string; limit?: number } = {}
 ): Promise<OrchestratorMemory[]> {
   const limit = options.limit || 50;
+
+  if (options.query) {
+    // Use FTS5 full-text search with BM25 ranking
+    // Tokenize query words and join with OR for broad matching
+    const ftsQuery = options.query
+      .replace(/[^\w\s]/g, '')
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => `"${w}"`)
+      .join(' OR ');
+
+    if (!ftsQuery) {
+      // Query was all punctuation — fall through to non-FTS path
+      return listOrchestratorMemoriesPlain(db, userId, options.category, limit);
+    }
+
+    let query = `
+      SELECT m.* FROM orchestrator_memories m
+      JOIN orchestrator_memories_fts fts ON fts.rowid = m.rowid
+      WHERE orchestrator_memories_fts MATCH ? AND m.user_id = ?`;
+    const params: (string | number)[] = [ftsQuery, userId];
+
+    if (options.category) {
+      query += ' AND m.category = ?';
+      params.push(options.category);
+    }
+
+    query += ' ORDER BY bm25(orchestrator_memories_fts) LIMIT ?';
+    params.push(limit);
+
+    const result = await db.prepare(query).bind(...params).all();
+    return (result.results || []).map(mapOrchestratorMemory);
+  }
+
+  return listOrchestratorMemoriesPlain(db, userId, options.category, limit);
+}
+
+function listOrchestratorMemoriesPlain(
+  db: D1Database,
+  userId: string,
+  category?: string,
+  limit: number = 50,
+): Promise<OrchestratorMemory[]> {
   let query = 'SELECT * FROM orchestrator_memories WHERE user_id = ?';
   const params: (string | number)[] = [userId];
 
-  if (options.category) {
+  if (category) {
     query += ' AND category = ?';
-    params.push(options.category);
-  }
-
-  if (options.query) {
-    query += ' AND content LIKE ?';
-    params.push(`%${options.query}%`);
+    params.push(category);
   }
 
   query += ' ORDER BY relevance DESC, last_accessed_at DESC LIMIT ?';
   params.push(limit);
 
-  const result = await db.prepare(query).bind(...params).all();
-  return (result.results || []).map(mapOrchestratorMemory);
+  return db.prepare(query).bind(...params).all().then((r) => (r.results || []).map(mapOrchestratorMemory));
 }
 
 export async function createOrchestratorMemory(
@@ -1655,6 +1692,18 @@ export async function createOrchestratorMemory(
     .bind(data.id, data.userId, data.category, data.content, data.relevance ?? 1.0)
     .run();
 
+  // Sync FTS index — get the rowid of the just-inserted row
+  const inserted = await db
+    .prepare('SELECT rowid FROM orchestrator_memories WHERE id = ?')
+    .bind(data.id)
+    .first<{ rowid: number }>();
+  if (inserted) {
+    await db
+      .prepare('INSERT INTO orchestrator_memories_fts(rowid, category, content) VALUES (?, ?, ?)')
+      .bind(inserted.rowid, data.category, data.content)
+      .run();
+  }
+
   // Prune if over cap: delete lowest-relevance entries
   const countResult = await db
     .prepare('SELECT COUNT(*) as cnt FROM orchestrator_memories WHERE user_id = ?')
@@ -1663,6 +1712,17 @@ export async function createOrchestratorMemory(
 
   if (countResult && countResult.cnt > MEMORY_CAP) {
     const excess = countResult.cnt - MEMORY_CAP;
+    // Get rowids before deleting so we can clean up FTS
+    const toDelete = await db
+      .prepare(
+        `SELECT rowid FROM orchestrator_memories WHERE id IN (
+          SELECT id FROM orchestrator_memories WHERE user_id = ?
+          ORDER BY relevance ASC, last_accessed_at ASC LIMIT ?
+        )`
+      )
+      .bind(data.userId, excess)
+      .all<{ rowid: number }>();
+
     await db
       .prepare(
         `DELETE FROM orchestrator_memories WHERE id IN (
@@ -1672,6 +1732,14 @@ export async function createOrchestratorMemory(
       )
       .bind(data.userId, excess)
       .run();
+
+    // Clean up FTS rows
+    for (const row of toDelete.results || []) {
+      await db
+        .prepare('DELETE FROM orchestrator_memories_fts WHERE rowid = ?')
+        .bind(row.rowid)
+        .run();
+    }
   }
 
   return {
@@ -1687,10 +1755,25 @@ export async function createOrchestratorMemory(
 }
 
 export async function deleteOrchestratorMemory(db: D1Database, id: string, userId: string): Promise<boolean> {
+  // Get rowid before deleting so we can clean up FTS
+  const row = await db
+    .prepare('SELECT rowid FROM orchestrator_memories WHERE id = ? AND user_id = ?')
+    .bind(id, userId)
+    .first<{ rowid: number }>();
+
   const result = await db
     .prepare('DELETE FROM orchestrator_memories WHERE id = ? AND user_id = ?')
     .bind(id, userId)
     .run();
+
+  // Clean up FTS index
+  if (row && (result.meta?.changes ?? 0) > 0) {
+    await db
+      .prepare('DELETE FROM orchestrator_memories_fts WHERE rowid = ?')
+      .bind(row.rowid)
+      .run();
+  }
+
   return (result.meta?.changes ?? 0) > 0;
 }
 
@@ -1834,6 +1917,7 @@ function mapUser(row: any): User {
     gitEmail: row.git_email || undefined,
     onboardingCompleted: !!row.onboarding_completed,
     idleTimeoutSeconds: row.idle_timeout_seconds ?? 900,
+    modelPreferences: row.model_preferences ? JSON.parse(row.model_preferences) : undefined,
     role: row.role || 'member',
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),

@@ -4,7 +4,7 @@ import { useUIStore } from '@/stores/ui';
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: DashboardIcon },
-  { href: '/orchestrator-setup', label: 'Orchestrator', icon: OrchestratorIcon },
+  { href: '/orchestrator', label: 'Orchestrator', icon: OrchestratorIcon },
   { href: '/workflows', label: 'Workflows', icon: WorkflowsIcon },
   { href: '/sessions', label: 'Sessions', icon: SessionsIcon },
   { href: '/integrations', label: 'Integrations', icon: IntegrationsIcon },

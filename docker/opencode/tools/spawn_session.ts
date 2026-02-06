@@ -41,6 +41,10 @@ export default tool({
       .string()
       .optional()
       .describe("Repository full name as owner/repo (e.g. 'octocat/hello-world')"),
+    model: tool.schema
+      .string()
+      .optional()
+      .describe("Model ID for the child session to use (e.g. 'anthropic/claude-sonnet-4-5-20250929'). If not specified, inherits parent's model preferences."),
   },
   async execute(args) {
     if (args.workspace.includes("/")) {
@@ -61,6 +65,7 @@ export default tool({
           sourcePrNumber: args.source_pr_number,
           sourceIssueNumber: args.source_issue_number,
           sourceRepoFullName: args.source_repo_full_name,
+          model: args.model,
         }),
       })
 

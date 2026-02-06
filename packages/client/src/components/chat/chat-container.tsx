@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Link } from '@tanstack/react-router';
+import { useRouter } from '@tanstack/react-router';
 import { useChat } from '@/hooks/use-chat';
 import { useSession, useSessionGitState, useUpdateSessionTitle, useSessionChildren } from '@/api/sessions';
 import { useDrawer } from '@/routes/sessions/$sessionId';
@@ -18,6 +18,7 @@ interface ChatContainerProps {
 }
 
 export function ChatContainer({ sessionId }: ChatContainerProps) {
+  const router = useRouter();
   const { data: session } = useSession(sessionId);
   const { data: gitState } = useSessionGitState(sessionId);
   const { data: childSessions } = useSessionChildren(sessionId);
@@ -114,11 +115,9 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
       {/* Header — Title bar */}
       <header className="flex h-10 shrink-0 items-center justify-between border-b border-border bg-surface-0 px-3 dark:bg-surface-0">
         <div className="flex items-center gap-2 min-w-0">
-          <Link to="/sessions">
-            <Button variant="ghost" size="sm" className="h-6 px-1.5 text-neutral-400 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-200">
-              <BackIcon className="h-3.5 w-3.5" />
-            </Button>
-          </Link>
+          <Button variant="ghost" size="sm" className="h-6 px-1.5 text-neutral-400 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-200" onClick={() => router.history.back()}>
+            <BackIcon className="h-3.5 w-3.5" />
+          </Button>
           <div className="h-3 w-px bg-neutral-200 dark:bg-neutral-800" />
 
           {/* Editable session title */}

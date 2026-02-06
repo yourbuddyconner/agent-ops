@@ -2,9 +2,9 @@ import { tool } from "@opencode-ai/plugin"
 
 export default tool({
   description:
-    "Read messages from another agent session's conversation. Returns recent messages including both user prompts and assistant responses. " +
+    "Read messages from another agent session's conversation. By default returns the most recent messages (newest first, in chronological order). " +
     "Use this to check on a child session's progress, read its results, or monitor what it's working on. " +
-    "Only works with sessions belonging to the same user.",
+    "Pass 'after' to paginate forward from a specific timestamp. Only works with sessions belonging to the same user.",
   args: {
     session_id: tool.schema
       .string()

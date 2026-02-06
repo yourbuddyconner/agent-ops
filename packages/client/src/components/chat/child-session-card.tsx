@@ -1,7 +1,11 @@
+import { useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { Badge } from '@/components/ui/badge';
 import type { ChildSessionSummary } from '@/api/types';
 import type { ChildSessionEvent } from '@/hooks/use-chat';
+
+const INACTIVE_STATUSES = new Set(['terminated', 'error']);
+const PAGE_SIZE = 5;
 
 interface ChildSessionCardProps {
   event: ChildSessionEvent;
@@ -75,16 +79,96 @@ export function ChildSessionInlineList({ events, children }: ChildSessionInlineL
 
   const summaryMap = new Map(children?.map((c) => [c.id, c]));
 
+  const active: ChildSessionEvent[] = [];
+  const inactive: ChildSessionEvent[] = [];
+  for (const event of events) {
+    const status = summaryMap.get(event.childSessionId)?.status ?? 'initializing';
+    if (INACTIVE_STATUSES.has(status)) {
+      inactive.push(event);
+    } else {
+      active.push(event);
+    }
+  }
+
   return (
     <div className="space-y-1">
-      {events.map((event) => (
+      {active.map((event) => (
         <ChildSessionCard
           key={event.childSessionId}
           event={event}
           summary={summaryMap.get(event.childSessionId)}
         />
       ))}
+      {inactive.length > 0 && (
+        <CompletedSessionsToggle events={inactive} summaryMap={summaryMap} />
+      )}
     </div>
+  );
+}
+
+function CompletedSessionsToggle({
+  events,
+  summaryMap,
+}: {
+  events: ChildSessionEvent[];
+  summaryMap: Map<string, ChildSessionSummary>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
+  const visible = events.slice(0, visibleCount);
+  const remaining = events.length - visibleCount;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1 rounded-full bg-neutral-100 px-2.5 py-1 font-mono text-[10px] text-neutral-400 transition-colors hover:text-neutral-600 dark:bg-neutral-800 dark:hover:text-neutral-300"
+      >
+        <ChevronIcon expanded={expanded} />
+        {events.length} completed session{events.length !== 1 ? 's' : ''}
+      </button>
+      {expanded && (
+        <div className="space-y-1">
+          {visible.map((event) => (
+            <ChildSessionCard
+              key={event.childSessionId}
+              event={event}
+              summary={summaryMap.get(event.childSessionId)}
+            />
+          ))}
+          {remaining > 0 && (
+            <button
+              type="button"
+              onClick={() => setVisibleCount((v) => v + PAGE_SIZE)}
+              className="mx-auto block font-mono text-[10px] text-neutral-400 transition-colors hover:text-neutral-600 dark:hover:text-neutral-300"
+            >
+              Show {Math.min(remaining, PAGE_SIZE)} more
+            </button>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+function ChevronIcon({ expanded }: { expanded: boolean }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="10"
+      height="10"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`transition-transform ${expanded ? 'rotate-90' : ''}`}
+    >
+      <path d="m9 18 6-6-6-6" />
+    </svg>
   );
 }
 

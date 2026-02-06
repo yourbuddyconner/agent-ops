@@ -39,6 +39,13 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
     '!f() { echo "username=oauth2"; echo "password=${GITHUB_TOKEN}"; }; f'
 fi
 
+# Global gitignore — prevent sandbox-injected dirs from being committed
+cat > /root/.gitignore_global << 'GITIGNORE'
+.agent-ops/
+.opencode/
+GITIGNORE
+git config --global core.excludesFile /root/.gitignore_global
+
 # ─── Clone Repository ─────────────────────────────────────────────────
 # Clone into /workspace/<repo-name> to support multiple repos in the future
 WORK_DIR=/workspace
@@ -139,6 +146,14 @@ echo "[start.sh] Setting up OpenCode config, custom tools, and skills"
 cp /opencode-config/opencode.json "${WORK_DIR}/opencode.json"
 mkdir -p "${WORK_DIR}/.opencode/tools"
 cp /opencode-config/tools/* "${WORK_DIR}/.opencode/tools/"
+
+# Orchestrators should never self-terminate and have no parent
+if [ "${IS_ORCHESTRATOR:-}" = "true" ]; then
+  echo "[start.sh] Orchestrator mode: removing complete_session and notify_parent tools"
+  rm -f "${WORK_DIR}/.opencode/tools/complete_session.ts"
+  rm -f "${WORK_DIR}/.opencode/tools/notify_parent.ts"
+fi
+
 mkdir -p "${WORK_DIR}/.opencode/skills"
 cp -r /opencode-config/skills/* "${WORK_DIR}/.opencode/skills/"
 

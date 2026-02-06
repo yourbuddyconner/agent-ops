@@ -32,7 +32,7 @@ export class AgentClient {
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private closing = false;
 
-  private promptHandler: ((messageId: string, content: string, model?: string, author?: PromptAuthor) => void | Promise<void>) | null = null;
+  private promptHandler: ((messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[]) => void | Promise<void>) | null = null;
   private answerHandler: ((questionId: string, answer: string | boolean) => void | Promise<void>) | null = null;
   private stopHandler: (() => void) | null = null;
   private abortHandler: (() => void | Promise<void>) | null = null;
@@ -162,6 +162,10 @@ export class AgentClient {
     this.send({ type: "models", models });
   }
 
+  sendModelSwitched(messageId: string, fromModel: string, toModel: string, reason: string): void {
+    this.send({ type: "model-switched", messageId, fromModel, toModel, reason });
+  }
+
   sendAborted(): void {
     this.send({ type: "aborted" });
   }
@@ -198,6 +202,7 @@ export class AgentClient {
     sourcePrNumber?: number;
     sourceIssueNumber?: number;
     sourceRepoFullName?: string;
+    model?: string;
   }): Promise<{ childSessionId: string }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, SPAWN_CHILD_TIMEOUT_MS, () => {
@@ -258,6 +263,20 @@ export class AgentClient {
     });
   }
 
+  requestListPullRequests(params: { owner?: string; repo?: string; state?: string; limit?: number }): Promise<{ pulls: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "list-pull-requests", requestId, ...params });
+    });
+  }
+
+  requestInspectPullRequest(params: { prNumber: number; owner?: string; repo?: string; filesLimit?: number; commentsLimit?: number }): Promise<unknown> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "inspect-pull-request", requestId, ...params });
+    });
+  }
+
   requestListPersonas(): Promise<{ personas: unknown[] }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
@@ -265,10 +284,24 @@ export class AgentClient {
     });
   }
 
+  requestListChildSessions(): Promise<{ children: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "list-child-sessions", requestId });
+    });
+  }
+
   requestGetSessionStatus(targetSessionId: string): Promise<{ sessionStatus: unknown }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
       this.send({ type: "get-session-status", requestId, targetSessionId });
+    });
+  }
+
+  requestForwardMessages(targetSessionId: string, limit?: number, after?: string): Promise<{ count: number; sourceSessionId: string }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "forward-messages", requestId, targetSessionId, limit, after });
     });
   }
 
@@ -313,7 +346,7 @@ export class AgentClient {
 
   // ─── Inbound Handlers (DO → Runner) ─────────────────────────────────
 
-  onPrompt(handler: (messageId: string, content: string, model?: string, author?: PromptAuthor) => void | Promise<void>): void {
+  onPrompt(handler: (messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[]) => void | Promise<void>): void {
     this.promptHandler = handler;
   }
 
@@ -392,7 +425,7 @@ export class AgentClient {
           const author: PromptAuthor | undefined = (msg.gitName || msg.gitEmail || msg.authorName || msg.authorEmail)
             ? { gitName: msg.gitName, gitEmail: msg.gitEmail, authorName: msg.authorName, authorEmail: msg.authorEmail }
             : undefined;
-          await this.promptHandler?.(msg.messageId, msg.content, msg.model, author);
+          await this.promptHandler?.(msg.messageId, msg.content, msg.model, author, msg.modelPreferences);
           break;
         }
         case "answer":
@@ -457,6 +490,22 @@ export class AgentClient {
           }
           break;
 
+        case "list-pull-requests-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { pulls: msg.pulls ?? [] });
+          }
+          break;
+
+        case "inspect-pull-request-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, msg.data ?? null);
+          }
+          break;
+
         case "terminate-child-result":
           if (msg.error) {
             this.rejectPendingRequest(msg.requestId, msg.error);
@@ -510,6 +559,22 @@ export class AgentClient {
             this.rejectPendingRequest(msg.requestId, msg.error);
           } else {
             this.resolvePendingRequest(msg.requestId, { sessionStatus: msg.sessionStatus });
+          }
+          break;
+
+        case "list-child-sessions-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { children: msg.children ?? [] });
+          }
+          break;
+
+        case "forward-messages-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { count: msg.count, sourceSessionId: msg.sourceSessionId });
           }
           break;
       }

@@ -59,6 +59,25 @@ export function useInfiniteSessions(ownership?: SessionOwnershipFilter) {
   });
 }
 
+export interface ProviderModels {
+  provider: string;
+  models: { id: string; name: string }[];
+}
+
+export function useAvailableModels() {
+  return useQuery({
+    queryKey: ['available-models'],
+    queryFn: () => api.get<{ models: ProviderModels[] }>('/sessions/available-models'),
+    select: (data) => data.models ?? [],
+    staleTime: 60_000,
+    // Poll more frequently when no models are available yet
+    refetchInterval: (query) => {
+      const models = query.state.data?.models;
+      return models && models.length > 0 ? 60_000 : 10_000;
+    },
+  });
+}
+
 interface SessionDetailResponse {
   session: AgentSession;
   doStatus: Record<string, unknown>;
@@ -70,6 +89,16 @@ export function useSession(sessionId: string) {
     queryFn: () => api.get<SessionDetailResponse>(`/sessions/${sessionId}`),
     enabled: !!sessionId,
     select: (data) => data.session,
+    refetchInterval: 15_000,
+  });
+}
+
+export function useSessionDoStatus(sessionId: string) {
+  return useQuery({
+    queryKey: sessionKeys.detail(sessionId),
+    queryFn: () => api.get<SessionDetailResponse>(`/sessions/${sessionId}`),
+    enabled: !!sessionId,
+    select: (data) => data.doStatus,
     refetchInterval: 15_000,
   });
 }

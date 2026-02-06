@@ -134,8 +134,10 @@ orchestratorRouter.post('/orchestrator', zValidator('json', createOrchestratorSc
         isOrchestrator: true,
       });
 
-  // Build env vars (LLM keys only — no repo for orchestrator)
-  const envVars: Record<string, string> = {};
+  // Build env vars (LLM keys + orchestrator flag — no repo for orchestrator)
+  const envVars: Record<string, string> = {
+    IS_ORCHESTRATOR: 'true',
+  };
   const providerEnvMap = [
     { provider: 'anthropic', envKey: 'ANTHROPIC_API_KEY' },
     { provider: 'openai', envKey: 'OPENAI_API_KEY' },

@@ -135,7 +135,14 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
  */
 type TurnSegment =
   | { kind: 'text'; content: string; id: string }
-  | { kind: 'tool'; message: Message };
+  | { kind: 'tool'; message: Message }
+  | { kind: 'forwarded'; message: Message; sourceTitle: string; originalRole: string };
+
+/** Check if a message has forwarded metadata in its parts. */
+function isForwardedMessage(msg: Message): boolean {
+  if (!msg.parts || typeof msg.parts !== 'object') return false;
+  return (msg.parts as Record<string, unknown>).forwarded === true;
+}
 
 function mergeAssistantSegments(messages: Message[]): TurnSegment[] {
   const segments: TurnSegment[] = [];
@@ -143,6 +150,14 @@ function mergeAssistantSegments(messages: Message[]): TurnSegment[] {
   for (const msg of messages) {
     if (msg.role === 'tool') {
       segments.push({ kind: 'tool', message: msg });
+    } else if (isForwardedMessage(msg)) {
+      const parts = msg.parts as Record<string, unknown>;
+      segments.push({
+        kind: 'forwarded',
+        message: msg,
+        sourceTitle: (parts.sourceSessionTitle as string) || 'Session',
+        originalRole: (parts.originalRole as string) || 'assistant',
+      });
     } else if (msg.content) {
       const last = segments[segments.length - 1];
       if (last && last.kind === 'text') {
@@ -182,6 +197,8 @@ function AssistantTurn({ messages }: { messages: Message[] }) {
           {segments.map((seg) =>
             seg.kind === 'tool' ? (
               <InlineToolCard key={seg.message.id} message={seg.message} />
+            ) : seg.kind === 'forwarded' ? (
+              <ForwardedMessage key={seg.message.id} content={seg.message.content} sourceTitle={seg.sourceTitle} originalRole={seg.originalRole} />
             ) : (
               <MarkdownContent key={seg.id} content={seg.content} />
             )
@@ -220,6 +237,34 @@ function getToolCallFromParts(parts: unknown): ToolCallData | null {
 
 function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+/** Renders a forwarded message in a quote-style block with source attribution. */
+function ForwardedMessage({ content, sourceTitle, originalRole }: { content: string; sourceTitle: string; originalRole: string }) {
+  const roleLabel = originalRole === 'user' ? 'User' : originalRole === 'assistant' ? 'Agent' : originalRole === 'tool' ? 'Tool' : originalRole;
+
+  return (
+    <div className="rounded-md border border-neutral-200/60 bg-neutral-50/50 px-3 py-2 dark:border-neutral-700/40 dark:bg-neutral-800/30">
+      <div className="mb-1 flex items-center gap-1.5">
+        <ForwardIcon className="h-3 w-3 text-neutral-400 dark:text-neutral-500" />
+        <span className="font-mono text-[9px] font-medium uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+          {sourceTitle} &middot; {roleLabel}
+        </span>
+      </div>
+      <div className="text-[13px] leading-relaxed text-neutral-600 dark:text-neutral-300">
+        <MarkdownContent content={content} />
+      </div>
+    </div>
+  );
+}
+
+function ForwardIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <polyline points="15 17 20 12 15 7" />
+      <path d="M4 18v-2a4 4 0 0 1 4-4h12" />
+    </svg>
+  );
 }
 
 function BotIcon({ className }: { className?: string }) {

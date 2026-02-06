@@ -6,6 +6,8 @@ import { FilesDrawer } from '@/components/session/files-drawer';
 import { ReviewDrawer } from '@/components/session/review-drawer';
 import { LogsPanel } from '@/components/panels/logs-panel';
 import { SessionMetadataSidebar } from '@/components/session/session-metadata-sidebar';
+import { OrchestratorMetadataSidebar } from '@/components/session/orchestrator-metadata-sidebar';
+import { useSession } from '@/api/sessions';
 import type { LogEntry, ConnectedUser } from '@/hooks/use-chat';
 
 type DrawerPanel = 'editor' | 'files' | 'review' | 'logs' | null;
@@ -123,6 +125,7 @@ export const Route = createFileRoute('/sessions/$sessionId')({
 
 function SessionLayout() {
   const { sessionId } = Route.useParams();
+  const { data: session } = useSession(sessionId);
   const [activePanel, setActivePanel] = useState<DrawerPanel>(loadDrawerState);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [overlay, setOverlay] = useState<SessionOverlay>(null);
@@ -260,7 +263,9 @@ function SessionLayout() {
             <Panel defaultSize={75} minSize={30}>
               <div className="flex h-full">
                 {sidebarOpen && (
-                  <SessionMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} compact />
+                  session?.isOrchestrator
+                    ? <OrchestratorMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} compact />
+                    : <SessionMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} compact />
                 )}
                 <div className="flex-1 min-w-0">
                   {activePanel === 'editor' && (
@@ -285,7 +290,9 @@ function SessionLayout() {
               <Outlet />
             </div>
             {sidebarOpen && (
-              <SessionMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} />
+              session?.isOrchestrator
+                ? <OrchestratorMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} />
+                : <SessionMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} />
             )}
           </div>
         )}

@@ -4,6 +4,8 @@ import { PageContainer, PageHeader } from '@/components/layout/page-container';
 import { useAuthStore } from '@/stores/auth';
 import { useLogout, useUpdateProfile } from '@/api/auth';
 import { useOrchestratorInfo, useUpdateOrchestratorIdentity, useCheckHandle } from '@/api/orchestrator';
+import { useAvailableModels } from '@/api/sessions';
+import type { ProviderModels } from '@/api/sessions';
 import { Button } from '@/components/ui/button';
 import { APIKeyList } from '@/components/settings/api-key-list';
 import { useTheme } from '@/hooks/use-theme';
@@ -109,6 +111,8 @@ function SettingsPage() {
             </div>
           </div>
         </SettingsSection>
+
+        <ModelPreferencesSection />
 
         <IdleTimeoutSection />
 
@@ -402,6 +406,331 @@ function OrchestratorIdentitySection() {
         </div>
       </div>
     </SettingsSection>
+  );
+}
+
+interface FlatModel {
+  id: string;
+  name: string;
+  provider: string;
+}
+
+function flattenModels(providers: ProviderModels[]): FlatModel[] {
+  return providers.flatMap((p) =>
+    p.models.map((m) => ({ id: m.id, name: m.name, provider: p.provider }))
+  );
+}
+
+function ModelPreferencesSection() {
+  const user = useAuthStore((s) => s.user);
+  const updateProfile = useUpdateProfile();
+  const { data: availableModels } = useAvailableModels();
+  const [models, setModels] = React.useState<string[]>([]);
+  const [newModel, setNewModel] = React.useState('');
+  const [saved, setSaved] = React.useState(false);
+  const [dragIndex, setDragIndex] = React.useState<number | null>(null);
+  const [showDropdown, setShowDropdown] = React.useState(false);
+  const [highlightedIndex, setHighlightedIndex] = React.useState(0);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const dropdownRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    setModels(user?.modelPreferences ?? []);
+  }, [user?.modelPreferences]);
+
+  const allModels = React.useMemo(() => flattenModels(availableModels ?? []), [availableModels]);
+
+  const filteredModels = React.useMemo(() => {
+    const query = newModel.toLowerCase().trim();
+    const candidates = allModels.filter((m) => !models.includes(m.id));
+    if (!query) return candidates;
+    return candidates.filter(
+      (m) =>
+        m.name.toLowerCase().includes(query) ||
+        m.id.toLowerCase().includes(query) ||
+        m.provider.toLowerCase().includes(query)
+    );
+  }, [newModel, allModels, models]);
+
+  // Close dropdown on outside click
+  React.useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (
+        dropdownRef.current && !dropdownRef.current.contains(e.target as Node) &&
+        inputRef.current && !inputRef.current.contains(e.target as Node)
+      ) {
+        setShowDropdown(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  // Reset highlight when filtered list changes
+  React.useEffect(() => {
+    setHighlightedIndex(0);
+  }, [filteredModels.length]);
+
+  // Scroll highlighted item into view
+  React.useEffect(() => {
+    if (!showDropdown || !dropdownRef.current) return;
+    const item = dropdownRef.current.children[highlightedIndex] as HTMLElement | undefined;
+    item?.scrollIntoView({ block: 'nearest' });
+  }, [highlightedIndex, showDropdown]);
+
+  const hasChanges = JSON.stringify(models) !== JSON.stringify(user?.modelPreferences ?? []);
+
+  function handleSave() {
+    updateProfile.mutate(
+      { modelPreferences: models },
+      {
+        onSuccess: () => {
+          setSaved(true);
+          setTimeout(() => setSaved(false), 2000);
+        },
+      }
+    );
+  }
+
+  function addModel(modelId?: string) {
+    const trimmed = (modelId ?? newModel).trim();
+    if (trimmed && !models.includes(trimmed)) {
+      setModels([...models, trimmed]);
+      setNewModel('');
+      setShowDropdown(false);
+    }
+  }
+
+  function removeModel(index: number) {
+    setModels(models.filter((_, i) => i !== index));
+  }
+
+  function moveModel(from: number, to: number) {
+    if (to < 0 || to >= models.length) return;
+    const updated = [...models];
+    const [item] = updated.splice(from, 1);
+    updated.splice(to, 0, item);
+    setModels(updated);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (!showDropdown || filteredModels.length === 0) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addModel();
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setHighlightedIndex((i) => Math.min(i + 1, filteredModels.length - 1));
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setHighlightedIndex((i) => Math.max(i - 1, 0));
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (filteredModels[highlightedIndex]) {
+          addModel(filteredModels[highlightedIndex].id);
+        } else {
+          addModel();
+        }
+        break;
+      case 'Escape':
+        setShowDropdown(false);
+        break;
+    }
+  }
+
+  // Determine display name for a model ID
+  function getModelDisplay(modelId: string) {
+    const flat = allModels.find((m) => m.id === modelId);
+    if (flat) return { name: flat.name, provider: flat.provider };
+    // Fallback: parse provider from ID
+    const slash = modelId.indexOf('/');
+    if (slash > 0) return { name: modelId.slice(slash + 1), provider: modelId.slice(0, slash) };
+    return { name: modelId, provider: '' };
+  }
+
+  return (
+    <SettingsSection title="Model Preferences">
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Set your preferred model order. When a model encounters a billing, rate limit, or auth error,
+          the system will automatically failover to the next model in this list.
+        </p>
+
+        {models.length > 0 && (
+          <div className="space-y-1.5">
+            {models.map((model, index) => {
+              const display = getModelDisplay(model);
+              return (
+                <div
+                  key={model}
+                  draggable
+                  onDragStart={() => setDragIndex(index)}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    if (dragIndex !== null && dragIndex !== index) {
+                      moveModel(dragIndex, index);
+                      setDragIndex(index);
+                    }
+                  }}
+                  onDragEnd={() => setDragIndex(null)}
+                  className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${
+                    dragIndex === index
+                      ? 'border-neutral-400 bg-neutral-50 dark:border-neutral-500 dark:bg-neutral-900'
+                      : 'border-neutral-200 bg-white dark:border-neutral-700 dark:bg-neutral-800'
+                  } cursor-grab active:cursor-grabbing`}
+                >
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-neutral-100 font-mono text-[10px] font-semibold text-neutral-500 dark:bg-neutral-700 dark:text-neutral-400">
+                    {index + 1}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <span className="truncate text-sm text-neutral-800 dark:text-neutral-200">
+                      {display.name}
+                    </span>
+                    {display.provider && (
+                      <span className="ml-2 text-xs text-neutral-400 dark:text-neutral-500">
+                        {display.provider}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => moveModel(index, index - 1)}
+                      disabled={index === 0}
+                      className="rounded p-0.5 text-neutral-400 hover:text-neutral-600 disabled:opacity-30 dark:text-neutral-500 dark:hover:text-neutral-300"
+                      title="Move up"
+                    >
+                      <ChevronUp className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveModel(index, index + 1)}
+                      disabled={index === models.length - 1}
+                      className="rounded p-0.5 text-neutral-400 hover:text-neutral-600 disabled:opacity-30 dark:text-neutral-500 dark:hover:text-neutral-300"
+                      title="Move down"
+                    >
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeModel(index)}
+                      className="rounded p-0.5 text-neutral-400 hover:text-red-500 dark:text-neutral-500 dark:hover:text-red-400"
+                      title="Remove"
+                    >
+                      <XIcon className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="relative max-w-lg">
+          <input
+            ref={inputRef}
+            type="text"
+            value={newModel}
+            onChange={(e) => {
+              setNewModel(e.target.value);
+              setShowDropdown(true);
+            }}
+            onFocus={() => setShowDropdown(true)}
+            onKeyDown={handleKeyDown}
+            placeholder={allModels.length > 0 ? 'Search models...' : 'provider/model-id'}
+            className="block w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
+          />
+          {showDropdown && filteredModels.length > 0 && (
+            <div
+              ref={dropdownRef}
+              className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-md border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-800"
+            >
+              {filteredModels.map((model, i) => (
+                <button
+                  key={model.id}
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    addModel(model.id);
+                  }}
+                  onMouseEnter={() => setHighlightedIndex(i)}
+                  className={`flex w-full items-center gap-3 px-3 py-2 text-left text-sm ${
+                    i === highlightedIndex
+                      ? 'bg-neutral-100 dark:bg-neutral-700'
+                      : 'hover:bg-neutral-50 dark:hover:bg-neutral-750'
+                  }`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-neutral-900 dark:text-neutral-100">
+                      {model.name}
+                    </div>
+                    <div className="truncate font-mono text-xs text-neutral-400 dark:text-neutral-500">
+                      {model.id}
+                    </div>
+                  </div>
+                  <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-700 dark:text-neutral-400">
+                    {model.provider}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {allModels.length === 0 && (
+          <p className="text-xs text-neutral-400 dark:text-neutral-500">
+            Start a session to discover available models, or type a model ID manually (e.g. anthropic/claude-sonnet-4-5-20250929).
+          </p>
+        )}
+
+        <div className="flex items-center gap-3">
+          <Button
+            onClick={handleSave}
+            disabled={!hasChanges || updateProfile.isPending}
+          >
+            {updateProfile.isPending ? 'Saving...' : 'Save'}
+          </Button>
+          {saved && (
+            <span className="text-sm text-green-600 dark:text-green-400">Saved</span>
+          )}
+          {updateProfile.isError && (
+            <span className="text-sm text-red-600 dark:text-red-400">Failed to save</span>
+          )}
+        </div>
+      </div>
+    </SettingsSection>
+  );
+}
+
+function ChevronUp({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="m18 15-6-6-6 6" />
+    </svg>
+  );
+}
+
+function ChevronDown({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
+function XIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
   );
 }
 

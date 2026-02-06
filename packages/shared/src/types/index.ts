@@ -223,6 +223,7 @@ export interface User {
   gitEmail?: string;
   onboardingCompleted?: boolean;
   idleTimeoutSeconds?: number;
+  modelPreferences?: string[];
   role: UserRole;
   createdAt: Date;
   updatedAt: Date;

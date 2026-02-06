@@ -95,6 +95,12 @@ async function main() {
     onUpdatePullRequest: async (params) => {
       return await agentClient.requestUpdatePullRequest(params);
     },
+    onListPullRequests: async (params) => {
+      return await agentClient.requestListPullRequests(params);
+    },
+    onInspectPullRequest: async (params) => {
+      return await agentClient.requestInspectPullRequest(params);
+    },
     onReportGitState: (params) => {
       agentClient.sendGitState(params);
     },
@@ -116,13 +122,19 @@ async function main() {
     onGetSessionStatus: async (targetSessionId) => {
       return await agentClient.requestGetSessionStatus(targetSessionId);
     },
+    onListChildSessions: async () => {
+      return await agentClient.requestListChildSessions();
+    },
+    onForwardMessages: async (targetSessionId, limit, after) => {
+      return await agentClient.requestForwardMessages(targetSessionId, limit, after);
+    },
   });
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient);
 
   // Register handlers
-  agentClient.onPrompt(async (messageId, content, model, author) => {
-    console.log(`[Runner] Received prompt: ${messageId}${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}`);
-    await promptHandler.handlePrompt(messageId, content, model, author);
+  agentClient.onPrompt(async (messageId, content, model, author, modelPreferences) => {
+    console.log(`[Runner] Received prompt: ${messageId}${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length} models)` : ''}`);
+    await promptHandler.handlePrompt(messageId, content, model, author, modelPreferences);
   });
 
   agentClient.onAnswer(async (questionId, answer) => {

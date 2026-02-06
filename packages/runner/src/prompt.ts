@@ -187,6 +187,33 @@ function parseReviewResponse(content: string): ReviewResultData | null {
   }
 }
 
+// ─── Retriable Error Detection ──────────────────────────────────────────
+
+const RETRIABLE_ERROR_PATTERNS = [
+  // Billing / credit errors
+  /credit balance is too low/i,
+  /insufficient_quota/i,
+  /billing.*not.*active/i,
+  /exceeded.*quota/i,
+  /payment.*required/i,
+  // Rate limit errors
+  /rate_limit_exceeded/i,
+  /rate limit/i,
+  /too many requests/i,
+  /429/,
+  // Auth errors
+  /invalid_api_key/i,
+  /authentication_error/i,
+  /invalid.*api.*key/i,
+  /unauthorized/i,
+  /api key.*invalid/i,
+  /permission.*denied/i,
+];
+
+function isRetriableProviderError(errorMsg: string): boolean {
+  return RETRIABLE_ERROR_PATTERNS.some((pattern) => pattern.test(errorMsg));
+}
+
 export class PromptHandler {
   private opencodeUrl: string;
   private agentClient: AgentClient;
@@ -201,7 +228,7 @@ export class PromptHandler {
   private responseTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
   // Track tool states to detect completion (pending/running → completed)
-  private toolStates = new Map<string, ToolStatus>();
+  private toolStates = new Map<string, { status: ToolStatus; toolName: string }>();
   private lastError: string | null = null; // Track session errors
   private hadToolSinceLastText = false; // Track if tools ran since last text chunk
 
@@ -212,6 +239,12 @@ export class PromptHandler {
   // Ephemeral session tracking — resolved when the session becomes idle via SSE
   private idleWaiters = new Map<string, () => void>();
   private ephemeralContent = new Map<string, string>(); // accumulated text from SSE
+
+  // Model failover state for current prompt
+  private currentModelPreferences: string[] | undefined;
+  private currentModelIndex = 0;
+  private pendingRetryContent: string | null = null;
+  private pendingRetryAuthor: { gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string } | undefined;
 
   constructor(opencodeUrl: string, agentClient: AgentClient) {
     this.opencodeUrl = opencodeUrl;
@@ -234,8 +267,8 @@ export class PromptHandler {
     });
   }
 
-  async handlePrompt(messageId: string, content: string, model?: string, author?: { gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }): Promise<void> {
-    console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}`);
+  async handlePrompt(messageId: string, content: string, model?: string, author?: { gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }, modelPreferences?: string[]): Promise<void> {
+    console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length})` : ''}`);
     try {
       // Set git config for author attribution before processing
       if (author?.gitName || author?.authorName) {
@@ -277,12 +310,30 @@ export class PromptHandler {
       this.lastError = null;
       this.toolStates.clear();
 
+      // Store failover state
+      this.currentModelPreferences = modelPreferences;
+      this.pendingRetryContent = content;
+      this.pendingRetryAuthor = author;
+
+      // Determine which model to use: explicit model takes priority, then first preference
+      let effectiveModel = model;
+      if (!effectiveModel && modelPreferences && modelPreferences.length > 0) {
+        effectiveModel = modelPreferences[0];
+        this.currentModelIndex = 0;
+      } else if (effectiveModel && modelPreferences) {
+        // Find where the explicit model sits in preferences
+        const idx = modelPreferences.indexOf(effectiveModel);
+        this.currentModelIndex = idx >= 0 ? idx : 0;
+      } else {
+        this.currentModelIndex = 0;
+      }
+
       // Notify client that agent is thinking
       this.agentClient.sendAgentStatus("thinking");
 
       // Send message async (fire-and-forget)
-      await this.sendPromptAsync(this.sessionId, content, model);
-      console.log(`[PromptHandler] Prompt ${messageId} sent to OpenCode`);
+      await this.sendPromptAsync(this.sessionId, content, effectiveModel);
+      console.log(`[PromptHandler] Prompt ${messageId} sent to OpenCode${effectiveModel ? ` (model: ${effectiveModel})` : ''}`);
 
       // Response will arrive via SSE events — don't block here
     } catch (err) {
@@ -290,6 +341,52 @@ export class PromptHandler {
       console.error("[PromptHandler] Error processing prompt:", errorMsg);
       this.agentClient.sendError(messageId, errorMsg);
       this.agentClient.sendComplete();
+    }
+  }
+
+  /**
+   * Attempt to failover to the next model in preferences.
+   * Returns true if failover was initiated, false if no more models.
+   */
+  private async attemptModelFailover(errorMsg: string): Promise<boolean> {
+    if (!this.currentModelPreferences || this.currentModelPreferences.length === 0) {
+      return false;
+    }
+
+    const nextIndex = this.currentModelIndex + 1;
+    if (nextIndex >= this.currentModelPreferences.length) {
+      console.log(`[PromptHandler] No more models to failover to (tried ${this.currentModelPreferences.length})`);
+      return false;
+    }
+
+    const fromModel = this.currentModelPreferences[this.currentModelIndex] || "default";
+    const toModel = this.currentModelPreferences[nextIndex];
+    this.currentModelIndex = nextIndex;
+
+    console.log(`[PromptHandler] Failing over from ${fromModel} to ${toModel} due to: ${errorMsg}`);
+
+    // Notify DO about the switch
+    if (this.activeMessageId) {
+      this.agentClient.sendModelSwitched(this.activeMessageId, fromModel, toModel, errorMsg);
+    }
+
+    // Reset stream state for retry (keep activeMessageId)
+    this.streamedContent = "";
+    this.hasActivity = false;
+    this.hadToolSinceLastText = false;
+    this.lastChunkTime = 0;
+    this.lastError = null;
+    this.toolStates.clear();
+
+    // Retry with next model
+    try {
+      this.agentClient.sendAgentStatus("thinking");
+      await this.sendPromptAsync(this.sessionId!, this.pendingRetryContent!, toModel);
+      console.log(`[PromptHandler] Retry sent with model ${toModel}`);
+      return true;
+    } catch (err) {
+      console.error(`[PromptHandler] Failed to retry with model ${toModel}:`, err);
+      return false;
     }
   }
 
@@ -832,8 +929,24 @@ export class PromptHandler {
         console.error(`[PromptHandler] session.error: ${errorMsg}`);
         // Also log the raw structure for debugging
         console.error(`[PromptHandler] session.error raw:`, JSON.stringify(props));
-        this.lastError = errorMsg;
-        this.hasActivity = true;
+
+        // Check if this is a retriable provider error and we have model preferences
+        if (this.activeMessageId && !this.hasActivity && isRetriableProviderError(errorMsg)) {
+          // Attempt failover — only if we haven't started streaming content yet
+          this.attemptModelFailover(errorMsg).then((didFailover) => {
+            if (!didFailover) {
+              // No more models — propagate original error
+              this.lastError = errorMsg;
+              this.hasActivity = true;
+            }
+          }).catch(() => {
+            this.lastError = errorMsg;
+            this.hasActivity = true;
+          });
+        } else {
+          this.lastError = errorMsg;
+          this.hasActivity = true;
+        }
         break;
       }
 
@@ -924,14 +1037,15 @@ export class PromptHandler {
     }
 
     const callID = part.id || part.callID || toolName;
-    const prevStatus = this.toolStates.get(callID);
+    const prev = this.toolStates.get(callID);
+    const prevStatus = prev?.status;
     const currentStatus = state.status;
 
     // Only act on state transitions
     if (currentStatus === prevStatus) return;
 
     console.log(`[PromptHandler] Tool "${toolName}" [${callID}] ${prevStatus ?? "new"} → ${currentStatus}`);
-    this.toolStates.set(callID, currentStatus);
+    this.toolStates.set(callID, { status: currentStatus, toolName });
 
     this.hasActivity = true;
     this.hadToolSinceLastText = true;
@@ -968,6 +1082,17 @@ export class PromptHandler {
         state.input ?? null,
         toolResult,
       );
+
+      // wait_for_event: forcibly end the turn so the agent actually stops
+      if (toolName === "wait_for_event") {
+        console.log(`[PromptHandler] wait_for_event completed — aborting OpenCode and finalizing turn`);
+        this.finalizeResponse();
+        // Abort OpenCode generation so it doesn't keep producing output
+        if (this.sessionId) {
+          fetch(`${this.opencodeUrl}/session/${this.sessionId}/abort`, { method: "POST" })
+            .catch((err) => console.error("[PromptHandler] Error aborting after wait_for_event:", err));
+        }
+      }
 
     } else if (currentStatus === "error") {
       console.log(`[PromptHandler] Tool "${toolName}" error: ${state.error}`);
@@ -1052,6 +1177,15 @@ export class PromptHandler {
       console.log(`[PromptHandler] No text content for ${messageId}, skipping result (tools-only response)`);
     }
 
+    // Flush any tools still in non-terminal state as "completed".
+    // This handles cases where the completed event was missed or arrived out-of-order.
+    for (const [callID, { status, toolName }] of this.toolStates) {
+      if (status === "pending" || status === "running") {
+        console.log(`[PromptHandler] Flushing stuck tool "${toolName}" [${callID}] as completed (was: ${status})`);
+        this.agentClient.sendToolCall(callID, toolName, "completed", null, null);
+      }
+    }
+
     console.log(`[PromptHandler] Sending complete`);
     this.agentClient.sendComplete();
 
@@ -1070,6 +1204,11 @@ export class PromptHandler {
     this.lastChunkTime = 0;
     this.lastError = null;
     this.toolStates.clear();
+    // Clear failover state
+    this.currentModelPreferences = undefined;
+    this.currentModelIndex = 0;
+    this.pendingRetryContent = null;
+    this.pendingRetryAuthor = undefined;
     console.log(`[PromptHandler] Response finalized`);
   }
 

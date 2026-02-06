@@ -76,6 +76,42 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
     );
   }
 
+  // Screenshot messages (stored as system role with screenshot parts)
+  if (isSystem && screenshotParts.length > 0) {
+    return (
+      <div className="flex justify-center py-3 animate-fade-in">
+        <div className="space-y-1.5">
+          {screenshotParts.map((src, i) => (
+            <img
+              key={i}
+              src={src}
+              alt={message.content || 'Screenshot'}
+              loading="lazy"
+              className="max-h-[500px] max-w-full rounded-lg border border-neutral-200 object-contain shadow-sm dark:border-neutral-700"
+            />
+          ))}
+          <p className="text-center font-mono text-[9px] text-neutral-400 dark:text-neutral-500">
+            {message.content}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Model-switched notices: subtle inline notification
+  if (isSystem && message.content.startsWith('Model switched from ')) {
+    return (
+      <div className="flex justify-center py-2">
+        <div className="flex items-center gap-1.5 rounded-full bg-blue-500/[0.06] px-3 py-1 dark:bg-blue-500/[0.08]">
+          <SwitchIcon className="h-2.5 w-2.5 text-blue-500/70 dark:text-blue-400/60" />
+          <p className="text-center font-mono text-[10px] text-blue-600 dark:text-blue-400/80">
+            {message.content}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   // System messages: centered, compact
   if (isSystem) {
     return (
@@ -175,6 +211,17 @@ function getScreenshotParts(parts: unknown): string[] {
   }
 
   return result;
+}
+
+function SwitchIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M8 3 4 7l4 4" />
+      <path d="M4 7h16" />
+      <path d="m16 21 4-4-4-4" />
+      <path d="M20 17H4" />
+    </svg>
+  );
 }
 
 function BotIcon({ className }: { className?: string }) {

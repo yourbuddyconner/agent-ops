@@ -379,6 +379,7 @@ export interface SpawnChildParams {
   sourcePrNumber?: number;
   sourceIssueNumber?: number;
   sourceRepoFullName?: string;
+  model?: string;
 }
 
 export interface MessageEntry {
@@ -416,6 +417,21 @@ export interface UpdatePullRequestResult {
   state: string;
 }
 
+export interface ListPullRequestsParams {
+  owner?: string;
+  repo?: string;
+  state?: "open" | "closed" | "all";
+  limit?: number;
+}
+
+export interface InspectPullRequestParams {
+  prNumber: number;
+  owner?: string;
+  repo?: string;
+  filesLimit?: number;
+  commentsLimit?: number;
+}
+
 export interface GitStateParams {
   branch?: string;
   baseBranch?: string;
@@ -437,6 +453,8 @@ export interface GatewayCallbacks {
   onReadMessages?: (targetSessionId: string, limit?: number, after?: string) => Promise<MessageEntry[]>;
   onCreatePullRequest?: (params: CreatePullRequestParams) => Promise<CreatePullRequestResult>;
   onUpdatePullRequest?: (params: UpdatePullRequestParams) => Promise<UpdatePullRequestResult>;
+  onListPullRequests?: (params: ListPullRequestsParams) => Promise<{ pulls: unknown[] }>;
+  onInspectPullRequest?: (params: InspectPullRequestParams) => Promise<unknown>;
   onReportGitState?: (params: GitStateParams) => void;
   onMemoryRead?: (params: MemoryReadParams) => Promise<{ memories: unknown[] }>;
   onMemoryWrite?: (content: string, category: string) => Promise<{ memory: unknown; success: boolean }>;
@@ -444,6 +462,8 @@ export interface GatewayCallbacks {
   onListRepos?: (source?: string) => Promise<{ repos: unknown[] }>;
   onListPersonas?: () => Promise<{ personas: unknown[] }>;
   onGetSessionStatus?: (targetSessionId: string) => Promise<{ sessionStatus: unknown }>;
+  onListChildSessions?: () => Promise<{ children: unknown[] }>;
+  onForwardMessages?: (targetSessionId: string, limit?: number, after?: string) => Promise<{ count: number; sourceSessionId: string }>;
 }
 
 export function startGateway(port: number, callbacks: GatewayCallbacks): void {
@@ -476,7 +496,7 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json({ error: "Spawn child handler not configured" }, 500);
     }
     try {
-      const body = await c.req.json() as { task?: string; workspace?: string; repoUrl?: string; branch?: string; title?: string; sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string };
+      const body = await c.req.json() as { task?: string; workspace?: string; repoUrl?: string; branch?: string; title?: string; sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string; model?: string };
       if (!body.task || !body.workspace) {
         return c.json({ error: "Missing required fields: task, workspace" }, 400);
       }
@@ -490,6 +510,7 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
         sourcePrNumber: body.sourcePrNumber,
         sourceIssueNumber: body.sourceIssueNumber,
         sourceRepoFullName: body.sourceRepoFullName,
+        model: body.model,
       });
       return c.json(result);
     } catch (err) {
@@ -611,6 +632,75 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
     }
   });
 
+  app.get("/api/pull-requests", async (c) => {
+    if (!callbacks.onListPullRequests) {
+      return c.json({ error: "List pull requests handler not configured" }, 500);
+    }
+    try {
+      const owner = c.req.query("owner") || undefined;
+      const repo = c.req.query("repo") || undefined;
+      const state = c.req.query("state") as "open" | "closed" | "all" | undefined;
+      const limit = c.req.query("limit") ? parseInt(c.req.query("limit")!, 10) : undefined;
+
+      if ((owner && !repo) || (!owner && repo)) {
+        return c.json({ error: "Both owner and repo are required when targeting a specific repository" }, 400);
+      }
+
+      if (limit !== undefined && (Number.isNaN(limit) || limit < 1 || limit > 100)) {
+        return c.json({ error: "limit must be between 1 and 100" }, 400);
+      }
+
+      if (state && !["open", "closed", "all"].includes(state)) {
+        return c.json({ error: "state must be one of: open, closed, all" }, 400);
+      }
+
+      const result = await callbacks.onListPullRequests({ owner, repo, state, limit });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] List pull requests error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.get("/api/pull-request", async (c) => {
+    if (!callbacks.onInspectPullRequest) {
+      return c.json({ error: "Inspect pull request handler not configured" }, 500);
+    }
+    try {
+      const prNumberRaw = c.req.query("pr_number");
+      if (!prNumberRaw) {
+        return c.json({ error: "Missing required query param: pr_number" }, 400);
+      }
+      const prNumber = parseInt(prNumberRaw, 10);
+      if (Number.isNaN(prNumber) || prNumber < 1) {
+        return c.json({ error: "pr_number must be a positive integer" }, 400);
+      }
+
+      const owner = c.req.query("owner") || undefined;
+      const repo = c.req.query("repo") || undefined;
+      const filesLimit = c.req.query("files_limit") ? parseInt(c.req.query("files_limit")!, 10) : undefined;
+      const commentsLimit = c.req.query("comments_limit") ? parseInt(c.req.query("comments_limit")!, 10) : undefined;
+
+      if ((owner && !repo) || (!owner && repo)) {
+        return c.json({ error: "Both owner and repo are required when targeting a specific repository" }, 400);
+      }
+
+      if (filesLimit !== undefined && (Number.isNaN(filesLimit) || filesLimit < 1 || filesLimit > 300)) {
+        return c.json({ error: "files_limit must be between 1 and 300" }, 400);
+      }
+
+      if (commentsLimit !== undefined && (Number.isNaN(commentsLimit) || commentsLimit < 1 || commentsLimit > 300)) {
+        return c.json({ error: "comments_limit must be between 1 and 300" }, 400);
+      }
+
+      const result = await callbacks.onInspectPullRequest({ prNumber, owner, repo, filesLimit, commentsLimit });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Inspect pull request error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
   app.post("/api/git-state", async (c) => {
     if (!callbacks.onReportGitState) {
       return c.json({ error: "Report git state handler not configured" }, 500);
@@ -718,6 +808,36 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] Get session status error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.get("/api/child-sessions", async (c) => {
+    if (!callbacks.onListChildSessions) {
+      return c.json({ error: "List child sessions handler not configured" }, 500);
+    }
+    try {
+      const result = await callbacks.onListChildSessions();
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] List child sessions error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/forward-messages", async (c) => {
+    if (!callbacks.onForwardMessages) {
+      return c.json({ error: "Forward messages handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as { sessionId?: string; limit?: number; after?: string };
+      if (!body.sessionId) {
+        return c.json({ error: "Missing required field: sessionId" }, 400);
+      }
+      const result = await callbacks.onForwardMessages(body.sessionId, body.limit, body.after);
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Forward messages error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });

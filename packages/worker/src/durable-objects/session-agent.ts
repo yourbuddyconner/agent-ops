@@ -1,5 +1,5 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById } from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
@@ -23,7 +23,7 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'model-switched';
   prNumber?: number;
   targetSessionId?: string;
   interrupt?: boolean;
@@ -64,6 +64,10 @@ interface RunnerMessage {
   sourceRepoFullName?: string;
   labels?: string[];
   state?: string;
+  owner?: string;
+  repo?: string;
+  filesLimit?: number;
+  commentsLimit?: number;
   childSessionId?: string;
   diffFiles?: unknown;
   // Orchestrator memory fields
@@ -72,17 +76,22 @@ interface RunnerMessage {
   memoryId?: string;
   relevance?: number;
   source?: string;
+  // Model failover fields
+  fromModel?: string;
+  toModel?: string;
+  reason?: string;
+  model?: string;
 }
 
 /** Messages sent from DO to clients */
 interface ClientOutbound {
-  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'review-result' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'audit_log';
+  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'review-result' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'audit_log' | 'model-switched';
   [key: string]: unknown;
 }
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result';
   messageId?: string;
   content?: string;
   model?: string;
@@ -109,6 +118,13 @@ interface RunnerOutbound {
   repos?: unknown[];
   personas?: unknown[];
   sessionStatus?: unknown;
+  pulls?: unknown[];
+  data?: unknown;
+  // Forward messages result
+  count?: number;
+  sourceSessionId?: string;
+  // Model failover
+  modelPreferences?: string[];
 }
 
 // ─── Durable SQLite Table Schemas ──────────────────────────────────────────
@@ -177,6 +193,7 @@ interface CachedUserDetails {
   avatarUrl?: string;
   gitName?: string;
   gitEmail?: string;
+  modelPreferences?: string[];
 }
 
 export class SessionAgentDO {
@@ -233,6 +250,11 @@ export class SessionAgentDO {
         return this.handleGarbageCollect();
       case '/webhook-update':
         return this.handleWebhookUpdate(request);
+      case '/models': {
+        const raw = this.getStateValue('availableModels');
+        const models = raw ? JSON.parse(raw) : [];
+        return Response.json({ models });
+      }
       case '/prompt': {
         // HTTP-based prompt submission (alternative to WebSocket)
         const body = await request.json() as { content: string; model?: string; interrupt?: boolean };
@@ -293,8 +315,8 @@ export class SessionAgentDO {
     if (!this.userDetailsCache.has(userId)) {
       try {
         const userRow = await this.env.DB.prepare(
-          'SELECT id, email, name, avatar_url, git_name, git_email FROM users WHERE id = ?'
-        ).bind(userId).first<{ id: string; email: string; name: string | null; avatar_url: string | null; git_name: string | null; git_email: string | null }>();
+          'SELECT id, email, name, avatar_url, git_name, git_email, model_preferences FROM users WHERE id = ?'
+        ).bind(userId).first<{ id: string; email: string; name: string | null; avatar_url: string | null; git_name: string | null; git_email: string | null; model_preferences: string | null }>();
         if (userRow) {
           this.userDetailsCache.set(userId, {
             id: userRow.id,
@@ -303,6 +325,7 @@ export class SessionAgentDO {
             avatarUrl: userRow.avatar_url || undefined,
             gitName: userRow.git_name || undefined,
             gitEmail: userRow.git_email || undefined,
+            modelPreferences: userRow.model_preferences ? JSON.parse(userRow.model_preferences) : undefined,
           });
         }
       } catch (err) {
@@ -448,6 +471,9 @@ export class SessionAgentDO {
       if (authorId) {
         this.setStateValue('currentPromptAuthorId', authorId);
       }
+      // Resolve model preferences from session owner
+      const initOwnerId = this.getStateValue('userId');
+      const initOwnerDetails = initOwnerId ? this.userDetailsCache.get(initOwnerId) : undefined;
       server.send(JSON.stringify({
         type: 'prompt',
         messageId: prompt.id,
@@ -457,6 +483,7 @@ export class SessionAgentDO {
         authorName: prompt.author_name || undefined,
         gitName: authorDetails?.gitName,
         gitEmail: authorDetails?.gitEmail,
+        modelPreferences: initOwnerDetails?.modelPreferences,
       }));
       this.setStateValue('runnerBusy', 'true');
     } else {
@@ -480,10 +507,18 @@ export class SessionAgentDO {
             createdAt: Math.floor(Date.now() / 1000),
           },
         });
+        const ipOwnerId = this.getStateValue('userId');
+        const ipOwnerDetails = ipOwnerId ? this.userDetailsCache.get(ipOwnerId) : undefined;
+        const initialModel = this.getStateValue('initialModel');
+        if (initialModel) {
+          this.setStateValue('initialModel', ''); // Clear so it only applies once
+        }
         server.send(JSON.stringify({
           type: 'prompt',
           messageId,
           content: initialPrompt,
+          model: initialModel || undefined,
+          modelPreferences: ipOwnerDetails?.modelPreferences,
         }));
         this.setStateValue('runnerBusy', 'true');
       }
@@ -805,6 +840,9 @@ export class SessionAgentDO {
 
     // Forward directly to runner with author info
     this.setStateValue('runnerBusy', 'true');
+    // Resolve model preferences: use the session owner's preferences
+    const ownerId = this.getStateValue('userId');
+    const ownerDetails = ownerId ? this.userDetailsCache.get(ownerId) : undefined;
     this.sendToRunner({
       type: 'prompt',
       messageId,
@@ -815,6 +853,7 @@ export class SessionAgentDO {
       authorName: author?.name,
       gitName: author?.gitName,
       gitEmail: author?.gitEmail,
+      modelPreferences: ownerDetails?.modelPreferences,
     });
   }
 
@@ -1154,8 +1193,35 @@ export class SessionAgentDO {
             type: 'models',
             models: msg.models,
           });
+          // Persist to D1 so the settings typeahead works without a running session
+          const userId = this.getStateValue('userId');
+          if (userId) {
+            this.env.DB.prepare('UPDATE users SET discovered_models = ? WHERE id = ?')
+              .bind(JSON.stringify(msg.models), userId)
+              .run()
+              .catch((err: unknown) => console.error('[SessionAgentDO] Failed to cache models to D1:', err));
+          }
         }
         break;
+
+      case 'model-switched': {
+        // Runner switched models due to provider error — store notice and broadcast
+        const switchId = crypto.randomUUID();
+        const switchText = `Model switched from ${msg.fromModel} to ${msg.toModel}: ${msg.reason}`;
+        this.ctx.storage.sql.exec(
+          'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
+          switchId, 'system', switchText
+        );
+        this.broadcastToClients({
+          type: 'model-switched',
+          messageId: switchId,
+          fromModel: msg.fromModel,
+          toModel: msg.toModel,
+          reason: msg.reason,
+        });
+        this.appendAuditLog('agent.error', switchText.slice(0, 120));
+        break;
+      }
 
       case 'aborted':
         // Runner confirmed abort — mark idle, broadcast
@@ -1314,6 +1380,7 @@ export class SessionAgentDO {
           sourcePrNumber: msg.sourcePrNumber,
           sourceIssueNumber: msg.sourceIssueNumber,
           sourceRepoFullName: msg.sourceRepoFullName,
+          model: msg.model,
         });
         break;
 
@@ -1350,12 +1417,39 @@ export class SessionAgentDO {
         await this.handleListRepos(msg.requestId!, msg.source);
         break;
 
+      case 'list-pull-requests':
+        await this.handleListPullRequests(msg.requestId!, {
+          owner: msg.owner,
+          repo: msg.repo,
+          state: msg.state,
+          limit: msg.limit,
+        });
+        break;
+
+      case 'inspect-pull-request':
+        await this.handleInspectPullRequest(msg.requestId!, {
+          prNumber: msg.prNumber!,
+          owner: msg.owner,
+          repo: msg.repo,
+          filesLimit: msg.filesLimit,
+          commentsLimit: msg.commentsLimit,
+        });
+        break;
+
       case 'list-personas':
         await this.handleListPersonas(msg.requestId!);
         break;
 
       case 'get-session-status':
         await this.handleGetSessionStatus(msg.requestId!, msg.targetSessionId!);
+        break;
+
+      case 'list-child-sessions':
+        await this.handleListChildSessions(msg.requestId!);
+        break;
+
+      case 'forward-messages':
+        await this.handleForwardMessages(msg.requestId!, msg.targetSessionId!, msg.limit, msg.after);
         break;
 
       case 'ping':
@@ -1372,6 +1466,7 @@ export class SessionAgentDO {
     params: {
       task: string; workspace: string; repoUrl?: string; branch?: string; title?: string;
       sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string;
+      model?: string;
     },
   ) {
     try {
@@ -1449,6 +1544,10 @@ export class SessionAgentDO {
         doWsUrl: childDoWsUrl,
         runnerToken: childRunnerToken,
         workspace: params.workspace,
+        envVars: {
+          ...parentSpawnRequest.envVars,
+          PARENT_SESSION_ID: parentSessionId,
+        },
       };
 
       // Override repo-specific env vars if we have repo info (explicit or inherited)
@@ -1459,6 +1558,38 @@ export class SessionAgentDO {
         };
         if (mergedBranch) {
           childSpawnRequest.envVars.REPO_BRANCH = mergedBranch;
+        }
+
+        // Inject git credentials if the parent doesn't have them (e.g. orchestrator)
+        if (!childSpawnRequest.envVars.GITHUB_TOKEN) {
+          try {
+            const oauthToken = await getOAuthToken(this.env.DB, userId, 'github');
+            if (oauthToken) {
+              childSpawnRequest.envVars.GITHUB_TOKEN = await decryptString(
+                oauthToken.encryptedAccessToken,
+                this.env.ENCRYPTION_KEY,
+              );
+            }
+          } catch (err) {
+            console.warn('[SessionAgentDO] Failed to fetch GitHub token for child:', err);
+          }
+        }
+
+        // Inject git user identity if missing
+        if (!childSpawnRequest.envVars.GIT_USER_NAME || !childSpawnRequest.envVars.GIT_USER_EMAIL) {
+          try {
+            const userRow = await getUserById(this.env.DB, userId);
+            if (userRow) {
+              if (!childSpawnRequest.envVars.GIT_USER_NAME) {
+                childSpawnRequest.envVars.GIT_USER_NAME = userRow.gitName || userRow.name || userRow.githubUsername || 'Agent Ops User';
+              }
+              if (!childSpawnRequest.envVars.GIT_USER_EMAIL) {
+                childSpawnRequest.envVars.GIT_USER_EMAIL = userRow.gitEmail || userRow.email;
+              }
+            }
+          } catch (err) {
+            console.warn('[SessionAgentDO] Failed to fetch user info for child git config:', err);
+          }
         }
       }
 
@@ -1484,6 +1615,7 @@ export class SessionAgentDO {
           idleTimeoutMs,
           spawnRequest: childSpawnRequest,
           initialPrompt: params.task,
+          initialModel: params.model,
         }),
       }));
 
@@ -1563,6 +1695,77 @@ export class SessionAgentDO {
       console.error('[SessionAgentDO] Failed to read messages:', err);
       this.sendToRunner({
         type: 'session-messages-result',
+        requestId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private async handleForwardMessages(requestId: string, targetSessionId: string, limit?: number, after?: string) {
+    try {
+      const userId = this.getStateValue('userId')!;
+
+      // Verify target session belongs to the same user
+      const targetSession = await getSession(this.env.DB, targetSessionId);
+      if (!targetSession || targetSession.userId !== userId) {
+        this.sendToRunner({ type: 'forward-messages-result', requestId, error: 'Session not found or access denied' });
+        return;
+      }
+
+      // Fetch messages from target DO
+      const messages = await this.fetchMessagesFromDO(targetSessionId, limit || 20, after);
+
+      if (messages.length === 0) {
+        this.sendToRunner({ type: 'forward-messages-result', requestId, count: 0, sourceSessionId: targetSessionId });
+        return;
+      }
+
+      // Insert each message into our own messages table with forwarded metadata
+      const sessionTitle = targetSession.title || targetSession.workspace || targetSessionId.slice(0, 8);
+      for (const msg of messages) {
+        const newId = crypto.randomUUID();
+        const parts = JSON.stringify({
+          forwarded: true,
+          sourceSessionId: targetSessionId,
+          sourceSessionTitle: sessionTitle,
+          originalRole: msg.role,
+          originalCreatedAt: msg.createdAt,
+        });
+
+        // Store all forwarded messages as 'assistant' role for consistent left-aligned rendering
+        this.ctx.storage.sql.exec(
+          'INSERT INTO messages (id, role, content, parts) VALUES (?, ?, ?, ?)',
+          newId, 'assistant', msg.content, parts
+        );
+
+        this.broadcastToClients({
+          type: 'message',
+          data: {
+            id: newId,
+            role: 'assistant',
+            content: msg.content,
+            parts: {
+              forwarded: true,
+              sourceSessionId: targetSessionId,
+              sourceSessionTitle: sessionTitle,
+              originalRole: msg.role,
+              originalCreatedAt: msg.createdAt,
+            },
+            createdAt: Math.floor(Date.now() / 1000),
+          },
+        });
+      }
+
+      this.sendToRunner({
+        type: 'forward-messages-result',
+        requestId,
+        count: messages.length,
+        sourceSessionId: targetSessionId,
+      });
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to forward messages:', err);
+      this.sendToRunner({
+        type: 'forward-messages-result',
         requestId,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -1740,6 +1943,373 @@ export class SessionAgentDO {
     }
   }
 
+  private async handleListPullRequests(
+    requestId: string,
+    params: { owner?: string; repo?: string; state?: string; limit?: number },
+  ) {
+    try {
+      const githubToken = await this.getGitHubToken();
+      if (!githubToken) {
+        this.sendToRunner({ type: 'list-pull-requests-result', requestId, error: 'No GitHub token found — user must connect GitHub in settings' } as any);
+        return;
+      }
+
+      const { owner, repo } = await this.resolveOwnerRepo(params.owner, params.repo);
+      const state = params.state || 'open';
+      const limit = Math.min(Math.max(params.limit ?? 30, 1), 100);
+
+      const res = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/pulls?state=${encodeURIComponent(state)}&sort=updated&direction=desc&per_page=${limit}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${githubToken}`,
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'agent-ops',
+          },
+        },
+      );
+
+      if (!res.ok) {
+        const errText = await res.text();
+        this.sendToRunner({ type: 'list-pull-requests-result', requestId, error: `GitHub API error (${res.status}): ${errText}` } as any);
+        return;
+      }
+
+      const pulls = await res.json() as Array<{
+        number: number;
+        title: string;
+        state: string;
+        draft: boolean;
+        body: string | null;
+        html_url: string;
+        created_at: string;
+        updated_at: string;
+        user: { login: string; avatar_url: string };
+        head: { ref: string; sha: string };
+        base: { ref: string; sha: string };
+        labels: Array<{ name: string }>;
+      }>;
+
+      this.sendToRunner({
+        type: 'list-pull-requests-result',
+        requestId,
+        pulls: pulls.map((pr) => ({
+          number: pr.number,
+          title: pr.title,
+          state: pr.state,
+          draft: pr.draft,
+          body: pr.body,
+          url: pr.html_url,
+          createdAt: pr.created_at,
+          updatedAt: pr.updated_at,
+          author: { login: pr.user.login, avatarUrl: pr.user.avatar_url },
+          headRef: pr.head.ref,
+          headSha: pr.head.sha,
+          baseRef: pr.base.ref,
+          baseSha: pr.base.sha,
+          labels: pr.labels?.map((label) => label.name) ?? [],
+        })),
+      } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to list pull requests:', err);
+      this.sendToRunner({ type: 'list-pull-requests-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleInspectPullRequest(
+    requestId: string,
+    params: { prNumber: number; owner?: string; repo?: string; filesLimit?: number; commentsLimit?: number },
+  ) {
+    try {
+      const githubToken = await this.getGitHubToken();
+      if (!githubToken) {
+        this.sendToRunner({ type: 'inspect-pull-request-result', requestId, error: 'No GitHub token found — user must connect GitHub in settings' } as any);
+        return;
+      }
+
+      const { owner, repo } = await this.resolveOwnerRepo(params.owner, params.repo);
+      const filesLimit = Math.min(Math.max(params.filesLimit ?? 200, 1), 300);
+      const commentsLimit = Math.min(Math.max(params.commentsLimit ?? 100, 1), 300);
+
+      const prResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${params.prNumber}`, {
+        headers: {
+          'Authorization': `Bearer ${githubToken}`,
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'agent-ops',
+        },
+      });
+
+      if (!prResp.ok) {
+        const errText = await prResp.text();
+        this.sendToRunner({ type: 'inspect-pull-request-result', requestId, error: `GitHub API error (${prResp.status}): ${errText}` } as any);
+        return;
+      }
+
+      const pr = await prResp.json() as {
+        number: number;
+        title: string;
+        state: string;
+        draft: boolean;
+        body: string | null;
+        html_url: string;
+        created_at: string;
+        updated_at: string;
+        closed_at: string | null;
+        merged_at: string | null;
+        user: { login: string; avatar_url: string };
+        base: { ref: string; sha: string };
+        head: { ref: string; sha: string };
+        labels: Array<{ name: string }>;
+        assignees: Array<{ login: string }>;
+        requested_reviewers: Array<{ login: string }>;
+        requested_teams: Array<{ name: string }>;
+        mergeable: boolean | null;
+        mergeable_state: string;
+        commits: number;
+        additions: number;
+        deletions: number;
+        changed_files: number;
+      };
+
+      const perPage = 100;
+      let page = 1;
+      const files: Array<{ filename: string; status: string; additions: number; deletions: number; changes: number }> = [];
+      let filesTruncated = false;
+      while (files.length < filesLimit) {
+        const remaining = filesLimit - files.length;
+        const pageSize = Math.min(perPage, remaining);
+        const filesResp = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/pulls/${params.prNumber}/files?per_page=${pageSize}&page=${page}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${githubToken}`,
+              'Accept': 'application/vnd.github+json',
+              'User-Agent': 'agent-ops',
+            },
+          },
+        );
+        if (!filesResp.ok) {
+          const errText = await filesResp.text();
+          throw new Error(`GitHub API error (${filesResp.status}) while fetching files: ${errText}`);
+        }
+        const pageFiles = await filesResp.json() as Array<{
+          filename: string;
+          status: string;
+          additions: number;
+          deletions: number;
+          changes: number;
+        }>;
+        files.push(...pageFiles.map((f) => ({
+          filename: f.filename,
+          status: f.status,
+          additions: f.additions,
+          deletions: f.deletions,
+          changes: f.changes,
+        })));
+        if (pageFiles.length < pageSize) break;
+        page += 1;
+      }
+      if (files.length >= filesLimit && pr.changed_files > filesLimit) filesTruncated = true;
+
+      const reviewsResp = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${params.prNumber}/reviews?per_page=100`,
+        {
+          headers: {
+            'Authorization': `Bearer ${githubToken}`,
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'agent-ops',
+          },
+        },
+      );
+
+      const reviews = reviewsResp.ok
+        ? await reviewsResp.json() as Array<{ id: number; user: { login: string }; state: string; submitted_at: string | null }>
+        : [];
+      const dismissedReviewIds = new Set(reviews.filter(r => r.state === 'DISMISSED').map(r => r.id));
+
+      const reviewCounts = reviews.reduce<Record<string, number>>((acc, review) => {
+        acc[review.state] = (acc[review.state] || 0) + 1;
+        return acc;
+      }, {});
+
+      const reviewComments: Array<{
+        id: number;
+        user: { login: string };
+        body: string;
+        path: string;
+        line: number | null;
+        created_at: string;
+        updated_at: string;
+      }> = [];
+      let commentsPage = 1;
+      while (reviewComments.length < commentsLimit) {
+        const remaining = commentsLimit - reviewComments.length;
+        const pageSize = Math.min(perPage, remaining);
+        const commentsResp = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/pulls/${params.prNumber}/comments?per_page=${pageSize}&page=${commentsPage}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${githubToken}`,
+              'Accept': 'application/vnd.github+json',
+              'User-Agent': 'agent-ops',
+            },
+          },
+        );
+        if (!commentsResp.ok) {
+          const errText = await commentsResp.text();
+          throw new Error(`GitHub API error (${commentsResp.status}) while fetching review comments: ${errText}`);
+        }
+        const pageComments = await commentsResp.json() as Array<{
+          id: number;
+          user: { login: string };
+          body: string;
+          path: string;
+          line: number | null;
+          created_at: string;
+          updated_at: string;
+          pull_request_review_id?: number;
+        }>;
+        const filtered = pageComments.filter((comment) => {
+          if (!comment.pull_request_review_id) return true;
+          return !dismissedReviewIds.has(comment.pull_request_review_id);
+        });
+        reviewComments.push(...filtered.map((comment) => ({
+          id: comment.id,
+          user: { login: comment.user.login },
+          body: comment.body,
+          path: comment.path,
+          line: comment.line,
+          created_at: comment.created_at,
+          updated_at: comment.updated_at,
+        })));
+        if (pageComments.length < pageSize) break;
+        commentsPage += 1;
+      }
+      const commentsTruncated = reviewComments.length >= commentsLimit;
+
+      const statusResp = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/commits/${pr.head.sha}/status`,
+        {
+          headers: {
+            'Authorization': `Bearer ${githubToken}`,
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'agent-ops',
+          },
+        },
+      );
+      const statusData = statusResp.ok ? await statusResp.json() as {
+        state: string;
+        statuses: Array<{ state: string; context: string; description: string | null; target_url: string | null; updated_at: string }>;
+      } : null;
+
+      const checksResp = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/commits/${pr.head.sha}/check-runs?per_page=100`,
+        {
+          headers: {
+            'Authorization': `Bearer ${githubToken}`,
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'agent-ops',
+          },
+        },
+      );
+      const checksData = checksResp.ok ? await checksResp.json() as {
+        total_count: number;
+        check_runs: Array<{ name: string; status: string; conclusion: string | null; html_url: string | null; app: { name: string } }>;
+      } : null;
+
+      const checkSummary = checksData?.check_runs.reduce<Record<string, number>>((acc, run) => {
+        const key = run.conclusion || run.status || 'unknown';
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {}) ?? {};
+
+      this.sendToRunner({
+        type: 'inspect-pull-request-result',
+        requestId,
+        data: {
+          repo: { owner, repo },
+          pr: {
+            number: pr.number,
+            title: pr.title,
+            state: pr.state,
+            draft: pr.draft,
+            url: pr.html_url,
+            body: pr.body,
+            createdAt: pr.created_at,
+            updatedAt: pr.updated_at,
+            closedAt: pr.closed_at,
+            mergedAt: pr.merged_at,
+            author: { login: pr.user.login, avatarUrl: pr.user.avatar_url },
+            baseRef: pr.base.ref,
+            baseSha: pr.base.sha,
+            headRef: pr.head.ref,
+            headSha: pr.head.sha,
+            labels: pr.labels?.map((label) => label.name) ?? [],
+            assignees: pr.assignees?.map((assignee) => assignee.login) ?? [],
+            requestedReviewers: pr.requested_reviewers?.map((reviewer) => reviewer.login) ?? [],
+            requestedTeams: pr.requested_teams?.map((team) => team.name) ?? [],
+            mergeable: pr.mergeable,
+            mergeableState: pr.mergeable_state,
+            commits: pr.commits,
+            additions: pr.additions,
+            deletions: pr.deletions,
+            changedFiles: pr.changed_files,
+          },
+          files: {
+            totalChangedFiles: pr.changed_files,
+            returned: files.length,
+            truncated: filesTruncated,
+            items: files,
+          },
+          reviews: {
+            counts: reviewCounts,
+            items: reviews.map((review) => ({
+              id: review.id,
+              user: { login: review.user.login },
+              state: review.state,
+              submittedAt: review.submitted_at,
+            })),
+          },
+          reviewComments: {
+            returned: reviewComments.length,
+            truncated: commentsTruncated,
+            items: reviewComments,
+          },
+          checks: {
+            status: statusData
+              ? {
+                state: statusData.state,
+                items: statusData.statuses.map((s) => ({
+                  state: s.state,
+                  context: s.context,
+                  description: s.description,
+                  targetUrl: s.target_url,
+                  updatedAt: s.updated_at,
+                })),
+              }
+              : null,
+            checkRuns: checksData
+              ? {
+                total: checksData.total_count,
+                summary: checkSummary,
+                items: checksData.check_runs.map((run) => ({
+                  name: run.name,
+                  status: run.status,
+                  conclusion: run.conclusion,
+                  url: run.html_url,
+                  app: run.app?.name,
+                })),
+              }
+              : null,
+          },
+        },
+      } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to inspect pull request:', err);
+      this.sendToRunner({ type: 'inspect-pull-request-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
   private async handleListPersonas(requestId: string) {
     try {
       const userId = this.getStateValue('userId')!;
@@ -1748,6 +2318,17 @@ export class SessionAgentDO {
     } catch (err) {
       console.error('[SessionAgentDO] Failed to list personas:', err);
       this.sendToRunner({ type: 'list-personas-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleListChildSessions(requestId: string) {
+    try {
+      const sessionId = this.getStateValue('sessionId')!;
+      const children = await getChildSessions(this.env.DB, sessionId);
+      this.sendToRunner({ type: 'list-child-sessions-result', requestId, children } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to list child sessions:', err);
+      this.sendToRunner({ type: 'list-child-sessions-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
     }
   }
 
@@ -1811,6 +2392,9 @@ export class SessionAgentDO {
         this.setStateValue('currentPromptAuthorId', authorId);
       }
 
+      // Resolve model preferences from session owner
+      const queueOwnerId = this.getStateValue('userId');
+      const queueOwnerDetails = queueOwnerId ? this.userDetailsCache.get(queueOwnerId) : undefined;
       this.sendToRunner({
         type: 'prompt',
         messageId: prompt.id as string,
@@ -1820,6 +2404,7 @@ export class SessionAgentDO {
         authorName: (prompt.author_name as string) || undefined,
         gitName: authorDetails?.gitName,
         gitEmail: authorDetails?.gitEmail,
+        modelPreferences: queueOwnerDetails?.modelPreferences,
       });
       this.broadcastToClients({
         type: 'status',
@@ -1859,6 +2444,7 @@ export class SessionAgentDO {
       spawnRequest?: Record<string, unknown>;
       idleTimeoutMs?: number;
       initialPrompt?: string;
+      initialModel?: string;
     };
 
     // Clear old session data (messages, queue, audit log) for a fresh start.
@@ -1906,6 +2492,9 @@ export class SessionAgentDO {
     }
     if (body.initialPrompt) {
       this.setStateValue('initialPrompt', body.initialPrompt);
+    }
+    if (body.initialModel) {
+      this.setStateValue('initialModel', body.initialModel);
     }
 
     // Initialize idle tracking
@@ -2163,6 +2752,7 @@ export class SessionAgentDO {
     const clientCount = this.getClientSockets().length;
     const runnerConnected = this.ctx.getWebSockets('runner').length > 0;
     const connectedUsers = this.getConnectedUserIds();
+    const runningStartedAt = this.getStateValue('runningStartedAt');
 
     return Response.json({
       sessionId,
@@ -2177,6 +2767,7 @@ export class SessionAgentDO {
       queuedPrompts: queueLength,
       connectedClients: clientCount,
       connectedUsers,
+      runningStartedAt: runningStartedAt ? parseInt(runningStartedAt) : null,
     });
   }
 
@@ -2189,16 +2780,19 @@ export class SessionAgentDO {
     const limit = parseInt(url.searchParams.get('limit') || '20', 10);
     const after = url.searchParams.get('after');
 
-    let query = 'SELECT id, role, content, parts, created_at FROM messages';
+    let query: string;
     const params: (string | number)[] = [];
 
     if (after) {
-      query += ' WHERE created_at > ?';
-      params.push(after);
+      // Pagination: get messages after a cursor, oldest-first
+      query = 'SELECT id, role, content, parts, created_at FROM messages WHERE created_at > ? ORDER BY created_at ASC LIMIT ?';
+      params.push(after, limit);
+    } else {
+      // Default: get the MOST RECENT messages, returned in chronological order.
+      // Subquery selects newest N rows (DESC), outer query re-sorts ASC.
+      query = 'SELECT * FROM (SELECT id, role, content, parts, created_at FROM messages ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC';
+      params.push(limit);
     }
-
-    query += ' ORDER BY created_at ASC LIMIT ?';
-    params.push(limit);
 
     const rows = this.ctx.storage.sql
       .exec(query, ...params)
@@ -2342,6 +2936,26 @@ export class SessionAgentDO {
     const match = repoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
     if (!match) return null;
     return { owner: match[1], repo: match[2] };
+  }
+
+  private async resolveOwnerRepo(owner?: string, repo?: string): Promise<{ owner: string; repo: string }> {
+    if (owner && repo) {
+      return { owner, repo };
+    }
+
+    const sessionId = this.getStateValue('sessionId');
+    const gitState = sessionId ? await getSessionGitState(this.env.DB, sessionId) : null;
+    const repoUrl = gitState?.sourceRepoUrl;
+    if (!repoUrl) {
+      throw new Error('No repository URL found for this session');
+    }
+
+    const ownerRepo = this.extractOwnerRepo(repoUrl);
+    if (!ownerRepo) {
+      throw new Error(`Cannot extract owner/repo from URL: ${repoUrl}`);
+    }
+
+    return ownerRepo;
   }
 
   // ─── PR Creation ──────────────────────────────────────────────────────
@@ -2935,8 +3549,8 @@ export class SessionAgentDO {
       try {
         const placeholders = uncachedIds.map(() => '?').join(',');
         const rows = await this.env.DB.prepare(
-          `SELECT id, email, name, avatar_url, git_name, git_email FROM users WHERE id IN (${placeholders})`
-        ).bind(...uncachedIds).all<{ id: string; email: string; name: string | null; avatar_url: string | null; git_name: string | null; git_email: string | null }>();
+          `SELECT id, email, name, avatar_url, git_name, git_email, model_preferences FROM users WHERE id IN (${placeholders})`
+        ).bind(...uncachedIds).all<{ id: string; email: string; name: string | null; avatar_url: string | null; git_name: string | null; git_email: string | null; model_preferences: string | null }>();
         for (const row of rows.results) {
           this.userDetailsCache.set(row.id, {
             id: row.id,
@@ -2945,6 +3559,7 @@ export class SessionAgentDO {
             avatarUrl: row.avatar_url || undefined,
             gitName: row.git_name || undefined,
             gitEmail: row.git_email || undefined,
+            modelPreferences: row.model_preferences ? JSON.parse(row.model_preferences) : undefined,
           });
         }
       } catch (err) {

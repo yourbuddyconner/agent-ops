@@ -3,6 +3,7 @@
 /** Messages sent from DO to Runner */
 export type DOToRunnerMessage =
   | { type: "prompt"; messageId: string; content: string; model?: string;
+      modelPreferences?: string[];
       authorId?: string; authorEmail?: string; authorName?: string;
       gitName?: string; gitEmail?: string }
   | { type: "answer"; questionId: string; answer: string | boolean }
@@ -17,13 +18,17 @@ export type DOToRunnerMessage =
   | { type: "session-messages-result"; requestId: string; messages?: Array<{ role: string; content: string; createdAt: string }>; error?: string }
   | { type: "create-pr-result"; requestId: string; number?: number; url?: string; title?: string; state?: string; error?: string }
   | { type: "update-pr-result"; requestId: string; number?: number; url?: string; title?: string; state?: string; error?: string }
+  | { type: "list-pull-requests-result"; requestId: string; pulls?: unknown[]; error?: string }
+  | { type: "inspect-pull-request-result"; requestId: string; data?: unknown; error?: string }
   | { type: "terminate-child-result"; requestId: string; success?: boolean; error?: string }
   | { type: "memory-read-result"; requestId: string; memories?: unknown[]; error?: string }
   | { type: "memory-write-result"; requestId: string; memory?: unknown; success?: boolean; error?: string }
   | { type: "memory-delete-result"; requestId: string; success?: boolean; error?: string }
   | { type: "list-repos-result"; requestId: string; repos?: unknown[]; error?: string }
   | { type: "list-personas-result"; requestId: string; personas?: unknown[]; error?: string }
-  | { type: "get-session-status-result"; requestId: string; sessionStatus?: unknown; error?: string };
+  | { type: "get-session-status-result"; requestId: string; sessionStatus?: unknown; error?: string }
+  | { type: "list-child-sessions-result"; requestId: string; children?: unknown[]; error?: string }
+  | { type: "forward-messages-result"; requestId: string; count?: number; sourceSessionId?: string; error?: string };
 
 /** Tool call status values */
 export type ToolCallStatus = "pending" | "running" | "completed" | "error";
@@ -43,13 +48,15 @@ export type RunnerToDOMessage =
   | { type: "agentStatus"; status: AgentStatus; detail?: string }
   | { type: "create-pr"; requestId: string; branch: string; title: string; body?: string; base?: string }
   | { type: "update-pr"; requestId: string; prNumber: number; title?: string; body?: string; state?: string; labels?: string[] }
+  | { type: "list-pull-requests"; requestId: string; owner?: string; repo?: string; state?: string; limit?: number }
+  | { type: "inspect-pull-request"; requestId: string; prNumber: number; owner?: string; repo?: string; filesLimit?: number; commentsLimit?: number }
   | { type: "git-state"; branch?: string; baseBranch?: string; commitCount?: number }
   | { type: "models"; models: AvailableModels }
   | { type: "aborted" }
   | { type: "reverted"; messageIds: string[] }
   | { type: "diff"; requestId: string; data: { files: DiffFile[] } }
   | { type: "files-changed"; files: Array<{ path: string; status: string; additions?: number; deletions?: number }> }
-  | { type: "spawn-child"; requestId: string; task: string; workspace: string; repoUrl?: string; branch?: string; title?: string; sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string }
+  | { type: "spawn-child"; requestId: string; task: string; workspace: string; repoUrl?: string; branch?: string; title?: string; sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string; model?: string }
   | { type: "session-message"; requestId: string; targetSessionId: string; content: string; interrupt?: boolean }
   | { type: "session-messages"; requestId: string; targetSessionId: string; limit?: number; after?: string }
   | { type: "terminate-child"; requestId: string; childSessionId: string }
@@ -61,7 +68,10 @@ export type RunnerToDOMessage =
   | { type: "memory-delete"; requestId: string; memoryId: string }
   | { type: "list-repos"; requestId: string; source?: string }
   | { type: "list-personas"; requestId: string }
-  | { type: "get-session-status"; requestId: string; targetSessionId: string };
+  | { type: "get-session-status"; requestId: string; targetSessionId: string }
+  | { type: "list-child-sessions"; requestId: string }
+  | { type: "forward-messages"; requestId: string; targetSessionId: string; limit?: number; after?: string }
+  | { type: "model-switched"; messageId: string; fromModel: string; toModel: string; reason: string };
 
 /** Structured review result data */
 export interface ReviewFinding {

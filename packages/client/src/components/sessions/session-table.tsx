@@ -56,6 +56,7 @@ export function SessionTable() {
 
   const filteredSessions = React.useMemo(() => {
     return sessions.filter((session) => {
+      if (session.isOrchestrator) return false;
       if (statusFilter !== 'all' && session.status !== statusFilter) {
         return false;
       }

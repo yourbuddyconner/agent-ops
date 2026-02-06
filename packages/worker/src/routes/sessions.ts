@@ -254,6 +254,65 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
 });
 
 /**
+ * GET /api/sessions/available-models
+ * Returns the list of available models. Checks the orchestrator DO first,
+ * then falls back to D1 cached models from previous discovery.
+ */
+sessionsRouter.get('/available-models', async (c) => {
+  const user = c.get('user');
+  const orchestratorId = `orchestrator:${user.id}`;
+
+  try {
+    const doId = c.env.SESSIONS.idFromName(orchestratorId);
+    const sessionDO = c.env.SESSIONS.get(doId);
+
+    // Try to get models from the live orchestrator DO
+    const resp = await sessionDO.fetch(new Request('http://do/models'));
+    if (resp.ok) {
+      const data = await resp.json() as { models: unknown[] };
+      if (data.models && data.models.length > 0) {
+        return c.json(data);
+      }
+    }
+  } catch {
+    // DO may not exist or be unreachable — fall through to D1 cache
+  }
+
+  // Fall back to D1 cached models from previous discovery
+  try {
+    const row = await c.env.DB.prepare('SELECT discovered_models FROM users WHERE id = ?')
+      .bind(user.id)
+      .first<{ discovered_models: string | null }>();
+    if (row?.discovered_models) {
+      const models = JSON.parse(row.discovered_models);
+      if (Array.isArray(models) && models.length > 0) {
+        return c.json({ models });
+      }
+    }
+  } catch {
+    // D1 read failed — return empty
+  }
+
+  return c.json({ models: [] });
+});
+
+/**
+ * POST /api/sessions/join/:token
+ * Redeem a share link and join as a participant
+ */
+sessionsRouter.post('/join/:token', async (c) => {
+  const user = c.get('user');
+  const { token } = c.req.param();
+
+  const result = await db.redeemShareLink(c.env.DB, token, user.id);
+  if (!result) {
+    return c.json({ error: 'Invalid, expired, or exhausted share link' }, 400);
+  }
+
+  return c.json({ sessionId: result.sessionId, role: result.role });
+});
+
+/**
  * GET /api/sessions/:id
  * Get session details
  */
@@ -828,18 +887,3 @@ sessionsRouter.delete('/:id/share-link/:linkId', async (c) => {
   return c.json({ success: true });
 });
 
-/**
- * POST /api/sessions/join/:token
- * Redeem a share link and join as a participant
- */
-sessionsRouter.post('/join/:token', async (c) => {
-  const user = c.get('user');
-  const { token } = c.req.param();
-
-  const result = await db.redeemShareLink(c.env.DB, token, user.id);
-  if (!result) {
-    return c.json({ error: 'Invalid, expired, or exhausted share link' }, 400);
-  }
-
-  return c.json({ sessionId: result.sessionId, role: result.role });
-});

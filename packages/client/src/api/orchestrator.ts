@@ -110,8 +110,9 @@ export function useCreateMemory() {
     mutationFn: (data: { content: string; category: string }) =>
       api.post<{ memory: OrchestratorMemory }>('/me/memories', data),
     onSuccess: () => {
+      // Use prefix key to invalidate all memory queries regardless of category filter
       queryClient.invalidateQueries({
-        queryKey: orchestratorKeys.memories(),
+        queryKey: [...orchestratorKeys.all, 'memories'],
       });
     },
   });
@@ -123,8 +124,9 @@ export function useDeleteMemory() {
   return useMutation({
     mutationFn: (id: string) => api.delete<{ success: boolean }>(`/me/memories/${id}`),
     onSuccess: () => {
+      // Use prefix key to invalidate all memory queries regardless of category filter
       queryClient.invalidateQueries({
-        queryKey: orchestratorKeys.memories(),
+        queryKey: [...orchestratorKeys.all, 'memories'],
       });
     },
   });

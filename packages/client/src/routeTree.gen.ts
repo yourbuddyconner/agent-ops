@@ -9,7 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as OrchestratorSetupRouteImport } from './routes/orchestrator-setup'
+import { Route as OrchestratorRouteImport } from './routes/orchestrator'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as IndexRouteImport } from './routes/index'
@@ -28,9 +28,9 @@ import { Route as AuthCallbackRouteImport } from './routes/auth/callback'
 import { Route as SessionsSessionIdIndexRouteImport } from './routes/sessions/$sessionId/index'
 import { Route as SessionsJoinTokenRouteImport } from './routes/sessions/join/$token'
 
-const OrchestratorSetupRoute = OrchestratorSetupRouteImport.update({
-  id: '/orchestrator-setup',
-  path: '/orchestrator-setup',
+const OrchestratorRoute = OrchestratorRouteImport.update({
+  id: '/orchestrator',
+  path: '/orchestrator',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OnboardingRoute = OnboardingRouteImport.update({
@@ -123,7 +123,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
-  '/orchestrator-setup': typeof OrchestratorSetupRoute
+  '/orchestrator': typeof OrchestratorRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/invite/$code': typeof InviteCodeRoute
@@ -143,7 +143,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
-  '/orchestrator-setup': typeof OrchestratorSetupRoute
+  '/orchestrator': typeof OrchestratorRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/invite/$code': typeof InviteCodeRoute
@@ -163,7 +163,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
-  '/orchestrator-setup': typeof OrchestratorSetupRoute
+  '/orchestrator': typeof OrchestratorRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/invite/$code': typeof InviteCodeRoute
@@ -185,7 +185,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/onboarding'
-    | '/orchestrator-setup'
+    | '/orchestrator'
     | '/auth/callback'
     | '/integrations/callback'
     | '/invite/$code'
@@ -205,7 +205,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/onboarding'
-    | '/orchestrator-setup'
+    | '/orchestrator'
     | '/auth/callback'
     | '/integrations/callback'
     | '/invite/$code'
@@ -224,7 +224,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/onboarding'
-    | '/orchestrator-setup'
+    | '/orchestrator'
     | '/auth/callback'
     | '/integrations/callback'
     | '/invite/$code'
@@ -245,7 +245,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
   OnboardingRoute: typeof OnboardingRoute
-  OrchestratorSetupRoute: typeof OrchestratorSetupRoute
+  OrchestratorRoute: typeof OrchestratorRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
   IntegrationsCallbackRoute: typeof IntegrationsCallbackRoute
   InviteCodeRoute: typeof InviteCodeRoute
@@ -263,11 +263,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/orchestrator-setup': {
-      id: '/orchestrator-setup'
-      path: '/orchestrator-setup'
-      fullPath: '/orchestrator-setup'
-      preLoaderRoute: typeof OrchestratorSetupRouteImport
+    '/orchestrator': {
+      id: '/orchestrator'
+      path: '/orchestrator'
+      fullPath: '/orchestrator'
+      preLoaderRoute: typeof OrchestratorRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/onboarding': {
@@ -407,7 +407,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
   OnboardingRoute: OnboardingRoute,
-  OrchestratorSetupRoute: OrchestratorSetupRoute,
+  OrchestratorRoute: OrchestratorRoute,
   AuthCallbackRoute: AuthCallbackRoute,
   IntegrationsCallbackRoute: IntegrationsCallbackRoute,
   InviteCodeRoute: InviteCodeRoute,
