@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, Link } from '@tanstack/react-router';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
 import { useDashboardStats } from '@/api/dashboard';
+import { useOrchestratorInfo } from '@/api/orchestrator';
 import { PeriodSelector } from '@/components/dashboard/period-selector';
 import { LiveSessionsBanner } from '@/components/dashboard/live-sessions-banner';
 import { HeroMetrics } from '@/components/dashboard/hero-metrics';
@@ -33,6 +34,8 @@ function DashboardPage() {
         </div>
       )}
 
+      <OrchestratorBanner />
+
       {isLoading || !data ? (
         <DashboardSkeleton />
       ) : (
@@ -52,5 +55,66 @@ function DashboardPage() {
         </div>
       )}
     </PageContainer>
+  );
+}
+
+function OrchestratorBanner() {
+  const { data, isLoading } = useOrchestratorInfo();
+
+  if (isLoading) return null;
+
+  if (!data?.exists) {
+    return (
+      <div className="mb-6 flex items-center justify-between rounded-lg border border-dashed border-neutral-300 bg-neutral-50 p-4 dark:border-neutral-700 dark:bg-neutral-800/50">
+        <div>
+          <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
+            Set up your personal orchestrator
+          </p>
+          <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
+            A persistent AI assistant that manages tasks and coordinates your agent sessions
+          </p>
+        </div>
+        <Link
+          to="/orchestrator-setup"
+          className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90"
+        >
+          Get Started
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-6 flex items-center justify-between rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-700 dark:bg-neutral-800">
+      <div className="flex items-center gap-3">
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent/10 text-sm font-semibold text-accent">
+          {data.identity?.name?.charAt(0) || 'O'}
+        </div>
+        <div>
+          <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
+            {data.identity?.name}
+          </p>
+          <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            @{data.identity?.handle}
+            {data.session && (
+              <span className="ml-2">
+                {data.session.status === 'running' || data.session.status === 'idle'
+                  ? 'Online'
+                  : data.session.status === 'hibernated'
+                    ? 'Sleeping'
+                    : data.session.status}
+              </span>
+            )}
+          </p>
+        </div>
+      </div>
+      <Link
+        to="/sessions/$sessionId"
+        params={{ sessionId: data.sessionId }}
+        className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
+      >
+        Talk to {data.identity?.name}
+      </Link>
+    </div>
   );
 }

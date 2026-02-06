@@ -230,6 +230,48 @@ export class AgentClient {
     });
   }
 
+  requestMemoryRead(params: { category?: string; query?: string; limit?: number } = {}): Promise<{ memories: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "memory-read", requestId, ...params });
+    });
+  }
+
+  requestMemoryWrite(content: string, category: string): Promise<{ memory: unknown; success: boolean }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "memory-write", requestId, content, category });
+    });
+  }
+
+  requestMemoryDelete(memoryId: string): Promise<{ success: boolean }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "memory-delete", requestId, memoryId });
+    });
+  }
+
+  requestListRepos(): Promise<{ repos: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "list-repos", requestId });
+    });
+  }
+
+  requestListPersonas(): Promise<{ personas: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "list-personas", requestId });
+    });
+  }
+
+  requestGetSessionStatus(targetSessionId: string): Promise<{ sessionStatus: unknown }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "get-session-status", requestId, targetSessionId });
+    });
+  }
+
   requestSelfTerminate(): void {
     this.send({ type: "self-terminate" });
     // Disconnect and exit — the DO will handle sandbox termination
@@ -420,6 +462,54 @@ export class AgentClient {
             this.rejectPendingRequest(msg.requestId, msg.error);
           } else {
             this.resolvePendingRequest(msg.requestId, { success: true });
+          }
+          break;
+
+        case "memory-read-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { memories: msg.memories ?? [] });
+          }
+          break;
+
+        case "memory-write-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { memory: msg.memory, success: true });
+          }
+          break;
+
+        case "memory-delete-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { success: msg.success ?? true });
+          }
+          break;
+
+        case "list-repos-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { repos: msg.repos ?? [] });
+          }
+          break;
+
+        case "list-personas-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { personas: msg.personas ?? [] });
+          }
+          break;
+
+        case "get-session-status-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { sessionStatus: msg.sessionStatus });
           }
           break;
       }

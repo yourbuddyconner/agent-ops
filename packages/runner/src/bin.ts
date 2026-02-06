@@ -98,6 +98,24 @@ async function main() {
     onReportGitState: (params) => {
       agentClient.sendGitState(params);
     },
+    onMemoryRead: async (params) => {
+      return await agentClient.requestMemoryRead(params);
+    },
+    onMemoryWrite: async (content, category) => {
+      return await agentClient.requestMemoryWrite(content, category);
+    },
+    onMemoryDelete: async (memoryId) => {
+      return await agentClient.requestMemoryDelete(memoryId);
+    },
+    onListRepos: async () => {
+      return await agentClient.requestListRepos();
+    },
+    onListPersonas: async () => {
+      return await agentClient.requestListPersonas();
+    },
+    onGetSessionStatus: async (targetSessionId) => {
+      return await agentClient.requestGetSessionStatus(targetSessionId);
+    },
   });
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient);
 

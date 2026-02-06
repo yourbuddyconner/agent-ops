@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionParticipantSummary, SessionShareLink, AuditLogEntry, OrgRepository, AgentPersona, AgentPersonaFile, PersonaVisibility } from '@agent-ops/shared';
+import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionParticipantSummary, SessionShareLink, AuditLogEntry, OrgRepository, AgentPersona, AgentPersonaFile, PersonaVisibility, OrchestratorIdentity, OrchestratorMemory, OrchestratorMemoryCategory } from '@agent-ops/shared';
 
 /**
  * Database helper functions for D1
@@ -38,11 +38,11 @@ export async function getOrCreateUser(
 // Session operations
 export async function createSession(
   db: D1Database,
-  data: { id: string; userId: string; workspace: string; title?: string; parentSessionId?: string; containerId?: string; metadata?: Record<string, unknown>; personaId?: string }
+  data: { id: string; userId: string; workspace: string; title?: string; parentSessionId?: string; containerId?: string; metadata?: Record<string, unknown>; personaId?: string; isOrchestrator?: boolean }
 ): Promise<AgentSession> {
   await db
     .prepare(
-      'INSERT INTO sessions (id, user_id, workspace, status, container_id, metadata, title, parent_session_id, persona_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO sessions (id, user_id, workspace, status, container_id, metadata, title, parent_session_id, persona_id, is_orchestrator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )
     .bind(
       data.id,
@@ -53,7 +53,8 @@ export async function createSession(
       data.metadata ? JSON.stringify(data.metadata) : null,
       data.title || null,
       data.parentSessionId || null,
-      data.personaId || null
+      data.personaId || null,
+      data.isOrchestrator ? 1 : 0
     )
     .run();
 
@@ -67,6 +68,7 @@ export async function createSession(
     containerId: data.containerId,
     metadata: data.metadata,
     personaId: data.personaId,
+    isOrchestrator: data.isOrchestrator,
     createdAt: new Date(),
     lastActiveAt: new Date(),
   };
@@ -1534,6 +1536,193 @@ export async function deleteRepoPersonaDefault(db: D1Database, orgRepoId: string
   await db.prepare('DELETE FROM org_repo_persona_defaults WHERE org_repo_id = ?').bind(orgRepoId).run();
 }
 
+// ─── Orchestrator Identity Operations ────────────────────────────────────
+
+export async function getOrchestratorIdentity(db: D1Database, userId: string, orgId: string = 'default'): Promise<OrchestratorIdentity | null> {
+  const row = await db
+    .prepare('SELECT * FROM orchestrator_identities WHERE user_id = ? AND org_id = ?')
+    .bind(userId, orgId)
+    .first();
+  return row ? mapOrchestratorIdentity(row) : null;
+}
+
+export async function getOrchestratorIdentityByHandle(db: D1Database, handle: string, orgId: string = 'default'): Promise<OrchestratorIdentity | null> {
+  const row = await db
+    .prepare('SELECT * FROM orchestrator_identities WHERE handle = ? AND org_id = ?')
+    .bind(handle, orgId)
+    .first();
+  return row ? mapOrchestratorIdentity(row) : null;
+}
+
+export async function createOrchestratorIdentity(
+  db: D1Database,
+  data: { id: string; userId: string; name: string; handle: string; avatar?: string; customInstructions?: string; orgId?: string }
+): Promise<OrchestratorIdentity> {
+  const orgId = data.orgId || 'default';
+  await db
+    .prepare(
+      'INSERT INTO orchestrator_identities (id, user_id, org_id, type, name, handle, avatar, custom_instructions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    )
+    .bind(data.id, data.userId, orgId, 'personal', data.name, data.handle, data.avatar || null, data.customInstructions || null)
+    .run();
+
+  return {
+    id: data.id,
+    userId: data.userId,
+    orgId,
+    type: 'personal',
+    name: data.name,
+    handle: data.handle,
+    avatar: data.avatar,
+    customInstructions: data.customInstructions,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export async function updateOrchestratorIdentity(
+  db: D1Database,
+  id: string,
+  updates: Partial<Pick<OrchestratorIdentity, 'name' | 'handle' | 'avatar' | 'customInstructions'>>
+): Promise<void> {
+  const sets: string[] = [];
+  const params: (string | null)[] = [];
+
+  if (updates.name !== undefined) { sets.push('name = ?'); params.push(updates.name); }
+  if (updates.handle !== undefined) { sets.push('handle = ?'); params.push(updates.handle); }
+  if (updates.avatar !== undefined) { sets.push('avatar = ?'); params.push(updates.avatar || null); }
+  if (updates.customInstructions !== undefined) { sets.push('custom_instructions = ?'); params.push(updates.customInstructions || null); }
+
+  if (sets.length === 0) return;
+
+  sets.push("updated_at = datetime('now')");
+  await db.prepare(`UPDATE orchestrator_identities SET ${sets.join(', ')} WHERE id = ?`).bind(...params, id).run();
+}
+
+function mapOrchestratorIdentity(row: any): OrchestratorIdentity {
+  return {
+    id: row.id,
+    userId: row.user_id || undefined,
+    orgId: row.org_id,
+    type: row.type as OrchestratorIdentity['type'],
+    name: row.name,
+    handle: row.handle,
+    avatar: row.avatar || undefined,
+    customInstructions: row.custom_instructions || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+// ─── Orchestrator Memory Operations ─────────────────────────────────────
+
+const MEMORY_CAP = 200;
+
+export async function listOrchestratorMemories(
+  db: D1Database,
+  userId: string,
+  options: { category?: string; query?: string; limit?: number } = {}
+): Promise<OrchestratorMemory[]> {
+  const limit = options.limit || 50;
+  let query = 'SELECT * FROM orchestrator_memories WHERE user_id = ?';
+  const params: (string | number)[] = [userId];
+
+  if (options.category) {
+    query += ' AND category = ?';
+    params.push(options.category);
+  }
+
+  if (options.query) {
+    query += ' AND content LIKE ?';
+    params.push(`%${options.query}%`);
+  }
+
+  query += ' ORDER BY relevance DESC, last_accessed_at DESC LIMIT ?';
+  params.push(limit);
+
+  const result = await db.prepare(query).bind(...params).all();
+  return (result.results || []).map(mapOrchestratorMemory);
+}
+
+export async function createOrchestratorMemory(
+  db: D1Database,
+  data: { id: string; userId: string; category: OrchestratorMemoryCategory; content: string; relevance?: number }
+): Promise<OrchestratorMemory> {
+  await db
+    .prepare(
+      'INSERT INTO orchestrator_memories (id, user_id, category, content, relevance) VALUES (?, ?, ?, ?, ?)'
+    )
+    .bind(data.id, data.userId, data.category, data.content, data.relevance ?? 1.0)
+    .run();
+
+  // Prune if over cap: delete lowest-relevance entries
+  const countResult = await db
+    .prepare('SELECT COUNT(*) as cnt FROM orchestrator_memories WHERE user_id = ?')
+    .bind(data.userId)
+    .first<{ cnt: number }>();
+
+  if (countResult && countResult.cnt > MEMORY_CAP) {
+    const excess = countResult.cnt - MEMORY_CAP;
+    await db
+      .prepare(
+        `DELETE FROM orchestrator_memories WHERE id IN (
+          SELECT id FROM orchestrator_memories WHERE user_id = ?
+          ORDER BY relevance ASC, last_accessed_at ASC LIMIT ?
+        )`
+      )
+      .bind(data.userId, excess)
+      .run();
+  }
+
+  return {
+    id: data.id,
+    userId: data.userId,
+    orgId: 'default',
+    category: data.category,
+    content: data.content,
+    relevance: data.relevance ?? 1.0,
+    createdAt: new Date().toISOString(),
+    lastAccessedAt: new Date().toISOString(),
+  };
+}
+
+export async function deleteOrchestratorMemory(db: D1Database, id: string, userId: string): Promise<boolean> {
+  const result = await db
+    .prepare('DELETE FROM orchestrator_memories WHERE id = ? AND user_id = ?')
+    .bind(id, userId)
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
+}
+
+export async function boostMemoryRelevance(db: D1Database, id: string): Promise<void> {
+  await db
+    .prepare(
+      "UPDATE orchestrator_memories SET relevance = MIN(relevance + 0.1, 2.0), last_accessed_at = datetime('now') WHERE id = ?"
+    )
+    .bind(id)
+    .run();
+}
+
+function mapOrchestratorMemory(row: any): OrchestratorMemory {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    orgId: row.org_id,
+    category: row.category as OrchestratorMemoryCategory,
+    content: row.content,
+    relevance: row.relevance ?? 1.0,
+    createdAt: row.created_at,
+    lastAccessedAt: row.last_accessed_at,
+  };
+}
+
+// ─── Orchestrator Session Helpers ───────────────────────────────────────
+
+export async function getOrchestratorSession(db: D1Database, userId: string): Promise<AgentSession | null> {
+  const sessionId = `orchestrator:${userId}`;
+  return getSession(db, sessionId);
+}
+
 // Mapping helpers
 function mapSessionGitState(row: any): SessionGitState {
   return {
@@ -1600,6 +1789,7 @@ function mapSession(row: any): AgentSession {
     errorMessage: row.error_message || undefined,
     personaId: row.persona_id || undefined,
     personaName: row.persona_name || undefined,
+    isOrchestrator: !!row.is_orchestrator || undefined,
     createdAt: new Date(row.created_at),
     lastActiveAt: new Date(row.last_active_at),
   };

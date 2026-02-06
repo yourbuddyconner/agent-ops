@@ -1,5 +1,5 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionMessages, getSessionGitState, getOAuthToken, getChildSessions } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionMessages, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas } from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
@@ -23,7 +23,7 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status';
   prNumber?: number;
   targetSessionId?: string;
   interrupt?: boolean;
@@ -66,6 +66,11 @@ interface RunnerMessage {
   state?: string;
   childSessionId?: string;
   diffFiles?: unknown;
+  // Orchestrator memory fields
+  category?: string;
+  query?: string;
+  memoryId?: string;
+  relevance?: number;
 }
 
 /** Messages sent from DO to clients */
@@ -76,7 +81,7 @@ interface ClientOutbound {
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'terminate-child-result';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result';
   messageId?: string;
   content?: string;
   model?: string;
@@ -97,6 +102,12 @@ interface RunnerOutbound {
   authorName?: string;
   gitName?: string;
   gitEmail?: string;
+  // Orchestrator result fields
+  memories?: unknown[];
+  memory?: unknown;
+  repos?: unknown[];
+  personas?: unknown[];
+  sessionStatus?: unknown;
 }
 
 // ─── Durable SQLite Table Schemas ──────────────────────────────────────────
@@ -1319,6 +1330,31 @@ export class SessionAgentDO {
         await this.handleSelfTerminate();
         break;
 
+      // ─── Orchestrator Operations ──────────────────────────────────────
+      case 'memory-read':
+        await this.handleMemoryRead(msg.requestId!, msg.category, msg.query, msg.limit);
+        break;
+
+      case 'memory-write':
+        await this.handleMemoryWrite(msg.requestId!, msg.content!, msg.category!);
+        break;
+
+      case 'memory-delete':
+        await this.handleMemoryDelete(msg.requestId!, msg.memoryId!);
+        break;
+
+      case 'list-repos':
+        await this.handleListRepos(msg.requestId!);
+        break;
+
+      case 'list-personas':
+        await this.handleListPersonas(msg.requestId!);
+        break;
+
+      case 'get-session-status':
+        await this.handleGetSessionStatus(msg.requestId!, msg.targetSessionId!);
+        break;
+
       case 'ping':
         // Keepalive from runner — respond with pong
         this.sendToRunner({ type: 'pong' });
@@ -1591,6 +1627,109 @@ export class SessionAgentDO {
     });
 
     return response;
+  }
+
+  // ─── Orchestrator Operations ────────────────────────────────────────────
+
+  private async handleMemoryRead(requestId: string, category?: string, query?: string, limit?: number) {
+    try {
+      const userId = this.getStateValue('userId')!;
+      const memories = await listOrchestratorMemories(this.env.DB, userId, { category, query, limit });
+
+      // Boost relevance for accessed memories
+      for (const mem of memories) {
+        boostMemoryRelevance(this.env.DB, mem.id).catch(() => {});
+      }
+
+      this.sendToRunner({ type: 'memory-read-result', requestId, memories } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to read memories:', err);
+      this.sendToRunner({ type: 'memory-read-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleMemoryWrite(requestId: string, content: string, category: string) {
+    try {
+      const userId = this.getStateValue('userId')!;
+      const id = crypto.randomUUID();
+      const memory = await createOrchestratorMemory(this.env.DB, {
+        id,
+        userId,
+        category: category as any,
+        content,
+      });
+      this.sendToRunner({ type: 'memory-write-result', requestId, memory, success: true } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to write memory:', err);
+      this.sendToRunner({ type: 'memory-write-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleMemoryDelete(requestId: string, memoryId: string) {
+    try {
+      const userId = this.getStateValue('userId')!;
+      const deleted = await deleteOrchestratorMemory(this.env.DB, memoryId, userId);
+      this.sendToRunner({ type: 'memory-delete-result', requestId, success: deleted } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to delete memory:', err);
+      this.sendToRunner({ type: 'memory-delete-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleListRepos(requestId: string) {
+    try {
+      const repos = await listOrgRepositories(this.env.DB);
+      this.sendToRunner({ type: 'list-repos-result', requestId, repos } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to list repos:', err);
+      this.sendToRunner({ type: 'list-repos-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleListPersonas(requestId: string) {
+    try {
+      const userId = this.getStateValue('userId')!;
+      const personas = await listPersonas(this.env.DB, userId);
+      this.sendToRunner({ type: 'list-personas-result', requestId, personas } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to list personas:', err);
+      this.sendToRunner({ type: 'list-personas-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleGetSessionStatus(requestId: string, targetSessionId: string) {
+    try {
+      const userId = this.getStateValue('userId')!;
+      const session = await getSession(this.env.DB, targetSessionId);
+      if (!session || session.userId !== userId) {
+        this.sendToRunner({ type: 'get-session-status-result', requestId, error: 'Session not found or access denied' } as any);
+        return;
+      }
+
+      const messages = await getSessionMessages(this.env.DB, targetSessionId, { limit: 10 });
+      const recentMessages = messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : String(m.createdAt),
+      }));
+
+      this.sendToRunner({
+        type: 'get-session-status-result',
+        requestId,
+        sessionStatus: {
+          id: session.id,
+          status: session.status,
+          workspace: session.workspace,
+          title: session.title,
+          createdAt: session.createdAt instanceof Date ? session.createdAt.toISOString() : String(session.createdAt),
+          lastActiveAt: session.lastActiveAt instanceof Date ? session.lastActiveAt.toISOString() : String(session.lastActiveAt),
+          recentMessages,
+        },
+      } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to get session status:', err);
+      this.sendToRunner({ type: 'get-session-status-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
   }
 
   private async handlePromptComplete() {

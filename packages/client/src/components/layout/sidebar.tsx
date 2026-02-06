@@ -4,6 +4,7 @@ import { useUIStore } from '@/stores/ui';
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: DashboardIcon },
+  { href: '/orchestrator-setup', label: 'Orchestrator', icon: OrchestratorIcon },
   { href: '/workflows', label: 'Workflows', icon: WorkflowsIcon },
   { href: '/sessions', label: 'Sessions', icon: SessionsIcon },
   { href: '/integrations', label: 'Integrations', icon: IntegrationsIcon },
@@ -143,6 +144,19 @@ function IntegrationsIcon({ className }: { className?: string }) {
       <path d="M9 8V2" />
       <path d="M15 8V2" />
       <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
+    </svg>
+  );
+}
+
+function OrchestratorIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M12 8V4H8" />
+      <rect width="8" height="4" x="8" y="2" rx="1" ry="1" />
+      <path d="M12 8a4 4 0 1 0 0 8" />
+      <path d="M12 16a4 4 0 1 0 0-8" />
+      <path d="M12 16v4h4" />
+      <rect width="8" height="4" x="8" y="18" rx="1" ry="1" />
     </svg>
   );
 }

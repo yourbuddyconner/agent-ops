@@ -173,6 +173,8 @@ export interface AgentSession {
   // Persona info
   personaId?: string;
   personaName?: string;
+  // Orchestrator flag
+  isOrchestrator?: boolean;
   // Convenience flag for current user
   isOwner?: boolean;
 }
@@ -645,6 +647,48 @@ export interface AgentPersonaFile {
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
+}
+
+// Orchestrator types
+export type OrchestratorType = 'personal' | 'org';
+
+export type OrchestratorMemoryCategory =
+  | 'preference'
+  | 'workflow'
+  | 'context'
+  | 'project'
+  | 'decision'
+  | 'general';
+
+export interface OrchestratorIdentity {
+  id: string;
+  userId?: string;
+  orgId: string;
+  type: OrchestratorType;
+  name: string;
+  handle: string;
+  avatar?: string;
+  customInstructions?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OrchestratorMemory {
+  id: string;
+  userId: string;
+  orgId: string;
+  category: OrchestratorMemoryCategory;
+  content: string;
+  relevance: number;
+  createdAt: string;
+  lastAccessedAt: string;
+}
+
+export interface OrchestratorInfo {
+  sessionId: string;
+  identity: OrchestratorIdentity | null;
+  session: AgentSession | null;
+  exists: boolean;
 }
 
 // Audit log types

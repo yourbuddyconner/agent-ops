@@ -422,6 +422,12 @@ export interface GitStateParams {
   commitCount?: number;
 }
 
+export interface MemoryReadParams {
+  category?: string;
+  query?: string;
+  limit?: number;
+}
+
 export interface GatewayCallbacks {
   onImage?: (data: string, description: string) => void;
   onSpawnChild?: (params: SpawnChildParams) => Promise<{ childSessionId: string }>;
@@ -432,6 +438,12 @@ export interface GatewayCallbacks {
   onCreatePullRequest?: (params: CreatePullRequestParams) => Promise<CreatePullRequestResult>;
   onUpdatePullRequest?: (params: UpdatePullRequestParams) => Promise<UpdatePullRequestResult>;
   onReportGitState?: (params: GitStateParams) => void;
+  onMemoryRead?: (params: MemoryReadParams) => Promise<{ memories: unknown[] }>;
+  onMemoryWrite?: (content: string, category: string) => Promise<{ memory: unknown; success: boolean }>;
+  onMemoryDelete?: (memoryId: string) => Promise<{ success: boolean }>;
+  onListRepos?: () => Promise<{ repos: unknown[] }>;
+  onListPersonas?: () => Promise<{ personas: unknown[] }>;
+  onGetSessionStatus?: (targetSessionId: string) => Promise<{ sessionStatus: unknown }>;
 }
 
 export function startGateway(port: number, callbacks: GatewayCallbacks): void {
@@ -613,6 +625,98 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json({ ok: true });
     } catch (err) {
       console.error("[Gateway] Report git state error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // ─── Orchestrator API ─────────────────────────────────────────────
+
+  app.get("/api/memories", async (c) => {
+    if (!callbacks.onMemoryRead) {
+      return c.json({ error: "Memory read handler not configured" }, 500);
+    }
+    try {
+      const category = c.req.query("category") || undefined;
+      const query = c.req.query("query") || undefined;
+      const limit = c.req.query("limit") ? parseInt(c.req.query("limit")!, 10) : undefined;
+      const result = await callbacks.onMemoryRead({ category, query, limit });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Memory read error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/memories", async (c) => {
+    if (!callbacks.onMemoryWrite) {
+      return c.json({ error: "Memory write handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as { content?: string; category?: string };
+      if (!body.content || !body.category) {
+        return c.json({ error: "Missing required fields: content, category" }, 400);
+      }
+      const result = await callbacks.onMemoryWrite(body.content, body.category);
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Memory write error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.delete("/api/memories/:id", async (c) => {
+    if (!callbacks.onMemoryDelete) {
+      return c.json({ error: "Memory delete handler not configured" }, 500);
+    }
+    try {
+      const memoryId = c.req.param("id");
+      const result = await callbacks.onMemoryDelete(memoryId);
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Memory delete error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.get("/api/org-repos", async (c) => {
+    if (!callbacks.onListRepos) {
+      return c.json({ error: "List repos handler not configured" }, 500);
+    }
+    try {
+      const result = await callbacks.onListRepos();
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] List repos error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.get("/api/personas", async (c) => {
+    if (!callbacks.onListPersonas) {
+      return c.json({ error: "List personas handler not configured" }, 500);
+    }
+    try {
+      const result = await callbacks.onListPersonas();
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] List personas error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.get("/api/session-status", async (c) => {
+    if (!callbacks.onGetSessionStatus) {
+      return c.json({ error: "Get session status handler not configured" }, 500);
+    }
+    try {
+      const sessionId = c.req.query("sessionId");
+      if (!sessionId) {
+        return c.json({ error: "Missing required query param: sessionId" }, 400);
+      }
+      const result = await callbacks.onGetSessionStatus(sessionId);
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Get session status error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });

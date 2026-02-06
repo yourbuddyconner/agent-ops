@@ -17,7 +17,13 @@ export type DOToRunnerMessage =
   | { type: "session-messages-result"; requestId: string; messages?: Array<{ role: string; content: string; createdAt: string }>; error?: string }
   | { type: "create-pr-result"; requestId: string; number?: number; url?: string; title?: string; state?: string; error?: string }
   | { type: "update-pr-result"; requestId: string; number?: number; url?: string; title?: string; state?: string; error?: string }
-  | { type: "terminate-child-result"; requestId: string; success?: boolean; error?: string };
+  | { type: "terminate-child-result"; requestId: string; success?: boolean; error?: string }
+  | { type: "memory-read-result"; requestId: string; memories?: unknown[]; error?: string }
+  | { type: "memory-write-result"; requestId: string; memory?: unknown; success?: boolean; error?: string }
+  | { type: "memory-delete-result"; requestId: string; success?: boolean; error?: string }
+  | { type: "list-repos-result"; requestId: string; repos?: unknown[]; error?: string }
+  | { type: "list-personas-result"; requestId: string; personas?: unknown[]; error?: string }
+  | { type: "get-session-status-result"; requestId: string; sessionStatus?: unknown; error?: string };
 
 /** Tool call status values */
 export type ToolCallStatus = "pending" | "running" | "completed" | "error";
@@ -49,7 +55,13 @@ export type RunnerToDOMessage =
   | { type: "terminate-child"; requestId: string; childSessionId: string }
   | { type: "self-terminate" }
   | { type: "review-result"; requestId: string; data?: ReviewResultData; diffFiles?: DiffFile[]; error?: string }
-  | { type: "ping" };
+  | { type: "ping" }
+  | { type: "memory-read"; requestId: string; category?: string; query?: string; limit?: number }
+  | { type: "memory-write"; requestId: string; content: string; category: string }
+  | { type: "memory-delete"; requestId: string; memoryId: string }
+  | { type: "list-repos"; requestId: string }
+  | { type: "list-personas"; requestId: string }
+  | { type: "get-session-status"; requestId: string; targetSessionId: string };
 
 /** Structured review result data */
 export interface ReviewFinding {

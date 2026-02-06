@@ -42,6 +42,11 @@ export type {
   AgentPersona,
   AgentPersonaFile,
   PersonaVisibility,
+  OrchestratorType,
+  OrchestratorMemoryCategory,
+  OrchestratorIdentity,
+  OrchestratorMemory,
+  OrchestratorInfo,
 } from '@agent-ops/shared';
 
 export type { GitHub, Gmail, GoogleCalendar } from '@agent-ops/shared';
