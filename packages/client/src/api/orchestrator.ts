@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
-import type { OrchestratorIdentity, OrchestratorInfo, OrchestratorMemory, AgentSession } from './types';
+import type { OrchestratorIdentity, OrchestratorMemory, AgentSession } from './types';
 
 export const orchestratorKeys = {
   all: ['orchestrator'] as const,
