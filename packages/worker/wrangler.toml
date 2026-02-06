@@ -2,6 +2,7 @@ name = "agent-ops"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
+previews_enabled = false
 
 # Environment variables (set via wrangler secret)
 # ENCRYPTION_KEY - for encrypting stored credentials

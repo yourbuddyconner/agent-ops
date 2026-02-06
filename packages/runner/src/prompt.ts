@@ -231,6 +231,7 @@ export class PromptHandler {
   private toolStates = new Map<string, { status: ToolStatus; toolName: string }>();
   private lastError: string | null = null; // Track session errors
   private hadToolSinceLastText = false; // Track if tools ran since last text chunk
+  private idleNotified = false;
 
   // Message ID mapping: DO message IDs ↔ OpenCode message IDs
   private doToOcMessageId = new Map<string, string>();
@@ -438,6 +439,7 @@ export class PromptHandler {
     // Tell DO first so clients get immediate feedback
     this.agentClient.sendAborted();
     this.agentClient.sendAgentStatus("idle");
+    this.idleNotified = true;
 
     // Then tell OpenCode to stop generating (may be slow)
     try {
@@ -889,6 +891,10 @@ export class PromptHandler {
           console.log(`[PromptHandler] Session idle, finalizing response`);
           this.finalizeResponse();
         }
+        if (!this.idleNotified) {
+          this.agentClient.sendAgentStatus("idle");
+          this.idleNotified = true;
+        }
         break;
       }
 
@@ -1148,9 +1154,17 @@ export class PromptHandler {
 
     console.log(`[PromptHandler] session.status: "${statusType}" (active: ${this.activeMessageId ? 'yes' : 'no'}, content: ${this.streamedContent.length} chars, activity: ${this.hasActivity})`);
 
-    if (statusType === "idle" && this.activeMessageId && this.hasActivity) {
-      console.log(`[PromptHandler] Session idle, finalizing response`);
-      this.finalizeResponse();
+    if (statusType === "idle") {
+      if (this.activeMessageId && this.hasActivity) {
+        console.log(`[PromptHandler] Session idle, finalizing response`);
+        this.finalizeResponse();
+      }
+      if (!this.idleNotified) {
+        this.agentClient.sendAgentStatus("idle");
+        this.idleNotified = true;
+      }
+    } else if (statusType === "busy") {
+      this.idleNotified = false;
     }
   }
 

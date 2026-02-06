@@ -1193,6 +1193,13 @@ export class SessionAgentDO {
           status: msg.status,
           detail: msg.detail,
         });
+        if (msg.status === 'idle') {
+          this.setStateValue('runnerBusy', 'false');
+          await this.notifyParentIfIdle();
+        } else if (msg.status === 'thinking' || msg.status === 'tool_calling' || msg.status === 'streaming') {
+          this.setStateValue('runnerBusy', 'true');
+          this.setStateValue('lastParentIdleNotice', '');
+        }
         break;
 
       case 'create-pr': {
@@ -2569,6 +2576,7 @@ export class SessionAgentDO {
         type: 'status',
         data: { runnerBusy: false },
       });
+      await this.notifyParentIfIdle();
     }
   }
 
@@ -2879,25 +2887,7 @@ export class SessionAgentDO {
       timestamp: new Date().toISOString(),
     });
 
-    // Notify parent session (if any) so orchestrators can wake without polling
-    if (sessionId) {
-      try {
-        const session = await getSession(this.env.DB, sessionId);
-        const parentSessionId = session?.parentSessionId;
-        if (parentSessionId) {
-          const parentDoId = this.env.SESSIONS.idFromName(parentSessionId);
-          const parentDO = this.env.SESSIONS.get(parentDoId);
-          const content = `Child session event: ${sessionId} completed (reason: ${reason}).`;
-          await parentDO.fetch(new Request('http://do/prompt', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content }),
-          }));
-        }
-      } catch (err) {
-        console.error('[SessionAgentDO] Failed to notify parent session:', err);
-      }
-    }
+    await this.notifyParentEvent(`Child session event: ${sessionId} completed (reason: ${reason}).`);
 
     return Response.json({
       success: true,
@@ -2941,6 +2931,40 @@ export class SessionAgentDO {
       connectedUsers,
       runningStartedAt: runningStartedAt ? parseInt(runningStartedAt) : null,
     });
+  }
+
+  private async notifyParentIfIdle() {
+    const sessionId = this.getStateValue('sessionId');
+    if (!sessionId) return;
+    const status = this.getStateValue('status');
+    if (status !== 'running') return;
+    const runnerBusy = this.getStateValue('runnerBusy') === 'true';
+    const queued = this.getQueueLength();
+    if (runnerBusy || queued > 0) return;
+
+    const last = this.getStateValue('lastParentIdleNotice');
+    if (last === 'true') return;
+    this.setStateValue('lastParentIdleNotice', 'true');
+    await this.notifyParentEvent(`Child session event: ${sessionId} is idle.`);
+  }
+
+  private async notifyParentEvent(content: string) {
+    try {
+      const sessionId = this.getStateValue('sessionId');
+      if (!sessionId) return;
+      const session = await getSession(this.env.DB, sessionId);
+      const parentSessionId = session?.parentSessionId;
+      if (!parentSessionId) return;
+      const parentDoId = this.env.SESSIONS.idFromName(parentSessionId);
+      const parentDO = this.env.SESSIONS.get(parentDoId);
+      await parentDO.fetch(new Request('http://do/prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      }));
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to notify parent session:', err);
+    }
   }
 
   /**
