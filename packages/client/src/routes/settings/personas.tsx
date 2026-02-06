@@ -46,6 +46,7 @@ function PersonasPage() {
         slug: data.slug,
         description: data.description || undefined,
         icon: data.icon || undefined,
+        defaultModel: data.defaultModel || undefined,
         visibility: data.visibility,
       });
       // Update files
@@ -59,6 +60,7 @@ function PersonasPage() {
         slug: data.slug,
         description: data.description || undefined,
         icon: data.icon || undefined,
+        defaultModel: data.defaultModel || undefined,
         visibility: data.visibility,
         files: data.files,
       });
@@ -187,6 +189,11 @@ function PersonaCard({
             <> &middot; by {persona.creatorName}</>
           )}
         </span>
+        {persona.defaultModel && (
+          <span className="rounded-full border border-neutral-200 px-2 py-0.5 text-[10px] text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+            {persona.defaultModel}
+          </span>
+        )}
 
         {canEdit && (
           <div className="flex items-center gap-2">

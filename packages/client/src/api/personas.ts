@@ -31,6 +31,7 @@ interface CreatePersonaInput {
   slug: string;
   description?: string;
   icon?: string;
+  defaultModel?: string;
   visibility?: PersonaVisibility;
   isDefault?: boolean;
   files?: { filename: string; content: string; sortOrder: number }[];
@@ -54,6 +55,7 @@ interface UpdatePersonaInput {
   slug?: string;
   description?: string;
   icon?: string;
+  defaultModel?: string;
   visibility?: PersonaVisibility;
   isDefault?: boolean;
 }

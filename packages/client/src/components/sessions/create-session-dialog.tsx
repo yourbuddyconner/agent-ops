@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { useCreateSession } from '@/api/sessions';
+import { useCreateSession, useAvailableModels } from '@/api/sessions';
 import { useRepos, useValidateRepo, useRepoPulls, useRepoIssues, type Repo, type RepoPull, type RepoIssue } from '@/api/repos';
 import { getWebSocketUrl } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
@@ -19,6 +19,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/cn';
 import { PersonaPicker } from '@/components/personas/persona-picker';
+import { usePersonas } from '@/api/personas';
 import { useOrgRepos } from '@/api/org-repos';
 import type { SessionStatus, CreateSessionResponse } from '@/api/types';
 
@@ -192,6 +193,8 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
 
   // Persona state
   const [selectedPersonaId, setSelectedPersonaId] = useState<string | undefined>(undefined);
+  const [selectedModel, setSelectedModel] = useState('');
+  const [modelTouched, setModelTouched] = useState(false);
 
   // Progress state
   const [sessionResult, setSessionResult] = useState<CreateSessionResponse | null>(null);
@@ -202,6 +205,8 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
   // Queries
   const { data: reposData, isLoading: reposLoading } = useRepos();
   const { data: orgRepos } = useOrgRepos();
+  const { data: personas } = usePersonas();
+  const { data: availableModels } = useAvailableModels();
   const validateRepo = useValidateRepo(repoMode === 'url' ? repoUrl : '');
 
   // PR/Issue queries — derive owner/repo from selected repo
@@ -232,6 +237,15 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
         (r.description?.toLowerCase().includes(q) ?? false)
     );
   }, [reposData?.repos, repoSearch]);
+
+  const selectedPersona = personas?.find((p) => p.id === selectedPersonaId);
+  const personaDefaultModel = selectedPersona?.defaultModel;
+
+  useEffect(() => {
+    if (!modelTouched) {
+      setSelectedModel('');
+    }
+  }, [selectedPersonaId, modelTouched]);
 
   // Elapsed time tracker for progress view
   useEffect(() => {
@@ -282,6 +296,8 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
     setSourceType(undefined);
     setInitialPrompt(undefined);
     setSelectedPersonaId(undefined);
+    setSelectedModel('');
+    setModelTouched(false);
     createSession.reset();
   }, [createSession]);
 
@@ -333,6 +349,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
       sourceRepoFullName?: string;
       initialPrompt?: string;
       personaId?: string;
+      initialModel?: string;
     } = {
       workspace: workspace.trim(),
     };
@@ -351,6 +368,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
     if (selectedIssue) request.sourceIssueNumber = selectedIssue.number;
     if (initialPrompt) request.initialPrompt = initialPrompt;
     if (selectedPersonaId) request.personaId = selectedPersonaId;
+    if (selectedModel) request.initialModel = selectedModel;
 
     try {
       const result = await createSession.mutateAsync(request);
@@ -800,6 +818,42 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
                   <span className="ml-1 text-xs font-normal text-neutral-400">(optional)</span>
                 </label>
                 <PersonaPicker value={selectedPersonaId} onChange={setSelectedPersonaId} />
+              </div>
+
+              {/* Model picker */}
+              <div>
+                <label className="mb-2 block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                  Model
+                  <span className="ml-1 text-xs font-normal text-neutral-400">(optional)</span>
+                </label>
+                <select
+                  value={selectedModel}
+                  onChange={(e) => {
+                    setSelectedModel(e.target.value);
+                    setModelTouched(true);
+                  }}
+                  className="w-full cursor-pointer appearance-none rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 transition-colors focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100"
+                >
+                  <option value="">
+                    {personaDefaultModel
+                      ? `Auto (persona default: ${personaDefaultModel})`
+                      : 'Auto (session default)'}
+                  </option>
+                  {availableModels?.map((provider) => (
+                    <optgroup key={provider.provider} label={provider.provider}>
+                      {provider.models.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-neutral-400">
+                  {personaDefaultModel
+                    ? 'Leave as Auto to use the persona default model.'
+                    : 'Leave as Auto to use the session default model.'}
+                </p>
               </div>
 
               {/* Workspace input */}

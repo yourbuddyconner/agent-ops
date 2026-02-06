@@ -218,6 +218,30 @@ export class SessionAgentDO {
     });
   }
 
+  private async getUserDetails(userId: string): Promise<CachedUserDetails | undefined> {
+    const cached = this.userDetailsCache.get(userId);
+    if (cached) return cached;
+
+    try {
+      const userRow = await getUserById(this.env.DB, userId);
+      if (!userRow) return undefined;
+      const details: CachedUserDetails = {
+        id: userRow.id,
+        email: userRow.email,
+        name: userRow.name,
+        avatarUrl: userRow.avatarUrl,
+        gitName: userRow.gitName,
+        gitEmail: userRow.gitEmail,
+        modelPreferences: userRow.modelPreferences,
+      };
+      this.userDetailsCache.set(userId, details);
+      return details;
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to fetch user details:', err);
+      return undefined;
+    }
+  }
+
   // ─── Entry Point ───────────────────────────────────────────────────────
 
   async fetch(request: Request): Promise<Response> {
@@ -473,7 +497,7 @@ export class SessionAgentDO {
       }
       // Resolve model preferences from session owner
       const initOwnerId = this.getStateValue('userId');
-      const initOwnerDetails = initOwnerId ? this.userDetailsCache.get(initOwnerId) : undefined;
+      const initOwnerDetails = initOwnerId ? await this.getUserDetails(initOwnerId) : undefined;
       server.send(JSON.stringify({
         type: 'prompt',
         messageId: prompt.id,
@@ -508,7 +532,7 @@ export class SessionAgentDO {
           },
         });
         const ipOwnerId = this.getStateValue('userId');
-        const ipOwnerDetails = ipOwnerId ? this.userDetailsCache.get(ipOwnerId) : undefined;
+        const ipOwnerDetails = ipOwnerId ? await this.getUserDetails(ipOwnerId) : undefined;
         const initialModel = this.getStateValue('initialModel');
         if (initialModel) {
           this.setStateValue('initialModel', ''); // Clear so it only applies once
@@ -842,7 +866,7 @@ export class SessionAgentDO {
     this.setStateValue('runnerBusy', 'true');
     // Resolve model preferences: use the session owner's preferences
     const ownerId = this.getStateValue('userId');
-    const ownerDetails = ownerId ? this.userDetailsCache.get(ownerId) : undefined;
+    const ownerDetails = ownerId ? await this.getUserDetails(ownerId) : undefined;
     this.sendToRunner({
       type: 'prompt',
       messageId,
@@ -2394,7 +2418,7 @@ export class SessionAgentDO {
 
       // Resolve model preferences from session owner
       const queueOwnerId = this.getStateValue('userId');
-      const queueOwnerDetails = queueOwnerId ? this.userDetailsCache.get(queueOwnerId) : undefined;
+      const queueOwnerDetails = queueOwnerId ? await this.getUserDetails(queueOwnerId) : undefined;
       this.sendToRunner({
         type: 'prompt',
         messageId: prompt.id as string,

@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import type { AgentPersona, PersonaVisibility } from '@/api/types';
+import { useAvailableModels } from '@/api/sessions';
 
 interface PersonaEditorProps {
   open: boolean;
@@ -24,6 +25,7 @@ export interface PersonaFormData {
   slug: string;
   description: string;
   icon: string;
+  defaultModel?: string;
   visibility: PersonaVisibility;
   files: { filename: string; content: string; sortOrder: number }[];
 }
@@ -41,9 +43,11 @@ export function PersonaEditor({ open, onOpenChange, persona, onSave, isSaving }:
   const [slugManual, setSlugManual] = React.useState(false);
   const [description, setDescription] = React.useState('');
   const [icon, setIcon] = React.useState('');
+  const [defaultModel, setDefaultModel] = React.useState('');
   const [visibility, setVisibility] = React.useState<PersonaVisibility>('shared');
   const [instructions, setInstructions] = React.useState('');
   const [files, setFiles] = React.useState<{ filename: string; content: string; sortOrder: number }[]>([]);
+  const { data: availableModels } = useAvailableModels();
 
   // Populate form when editing — separate the primary instructions.md from additional files
   React.useEffect(() => {
@@ -53,6 +57,7 @@ export function PersonaEditor({ open, onOpenChange, persona, onSave, isSaving }:
       setSlugManual(true);
       setDescription(persona.description || '');
       setIcon(persona.icon || '');
+      setDefaultModel(persona.defaultModel || '');
       setVisibility(persona.visibility);
       const allFiles = persona.files ?? [];
       const primary = allFiles.find((f) => f.filename === 'instructions.md');
@@ -72,6 +77,7 @@ export function PersonaEditor({ open, onOpenChange, persona, onSave, isSaving }:
       setSlugManual(false);
       setDescription('');
       setIcon('');
+      setDefaultModel('');
       setVisibility('shared');
       setInstructions('');
       setFiles([]);
@@ -106,7 +112,7 @@ export function PersonaEditor({ open, onOpenChange, persona, onSave, isSaving }:
         : []),
       ...files,
     ];
-    onSave({ name, slug, description, icon, visibility, files: allFiles });
+    onSave({ name, slug, description, icon, defaultModel: defaultModel || undefined, visibility, files: allFiles });
   };
 
   return (
@@ -173,6 +179,31 @@ export function PersonaEditor({ open, onOpenChange, persona, onSave, isSaving }:
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder="Reviews code for quality and best practices"
               />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                Default Model
+              </label>
+              <select
+                value={defaultModel}
+                onChange={(e) => setDefaultModel(e.target.value)}
+                className="w-full cursor-pointer appearance-none rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 transition-colors focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100"
+              >
+                <option value="">Auto (session default)</option>
+                {availableModels?.map((provider) => (
+                  <optgroup key={provider.provider} label={provider.provider}>
+                    {provider.models.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-neutral-400">
+                Used when a session is created with this persona, unless overridden.
+              </p>
             </div>
 
             <div>

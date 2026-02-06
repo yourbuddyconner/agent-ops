@@ -1346,7 +1346,7 @@ function mapOrgRepository(row: any): OrgRepository {
 
 export async function createPersona(
   db: D1Database,
-  data: { id: string; name: string; slug: string; description?: string; icon?: string; visibility?: PersonaVisibility; isDefault?: boolean; createdBy: string }
+  data: { id: string; name: string; slug: string; description?: string; icon?: string; defaultModel?: string; visibility?: PersonaVisibility; isDefault?: boolean; createdBy: string }
 ): Promise<AgentPersona> {
   // If setting as default, clear existing defaults first
   if (data.isDefault) {
@@ -1355,8 +1355,8 @@ export async function createPersona(
 
   await db
     .prepare(
-      `INSERT INTO agent_personas (id, name, slug, description, icon, visibility, is_default, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO agent_personas (id, name, slug, description, icon, default_model, visibility, is_default, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       data.id,
@@ -1364,6 +1364,7 @@ export async function createPersona(
       data.slug,
       data.description || null,
       data.icon || null,
+      data.defaultModel || null,
       data.visibility || 'shared',
       data.isDefault ? 1 : 0,
       data.createdBy
@@ -1377,6 +1378,7 @@ export async function createPersona(
     slug: data.slug,
     description: data.description,
     icon: data.icon,
+    defaultModel: data.defaultModel,
     visibility: data.visibility || 'shared',
     isDefault: !!data.isDefault,
     createdBy: data.createdBy,
@@ -1429,7 +1431,7 @@ export async function getPersonaWithFiles(db: D1Database, id: string): Promise<A
 export async function updatePersona(
   db: D1Database,
   id: string,
-  updates: Partial<Pick<AgentPersona, 'name' | 'slug' | 'description' | 'icon' | 'visibility' | 'isDefault'>>
+  updates: Partial<Pick<AgentPersona, 'name' | 'slug' | 'description' | 'icon' | 'defaultModel' | 'visibility' | 'isDefault'>>
 ): Promise<void> {
   const sets: string[] = [];
   const params: (string | number | null)[] = [];
@@ -1438,6 +1440,7 @@ export async function updatePersona(
   if (updates.slug !== undefined) { sets.push('slug = ?'); params.push(updates.slug); }
   if (updates.description !== undefined) { sets.push('description = ?'); params.push(updates.description || null); }
   if (updates.icon !== undefined) { sets.push('icon = ?'); params.push(updates.icon || null); }
+  if (updates.defaultModel !== undefined) { sets.push('default_model = ?'); params.push(updates.defaultModel || null); }
   if (updates.visibility !== undefined) { sets.push('visibility = ?'); params.push(updates.visibility); }
   if (updates.isDefault !== undefined) {
     if (updates.isDefault) {
@@ -1465,6 +1468,7 @@ function mapPersona(row: any): AgentPersona {
     slug: row.slug,
     description: row.description || undefined,
     icon: row.icon || undefined,
+    defaultModel: row.default_model || undefined,
     visibility: row.visibility as PersonaVisibility,
     isDefault: !!row.is_default,
     createdBy: row.created_by,

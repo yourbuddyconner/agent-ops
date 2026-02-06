@@ -12,6 +12,7 @@ const createPersonaSchema = z.object({
   slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, 'Slug must be lowercase alphanumeric with dashes'),
   description: z.string().max(500).optional(),
   icon: z.string().max(10).optional(),
+  defaultModel: z.string().max(255).optional(),
   visibility: z.enum(['private', 'shared']).default('shared'),
   isDefault: z.boolean().optional(),
   files: z
@@ -77,6 +78,7 @@ personasRouter.post('/', zValidator('json', createPersonaSchema), async (c) => {
     slug: body.slug,
     description: body.description,
     icon: body.icon,
+    defaultModel: body.defaultModel,
     visibility: body.visibility,
     isDefault: body.isDefault,
     createdBy: user.id,
@@ -103,6 +105,7 @@ const updatePersonaSchema = z.object({
   slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/).optional(),
   description: z.string().max(500).optional(),
   icon: z.string().max(10).optional(),
+  defaultModel: z.string().max(255).optional(),
   visibility: z.enum(['private', 'shared']).optional(),
   isDefault: z.boolean().optional(),
 });

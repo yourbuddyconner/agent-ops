@@ -28,6 +28,7 @@ const createSessionSchema = z.object({
   sourceIssueNumber: z.number().int().positive().optional(),
   sourceRepoFullName: z.string().optional(),
   initialPrompt: z.string().max(100000).optional(),
+  initialModel: z.string().max(255).optional(),
   personaId: z.string().uuid().optional(),
 });
 
@@ -92,6 +93,7 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
 
   // If persona requested, fetch and validate access
   let personaFiles: { filename: string; content: string; sortOrder: number }[] | undefined;
+  let personaDefaultModel: string | undefined;
   if (body.personaId) {
     const persona = await db.getPersonaWithFiles(c.env.DB, body.personaId);
     if (!persona) {
@@ -107,6 +109,9 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
         content: f.content,
         sortOrder: f.sortOrder,
       }));
+    }
+    if (persona.defaultModel) {
+      personaDefaultModel = persona.defaultModel;
     }
   }
 
@@ -200,6 +205,8 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
   const doId = c.env.SESSIONS.idFromName(sessionId);
   const sessionDO = c.env.SESSIONS.get(doId);
 
+  const initialModel = body.initialModel || personaDefaultModel;
+
   const spawnRequest = {
     sessionId,
     userId: user.id,
@@ -228,8 +235,9 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
         hibernateUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'hibernate-session'),
         restoreUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'restore-session'),
         idleTimeoutMs,
-        spawnRequest,
-        initialPrompt: body.initialPrompt,
+    spawnRequest,
+    initialPrompt: body.initialPrompt,
+        initialModel,
       }),
     }));
   } catch (err) {
@@ -886,4 +894,3 @@ sessionsRouter.delete('/:id/share-link/:linkId', async (c) => {
 
   return c.json({ success: true });
 });
-

@@ -4,65 +4,6 @@
 
 Agent-Ops is a hosted background coding agent platform. Users interact with an AI coding agent through a web UI or Slack. Each session runs in an isolated Modal sandbox with a full dev environment (VS Code, browser via VNC, terminal, and an OpenCode agent). The architecture is modeled after Ramp's Inspect system.
 
-Read `V1.md` for the full architecture specification, all decisions, and implementation phases.
-
-## Task Tracking with Beans
-
-This project uses **beans** for task tracking. Beans stores issues as markdown files in `.beans/`.
-
-### Starting a Session
-
-Every session should begin by checking for work:
-
-```bash
-# 1. Check for in-progress beans first (finish what's started)
-beans list -s in-progress
-
-# 2. If none in-progress, list todo beans by priority
-beans list -s todo --sort priority
-
-# 3. Read the top bean to understand the task
-beans show <id>
-```
-
-**If a bean is in-progress**, finish it before starting anything new. Read it with `beans show <id>`, understand what's left, and complete it.
-
-**If no beans are in-progress**, pick the highest-priority todo bean, mark it in-progress, and start working:
-
-```bash
-beans update <id> -s in-progress
-```
-
-### While Working
-
-- **When done with a bean**: `beans update <id> -s completed`
-- **If a task is no longer needed**: `beans update <id> -s scrapped`
-- **If you discover sub-work needed**: Create child beans with `--parent`:
-  ```bash
-  beans create "Sub-task title" -t task -p high --parent <parent-id> -d "Description"
-  ```
-- **If a bean blocks another**: Use `--blocking <other-id>` on create or update
-- **To add notes/context to a bean**: `beans update <id> -d "Updated description with findings"`
-- **Use the frontend-design skill when finishing frontend tasks for final design polish"**
-
-### Bean Conventions
-
-- **Types**: `milestone` (phase), `epic` (large feature), `feature` (user-facing), `task` (implementation unit), `bug`
-- **Priorities**: `critical`, `high`, `normal`, `low`, `deferred`
-- **Statuses**: `todo`, `in-progress`, `completed`, `scrapped`, `draft`
-- Keep bean titles short and imperative ("Build SessionAgent DO", not "Building the session agent")
-- Bean bodies should include acceptance criteria — what does "done" look like?
-- Tag beans with the layer they affect: `--tag worker`, `--tag frontend`, `--tag runner`, `--tag backend`, `--tag sandbox`
-
-### Viewing Progress
-
-```bash
-beans list                          # All active beans
-beans list -s completed             # Done beans
-beans list --tag worker             # Beans for a specific layer
-beans roadmap                       # Milestone/epic overview
-```
-
 ## Project Structure
 
 ```

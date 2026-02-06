@@ -370,6 +370,7 @@ export interface CreateSessionRequest {
   sourceIssueNumber?: number;
   sourceRepoFullName?: string;
   initialPrompt?: string;
+  initialModel?: string;
   personaId?: string;
 }
 
@@ -630,6 +631,7 @@ export interface AgentPersona {
   slug: string;
   description?: string;
   icon?: string;
+  defaultModel?: string;
   visibility: PersonaVisibility;
   isDefault: boolean;
   createdBy: string;
