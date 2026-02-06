@@ -1195,7 +1195,9 @@ export class SessionAgentDO {
         });
         if (msg.status === 'idle') {
           this.setStateValue('runnerBusy', 'false');
-          await this.notifyParentIfIdle();
+          if (!(await this.sendNextQueuedPrompt())) {
+            await this.notifyParentIfIdle();
+          }
         } else if (msg.status === 'thinking' || msg.status === 'tool_calling' || msg.status === 'streaming') {
           this.setStateValue('runnerBusy', 'true');
           this.setStateValue('lastParentIdleNotice', '');
@@ -2530,54 +2532,17 @@ export class SessionAgentDO {
       "UPDATE prompt_queue SET status = 'completed' WHERE status = 'processing'"
     );
 
-    // Check for next queued prompt (includes author info)
-    const next = this.ctx.storage.sql
-      .exec("SELECT id, content, author_id, author_email, author_name FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
-      .toArray();
-
-    if (next.length > 0) {
-      const prompt = next[0];
-      this.ctx.storage.sql.exec(
-        "UPDATE prompt_queue SET status = 'processing' WHERE id = ?",
-        prompt.id as string
-      );
-
-      // Look up git details from cache for the prompt author
-      const authorId = prompt.author_id as string | null;
-      const authorDetails = authorId ? this.userDetailsCache.get(authorId) : undefined;
-
-      // Track current prompt author for PR attribution
-      if (authorId) {
-        this.setStateValue('currentPromptAuthorId', authorId);
-      }
-
-      // Resolve model preferences from session owner
-      const queueOwnerId = this.getStateValue('userId');
-      const queueOwnerDetails = queueOwnerId ? await this.getUserDetails(queueOwnerId) : undefined;
-      this.sendToRunner({
-        type: 'prompt',
-        messageId: prompt.id as string,
-        content: prompt.content as string,
-        authorId: authorId || undefined,
-        authorEmail: (prompt.author_email as string) || undefined,
-        authorName: (prompt.author_name as string) || undefined,
-        gitName: authorDetails?.gitName,
-        gitEmail: authorDetails?.gitEmail,
-        modelPreferences: queueOwnerDetails?.modelPreferences,
-      });
-      this.broadcastToClients({
-        type: 'status',
-        data: { promptDequeued: true, remaining: this.getQueueLength() },
-      });
-    } else {
-      // Runner is now idle
-      this.setStateValue('runnerBusy', 'false');
-      this.broadcastToClients({
-        type: 'status',
-        data: { runnerBusy: false },
-      });
-      await this.notifyParentIfIdle();
+    if (await this.sendNextQueuedPrompt()) {
+      return;
     }
+
+    // Runner is now idle
+    this.setStateValue('runnerBusy', 'false');
+    this.broadcastToClients({
+      type: 'status',
+      data: { runnerBusy: false },
+    });
+    await this.notifyParentIfIdle();
   }
 
   // ─── Internal Endpoints ────────────────────────────────────────────────
@@ -2965,6 +2930,53 @@ export class SessionAgentDO {
     } catch (err) {
       console.error('[SessionAgentDO] Failed to notify parent session:', err);
     }
+  }
+
+  private async sendNextQueuedPrompt(): Promise<boolean> {
+    const runnerSockets = this.ctx.getWebSockets('runner');
+    if (runnerSockets.length === 0) return false;
+
+    const next = this.ctx.storage.sql
+      .exec("SELECT id, content, author_id, author_email, author_name FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
+      .toArray();
+
+    if (next.length === 0) return false;
+
+    const prompt = next[0];
+    this.ctx.storage.sql.exec(
+      "UPDATE prompt_queue SET status = 'processing' WHERE id = ?",
+      prompt.id as string
+    );
+
+    // Look up git details from cache for the prompt author
+    const authorId = prompt.author_id as string | null;
+    const authorDetails = authorId ? this.userDetailsCache.get(authorId) : undefined;
+
+    // Track current prompt author for PR attribution
+    if (authorId) {
+      this.setStateValue('currentPromptAuthorId', authorId);
+    }
+
+    // Resolve model preferences from session owner
+    const queueOwnerId = this.getStateValue('userId');
+    const queueOwnerDetails = queueOwnerId ? await this.getUserDetails(queueOwnerId) : undefined;
+    this.sendToRunner({
+      type: 'prompt',
+      messageId: prompt.id as string,
+      content: prompt.content as string,
+      authorId: authorId || undefined,
+      authorEmail: (prompt.author_email as string) || undefined,
+      authorName: (prompt.author_name as string) || undefined,
+      gitName: authorDetails?.gitName,
+      gitEmail: authorDetails?.gitEmail,
+      modelPreferences: queueOwnerDetails?.modelPreferences,
+    });
+    this.setStateValue('runnerBusy', 'true');
+    this.broadcastToClients({
+      type: 'status',
+      data: { promptDequeued: true, remaining: this.getQueueLength() },
+    });
+    return true;
   }
 
   /**
