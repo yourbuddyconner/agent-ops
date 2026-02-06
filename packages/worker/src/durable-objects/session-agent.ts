@@ -1880,21 +1880,7 @@ export class SessionAgentDO {
     console.log(`[SessionAgentDO] Session ${sessionId} self-terminating (task complete)`);
 
     // Reuse handleStop which handles sandbox teardown, cascade, etc.
-    // The reason is 'completed' instead of 'user_stopped' — update the event after
-    const response = await this.handleStop();
-
-    // Override the event reason to 'completed' in D1
-    // (handleStop already set status to 'terminated' and published session.completed with 'user_stopped')
-    // We re-publish with the correct reason
-    this.notifyEventBus({
-      type: 'session.completed',
-      sessionId: sessionId || undefined,
-      userId: this.getStateValue('userId') || undefined,
-      data: { sandboxId: this.getStateValue('sandboxId') || null, reason: 'completed' },
-      timestamp: new Date().toISOString(),
-    });
-
-    return response;
+    return await this.handleStop('completed');
   }
 
   // ─── Orchestrator Operations ────────────────────────────────────────────
@@ -2772,7 +2758,7 @@ export class SessionAgentDO {
     }
   }
 
-  private async handleStop(): Promise<Response> {
+  private async handleStop(reason: 'user_stopped' | 'completed' = 'user_stopped'): Promise<Response> {
     const sandboxId = this.getStateValue('sandboxId');
     const sessionId = this.getStateValue('sessionId');
     const terminateUrl = this.getStateValue('terminateUrl');
@@ -2867,9 +2853,29 @@ export class SessionAgentDO {
       type: 'session.completed',
       sessionId: sessionId || undefined,
       userId: this.getStateValue('userId') || undefined,
-      data: { sandboxId: sandboxId || null, reason: 'user_stopped' },
+      data: { sandboxId: sandboxId || null, reason },
       timestamp: new Date().toISOString(),
     });
+
+    // Notify parent session (if any) so orchestrators can wake without polling
+    if (sessionId) {
+      try {
+        const session = await getSession(this.env.DB, sessionId);
+        const parentSessionId = session?.parentSessionId;
+        if (parentSessionId) {
+          const parentDoId = this.env.SESSIONS.idFromName(parentSessionId);
+          const parentDO = this.env.SESSIONS.get(parentDoId);
+          const content = `Child session event: ${sessionId} completed (reason: ${reason}).`;
+          await parentDO.fetch(new Request('http://do/prompt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content }),
+          }));
+        }
+      } catch (err) {
+        console.error('[SessionAgentDO] Failed to notify parent session:', err);
+      }
+    }
 
     return Response.json({
       success: true,
