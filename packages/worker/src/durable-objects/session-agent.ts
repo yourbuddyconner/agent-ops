@@ -1119,6 +1119,11 @@ export class SessionAgentDO {
             this.appendAuditLog('agent.tool_completed', `${msg.toolName || 'unknown'} ${toolStatus}`, undefined, { toolId, toolName: msg.toolName, status: toolStatus });
           }
         }
+        if (msg.toolName === 'wait_for_event' && toolStatus === 'completed') {
+          console.log('[SessionAgentDO] wait_for_event completed — marking runner idle');
+          this.setStateValue('runnerBusy', 'false');
+          await this.sendNextQueuedPrompt();
+        }
         break;
       }
 
