@@ -42,6 +42,8 @@ function generateRunnerToken(): string {
 
 // ─── Orchestrator Routes ────────────────────────────────────────────────
 
+const TERMINAL_STATUSES = new Set(['terminated', 'error']);
+
 /**
  * GET /api/me/orchestrator
  * Returns orchestrator info for the current user.
@@ -52,12 +54,14 @@ orchestratorRouter.get('/orchestrator', async (c) => {
   const identity = await db.getOrchestratorIdentity(c.env.DB, user.id);
   const session = await db.getOrchestratorSession(c.env.DB, user.id);
   const sessionId = `orchestrator:${user.id}`;
+  const needsRestart = !!identity && (!session || TERMINAL_STATUSES.has(session.status));
 
   return c.json({
     sessionId,
     identity,
     session,
     exists: !!identity && !!session,
+    needsRestart,
   });
 });
 
@@ -70,45 +74,65 @@ orchestratorRouter.post('/orchestrator', zValidator('json', createOrchestratorSc
   const body = c.req.valid('json');
 
   // Check if identity already exists
-  const existing = await db.getOrchestratorIdentity(c.env.DB, user.id);
-  if (existing) {
-    return c.json({ error: 'Orchestrator already exists' }, 409);
-  }
+  let identity = await db.getOrchestratorIdentity(c.env.DB, user.id);
+  const existingSession = await db.getOrchestratorSession(c.env.DB, user.id);
 
-  // Check handle uniqueness
-  const handleTaken = await db.getOrchestratorIdentityByHandle(c.env.DB, body.handle);
-  if (handleTaken) {
-    return c.json({ error: 'Handle already taken' }, 409);
+  if (identity && existingSession && !TERMINAL_STATUSES.has(existingSession.status)) {
+    // Identity exists and session is healthy — cannot recreate
+    return c.json({ error: 'Orchestrator already exists' }, 409);
   }
 
   // Ensure user exists in DB
   await db.getOrCreateUser(c.env.DB, { id: user.id, email: user.email });
 
-  // Create identity
-  const identityId = crypto.randomUUID();
-  const identity = await db.createOrchestratorIdentity(c.env.DB, {
-    id: identityId,
-    userId: user.id,
-    name: body.name,
-    handle: body.handle,
-    avatar: body.avatar,
-    customInstructions: body.customInstructions,
-  });
+  if (!identity) {
+    // Check handle uniqueness only for new identities
+    const handleTaken = await db.getOrchestratorIdentityByHandle(c.env.DB, body.handle);
+    if (handleTaken) {
+      return c.json({ error: 'Handle already taken' }, 409);
+    }
+
+    // Create identity
+    const identityId = crypto.randomUUID();
+    identity = await db.createOrchestratorIdentity(c.env.DB, {
+      id: identityId,
+      userId: user.id,
+      name: body.name,
+      handle: body.handle,
+      avatar: body.avatar,
+      customInstructions: body.customInstructions,
+    });
+  } else {
+    // Reuse existing identity — optionally update name/instructions if provided
+    await db.updateOrchestratorIdentity(c.env.DB, identity.id, {
+      name: body.name,
+      handle: body.handle,
+      customInstructions: body.customInstructions,
+    });
+    identity = (await db.getOrchestratorIdentity(c.env.DB, user.id))!;
+  }
 
   // Build persona files
   const personaFiles = buildOrchestratorPersonaFiles(identity);
 
-  // Create session with well-known ID
+  // Create session with well-known ID (resets the old terminated session)
   const sessionId = `orchestrator:${user.id}`;
   const runnerToken = generateRunnerToken();
 
-  const session = await db.createSession(c.env.DB, {
-    id: sessionId,
-    userId: user.id,
-    workspace: 'orchestrator',
-    title: `${body.name} (Orchestrator)`,
-    isOrchestrator: true,
-  });
+  // If old session exists in terminal state, update it back to initializing
+  if (existingSession && TERMINAL_STATUSES.has(existingSession.status)) {
+    await db.updateSessionStatus(c.env.DB, sessionId, 'initializing');
+  }
+
+  const session = existingSession && TERMINAL_STATUSES.has(existingSession.status)
+    ? { ...existingSession, status: 'initializing' as const }
+    : await db.createSession(c.env.DB, {
+        id: sessionId,
+        userId: user.id,
+        workspace: 'orchestrator',
+        title: `${identity.name} (Orchestrator)`,
+        isOrchestrator: true,
+      });
 
   // Build env vars (LLM keys only — no repo for orchestrator)
   const envVars: Record<string, string> = {};

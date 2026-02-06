@@ -2,7 +2,7 @@ import * as React from 'react';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
 import { Button } from '@/components/ui/button';
-import { useCreateOrchestrator, useCheckHandle } from '@/api/orchestrator';
+import { useCreateOrchestrator, useCheckHandle, useOrchestratorInfo } from '@/api/orchestrator';
 
 export const Route = createFileRoute('/orchestrator-setup')({
   component: OrchestratorSetupPage,
@@ -20,10 +20,18 @@ function useDebounced(value: string, delayMs: number) {
 function OrchestratorSetupPage() {
   const navigate = useNavigate();
   const createOrchestrator = useCreateOrchestrator();
+  const { data: orchInfo } = useOrchestratorInfo();
 
   const [name, setName] = React.useState('');
   const [handle, setHandle] = React.useState('');
   const [customInstructions, setCustomInstructions] = React.useState('');
+
+  // If orchestrator exists and is healthy, redirect to its session
+  React.useEffect(() => {
+    if (orchInfo?.exists && !orchInfo.needsRestart) {
+      navigate({ to: '/sessions/$sessionId', params: { sessionId: orchInfo.sessionId } });
+    }
+  }, [orchInfo, navigate]);
 
   const debouncedHandle = useDebounced(handle, 400);
   const handleCheck = useCheckHandle(debouncedHandle);

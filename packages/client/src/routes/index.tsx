@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
 import { useDashboardStats } from '@/api/dashboard';
-import { useOrchestratorInfo } from '@/api/orchestrator';
+import { useOrchestratorInfo, useCreateOrchestrator } from '@/api/orchestrator';
 import { PeriodSelector } from '@/components/dashboard/period-selector';
 import { LiveSessionsBanner } from '@/components/dashboard/live-sessions-banner';
 import { HeroMetrics } from '@/components/dashboard/hero-metrics';
@@ -60,10 +60,12 @@ function DashboardPage() {
 
 function OrchestratorBanner() {
   const { data, isLoading } = useOrchestratorInfo();
+  const createOrchestrator = useCreateOrchestrator();
 
   if (isLoading) return null;
 
-  if (!data?.exists) {
+  // No identity at all — show setup CTA
+  if (!data?.identity) {
     return (
       <div className="mb-6 flex items-center justify-between rounded-lg border border-dashed border-neutral-300 bg-neutral-50 p-4 dark:border-neutral-700 dark:bg-neutral-800/50">
         <div>
@@ -84,18 +86,50 @@ function OrchestratorBanner() {
     );
   }
 
+  // Identity exists but session is dead — show restart
+  if (data.needsRestart) {
+    return (
+      <div className="mb-6 flex items-center justify-between rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-950/30">
+        <div className="flex items-center gap-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-100 text-sm font-semibold text-amber-600 dark:bg-amber-900/50 dark:text-amber-400">
+            {data.identity.name.charAt(0)}
+          </div>
+          <div>
+            <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
+              {data.identity.name} is offline
+            </p>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              @{data.identity.handle} &middot; Session ended
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={() => createOrchestrator.mutate({
+            name: data.identity!.name,
+            handle: data.identity!.handle,
+            customInstructions: data.identity!.customInstructions ?? undefined,
+          })}
+          disabled={createOrchestrator.isPending}
+          className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
+        >
+          {createOrchestrator.isPending ? 'Restarting...' : 'Restart'}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="mb-6 flex items-center justify-between rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-700 dark:bg-neutral-800">
       <div className="flex items-center gap-3">
         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent/10 text-sm font-semibold text-accent">
-          {data.identity?.name?.charAt(0) || 'O'}
+          {data.identity.name.charAt(0)}
         </div>
         <div>
           <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-            {data.identity?.name}
+            {data.identity.name}
           </p>
           <p className="text-xs text-neutral-500 dark:text-neutral-400">
-            @{data.identity?.handle}
+            @{data.identity.handle}
             {data.session && (
               <span className="ml-2">
                 {data.session.status === 'running' || data.session.status === 'idle'
@@ -113,7 +147,7 @@ function OrchestratorBanner() {
         params={{ sessionId: data.sessionId }}
         className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
       >
-        Talk to {data.identity?.name}
+        Talk to {data.identity.name}
       </Link>
     </div>
   );

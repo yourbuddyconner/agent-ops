@@ -19,6 +19,7 @@ export function useOrchestratorInfo() {
         identity: OrchestratorIdentity | null;
         session: AgentSession | null;
         exists: boolean;
+        needsRestart: boolean;
       }>('/me/orchestrator'),
     staleTime: 30_000,
   });
