@@ -244,15 +244,17 @@ function ForwardedMessage({ content, sourceTitle, originalRole }: { content: str
   const roleLabel = originalRole === 'user' ? 'User' : originalRole === 'assistant' ? 'Agent' : originalRole === 'tool' ? 'Tool' : originalRole;
 
   return (
-    <div className="rounded-md border border-neutral-200/60 bg-neutral-50/50 px-3 py-2 dark:border-neutral-700/40 dark:bg-neutral-800/30">
-      <div className="mb-1 flex items-center gap-1.5">
-        <ForwardIcon className="h-3 w-3 text-neutral-400 dark:text-neutral-500" />
-        <span className="font-mono text-[9px] font-medium uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
-          {sourceTitle} &middot; {roleLabel}
-        </span>
-      </div>
-      <div className="text-[13px] leading-relaxed text-neutral-600 dark:text-neutral-300">
-        <MarkdownContent content={content} />
+    <div className="ml-3 border-l-2 border-neutral-200/70 pl-3 dark:border-neutral-700/60">
+      <div className="rounded-md border border-neutral-200/60 bg-neutral-50/60 px-3 py-2 dark:border-neutral-700/40 dark:bg-neutral-800/35">
+        <div className="mb-1 flex items-center gap-1.5">
+          <ForwardIcon className="h-3 w-3 text-neutral-400 dark:text-neutral-500" />
+          <span className="font-mono text-[9px] font-medium uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+            Forwarded from {sourceTitle} &middot; {roleLabel}
+          </span>
+        </div>
+        <div className="text-[13px] leading-relaxed text-neutral-600 dark:text-neutral-300">
+          <MarkdownContent content={content} />
+        </div>
       </div>
     </div>
   );
