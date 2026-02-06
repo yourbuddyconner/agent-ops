@@ -489,6 +489,7 @@ export class SessionAgentDO {
     const [client, server] = Object.values(pair);
 
     this.ctx.acceptWebSocket(server, ['runner']);
+    console.log('[SessionAgentDO] Runner connected');
 
     // Check if there's a queued prompt to send immediately
     const queued = this.ctx.storage.sql
@@ -521,6 +522,7 @@ export class SessionAgentDO {
         modelPreferences: initOwnerDetails?.modelPreferences,
       }));
       this.setStateValue('runnerBusy', 'true');
+      console.log('[SessionAgentDO] Runner connected: dispatched queued prompt', prompt.id);
     } else {
       // Check for initial prompt (from create-from-PR/Issue)
       const initialPrompt = this.getStateValue('initialPrompt');
@@ -556,6 +558,7 @@ export class SessionAgentDO {
           modelPreferences: ipOwnerDetails?.modelPreferences,
         }));
         this.setStateValue('runnerBusy', 'true');
+        console.log('[SessionAgentDO] Runner connected: dispatched initial prompt', messageId);
       }
     }
 
@@ -598,6 +601,7 @@ export class SessionAgentDO {
     const isRunner = tags.includes('runner');
 
     if (isRunner) {
+      console.log(`[SessionAgentDO] Runner disconnected: code=${code} reason="${reason || 'unknown'}"`);
       // Revert any processing prompt back to queued so it can be retried
       this.ctx.storage.sql.exec(
         "UPDATE prompt_queue SET status = 'queued' WHERE status = 'processing'"
@@ -844,13 +848,26 @@ export class SessionAgentDO {
     // Check if runner is busy
     const runnerBusy = this.getStateValue('runnerBusy') === 'true';
     const runnerSockets = this.ctx.getWebSockets('runner');
+    const runnerConnected = runnerSockets.length > 0;
+    const status = this.getStateValue('status');
+    const sandboxId = this.getStateValue('sandboxId');
+    const queuedCount = this.getQueueLength();
 
-    if (runnerSockets.length === 0) {
+    console.log(
+      `[SessionAgentDO] handlePrompt: runnerConnected=${runnerConnected} runnerBusy=${runnerBusy} status=${status} sandboxId=${sandboxId || 'none'} queued=${queuedCount}`
+    );
+
+    if (!runnerConnected) {
       // No runner connected — queue the prompt with author info
       this.ctx.storage.sql.exec(
         "INSERT INTO prompt_queue (id, content, status, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, 'queued', ?, ?, ?, ?)",
         messageId, content,
         author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null
+      );
+      this.appendAuditLog(
+        'prompt.queued',
+        `Queued: no runner connected (status=${status || 'unknown'}, sandbox=${sandboxId ? 'yes' : 'no'}, queued=${this.getQueueLength()})`,
+        author?.id
       );
       this.broadcastToClients({
         type: 'status',
@@ -866,6 +883,11 @@ export class SessionAgentDO {
         messageId, content,
         author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null
       );
+      this.appendAuditLog(
+        'prompt.queued',
+        `Queued: runner busy (status=${status || 'unknown'}, sandbox=${sandboxId ? 'yes' : 'no'}, queued=${this.getQueueLength()})`,
+        author?.id
+      );
       this.broadcastToClients({
         type: 'status',
         data: { promptQueued: true, queuePosition: this.getQueueLength() },
@@ -875,6 +897,7 @@ export class SessionAgentDO {
 
     // Forward directly to runner with author info
     this.setStateValue('runnerBusy', 'true');
+    console.log('[SessionAgentDO] handlePrompt: dispatching to runner');
     // Resolve model preferences: use the session owner's preferences
     const ownerId = this.getStateValue('userId');
     const ownerDetails = ownerId ? await this.getUserDetails(ownerId) : undefined;
@@ -1194,6 +1217,7 @@ export class SessionAgentDO {
           detail: msg.detail,
         });
         if (msg.status === 'idle') {
+          console.log(`[SessionAgentDO] agentStatus: idle (runnerConnected=${this.ctx.getWebSockets('runner').length > 0}, queued=${this.getQueueLength()})`);
           this.setStateValue('runnerBusy', 'false');
           if (!(await this.sendNextQueuedPrompt())) {
             await this.notifyParentIfIdle();
