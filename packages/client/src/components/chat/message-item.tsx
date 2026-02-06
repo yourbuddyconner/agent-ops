@@ -112,15 +112,25 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
     );
   }
 
-  // System messages: centered, compact
+  // System messages: styled with avatar + label
   if (isSystem) {
     return (
-      <div className="flex justify-center py-3">
-        <div className="flex items-center gap-2 rounded-full bg-amber-500/[0.05] px-3 py-1 dark:bg-amber-500/[0.07]">
-          <div className="h-1 w-1 rounded-full bg-amber-400/60" />
-          <p className="text-center font-mono text-[10px] text-amber-600 dark:text-amber-400/80">
-            {message.content}
-          </p>
+      <div className="group relative flex gap-2 py-2.5 animate-fade-in">
+        <Avatar className="mt-1 h-5 w-5 shrink-0">
+          <AvatarFallback className="text-[8px]">SYS</AvatarFallback>
+        </Avatar>
+        <div className={compact ? 'max-w-[90%]' : 'max-w-[75%]'}>
+          <div className="mb-1 flex items-center gap-1.5 px-1">
+            <span className="font-mono text-[10px] font-medium text-neutral-500 dark:text-neutral-400">
+              System
+            </span>
+            <span className="font-mono text-[9px] tabular-nums text-neutral-300 dark:text-neutral-600">
+              {formatTime(message.createdAt)}
+            </span>
+          </div>
+          <div className="rounded-2xl rounded-bl-md bg-amber-500/[0.08] px-3 py-2 text-amber-800 shadow-sm dark:bg-amber-500/[0.12] dark:text-amber-100 dark:shadow-none">
+            <MarkdownContent content={message.content} />
+          </div>
         </div>
       </div>
     );
