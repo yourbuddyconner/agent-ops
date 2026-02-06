@@ -246,6 +246,7 @@ export class PromptHandler {
   private currentModelIndex = 0;
   private pendingRetryContent: string | null = null;
   private pendingRetryAuthor: { gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string } | undefined;
+  private waitForEventForced = false;
 
   constructor(opencodeUrl: string, agentClient: AgentClient) {
     this.opencodeUrl = opencodeUrl;
@@ -310,6 +311,7 @@ export class PromptHandler {
       this.lastChunkTime = 0;
       this.lastError = null;
       this.toolStates.clear();
+      this.waitForEventForced = false;
 
       // Store failover state
       this.currentModelPreferences = modelPreferences;
@@ -1070,6 +1072,28 @@ export class PromptHandler {
 
     // Only act on state transitions
     if (currentStatus === prevStatus) return;
+
+    // wait_for_event: treat as an immediate yield — force completion + idle
+    if (toolName === "wait_for_event" && (currentStatus === "pending" || currentStatus === "running") && !this.waitForEventForced) {
+      this.waitForEventForced = true;
+      console.log(`[PromptHandler] wait_for_event observed (${currentStatus}) — forcing completion + idle`);
+      this.toolStates.set(callID, { status: "completed", toolName });
+      this.agentClient.sendToolCall(
+        callID,
+        toolName,
+        "completed",
+        state.input ?? null,
+        null,
+      );
+      this.finalizeResponse(true);
+      this.agentClient.sendAgentStatus("idle");
+      this.idleNotified = true;
+      if (this.sessionId) {
+        fetch(`${this.opencodeUrl}/session/${this.sessionId}/abort`, { method: "POST" })
+          .catch((err) => console.error("[PromptHandler] Error aborting after wait_for_event:", err));
+      }
+      return;
+    }
 
     console.log(`[PromptHandler] Tool "${toolName}" [${callID}] ${prevStatus ?? "new"} → ${currentStatus}`);
     this.toolStates.set(callID, { status: currentStatus, toolName });
