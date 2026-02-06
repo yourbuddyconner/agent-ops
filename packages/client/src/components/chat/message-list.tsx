@@ -1,4 +1,5 @@
 import { useRef, useEffect } from 'react';
+import { Link } from '@tanstack/react-router';
 import type { Message } from '@/api/types';
 import { MessageItem } from './message-item';
 import { StreamingMessage } from './streaming-message';
@@ -136,7 +137,7 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
 type TurnSegment =
   | { kind: 'text'; content: string; id: string }
   | { kind: 'tool'; message: Message }
-  | { kind: 'forwarded'; message: Message; sourceTitle: string; originalRole: string };
+  | { kind: 'forwarded'; message: Message; sourceTitle: string; sourceSessionId?: string; originalRole: string };
 
 /** Check if a message has forwarded metadata in its parts. */
 function isForwardedMessage(msg: Message): boolean {
@@ -156,6 +157,7 @@ function mergeAssistantSegments(messages: Message[]): TurnSegment[] {
         kind: 'forwarded',
         message: msg,
         sourceTitle: (parts.sourceSessionTitle as string) || 'Session',
+        sourceSessionId: parts.sourceSessionId as string | undefined,
         originalRole: (parts.originalRole as string) || 'assistant',
       });
     } else if (msg.content) {
@@ -198,7 +200,13 @@ function AssistantTurn({ messages }: { messages: Message[] }) {
             seg.kind === 'tool' ? (
               <InlineToolCard key={seg.message.id} message={seg.message} />
             ) : seg.kind === 'forwarded' ? (
-              <ForwardedMessage key={seg.message.id} content={seg.message.content} sourceTitle={seg.sourceTitle} originalRole={seg.originalRole} />
+              <ForwardedMessage
+                key={seg.message.id}
+                content={seg.message.content}
+                sourceTitle={seg.sourceTitle}
+                sourceSessionId={seg.sourceSessionId}
+                originalRole={seg.originalRole}
+              />
             ) : (
               <MarkdownContent key={seg.id} content={seg.content} />
             )
@@ -240,7 +248,7 @@ function formatTime(date: Date): string {
 }
 
 /** Renders a forwarded message in a quote-style block with source attribution. */
-function ForwardedMessage({ content, sourceTitle, originalRole }: { content: string; sourceTitle: string; originalRole: string }) {
+function ForwardedMessage({ content, sourceTitle, sourceSessionId, originalRole }: { content: string; sourceTitle: string; sourceSessionId?: string; originalRole: string }) {
   const roleLabel = originalRole === 'user' ? 'User' : originalRole === 'assistant' ? 'Agent' : originalRole === 'tool' ? 'Tool' : originalRole;
 
   return (
@@ -251,6 +259,18 @@ function ForwardedMessage({ content, sourceTitle, originalRole }: { content: str
           <span className="font-mono text-[9px] font-medium uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
             Forwarded from {sourceTitle} &middot; {roleLabel}
           </span>
+          {sourceSessionId && (
+            <>
+              <span className="text-[9px] text-neutral-300 dark:text-neutral-600">•</span>
+              <Link
+                to="/sessions/$sessionId"
+                params={{ sessionId: sourceSessionId }}
+                className="font-mono text-[9px] font-medium uppercase tracking-wider text-neutral-400 transition-colors hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300"
+              >
+                Open Session
+              </Link>
+            </>
+          )}
         </div>
         <div className="text-[13px] leading-relaxed text-neutral-600 dark:text-neutral-300">
           <MarkdownContent content={content} />
