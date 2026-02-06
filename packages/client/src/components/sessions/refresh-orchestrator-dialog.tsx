@@ -42,7 +42,9 @@ export function RefreshOrchestratorDialog({
         customInstructions: orchInfo.identity.customInstructions ?? undefined,
       });
 
-      onOpenChange(false);
+      // Full page reload to clear all stale chat state, WebSocket connections,
+      // and ensure a fresh init from the newly reset DO
+      window.location.reload();
     } catch {
       // Errors are handled by the mutations
     }
