@@ -1,5 +1,5 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionMessages, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas } from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
@@ -227,6 +227,8 @@ export class SessionAgentDO {
         return this.handleClearQueue();
       case '/flush-metrics':
         return this.handleFlushMetrics();
+      case '/messages':
+        return this.handleMessagesEndpoint(url);
       case '/gc':
         return this.handleGarbageCollect();
       case '/webhook-update':
@@ -1545,19 +1547,16 @@ export class SessionAgentDO {
         return;
       }
 
-      // Query messages from D1
-      const messages = await getSessionMessages(this.env.DB, targetSessionId, {
-        limit: limit || 20,
-        after,
-      });
+      // Fetch messages from the target DO's local SQLite (not D1)
+      const messages = await this.fetchMessagesFromDO(targetSessionId, limit || 20, after);
 
       this.sendToRunner({
         type: 'session-messages-result',
         requestId,
-        messages: messages.map((m) => ({
+        messages: messages.map((m: { role: string; content: string; createdAt: string }) => ({
           role: m.role,
           content: m.content,
-          createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : String(m.createdAt),
+          createdAt: m.createdAt,
         })),
       });
     } catch (err) {
@@ -1568,6 +1567,27 @@ export class SessionAgentDO {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  /** Fetch messages from another session's DO via internal HTTP endpoint. */
+  private async fetchMessagesFromDO(
+    targetSessionId: string,
+    limit: number,
+    after?: string,
+  ): Promise<Array<{ role: string; content: string; createdAt: string }>> {
+    const doId = this.env.SESSIONS.idFromName(targetSessionId);
+    const targetDO = this.env.SESSIONS.get(doId);
+
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (after) params.set('after', after);
+
+    const res = await targetDO.fetch(new Request(`http://do/messages?${params}`));
+    if (!res.ok) {
+      throw new Error(`Target DO returned ${res.status}: ${await res.text()}`);
+    }
+
+    const data = await res.json() as { messages: Array<{ role: string; content: string; createdAt: string }> };
+    return data.messages;
   }
 
   private async handleTerminateChild(requestId: string, childSessionId: string) {
@@ -1740,12 +1760,8 @@ export class SessionAgentDO {
         return;
       }
 
-      const messages = await getSessionMessages(this.env.DB, targetSessionId, { limit: 10 });
-      const recentMessages = messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-        createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : String(m.createdAt),
-      }));
+      // Fetch recent messages from the target DO's local SQLite (not D1)
+      const recentMessages = await this.fetchMessagesFromDO(targetSessionId, 10);
 
       this.sendToRunner({
         type: 'get-session-status-result',
@@ -2151,6 +2167,41 @@ export class SessionAgentDO {
       connectedClients: clientCount,
       connectedUsers,
     });
+  }
+
+  /**
+   * HTTP endpoint: returns messages from this DO's local SQLite.
+   * Used by other DOs for cross-session message reads.
+   * Query params: limit (default 20), after (ISO timestamp cursor)
+   */
+  private handleMessagesEndpoint(url: URL): Response {
+    const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+    const after = url.searchParams.get('after');
+
+    let query = 'SELECT id, role, content, parts, created_at FROM messages';
+    const params: (string | number)[] = [];
+
+    if (after) {
+      query += ' WHERE created_at > ?';
+      params.push(after);
+    }
+
+    query += ' ORDER BY created_at ASC LIMIT ?';
+    params.push(limit);
+
+    const rows = this.ctx.storage.sql
+      .exec(query, ...params)
+      .toArray();
+
+    const messages = rows.map((r) => ({
+      id: r.id as string,
+      role: r.role as string,
+      content: r.content as string,
+      parts: r.parts ? JSON.parse(r.parts as string) : undefined,
+      createdAt: r.created_at as string,
+    }));
+
+    return Response.json({ messages });
   }
 
   private async handleClearQueue(): Promise<Response> {
