@@ -67,6 +67,22 @@ if [ -n "${REPO_URL:-}" ]; then
   WORK_DIR="${CLONE_DIR}"
 fi
 
+# ─── Repo Context Injection ───────────────────────────────────────────
+# Add repository info to the system prompt for normal sessions.
+if [ -n "${REPO_URL:-}" ]; then
+  mkdir -p "${WORK_DIR}/.agent-ops/persona"
+  {
+    echo "# Repository Context"
+    echo ""
+    echo "- Repo URL: ${REPO_URL}"
+    if [ -n "${REPO_BRANCH:-}" ]; then
+      echo "- Branch: ${REPO_BRANCH}"
+    fi
+    echo ""
+    echo "Use this repository as the primary source of truth for this session."
+  } > "${WORK_DIR}/.agent-ops/persona/00-repo-context.md"
+fi
+
 # ─── Persona Files Injection ─────────────────────────────────────────
 if [ -n "${PERSONA_FILES_JSON:-}" ]; then
   echo "[start.sh] Injecting persona files"

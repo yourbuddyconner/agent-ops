@@ -47,6 +47,10 @@ export default tool({
       .describe("Model ID for the child session to use (e.g. 'anthropic/claude-sonnet-4-5-20250929'). If not specified, inherits parent's model preferences."),
   },
   async execute(args) {
+    if (process.env.PARENT_SESSION_ID) {
+      return "Error: spawning child sessions is disabled for child agents. Complete the task yourself or report back to the parent."
+    }
+
     if (args.workspace.includes("/")) {
       return `Error: workspace must be a short name (e.g. 'my-app'), not a file path. You provided: "${args.workspace}". Use just the repo name.`
     }
