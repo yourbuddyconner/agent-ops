@@ -43,6 +43,16 @@ export interface CompleteExecutionRequest {
   completedAt?: string;
 }
 
+export interface ApproveExecutionRequest {
+  approve: boolean;
+  resumeToken: string;
+  reason?: string;
+}
+
+export interface CancelExecutionRequest {
+  reason?: string;
+}
+
 // Query keys
 export const executionKeys = {
   all: ['executions'] as const,
@@ -117,6 +127,38 @@ export function useCompleteExecution() {
       api.post<{ success: boolean; status: string; completedAt: string }>(
         `/executions/${executionId}/complete`,
         data
+      ),
+    onSuccess: (_, { executionId }) => {
+      queryClient.invalidateQueries({ queryKey: executionKeys.detail(executionId) });
+      queryClient.invalidateQueries({ queryKey: executionKeys.lists() });
+    },
+  });
+}
+
+export function useApproveExecution() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ executionId, data }: { executionId: string; data: ApproveExecutionRequest }) =>
+      api.post<{ success: boolean; status: string }>(
+        `/executions/${executionId}/approve`,
+        data
+      ),
+    onSuccess: (_, { executionId }) => {
+      queryClient.invalidateQueries({ queryKey: executionKeys.detail(executionId) });
+      queryClient.invalidateQueries({ queryKey: executionKeys.lists() });
+    },
+  });
+}
+
+export function useCancelExecution() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ executionId, data }: { executionId: string; data?: CancelExecutionRequest }) =>
+      api.post<{ success: boolean; status: string }>(
+        `/executions/${executionId}/cancel`,
+        data || {}
       ),
     onSuccess: (_, { executionId }) => {
       queryClient.invalidateQueries({ queryKey: executionKeys.detail(executionId) });

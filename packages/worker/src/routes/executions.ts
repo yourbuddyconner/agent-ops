@@ -24,6 +24,16 @@ const completionSchema = z.object({
   completedAt: z.string().optional(),
 });
 
+const approvalSchema = z.object({
+  approve: z.boolean(),
+  resumeToken: z.string().min(1),
+  reason: z.string().optional(),
+});
+
+const cancelSchema = z.object({
+  reason: z.string().optional(),
+});
+
 /**
  * GET /api/executions
  * List recent workflow executions for the user
@@ -210,4 +220,90 @@ executionsRouter.post('/:id/status', async (c) => {
   `).bind(status, id).run();
 
   return c.json({ success: true, status });
+});
+
+/**
+ * POST /api/executions/:id/approve
+ * Approve or deny a waiting approval checkpoint.
+ */
+executionsRouter.post('/:id/approve', zValidator('json', approvalSchema), async (c) => {
+  const { id } = c.req.param();
+  const user = c.get('user');
+  const body = c.req.valid('json');
+
+  const execution = await c.env.DB.prepare(`
+    SELECT user_id, status FROM workflow_executions WHERE id = ?
+  `).bind(id).first<{ user_id: string; status: string }>();
+
+  if (!execution) {
+    throw new NotFoundError('Execution', id);
+  }
+  if (execution.user_id !== user.id) {
+    throw new UnauthorizedError('Unauthorized to update this execution');
+  }
+
+  const doId = c.env.WORKFLOW_EXECUTOR.idFromName(id);
+  const stub = c.env.WORKFLOW_EXECUTOR.get(doId);
+  const response = await stub.fetch(new Request('https://workflow-executor/resume', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      executionId: id,
+      resumeToken: body.resumeToken,
+      approve: body.approve,
+      reason: body.reason,
+    }),
+  }));
+
+  if (!response.ok) {
+    const errorBody = await response
+      .json<{ error?: string }>()
+      .catch((): { error?: string } => ({ error: undefined }));
+    throw new ValidationError(errorBody.error || 'Failed to apply approval decision');
+  }
+
+  const result = await response.json<{ ok: boolean; status: string }>();
+  return c.json({ success: true, status: result.status });
+});
+
+/**
+ * POST /api/executions/:id/cancel
+ * Cancel an execution (best-effort for running executions).
+ */
+executionsRouter.post('/:id/cancel', zValidator('json', cancelSchema), async (c) => {
+  const { id } = c.req.param();
+  const user = c.get('user');
+  const body = c.req.valid('json');
+
+  const execution = await c.env.DB.prepare(`
+    SELECT user_id, status FROM workflow_executions WHERE id = ?
+  `).bind(id).first<{ user_id: string; status: string }>();
+
+  if (!execution) {
+    throw new NotFoundError('Execution', id);
+  }
+  if (execution.user_id !== user.id) {
+    throw new UnauthorizedError('Unauthorized to update this execution');
+  }
+
+  const doId = c.env.WORKFLOW_EXECUTOR.idFromName(id);
+  const stub = c.env.WORKFLOW_EXECUTOR.get(doId);
+  const response = await stub.fetch(new Request('https://workflow-executor/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      executionId: id,
+      reason: body.reason,
+    }),
+  }));
+
+  if (!response.ok) {
+    const errorBody = await response
+      .json<{ error?: string }>()
+      .catch((): { error?: string } => ({ error: undefined }));
+    throw new ValidationError(errorBody.error || 'Failed to cancel execution');
+  }
+
+  const result = await response.json<{ ok: boolean; status: string }>();
+  return c.json({ success: true, status: result.status });
 });
