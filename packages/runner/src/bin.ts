@@ -131,6 +131,9 @@ async function main() {
     onReadRepoFile: async (params) => {
       return await agentClient.requestReadRepoFile(params);
     },
+    onTunnelsUpdated: (tunnels) => {
+      agentClient.sendTunnels(tunnels);
+    },
   });
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient);
 
@@ -169,6 +172,21 @@ async function main() {
   agentClient.onReview(async (requestId) => {
     console.log(`[Runner] Received review request: ${requestId}`);
     await promptHandler.handleReview(requestId);
+  });
+
+  agentClient.onTunnelDelete(async (name, actor) => {
+    console.log(`[Runner] Received tunnel delete: ${name} (actor=${actor?.name || actor?.email || actor?.id || "unknown"})`);
+    try {
+      const resp = await fetch(`http://localhost:${gatewayPort}/api/tunnels/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+      });
+      if (!resp.ok) {
+        const errText = await resp.text();
+        console.error(`[Runner] Tunnel delete failed: ${errText}`);
+      }
+    } catch (err) {
+      console.error("[Runner] Tunnel delete error:", err);
+    }
   });
 
   // Brief delay before first connection — the sandbox may boot before the Worker

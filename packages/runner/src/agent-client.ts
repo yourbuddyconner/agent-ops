@@ -39,6 +39,7 @@ export class AgentClient {
   private revertHandler: ((messageId: string) => void | Promise<void>) | null = null;
   private diffHandler: ((requestId: string) => void | Promise<void>) | null = null;
   private reviewHandler: ((requestId: string) => void | Promise<void>) | null = null;
+  private tunnelDeleteHandler: ((name: string, actor?: { id?: string; name?: string; email?: string }) => void | Promise<void>) | null = null;
 
   private pendingRequests = new Map<string, {
     resolve: (value: any) => void;
@@ -164,6 +165,10 @@ export class AgentClient {
 
   sendModelSwitched(messageId: string, fromModel: string, toModel: string, reason: string): void {
     this.send({ type: "model-switched", messageId, fromModel, toModel, reason });
+  }
+
+  sendTunnels(tunnels: Array<{ name: string; port: number; protocol?: string; path: string }>): void {
+    this.send({ type: "tunnels", tunnels });
   }
 
   sendAborted(): void {
@@ -382,6 +387,10 @@ export class AgentClient {
     this.reviewHandler = handler;
   }
 
+  onTunnelDelete(handler: (name: string, actor?: { id?: string; name?: string; email?: string }) => void | Promise<void>): void {
+    this.tunnelDeleteHandler = handler;
+  }
+
   // ─── Keepalive ──────────────────────────────────────────────────────
 
   private startPing(): void {
@@ -598,6 +607,13 @@ export class AgentClient {
               ref: msg.ref,
             });
           }
+          break;
+        case "tunnel-delete":
+          await this.tunnelDeleteHandler?.(msg.name, {
+            id: msg.actorId,
+            name: msg.actorName,
+            email: msg.actorEmail,
+          });
           break;
       }
     } catch (err) {

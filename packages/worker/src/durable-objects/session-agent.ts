@@ -23,7 +23,7 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'model-switched';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'model-switched' | 'tunnels';
   prNumber?: number;
   targetSessionId?: string;
   interrupt?: boolean;
@@ -86,6 +86,7 @@ interface RunnerMessage {
   repoUrl?: string;
   path?: string;
   ref?: string;
+  tunnels?: Array<{ name: string; port: number; protocol?: string; path: string }>;
 }
 
 /** Messages sent from DO to clients */
@@ -96,7 +97,7 @@ interface ClientOutbound {
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'tunnel-delete';
   messageId?: string;
   content?: string;
   model?: string;
@@ -136,6 +137,10 @@ interface RunnerOutbound {
   path?: string;
   repo?: string;
   ref?: string;
+  name?: string;
+  actorId?: string;
+  actorName?: string;
+  actorEmail?: string;
 }
 
 // ─── Durable SQLite Table Schemas ──────────────────────────────────────────
@@ -319,6 +324,21 @@ export class SessionAgentDO {
           return new Response(JSON.stringify({ error: 'Missing content' }), { status: 400 });
         }
         await this.handleSystemMessage(body.content, body.parts, body.wake);
+        return Response.json({ success: true });
+      }
+      case '/tunnels': {
+        if (request.method !== 'POST') {
+          return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405 });
+        }
+        const body = await request.json() as { action?: 'delete'; name?: string; actorId?: string; actorName?: string; actorEmail?: string };
+        if (body.action !== 'delete' || !body.name) {
+          return new Response(JSON.stringify({ error: 'Invalid action or missing name' }), { status: 400 });
+        }
+        await this.handleTunnelDelete(body.name, {
+          actorId: body.actorId,
+          actorName: body.actorName,
+          actorEmail: body.actorEmail,
+        });
         return Response.json({ success: true });
       }
     }
@@ -1052,6 +1072,15 @@ export class SessionAgentDO {
     }
 
     switch (msg.type) {
+      case 'tunnels': {
+        if (Array.isArray(msg.tunnels)) {
+          this.setStateValue('tunnels', JSON.stringify(msg.tunnels));
+        } else {
+          this.setStateValue('tunnels', '');
+        }
+        break;
+      }
+
       case 'stream':
         // Forward stream chunks to all clients (don't store)
         // Client expects 'chunk' type for streaming content
@@ -2646,6 +2675,8 @@ export class SessionAgentDO {
     // Clear stale state from previous lifecycle
     this.setStateValue('sandboxId', '');
     this.setStateValue('tunnelUrls', '');
+    this.setStateValue('tunnels', '');
+    this.setStateValue('tunnels', '');
     this.setStateValue('runningStartedAt', '');
 
     if (body.sandboxId) {
@@ -2886,6 +2917,7 @@ export class SessionAgentDO {
     this.setStateValue('status', 'terminated');
     this.setStateValue('sandboxId', '');
     this.setStateValue('tunnelUrls', '');
+    this.setStateValue('tunnels', '');
     this.setStateValue('snapshotImageId', '');
     this.setStateValue('runnerBusy', 'false');
 
@@ -2930,6 +2962,7 @@ export class SessionAgentDO {
     const userId = this.getStateValue('userId');
     const workspace = this.getStateValue('workspace');
     const tunnelUrls = this.getStateValue('tunnelUrls');
+    const tunnelsRaw = this.getStateValue('tunnels');
     const runnerBusy = this.getStateValue('runnerBusy') === 'true';
 
     const messageCount = this.ctx.storage.sql
@@ -2942,13 +2975,39 @@ export class SessionAgentDO {
     const connectedUsers = this.getConnectedUserIds();
     const runningStartedAt = this.getStateValue('runningStartedAt');
 
+    let tunnelUrlsParsed: Record<string, string> | null = null;
+    if (tunnelUrls) {
+      try {
+        tunnelUrlsParsed = JSON.parse(tunnelUrls);
+      } catch {
+        tunnelUrlsParsed = null;
+      }
+    }
+
+    let tunnelsParsed: Array<{ name: string; port: number; protocol?: string; path: string }> | null = null;
+    if (tunnelsRaw) {
+      try {
+        tunnelsParsed = JSON.parse(tunnelsRaw);
+      } catch {
+        tunnelsParsed = null;
+      }
+    }
+    const gatewayUrl = tunnelUrlsParsed?.gateway;
+    const tunnels = Array.isArray(tunnelsParsed)
+      ? tunnelsParsed.map((t) => ({
+        ...t,
+        url: gatewayUrl ? `${gatewayUrl}${t.path}` : undefined,
+      }))
+      : null;
+
     return Response.json({
       sessionId,
       userId,
       workspace,
       status,
       sandboxId: sandboxId || null,
-      tunnelUrls: tunnelUrls ? JSON.parse(tunnelUrls) : null,
+      tunnelUrls: tunnelUrlsParsed,
+      tunnels,
       runnerConnected,
       runnerBusy,
       messageCount,
@@ -3596,6 +3655,7 @@ export class SessionAgentDO {
         }
         this.setStateValue('sandboxId', '');
         this.setStateValue('tunnelUrls', '');
+        this.setStateValue('tunnels', '');
         this.setStateValue('runnerBusy', 'false');
         this.setStateValue('status', 'terminated');
         this.broadcastToClients({
@@ -3628,6 +3688,7 @@ export class SessionAgentDO {
       this.setStateValue('snapshotImageId', result.snapshotImageId);
       this.setStateValue('sandboxId', '');
       this.setStateValue('tunnelUrls', '');
+      this.setStateValue('tunnels', '');
       this.setStateValue('runnerBusy', 'false');
       this.setStateValue('status', 'hibernated');
 
@@ -4042,6 +4103,26 @@ export class SessionAgentDO {
         createdAt: new Date().toISOString(),
       },
     });
+  }
+
+  private async handleTunnelDelete(
+    name: string,
+    actor?: { actorId?: string; actorName?: string; actorEmail?: string },
+  ) {
+    if (!name) return;
+
+    this.sendToRunner({
+      type: 'tunnel-delete',
+      name,
+      actorId: actor?.actorId,
+      actorName: actor?.actorName,
+      actorEmail: actor?.actorEmail,
+    });
+
+    const who = actor?.actorName || actor?.actorEmail || actor?.actorId || 'User';
+    const summary = `${who} disabled tunnel "${name}"`;
+    this.appendAuditLog('tunnel.disabled', summary, actor?.actorId, { name });
+    await this.handleSystemMessage(summary, { type: 'tunnel.disabled', name });
   }
 
   private sendToRunner(message: RunnerOutbound): void {

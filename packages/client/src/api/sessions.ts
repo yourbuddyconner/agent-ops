@@ -178,6 +178,18 @@ export function useSessionToken(sessionId: string) {
   });
 }
 
+export function useDeleteSessionTunnel(sessionId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (name: string) =>
+      api.delete<{ success: boolean }>(`/sessions/${sessionId}/tunnels/${encodeURIComponent(name)}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: sessionKeys.detail(sessionId) });
+    },
+  });
+}
+
 export function useHibernateSession() {
   const queryClient = useQueryClient();
 

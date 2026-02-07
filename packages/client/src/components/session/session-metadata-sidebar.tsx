@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from '@tanstack/react-router';
-import { useSession, useSessionGitState, useSessionChildren, useSessionFilesChanged } from '@/api/sessions';
+import { useSession, useSessionGitState, useSessionChildren, useSessionFilesChanged, useSessionDoStatus, useDeleteSessionTunnel } from '@/api/sessions';
 import { useDrawer } from '@/routes/sessions/$sessionId';
 import { Badge } from '@/components/ui/badge';
 import type { PRState, SessionFileChanged } from '@/api/types';
@@ -15,10 +15,12 @@ interface SessionMetadataSidebarProps {
 
 export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedModel, compact = false }: SessionMetadataSidebarProps) {
   const { data: session } = useSession(sessionId);
+  const { data: doStatus } = useSessionDoStatus(sessionId);
   const { data: gitState } = useSessionGitState(sessionId);
   const { data: childSessions } = useSessionChildren(sessionId);
   const { data: filesChanged } = useSessionFilesChanged(sessionId);
   const { data: parentSession } = useSession(session?.parentSessionId ?? '', );
+  const deleteTunnel = useDeleteSessionTunnel(sessionId);
 
   const [elapsed, setElapsed] = useState(0);
 
@@ -41,6 +43,9 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
   };
 
   const activeChildren = (childSessions ?? []).filter((c) => c.status !== 'terminated' && c.status !== 'error');
+  const tunnels = Array.isArray((doStatus as { tunnels?: unknown })?.tunnels)
+    ? ((doStatus as { tunnels: Array<{ name: string; url?: string; path?: string; port?: number; protocol?: string }> }).tunnels || [])
+    : [];
 
   return (
     <div className={`flex h-full flex-col border-l border-border bg-surface-0 dark:bg-surface-0 ${compact ? 'w-[200px]' : 'w-[240px]'}`}>
@@ -82,6 +87,40 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
             <span className="inline-flex rounded-sm bg-surface-2/60 px-1.5 py-px font-mono text-[10px] font-medium text-neutral-600 dark:bg-surface-2 dark:text-neutral-400">
               {selectedModel}
             </span>
+          </SidebarSection>
+        )}
+
+        {/* Tunnels */}
+        {tunnels.length > 0 && (
+          <SidebarSection label={`Tunnels (${tunnels.length})`}>
+            <div className="space-y-1.5">
+              {tunnels.map((tunnel) => (
+                <div key={tunnel.name} className="flex items-center gap-2">
+                  <span className="min-w-[44px] font-mono text-[9px] uppercase tracking-[0.08em] text-neutral-400 dark:text-neutral-500">
+                    {tunnel.name}
+                  </span>
+                  <CopyableText text={tunnel.url || tunnel.path || `/t/${tunnel.name}`} />
+                  {tunnel.url && (
+                    <a
+                      href={tunnel.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="ml-auto rounded-sm border border-border/70 bg-surface-1 px-2 py-[2px] font-mono text-[9px] text-neutral-600 transition-colors hover:text-accent dark:bg-surface-2 dark:text-neutral-400 dark:hover:text-accent"
+                    >
+                      Open
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => deleteTunnel.mutate(tunnel.name)}
+                    className="rounded-sm border border-border/70 bg-surface-1 px-2 py-[2px] font-mono text-[9px] text-neutral-600 transition-colors hover:text-red-500 dark:bg-surface-2 dark:text-neutral-400 dark:hover:text-red-400"
+                    disabled={deleteTunnel.isPending}
+                  >
+                    Off
+                  </button>
+                </div>
+              ))}
+            </div>
           </SidebarSection>
         )}
 

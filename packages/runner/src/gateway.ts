@@ -17,6 +17,21 @@ import { Hono } from "hono";
 
 const app = new Hono();
 
+type TunnelProtocol = "http" | "ws" | "auto";
+
+interface TunnelEntry {
+  name: string;
+  port: number;
+  protocol: TunnelProtocol;
+}
+
+interface TunnelDescriptor extends TunnelEntry {
+  path: string;
+}
+
+const TUNNEL_NAME_RE = /^[a-zA-Z0-9_-]{1,32}$/;
+const tunnelRegistry = new Map<string, TunnelEntry>();
+
 // Session cookie name
 const SESSION_COOKIE = "gateway_session";
 // Cookie max age (15 minutes, matching JWT expiry)
@@ -353,6 +368,14 @@ interface WSTarget {
 }
 
 function getWSTarget(pathname: string): WSTarget | null {
+  const tunnelMatch = pathname.match(/^\/t\/([^/]+)(\/.*)?$/);
+  if (tunnelMatch) {
+    const name = tunnelMatch[1];
+    const entry = tunnelRegistry.get(name);
+    if (!entry) return null;
+    const path = tunnelMatch[2] || "/";
+    return { host: "127.0.0.1", port: entry.port, path };
+  }
   if (pathname.startsWith("/vscode")) {
     return { host: "127.0.0.1", port: 8080, path: pathname.replace(/^\/vscode/, "") || "/" };
   }
@@ -466,10 +489,23 @@ export interface GatewayCallbacks {
   onListChildSessions?: () => Promise<{ children: unknown[] }>;
   onForwardMessages?: (targetSessionId: string, limit?: number, after?: string) => Promise<{ count: number; sourceSessionId: string }>;
   onReadRepoFile?: (params: { owner?: string; repo?: string; repoUrl?: string; path: string; ref?: string }) => Promise<{ content: string; encoding?: string; truncated?: boolean; path?: string; repo?: string; ref?: string }>;
+  onTunnelsUpdated?: (tunnels: TunnelDescriptor[]) => void;
 }
 
 export function startGateway(port: number, callbacks: GatewayCallbacks): void {
   console.log(`[Gateway] Starting auth gateway on port ${port}`);
+  tunnelRegistry.clear();
+
+  function serializeTunnels(): TunnelDescriptor[] {
+    return Array.from(tunnelRegistry.values()).map((entry) => ({
+      ...entry,
+      path: `/t/${entry.name}`,
+    }));
+  }
+
+  function notifyTunnelsUpdated() {
+    callbacks.onTunnelsUpdated?.(serializeTunnels());
+  }
 
   // Image upload route (unauthenticated — only reachable from within the sandbox)
   app.post("/api/image", async (c) => {
@@ -489,6 +525,51 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       console.error("[Gateway] Image upload error:", err);
       return c.json({ error: "Invalid request body" }, 400);
     }
+  });
+
+  // ─── Tunnel Registry (sandbox-local) ───────────────────────────────
+
+  app.get("/api/tunnels", async (c) => {
+    return c.json({ tunnels: serializeTunnels() });
+  });
+
+  app.post("/api/tunnels", async (c) => {
+    try {
+      const body = await c.req.json() as { name?: string; port?: number; protocol?: TunnelProtocol };
+      const name = (body.name || "").trim();
+      const port = body.port;
+      const protocol = body.protocol ?? "http";
+
+      if (!name || !TUNNEL_NAME_RE.test(name)) {
+        return c.json({ error: "Invalid tunnel name (1-32 chars: a-z A-Z 0-9 _ -)" }, 400);
+      }
+      if (!port || Number.isNaN(port) || port < 1 || port > 65535) {
+        return c.json({ error: "Invalid port (1-65535)" }, 400);
+      }
+      if (!["http", "ws", "auto"].includes(protocol)) {
+        return c.json({ error: "Invalid protocol (http | ws | auto)" }, 400);
+      }
+
+      tunnelRegistry.set(name, { name, port, protocol });
+      notifyTunnelsUpdated();
+      return c.json({ ok: true, tunnel: { name, port, protocol, path: `/t/${name}` } });
+    } catch (err) {
+      console.error("[Gateway] Register tunnel error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.delete("/api/tunnels/:name", async (c) => {
+    const name = (c.req.param("name") || "").trim();
+    if (!name) return c.json({ error: "Missing tunnel name" }, 400);
+
+    if (!tunnelRegistry.has(name)) {
+      return c.json({ error: "Tunnel not found" }, 404);
+    }
+
+    tunnelRegistry.delete(name);
+    notifyTunnelsUpdated();
+    return c.json({ ok: true });
   });
 
   // ─── Cross-Session API ─────────────────────────────────────────────
@@ -865,6 +946,82 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
     } catch (err) {
       console.error("[Gateway] Read repo file error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // Apply auth middleware to all tunnel routes
+  app.use("/t/*", authMiddleware);
+  app.use("/t/:name", authMiddleware);
+
+  // Tunnel proxy
+  app.all("/t/:name", async (c) => {
+    const name = c.req.param("name");
+    const entry = tunnelRegistry.get(name);
+    if (!entry) return new Response("Tunnel not found", { status: 404 });
+
+    const url = new URL(c.req.url);
+    const searchParams = new URLSearchParams(url.search);
+    searchParams.delete("token");
+    const cleanSearch = searchParams.toString() ? `?${searchParams.toString()}` : "";
+    const target = `http://127.0.0.1:${entry.port}/${cleanSearch}`;
+
+    try {
+      const res = await fetch(target, {
+        method: c.req.method,
+        headers: createProxyHeaders(c.req.raw.headers),
+        body: c.req.method !== "GET" && c.req.method !== "HEAD" ? c.req.raw.body : undefined,
+      });
+
+      const responseHeaders = new Headers(res.headers);
+      responseHeaders.delete("content-encoding");
+      responseHeaders.delete("transfer-encoding");
+
+      const response = new Response(res.body, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: responseHeaders,
+      });
+
+      return addSessionCookie(response);
+    } catch (err) {
+      console.error(`[Gateway] Tunnel proxy error for /t/${name}:`, err);
+      return new Response(`Tunnel proxy error: ${err}`, { status: 502 });
+    }
+  });
+
+  app.all("/t/:name/*", async (c) => {
+    const name = c.req.param("name");
+    const entry = tunnelRegistry.get(name);
+    if (!entry) return new Response("Tunnel not found", { status: 404 });
+
+    const path = c.req.path.replace(new RegExp(`^/t/${name}`), "") || "/";
+    const url = new URL(c.req.url);
+    const searchParams = new URLSearchParams(url.search);
+    searchParams.delete("token");
+    const cleanSearch = searchParams.toString() ? `?${searchParams.toString()}` : "";
+    const target = `http://127.0.0.1:${entry.port}${path}${cleanSearch}`;
+
+    try {
+      const res = await fetch(target, {
+        method: c.req.method,
+        headers: createProxyHeaders(c.req.raw.headers),
+        body: c.req.method !== "GET" && c.req.method !== "HEAD" ? c.req.raw.body : undefined,
+      });
+
+      const responseHeaders = new Headers(res.headers);
+      responseHeaders.delete("content-encoding");
+      responseHeaders.delete("transfer-encoding");
+
+      const response = new Response(res.body, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: responseHeaders,
+      });
+
+      return addSessionCookie(response);
+    } catch (err) {
+      console.error(`[Gateway] Tunnel proxy error for /t/${name}${path}:`, err);
+      return new Response(`Tunnel proxy error: ${err}`, { status: 502 });
     }
   });
 

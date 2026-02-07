@@ -29,7 +29,8 @@ export type DOToRunnerMessage =
   | { type: "get-session-status-result"; requestId: string; sessionStatus?: unknown; error?: string }
   | { type: "list-child-sessions-result"; requestId: string; children?: unknown[]; error?: string }
   | { type: "forward-messages-result"; requestId: string; count?: number; sourceSessionId?: string; error?: string }
-  | { type: "read-repo-file-result"; requestId: string; content?: string; encoding?: string; truncated?: boolean; path?: string; repo?: string; ref?: string; error?: string };
+  | { type: "read-repo-file-result"; requestId: string; content?: string; encoding?: string; truncated?: boolean; path?: string; repo?: string; ref?: string; error?: string }
+  | { type: "tunnel-delete"; name: string; actorId?: string; actorName?: string; actorEmail?: string };
 
 /** Tool call status values */
 export type ToolCallStatus = "pending" | "running" | "completed" | "error";
@@ -73,7 +74,8 @@ export type RunnerToDOMessage =
   | { type: "list-child-sessions"; requestId: string }
   | { type: "forward-messages"; requestId: string; targetSessionId: string; limit?: number; after?: string }
   | { type: "read-repo-file"; requestId: string; owner?: string; repo?: string; repoUrl?: string; path: string; ref?: string }
-  | { type: "model-switched"; messageId: string; fromModel: string; toModel: string; reason: string };
+  | { type: "model-switched"; messageId: string; fromModel: string; toModel: string; reason: string }
+  | { type: "tunnels"; tunnels: Array<{ name: string; port: number; protocol?: string; path: string }> };
 
 /** Structured review result data */
 export interface ReviewFinding {

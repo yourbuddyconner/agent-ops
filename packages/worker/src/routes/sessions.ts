@@ -424,6 +424,39 @@ sessionsRouter.get('/:id/sandbox-token', async (c) => {
 });
 
 /**
+ * DELETE /api/sessions/:id/tunnels/:name
+ * Unregister a sandbox tunnel by name (delegated to the runner).
+ */
+sessionsRouter.delete('/:id/tunnels/:name', async (c) => {
+  const user = c.get('user');
+  const { id, name } = c.req.param();
+
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'collaborator');
+
+  const doId = c.env.SESSIONS.idFromName(id);
+  const sessionDO = c.env.SESSIONS.get(doId);
+
+  const resp = await sessionDO.fetch(new Request('http://do/tunnels', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'delete',
+      name,
+      actorId: user.id,
+      actorName: user.name,
+      actorEmail: user.email,
+    }),
+  }));
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    return c.json({ error: errText || 'Failed to delete tunnel' }, resp.status);
+  }
+
+  return c.json({ success: true });
+});
+
+/**
  * POST /api/sessions/:id/messages
  * Send a message/prompt to the session agent.
  * The DO will queue it and forward to the runner via WebSocket.
