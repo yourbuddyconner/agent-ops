@@ -146,11 +146,104 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (event, env, ctx) 
   }
 
   try {
+    await reconcileWorkflowExecutions(env);
+  } catch (error) {
+    console.error('Workflow execution reconcile error:', error);
+  }
+
+  try {
     await dispatchScheduledWorkflows(event, env);
   } catch (error) {
     console.error('Scheduled workflow dispatch error:', error);
   }
 };
+
+function hasPromptDispatch(runtimeStateRaw: string | null): boolean {
+  if (!runtimeStateRaw) return false;
+  try {
+    const parsed = JSON.parse(runtimeStateRaw) as {
+      executor?: { promptDispatchedAt?: string };
+    };
+    return !!parsed?.executor?.promptDispatchedAt;
+  } catch {
+    return false;
+  }
+}
+
+async function reconcileWorkflowExecutions(env: Env): Promise<void> {
+  const now = new Date().toISOString();
+  const result = await env.DB.prepare(`
+    SELECT
+      e.id,
+      e.status,
+      e.runtime_state,
+      s.status AS session_status
+    FROM workflow_executions e
+    JOIN sessions s ON s.id = e.session_id
+    WHERE e.status IN ('pending', 'running', 'waiting_approval')
+      AND COALESCE(s.purpose, 'interactive') = 'workflow'
+      AND s.status IN ('terminated', 'error', 'hibernated')
+  `).all<{
+    id: string;
+    status: string;
+    runtime_state: string | null;
+    session_status: string;
+  }>();
+
+  let completed = 0;
+  let failed = 0;
+
+  for (const row of result.results || []) {
+    if (row.session_status === 'error') {
+      await env.DB.prepare(`
+        UPDATE workflow_executions
+        SET status = 'failed',
+            error = ?,
+            completed_at = ?
+        WHERE id = ?
+      `).bind('workflow_session_error', now, row.id).run();
+      failed++;
+      continue;
+    }
+
+    if (row.session_status === 'hibernated') {
+      await env.DB.prepare(`
+        UPDATE workflow_executions
+        SET status = 'failed',
+            error = ?,
+            completed_at = ?
+        WHERE id = ?
+      `).bind('workflow_session_hibernated', now, row.id).run();
+      failed++;
+      continue;
+    }
+
+    const promptDispatched = hasPromptDispatch(row.runtime_state);
+    if (promptDispatched) {
+      await env.DB.prepare(`
+        UPDATE workflow_executions
+        SET status = 'completed',
+            error = NULL,
+            completed_at = ?
+        WHERE id = ?
+      `).bind(now, row.id).run();
+      completed++;
+    } else {
+      await env.DB.prepare(`
+        UPDATE workflow_executions
+        SET status = 'failed',
+            error = ?,
+            completed_at = ?
+        WHERE id = ?
+      `).bind('workflow_session_terminated_before_dispatch', now, row.id).run();
+      failed++;
+    }
+  }
+
+  if (completed > 0 || failed > 0) {
+    console.log(`Workflow reconcile finalized executions: completed=${completed} failed=${failed}`);
+  }
+}
 
 function matchesCronField(field: string, value: number, min: number, max: number, sundayAlias = false): boolean {
   const normalizedValue = sundayAlias && value === 0 ? 7 : value;
