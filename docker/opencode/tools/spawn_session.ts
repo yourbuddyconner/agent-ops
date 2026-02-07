@@ -20,7 +20,7 @@ export default tool({
     branch: tool.schema
       .string()
       .optional()
-      .describe("Git branch for the child to check out (optional)"),
+      .describe("Git branch for the child to check out (required for PR work)"),
     ref: tool.schema
       .string()
       .optional()

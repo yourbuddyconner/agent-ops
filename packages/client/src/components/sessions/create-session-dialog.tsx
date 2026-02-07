@@ -182,6 +182,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
   const [selectedRepo, setSelectedRepo] = useState<Repo | null>(null);
   const [repoUrl, setRepoUrl] = useState('');
   const [branch, setBranch] = useState('');
+  const [ref, setRef] = useState('');
   const [repoSearch, setRepoSearch] = useState('');
   const [workspaceManuallyEdited, setWorkspaceManuallyEdited] = useState(false);
 
@@ -343,6 +344,7 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
       workspace: string;
       repoUrl?: string;
       branch?: string;
+      ref?: string;
       sourceType?: SessionSourceType;
       sourcePrNumber?: number;
       sourceIssueNumber?: number;
@@ -357,10 +359,12 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
     if (selectedRepo) {
       request.repoUrl = selectedRepo.cloneUrl;
       if (branch.trim()) request.branch = branch.trim();
+      if (ref.trim()) request.ref = ref.trim();
       request.sourceRepoFullName = selectedRepo.fullName;
     } else if (repoMode === 'url' && repoUrl.trim()) {
       request.repoUrl = repoUrl.trim();
       if (branch.trim()) request.branch = branch.trim();
+      if (ref.trim()) request.ref = ref.trim();
     }
 
     if (sourceType) request.sourceType = sourceType;
@@ -796,7 +800,9 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
                     className="mb-2 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
                   >
                     Branch
-                    <span className="ml-1 text-xs font-normal text-neutral-400">(optional)</span>
+                    <span className="ml-1 text-xs font-normal text-neutral-400">
+                      {selectedPR ? '(required for PR)' : '(optional)'}
+                    </span>
                   </label>
                   <Input
                     id="branch"
@@ -808,6 +814,32 @@ export function CreateSessionDialog({ trigger }: CreateSessionDialogProps) {
                         : validateRepo.data?.repo?.defaultBranch ?? 'main'
                     }
                   />
+                  {selectedPR && (
+                    <p className="mt-1 text-xs text-neutral-400">
+                      Use the PR head branch.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {(selectedRepo || (repoMode === 'url' && repoUrlValid)) && (
+                <div>
+                  <label
+                    htmlFor="ref"
+                    className="mb-2 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
+                  >
+                    Ref
+                    <span className="ml-1 text-xs font-normal text-neutral-400">(optional)</span>
+                  </label>
+                  <Input
+                    id="ref"
+                    value={ref}
+                    onChange={(e) => setRef(e.target.value)}
+                    placeholder="Tag or commit SHA"
+                  />
+                  <p className="mt-1 text-xs text-neutral-400">
+                    Tag or commit SHA. Takes precedence over branch.
+                  </p>
                 </div>
               )}
 

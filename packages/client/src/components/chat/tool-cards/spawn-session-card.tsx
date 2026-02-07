@@ -10,6 +10,7 @@ interface SpawnSessionArgs {
   title?: string;
   repo_url?: string;
   branch?: string;
+  ref?: string;
 }
 
 /** UUID v4 pattern */
@@ -122,6 +123,14 @@ function ChildSessionDetail({ sessionId }: { sessionId: string }) {
         <div className="flex items-center gap-2">
           <span className="w-16 shrink-0 text-neutral-400 dark:text-neutral-500">Branch</span>
           <span className="text-neutral-600 dark:text-neutral-300">{gitState.branch}</span>
+        </div>
+      )}
+
+      {/* Ref */}
+      {gitState?.ref && (
+        <div className="flex items-center gap-2">
+          <span className="w-16 shrink-0 text-neutral-400 dark:text-neutral-500">Ref</span>
+          <span className="text-neutral-600 dark:text-neutral-300">{gitState.ref}</span>
         </div>
       )}
 
