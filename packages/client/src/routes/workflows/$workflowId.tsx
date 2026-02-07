@@ -1,7 +1,8 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
+import React from 'react';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
-import { useWorkflow, useRunWorkflow } from '@/api/workflows';
-import { useWorkflowExecutions } from '@/api/executions';
+import { useWorkflow, useRunWorkflow, useWorkflowProposals, useApplyWorkflowProposal } from '@/api/workflows';
+import { useWorkflowExecutions, useExecutionSteps, type Execution } from '@/api/executions';
 import { useTriggers, useCreateTrigger } from '@/api/triggers';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -19,12 +20,15 @@ function WorkflowDetailPage() {
   const { workflowId } = Route.useParams();
   const { data, isLoading, error } = useWorkflow(workflowId);
   const { data: executionsData, isLoading: executionsLoading } = useWorkflowExecutions(workflowId);
+  const { data: proposalsData, isLoading: proposalsLoading } = useWorkflowProposals(workflowId);
   const { data: triggersData } = useTriggers();
   const runWorkflow = useRunWorkflow();
   const createTrigger = useCreateTrigger();
+  const applyProposal = useApplyWorkflowProposal();
 
   const workflow = data?.workflow;
   const executions = executionsData?.executions ?? [];
+  const proposals = proposalsData?.proposals ?? [];
   const triggers = (triggersData?.triggers ?? []).filter(t => t.workflowId === workflowId);
 
   const handleRun = async () => {
@@ -168,25 +172,7 @@ function WorkflowDetailPage() {
               ) : executions.length > 0 ? (
                 <div className="space-y-2">
                   {executions.slice(0, 10).map((execution) => (
-                    <div
-                      key={execution.id}
-                      className="flex items-center justify-between rounded-lg border border-neutral-200 p-3 dark:border-neutral-700"
-                    >
-                      <div className="flex items-center gap-3">
-                        <ExecutionStatusBadge status={execution.status} />
-                        <div>
-                          <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                            {execution.triggerType} trigger
-                          </p>
-                          <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                            {execution.id.slice(0, 8)}...
-                          </p>
-                        </div>
-                      </div>
-                      <span className="text-sm text-neutral-500 tabular-nums dark:text-neutral-400">
-                        {formatRelativeTime(execution.startedAt)}
-                      </span>
-                    </div>
+                    <ExecutionRow key={execution.id} execution={execution} />
                   ))}
                 </div>
               ) : (
@@ -282,9 +268,119 @@ function WorkflowDetailPage() {
               )}
             </CardContent>
           </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Mutation Proposals</CardTitle>
+              <CardDescription>
+                Review and apply workflow self-modification proposals.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {proposalsLoading ? (
+                <div className="space-y-2">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <Skeleton key={i} className="h-14 w-full" />
+                  ))}
+                </div>
+              ) : proposals.length > 0 ? (
+                <div className="space-y-2">
+                  {proposals.slice(0, 8).map((proposal) => (
+                    <div
+                      key={proposal.id}
+                      className="rounded-lg border border-neutral-200 p-2 dark:border-neutral-700"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-medium text-neutral-900 dark:text-neutral-100">
+                            {proposal.id.slice(0, 8)}...
+                          </p>
+                          <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                            {formatRelativeTime(proposal.createdAt)}
+                          </p>
+                        </div>
+                        <Badge variant={proposal.status === 'approved' ? 'warning' : proposal.status === 'applied' ? 'success' : proposal.status === 'rejected' ? 'error' : 'secondary'}>
+                          {proposal.status}
+                        </Badge>
+                      </div>
+                      <div className="mt-2 flex items-center justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={proposal.status !== 'approved' || applyProposal.isPending}
+                          onClick={() => applyProposal.mutate({ workflowId, proposalId: proposal.id })}
+                        >
+                          Apply
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-pretty text-neutral-500 dark:text-neutral-400">
+                  No proposals yet.
+                </p>
+              )}
+            </CardContent>
+          </Card>
         </div>
       </div>
     </PageContainer>
+  );
+}
+
+function ExecutionRow({ execution }: { execution: Execution }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const { data: stepData, isLoading } = useExecutionSteps(expanded ? execution.id : '');
+  const steps = stepData?.steps ?? [];
+
+  return (
+    <div className="rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <ExecutionStatusBadge status={execution.status} />
+          <div>
+            <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
+              {execution.triggerType} trigger
+            </p>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              {execution.id.slice(0, 8)}...
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-neutral-500 tabular-nums dark:text-neutral-400">
+            {formatRelativeTime(execution.startedAt)}
+          </span>
+          <Button size="sm" variant="secondary" onClick={() => setExpanded(!expanded)}>
+            {expanded ? 'Hide Steps' : 'View Steps'}
+          </Button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="mt-3 space-y-1 border-t border-neutral-200 pt-3 dark:border-neutral-700">
+          {isLoading ? (
+            <Skeleton className="h-16 w-full" />
+          ) : steps.length > 0 ? (
+            steps.slice(0, 12).map((step) => (
+              <div key={step.id} className="flex items-center justify-between rounded border border-neutral-200 px-2 py-1 dark:border-neutral-700">
+                <span className="text-xs font-medium text-neutral-900 dark:text-neutral-100">
+                  {step.stepId}
+                </span>
+                <Badge variant={step.status === 'completed' ? 'success' : step.status === 'failed' ? 'error' : 'secondary'}>
+                  {step.status}
+                </Badge>
+              </div>
+            ))
+          ) : (
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              No normalized steps captured yet.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -294,6 +390,7 @@ function ExecutionStatusBadge({ status }: { status: string }) {
     running: 'default',
     waiting_approval: 'warning',
     completed: 'success',
+    cancelled: 'secondary',
     failed: 'error',
   };
 
