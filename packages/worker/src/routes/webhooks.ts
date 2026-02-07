@@ -13,6 +13,7 @@ export const webhooksRouter = new Hono<{ Bindings: Env; Variables: Variables }>(
 webhooksRouter.all('/*', async (c, next) => {
   // Extract the path after /webhooks/
   const url = new URL(c.req.url);
+  const workerOrigin = url.origin;
   const webhookPath = url.pathname.replace(/^\/webhooks\//, '');
 
   // Skip if it's one of the hardcoded integration webhooks
@@ -190,6 +191,7 @@ webhooksRouter.all('/*', async (c, next) => {
     userId: trigger.user_id,
     sessionId,
     triggerType: 'webhook',
+    workerOrigin,
   });
 
   // Update trigger last run time

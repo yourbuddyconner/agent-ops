@@ -1,5 +1,6 @@
 import type { DurableObjectState } from '@cloudflare/workers-types';
 import type { Env } from '../env.js';
+import { decryptString } from '../lib/crypto.js';
 
 interface EnqueueRequest {
   executionId: string;
@@ -7,6 +8,7 @@ interface EnqueueRequest {
   userId: string;
   sessionId?: string;
   triggerType: 'manual' | 'webhook' | 'schedule';
+  workerOrigin?: string;
 }
 
 interface ResumeRequest {
@@ -28,7 +30,32 @@ interface RuntimeState {
     lastEnqueuedAt: string;
     sessionId?: string;
     triggerType: 'manual' | 'webhook' | 'schedule';
+    promptDispatchedAt?: string;
+    sessionStartedAt?: string;
+    workerOrigin?: string;
+    lastError?: string;
   };
+}
+
+interface ExecutionRow {
+  id: string;
+  status: string;
+  runtime_state: string | null;
+  session_id: string | null;
+  workflow_hash: string | null;
+  variables: string | null;
+  trigger_metadata: string | null;
+  attempt_count: number | null;
+  idempotency_key: string | null;
+  user_id: string;
+  workflow_id: string;
+  workflow_data: string;
+}
+
+interface EnsureSessionResult {
+  ok: boolean;
+  startedAt?: string;
+  error?: string;
 }
 
 export class WorkflowExecutorDO implements DurableObject {
@@ -69,23 +96,74 @@ export class WorkflowExecutorDO implements DurableObject {
     }
 
     const row = await this.env.DB.prepare(`
-      SELECT id, status, runtime_state
-      FROM workflow_executions
-      WHERE id = ?
+      SELECT
+        e.id,
+        e.status,
+        e.runtime_state,
+        e.session_id,
+        e.workflow_hash,
+        e.variables,
+        e.trigger_metadata,
+        e.attempt_count,
+        e.idempotency_key,
+        e.user_id,
+        e.workflow_id,
+        w.data AS workflow_data
+      FROM workflow_executions e
+      JOIN workflows w ON w.id = e.workflow_id
+      WHERE e.id = ?
       LIMIT 1
-    `).bind(body.executionId).first<{ id: string; status: string; runtime_state: string | null }>();
+    `).bind(body.executionId).first<ExecutionRow>();
 
     if (!row) {
       return Response.json({ error: 'Execution not found' }, { status: 404 });
     }
 
-    if (row.status === 'completed' || row.status === 'failed') {
+    if (row.status === 'completed' || row.status === 'failed' || row.status === 'cancelled') {
       return Response.json({ ok: true, ignored: true, reason: 'already_finalized' });
+    }
+
+    if (row.status === 'waiting_approval') {
+      return Response.json({ ok: true, ignored: true, reason: 'waiting_approval' });
     }
 
     const existingState = this.parseRuntimeState(row.runtime_state);
     const now = new Date().toISOString();
     const dispatchCount = (existingState.executor?.dispatchCount ?? 0) + 1;
+    const workerOrigin = this.resolveWorkerOrigin(body.workerOrigin || existingState.executor?.workerOrigin);
+
+    let promptDispatchedAt = existingState.executor?.promptDispatchedAt;
+    let sessionStartedAt = existingState.executor?.sessionStartedAt;
+    let lastError: string | undefined;
+
+    if (!row.session_id) {
+      lastError = 'Execution is missing bound session_id';
+    } else if (!promptDispatchedAt) {
+      const ensured = await this.ensureWorkflowSessionReady({
+        sessionId: row.session_id,
+        userId: row.user_id,
+        workflowId: row.workflow_id,
+        executionId: row.id,
+        workerOrigin,
+      });
+
+      if (!ensured.ok) {
+        lastError = ensured.error || 'Failed to prepare workflow session';
+      } else {
+        if (ensured.startedAt) {
+          sessionStartedAt = ensured.startedAt;
+        }
+
+        const prompt = this.buildWorkflowRunPrompt(row);
+        const dispatched = await this.dispatchWorkflowPrompt(row.session_id, prompt);
+        if (dispatched.ok) {
+          promptDispatchedAt = now;
+          lastError = undefined;
+        } else {
+          lastError = dispatched.error || 'Failed to dispatch workflow prompt';
+        }
+      }
+    }
 
     const nextState: RuntimeState = {
       ...existingState,
@@ -93,20 +171,328 @@ export class WorkflowExecutorDO implements DurableObject {
         dispatchCount,
         firstEnqueuedAt: existingState.executor?.firstEnqueuedAt || now,
         lastEnqueuedAt: now,
-        sessionId: body.sessionId,
+        sessionId: row.session_id || body.sessionId,
         triggerType: body.triggerType,
+        promptDispatchedAt,
+        sessionStartedAt,
+        workerOrigin,
+        lastError,
       },
     };
 
+    const nextStatus = row.status === 'pending' && promptDispatchedAt ? 'running' : row.status;
+
     await this.env.DB.prepare(`
       UPDATE workflow_executions
-      SET runtime_state = ?
+      SET runtime_state = ?,
+          status = ?
       WHERE id = ?
-    `).bind(JSON.stringify(nextState), body.executionId).run();
+    `).bind(JSON.stringify(nextState), nextStatus, body.executionId).run();
 
-    await this.publishEnqueuedEvent(body.executionId, body.userId, body.workflowId, body.triggerType, dispatchCount);
+    await this.publishEnqueuedEvent(
+      body.executionId,
+      body.userId,
+      body.workflowId,
+      body.triggerType,
+      dispatchCount,
+      {
+        sessionId: row.session_id || body.sessionId,
+        promptDispatched: !!promptDispatchedAt,
+        sessionStarted: !!sessionStartedAt,
+        status: nextStatus,
+        error: lastError,
+      }
+    );
 
-    return Response.json({ ok: true, executionId: body.executionId, dispatchCount });
+    return Response.json({
+      ok: true,
+      executionId: body.executionId,
+      dispatchCount,
+      status: nextStatus,
+      promptDispatched: !!promptDispatchedAt,
+      sessionStarted: !!sessionStartedAt,
+      ...(lastError ? { error: lastError } : {}),
+    });
+  }
+
+  private async ensureWorkflowSessionReady(params: {
+    sessionId: string;
+    userId: string;
+    workflowId: string;
+    executionId: string;
+    workerOrigin: string;
+  }): Promise<EnsureSessionResult> {
+    const session = await this.env.DB.prepare(`
+      SELECT id, status, workspace
+      FROM sessions
+      WHERE id = ?
+      LIMIT 1
+    `).bind(params.sessionId).first<{ id: string; status: string; workspace: string }>();
+
+    if (!session) {
+      return { ok: false, error: `Session ${params.sessionId} not found` };
+    }
+
+    if (session.status === 'running' || session.status === 'initializing' || session.status === 'waking') {
+      return { ok: true };
+    }
+
+    const started = await this.bootstrapWorkflowSession({
+      sessionId: session.id,
+      workspace: session.workspace,
+      userId: params.userId,
+      workflowId: params.workflowId,
+      executionId: params.executionId,
+      workerOrigin: params.workerOrigin,
+    });
+
+    return started;
+  }
+
+  private async bootstrapWorkflowSession(params: {
+    sessionId: string;
+    workspace: string;
+    userId: string;
+    workflowId: string;
+    executionId: string;
+    workerOrigin: string;
+  }): Promise<EnsureSessionResult> {
+    try {
+      const runnerToken = this.generateRunnerToken();
+      const doWsUrl = this.buildDoWsUrl(params.workerOrigin, params.sessionId);
+
+      const userRow = await this.env.DB.prepare(`
+        SELECT idle_timeout_seconds
+        FROM users
+        WHERE id = ?
+      `).bind(params.userId).first<{ idle_timeout_seconds: number | null }>();
+
+      const idleTimeoutSeconds = userRow?.idle_timeout_seconds ?? 900;
+      const idleTimeoutMs = idleTimeoutSeconds * 1000;
+
+      const envVars = await this.buildSandboxEnvVars({
+        userId: params.userId,
+        sessionId: params.sessionId,
+        workflowId: params.workflowId,
+        executionId: params.executionId,
+      });
+
+      const spawnRequest = {
+        sessionId: params.sessionId,
+        userId: params.userId,
+        workspace: params.workspace,
+        imageType: 'base',
+        doWsUrl,
+        runnerToken,
+        jwtSecret: this.env.ENCRYPTION_KEY,
+        idleTimeoutSeconds,
+        envVars,
+      };
+
+      await this.env.DB.prepare(`
+        UPDATE sessions
+        SET status = 'initializing',
+            updated_at = ?,
+            error = NULL
+        WHERE id = ?
+      `).bind(new Date().toISOString(), params.sessionId).run();
+
+      const doId = this.env.SESSIONS.idFromName(params.sessionId);
+      const sessionDO = this.env.SESSIONS.get(doId);
+
+      const response = await sessionDO.fetch(new Request('http://do/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: params.sessionId,
+          userId: params.userId,
+          workspace: params.workspace,
+          runnerToken,
+          backendUrl: this.env.MODAL_BACKEND_URL.replace('{label}', 'create-session'),
+          terminateUrl: this.env.MODAL_BACKEND_URL.replace('{label}', 'terminate-session'),
+          hibernateUrl: this.env.MODAL_BACKEND_URL.replace('{label}', 'hibernate-session'),
+          restoreUrl: this.env.MODAL_BACKEND_URL.replace('{label}', 'restore-session'),
+          idleTimeoutMs,
+          spawnRequest,
+        }),
+      }));
+
+      if (!response.ok) {
+        const errText = await response.text();
+        return { ok: false, error: `Session start failed (${response.status}): ${errText}` };
+      }
+
+      return { ok: true, startedAt: new Date().toISOString() };
+    } catch (error) {
+      return {
+        ok: false,
+        error: `Session bootstrap error: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  private async buildSandboxEnvVars(params: {
+    userId: string;
+    sessionId: string;
+    workflowId: string;
+    executionId: string;
+  }): Promise<Record<string, string>> {
+    const envVars: Record<string, string> = {
+      IS_WORKFLOW_SESSION: 'true',
+      WORKFLOW_ID: params.workflowId,
+      WORKFLOW_EXECUTION_ID: params.executionId,
+    };
+
+    if (this.env.ANTHROPIC_API_KEY) envVars.ANTHROPIC_API_KEY = this.env.ANTHROPIC_API_KEY;
+    if (this.env.OPENAI_API_KEY) envVars.OPENAI_API_KEY = this.env.OPENAI_API_KEY;
+    if (this.env.GOOGLE_API_KEY) envVars.GOOGLE_API_KEY = this.env.GOOGLE_API_KEY;
+
+    const gitUserRow = await this.env.DB.prepare(`
+      SELECT name, email, github_username, git_name, git_email
+      FROM users
+      WHERE id = ?
+    `).bind(params.userId).first<{
+      name: string | null;
+      email: string | null;
+      github_username: string | null;
+      git_name: string | null;
+      git_email: string | null;
+    }>();
+
+    envVars.GIT_USER_NAME = gitUserRow?.git_name || gitUserRow?.name || gitUserRow?.github_username || 'Agent Ops User';
+    envVars.GIT_USER_EMAIL = gitUserRow?.git_email || gitUserRow?.email || 'agent-ops@example.local';
+
+    const oauthRow = await this.env.DB.prepare(`
+      SELECT encrypted_access_token
+      FROM oauth_tokens
+      WHERE user_id = ? AND provider = 'github'
+      LIMIT 1
+    `).bind(params.userId).first<{ encrypted_access_token: string }>();
+
+    if (oauthRow?.encrypted_access_token) {
+      try {
+        envVars.GITHUB_TOKEN = await decryptString(oauthRow.encrypted_access_token, this.env.ENCRYPTION_KEY);
+      } catch (error) {
+        console.warn('[WorkflowExecutorDO] Failed to decrypt GitHub token for workflow session', error);
+      }
+    }
+
+    const gitStateRow = await this.env.DB.prepare(`
+      SELECT source_repo_url, branch, ref
+      FROM session_git_state
+      WHERE session_id = ?
+      LIMIT 1
+    `).bind(params.sessionId).first<{
+      source_repo_url: string | null;
+      branch: string | null;
+      ref: string | null;
+    }>();
+
+    if (gitStateRow?.source_repo_url) {
+      envVars.REPO_URL = gitStateRow.source_repo_url;
+      if (gitStateRow.branch) envVars.REPO_BRANCH = gitStateRow.branch;
+      if (gitStateRow.ref) envVars.REPO_REF = gitStateRow.ref;
+    }
+
+    return envVars;
+  }
+
+  private buildWorkflowRunPrompt(row: ExecutionRow): string {
+    const payload = this.buildWorkflowRunPayload(row);
+    const payloadJson = JSON.stringify(payload, null, 2);
+    const workflowHash = this.normalizeWorkflowHash(row.workflow_hash);
+
+    return [
+      'Execute this workflow run in the local sandbox.',
+      'Run the shell script exactly as written:',
+      '```bash',
+      "cat > /tmp/workflow-run-input.json <<'JSON'",
+      payloadJson,
+      'JSON',
+      `workflow run --execution-id "${row.id}" --workflow-hash "${workflowHash}" --workspace "$(pwd)" < /tmp/workflow-run-input.json`,
+      '```',
+      'Return only the JSON output produced by the workflow command.',
+      'After returning the JSON output, call complete_session.',
+    ].join('\n');
+  }
+
+  private buildWorkflowRunPayload(row: ExecutionRow): Record<string, unknown> {
+    const workflow = this.parseJsonValue<Record<string, unknown>>(row.workflow_data, {});
+    const trigger = this.parseJsonValue<Record<string, unknown>>(row.trigger_metadata, {});
+    const variables = this.parseJsonValue<Record<string, unknown>>(row.variables, {});
+
+    return {
+      workflow,
+      trigger,
+      variables,
+      runtime: {
+        attempt: (row.attempt_count ?? 0) + 1,
+        idempotencyKey: row.idempotency_key,
+      },
+    };
+  }
+
+  private async dispatchWorkflowPrompt(sessionId: string, content: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const doId = this.env.SESSIONS.idFromName(sessionId);
+      const sessionDO = this.env.SESSIONS.get(doId);
+      const response = await sessionDO.fetch(new Request('http://do/prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      }));
+
+      if (!response.ok) {
+        const error = await response.text();
+        return { ok: false, error: `Prompt dispatch failed (${response.status}): ${error}` };
+      }
+
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: `Prompt dispatch error: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+
+  private resolveWorkerOrigin(origin?: string): string {
+    const fallback = this.env.FRONTEND_URL || 'http://localhost:8787';
+    const raw = origin || fallback;
+
+    try {
+      return new URL(raw).origin;
+    } catch {
+      return 'http://localhost:8787';
+    }
+  }
+
+  private buildDoWsUrl(workerOrigin: string, sessionId: string): string {
+    const parsed = new URL(workerOrigin);
+    const protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${parsed.host}/api/sessions/${sessionId}/ws`;
+  }
+
+  private generateRunnerToken(): string {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  private parseJsonValue<T>(raw: string | null, fallback: T): T {
+    if (!raw) return fallback;
+    try {
+      const parsed = JSON.parse(raw) as T;
+      return parsed ?? fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private normalizeWorkflowHash(hash: string | null): string {
+    const cleaned = (hash || '').trim();
+    if (!cleaned) return 'sha256:unknown';
+    if (cleaned.startsWith('sha256:')) return cleaned;
+    return `sha256:${cleaned}`;
   }
 
   private async handleResume(request: Request): Promise<Response> {
@@ -151,6 +537,10 @@ export class WorkflowExecutorDO implements DurableObject {
         lastEnqueuedAt: existingState.executor?.lastEnqueuedAt || now,
         sessionId: existingState.executor?.sessionId,
         triggerType: existingState.executor?.triggerType || 'manual',
+        promptDispatchedAt: existingState.executor?.promptDispatchedAt,
+        sessionStartedAt: existingState.executor?.sessionStartedAt,
+        workerOrigin: existingState.executor?.workerOrigin,
+        lastError: undefined,
       },
     };
 
@@ -242,7 +632,14 @@ export class WorkflowExecutorDO implements DurableObject {
     userId: string,
     workflowId: string,
     triggerType: 'manual' | 'webhook' | 'schedule',
-    dispatchCount: number
+    dispatchCount: number,
+    details: {
+      sessionId?: string;
+      promptDispatched: boolean;
+      sessionStarted: boolean;
+      status: string;
+      error?: string;
+    }
   ): Promise<void> {
     try {
       const eventBusId = this.env.EVENT_BUS.idFromName('global');
@@ -260,6 +657,11 @@ export class WorkflowExecutorDO implements DurableObject {
               workflowId,
               triggerType,
               dispatchCount,
+              sessionId: details.sessionId,
+              promptDispatched: details.promptDispatched,
+              sessionStarted: details.sessionStarted,
+              status: details.status,
+              ...(details.error ? { error: details.error } : {}),
             },
             timestamp: new Date().toISOString(),
           },

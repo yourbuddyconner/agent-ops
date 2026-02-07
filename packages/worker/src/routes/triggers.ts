@@ -67,6 +67,7 @@ triggersRouter.post('/manual/run', zValidator('json', manualRunSchema), async (c
   const user = c.get('user');
   const body = c.req.valid('json');
   const { workflowId, variables = {} } = body;
+  const workerOrigin = new URL(c.req.url).origin;
 
   // Verify user owns the workflow
   const workflow = await c.env.DB.prepare(`
@@ -145,6 +146,7 @@ triggersRouter.post('/manual/run', zValidator('json', manualRunSchema), async (c
     userId: user.id,
     sessionId,
     triggerType: 'manual',
+    workerOrigin,
   });
 
   return c.json(
@@ -448,6 +450,7 @@ triggersRouter.post('/:id/run', zValidator('json', triggerRunSchema), async (c) 
   const { id } = c.req.param();
   const user = c.get('user');
   const body = c.req.valid('json');
+  const workerOrigin = new URL(c.req.url).origin;
 
   const row = await c.env.DB.prepare(`
     SELECT t.*, w.id as wf_id, w.name as workflow_name, w.version as workflow_version, w.data as workflow_data
@@ -554,6 +557,7 @@ triggersRouter.post('/:id/run', zValidator('json', triggerRunSchema), async (c) 
     userId: user.id,
     sessionId,
     triggerType: 'manual',
+    workerOrigin,
   });
 
   // Update trigger last run time

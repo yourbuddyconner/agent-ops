@@ -64,6 +64,7 @@ export async function enqueueWorkflowExecution(
     userId: string;
     sessionId?: string;
     triggerType: 'manual' | 'webhook' | 'schedule';
+    workerOrigin?: string;
   }
 ): Promise<boolean> {
   try {
