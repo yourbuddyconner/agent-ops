@@ -416,6 +416,19 @@ export class WorkflowExecutorDO implements DurableObject {
     ].join('\n');
   }
 
+  private buildWorkflowResumePrompt(executionId: string, resumeToken: string, approve: boolean): string {
+    const decision = approve ? 'approve' : 'deny';
+    return [
+      'Resume this workflow execution in the local sandbox.',
+      'Run the command exactly as written:',
+      '```bash',
+      `workflow resume --execution-id \"${executionId}\" --resume-token \"${resumeToken}\" --decision \"${decision}\"`,
+      '```',
+      'Return only the JSON output produced by the workflow command.',
+      'After returning the JSON output, call complete_session.',
+    ].join('\n');
+  }
+
   private buildWorkflowRunPayload(row: ExecutionRow): Record<string, unknown> {
     const workflow = this.parseJsonValue<Record<string, unknown>>(row.workflow_data, {});
     const trigger = this.parseJsonValue<Record<string, unknown>>(row.trigger_metadata, {});
@@ -450,6 +463,20 @@ export class WorkflowExecutorDO implements DurableObject {
       return { ok: true };
     } catch (error) {
       return { ok: false, error: `Prompt dispatch error: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+
+  private async stopWorkflowSession(sessionId: string, reason: string): Promise<void> {
+    try {
+      const doId = this.env.SESSIONS.idFromName(sessionId);
+      const sessionDO = this.env.SESSIONS.get(doId);
+      await sessionDO.fetch(new Request('http://do/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: `workflow_execution_cancelled:${reason}` }),
+      }));
+    } catch (error) {
+      console.warn(`[WorkflowExecutorDO] Failed to stop workflow session ${sessionId}`, error);
     }
   }
 
@@ -502,7 +529,7 @@ export class WorkflowExecutorDO implements DurableObject {
     }
 
     const row = await this.env.DB.prepare(`
-      SELECT id, status, resume_token, runtime_state, user_id, workflow_id
+      SELECT id, status, resume_token, runtime_state, user_id, workflow_id, session_id
       FROM workflow_executions
       WHERE id = ?
       LIMIT 1
@@ -513,6 +540,7 @@ export class WorkflowExecutorDO implements DurableObject {
       runtime_state: string | null;
       user_id: string;
       workflow_id: string;
+      session_id: string | null;
     }>();
 
     if (!row) {
@@ -545,6 +573,14 @@ export class WorkflowExecutorDO implements DurableObject {
     };
 
     if (body.approve) {
+      if (row.session_id) {
+        const prompt = this.buildWorkflowResumePrompt(body.executionId, body.resumeToken, true);
+        const dispatched = await this.dispatchWorkflowPrompt(row.session_id, prompt);
+        if (!dispatched.ok) {
+          return Response.json({ error: dispatched.error || 'Failed to dispatch workflow resume prompt' }, { status: 502 });
+        }
+      }
+
       await this.env.DB.prepare(`
         UPDATE workflow_executions
         SET status = 'running',
@@ -580,7 +616,7 @@ export class WorkflowExecutorDO implements DurableObject {
     }
 
     const row = await this.env.DB.prepare(`
-      SELECT id, status, runtime_state, user_id, workflow_id
+      SELECT id, status, runtime_state, user_id, workflow_id, session_id
       FROM workflow_executions
       WHERE id = ?
       LIMIT 1
@@ -590,6 +626,7 @@ export class WorkflowExecutorDO implements DurableObject {
       runtime_state: string | null;
       user_id: string;
       workflow_id: string;
+      session_id: string | null;
     }>();
 
     if (!row) {
@@ -612,6 +649,10 @@ export class WorkflowExecutorDO implements DurableObject {
           completed_at = ?
       WHERE id = ?
     `).bind(JSON.stringify(existingState), reason, now, body.executionId).run();
+
+    if (row.session_id) {
+      await this.stopWorkflowSession(row.session_id, reason);
+    }
 
     await this.publishLifecycleEvent(row.user_id, row.workflow_id, body.executionId, 'cancelled', reason);
     return Response.json({ ok: true, executionId: body.executionId, status: 'failed' });
