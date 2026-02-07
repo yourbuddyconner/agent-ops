@@ -1,19 +1,10 @@
 #!/usr/bin/env bun
 import { parseArgs } from 'util';
+import { compileWorkflowDefinition } from './workflow-compiler.js';
+import { executeWorkflowRun, type WorkflowRunPayload } from './workflow-engine.js';
 
 type WorkflowCommand = 'run' | 'resume' | 'validate' | 'propose';
 type WorkflowStatus = 'ok' | 'needs_approval' | 'cancelled' | 'failed';
-
-interface RunPayload {
-  workflow?: Record<string, unknown>;
-  trigger?: Record<string, unknown>;
-  variables?: Record<string, unknown>;
-  runtime?: {
-    attempt?: number;
-    idempotencyKey?: string;
-    policy?: Record<string, unknown>;
-  };
-}
 
 interface RunResumeEnvelope {
   ok: boolean;
@@ -59,57 +50,78 @@ function fail(message: string, code: number): never {
   process.exit(code);
 }
 
-function printJson(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
+function printJson(value: unknown): Promise<void> {
+  return new Promise((resolve) => {
+    process.stdout.write(`${JSON.stringify(value)}\n`, () => resolve());
+  });
 }
 
 function nowIso(): string {
   return new Date().toISOString();
 }
 
-async function sha256Hex(input: string): Promise<string> {
-  const data = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-function buildRunResult(executionId: string): RunResumeEnvelope {
-  return {
-    ok: true,
-    status: 'ok',
-    executionId,
-    output: {},
-    steps: [],
-    requiresApproval: null,
-    error: null,
-  };
+function normalizeHash(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  return trimmed.startsWith('sha256:') ? trimmed : `sha256:${trimmed}`;
 }
 
 async function handleRun(flags: Record<string, string | boolean | undefined>): Promise<void> {
   const executionId = String(flags['execution-id'] || '');
-  const workflowHash = String(flags['workflow-hash'] || '');
+  const workflowHash = normalizeHash(String(flags['workflow-hash'] || ''));
   const workspace = String(flags['workspace'] || '');
 
   if (!executionId || !workflowHash || !workspace) {
     fail('Missing required flags for run: --execution-id --workflow-hash --workspace', 20);
   }
 
-  emitEvent({ type: 'execution.started', executionId, ts: nowIso() });
-
   const rawInput = (await readStdin()).trim();
   if (!rawInput) {
     fail('run requires JSON payload on stdin', 10);
   }
 
+  let payload: WorkflowRunPayload & { workflow?: unknown };
   try {
-    JSON.parse(rawInput) as RunPayload;
+    payload = JSON.parse(rawInput) as WorkflowRunPayload & { workflow?: unknown };
   } catch {
     fail('Invalid JSON input for run payload', 10);
   }
 
-  emitEvent({ type: 'execution.finished', executionId, status: 'ok', ts: nowIso() });
-  printJson(buildRunResult(executionId));
-  process.exit(0);
+  if (!payload.workflow) {
+    fail('run payload must include workflow object', 10);
+  }
+
+  const compiled = await compileWorkflowDefinition(payload.workflow);
+  if (!compiled.ok || !compiled.workflow || !compiled.workflowHash) {
+    await printJson({
+      ok: false,
+      status: 'failed',
+      executionId,
+      output: {},
+      steps: [],
+      requiresApproval: null,
+      error: compiled.errors[0]?.message || 'Workflow compilation failed',
+    });
+    process.exit(10);
+  }
+
+  if (normalizeHash(compiled.workflowHash) !== workflowHash) {
+    fail(`Workflow hash mismatch: expected ${workflowHash}, got ${compiled.workflowHash}`, 20);
+  }
+
+  const result = await executeWorkflowRun(
+    executionId,
+    compiled.workflow,
+    {
+      trigger: payload.trigger,
+      variables: payload.variables,
+      runtime: payload.runtime,
+    },
+    (event) => emitEvent(event),
+  );
+
+  await printJson(result);
+  process.exit(result.status === 'failed' ? 40 : 0);
 }
 
 async function handleResume(flags: Record<string, string | boolean | undefined>): Promise<void> {
@@ -138,7 +150,7 @@ async function handleResume(flags: Record<string, string | boolean | undefined>)
   };
 
   emitEvent({ type: 'execution.finished', executionId, status: result.status, ts: nowIso() });
-  printJson(result);
+  await printJson(result);
   process.exit(0);
 }
 
@@ -165,7 +177,7 @@ async function handleValidate(flags: Record<string, string | boolean | undefined
   try {
     parsed = JSON.parse(workflowRaw) as Record<string, unknown>;
   } catch {
-    printJson({
+    await printJson({
       ok: false,
       status: 'invalid',
       workflowHash: null,
@@ -174,22 +186,22 @@ async function handleValidate(flags: Record<string, string | boolean | undefined
     process.exit(10);
   }
 
-  const steps = parsed.steps;
-  if (!Array.isArray(steps)) {
-    printJson({
+  const compiled = await compileWorkflowDefinition(parsed);
+  if (!compiled.ok || !compiled.workflowHash) {
+    await printJson({
       ok: false,
       status: 'invalid',
       workflowHash: null,
-      errors: [{ message: 'workflow.steps must be an array' }],
+      errors: compiled.errors,
     });
     process.exit(10);
   }
 
-  const workflowHash = await sha256Hex(workflowRaw);
-  printJson({
+  await printJson({
     ok: true,
     status: 'valid',
-    workflowHash: `sha256:${workflowHash}`,
+    workflowHash: compiled.workflowHash,
+    stepOrder: compiled.stepOrder,
     errors: [],
   });
   process.exit(0);
@@ -218,7 +230,7 @@ async function handlePropose(flags: Record<string, string | boolean | undefined>
   };
 
   emitEvent({ type: 'proposal.created', workflowId, ts: nowIso() });
-  printJson(proposal);
+  await printJson(proposal);
   process.exit(0);
 }
 
