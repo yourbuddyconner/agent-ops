@@ -159,6 +159,7 @@ export interface AgentSession {
   containerId?: string;
   sandboxId?: string;
   tunnelUrls?: Record<string, string>;
+  tunnels?: Array<{ name: string; url?: string; path?: string; port?: number; protocol?: string }>;
   gatewayUrl?: string;
   metadata?: Record<string, unknown>;
   errorMessage?: string;

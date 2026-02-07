@@ -342,14 +342,16 @@ sessionsRouter.get('/:id', async (c) => {
   const statusRes = await sessionDO.fetch(new Request('http://do/status'));
   const doStatus = await statusRes.json() as {
     tunnelUrls?: Record<string, string>;
+    tunnels?: Array<{ name: string; url?: string; path?: string; port?: number; protocol?: string }>;
     [key: string]: unknown;
   };
 
   // Populate gatewayUrl from DO status for frontend consumption
   const gatewayUrl = doStatus.tunnelUrls?.gateway;
+  const tunnels = doStatus.tunnels ?? null;
 
   return c.json({
-    session: { ...session, gatewayUrl },
+    session: { ...session, gatewayUrl, tunnels },
     doStatus,
   });
 });
@@ -420,6 +422,31 @@ sessionsRouter.get('/:id/sandbox-token', async (c) => {
     token,
     tunnelUrls: statusData.tunnelUrls,
     expiresAt: new Date((now + 15 * 60) * 1000).toISOString(),
+  });
+});
+
+/**
+ * GET /api/sessions/:id/tunnels
+ * Get tunnel URLs for a running session.
+ */
+sessionsRouter.get('/:id/tunnels', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
+
+  const doId = c.env.SESSIONS.idFromName(id);
+  const sessionDO = c.env.SESSIONS.get(doId);
+
+  const statusRes = await sessionDO.fetch(new Request('http://do/status'));
+  const statusData = await statusRes.json() as {
+    tunnelUrls?: Record<string, string> | null;
+    tunnels?: Array<{ name: string; url?: string; path?: string; port?: number; protocol?: string }> | null;
+  };
+
+  return c.json({
+    gatewayUrl: statusData.tunnelUrls?.gateway ?? null,
+    tunnels: statusData.tunnels ?? [],
   });
 });
 
