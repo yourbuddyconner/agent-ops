@@ -55,8 +55,8 @@ dashboardRouter.get('/stats', async (c) => {
 
   const unflushedIds = (unflushed.results ?? []).map((r: Record<string, unknown>) => String(r.id));
   if (unflushedIds.length > 0) {
-    // Fire-and-forget — don't block the response, but await briefly to give DOs time to flush
-    await backfillUnflushedSessions(c.env, unflushedIds);
+    // Fire-and-forget — don't block the response
+    c.executionCtx?.waitUntil(backfillUnflushedSessions(c.env, unflushedIds));
   }
 
   type AggRow = {
