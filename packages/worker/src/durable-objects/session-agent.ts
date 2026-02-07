@@ -314,11 +314,11 @@ export class SessionAgentDO {
         return Response.json({ success: true });
       }
       case '/system-message': {
-        const body = await request.json() as { content: string; parts?: Record<string, unknown> };
+        const body = await request.json() as { content: string; parts?: Record<string, unknown>; wake?: boolean };
         if (!body.content) {
           return new Response(JSON.stringify({ error: 'Missing content' }), { status: 400 });
         }
-        await this.handleSystemMessage(body.content, body.parts);
+        await this.handleSystemMessage(body.content, body.parts, body.wake);
         return Response.json({ success: true });
       }
     }
@@ -2913,7 +2913,7 @@ export class SessionAgentDO {
       timestamp: new Date().toISOString(),
     });
 
-    await this.notifyParentEvent(`Child session event: ${sessionId} completed (reason: ${reason}).`);
+    await this.notifyParentEvent(`Child session event: ${sessionId} completed (reason: ${reason}).`, { wake: true });
 
     return Response.json({
       success: true,
@@ -2971,10 +2971,10 @@ export class SessionAgentDO {
     const last = this.getStateValue('lastParentIdleNotice');
     if (last === 'true') return;
     this.setStateValue('lastParentIdleNotice', 'true');
-    await this.notifyParentEvent(`Child session event: ${sessionId} is idle.`);
+    await this.notifyParentEvent(`Child session event: ${sessionId} is idle.`, { wake: true });
   }
 
-  private async notifyParentEvent(content: string) {
+  private async notifyParentEvent(content: string, options?: { wake?: boolean }) {
     try {
       const sessionId = this.getStateValue('sessionId');
       if (!sessionId) return;
@@ -2993,6 +2993,7 @@ export class SessionAgentDO {
             systemTitle: childTitle,
             systemAvatarKey: 'child-session',
           },
+          wake: options?.wake ?? false,
         }),
       }));
     } catch (err) {
@@ -3000,7 +3001,7 @@ export class SessionAgentDO {
     }
   }
 
-  private async handleSystemMessage(content: string, parts?: Record<string, unknown>) {
+  private async handleSystemMessage(content: string, parts?: Record<string, unknown>, wake?: boolean) {
     const messageId = crypto.randomUUID();
     const serializedParts = parts ? JSON.stringify(parts) : null;
 
@@ -3026,6 +3027,13 @@ export class SessionAgentDO {
         createdAt: Math.floor(Date.now() / 1000),
       },
     });
+
+    if (wake) {
+      const status = this.getStateValue('status');
+      if (status === 'hibernated') {
+        this.ctx.waitUntil(this.performWake());
+      }
+    }
   }
 
   private async sendNextQueuedPrompt(): Promise<boolean> {
