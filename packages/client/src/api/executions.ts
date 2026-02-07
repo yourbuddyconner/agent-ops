@@ -9,7 +9,7 @@ export interface Execution {
   sessionId?: string | null;
   triggerId: string | null;
   triggerName?: string | null;
-  status: 'pending' | 'running' | 'waiting_approval' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled';
   triggerType: 'webhook' | 'schedule' | 'manual';
   triggerMetadata: Record<string, unknown> | null;
   variables: Record<string, unknown> | null;
@@ -23,8 +23,12 @@ export interface Execution {
 export interface ExecutionStep {
   stepId: string;
   status: string;
+  attempt?: number;
+  input?: unknown;
   output?: unknown;
   error?: string;
+  startedAt?: string;
+  completedAt?: string;
 }
 
 export interface ListExecutionsResponse {
@@ -35,8 +39,26 @@ export interface GetExecutionResponse {
   execution: Execution;
 }
 
+export interface ExecutionStepTrace {
+  id: string;
+  executionId: string;
+  stepId: string;
+  attempt: number;
+  status: string;
+  input: unknown | null;
+  output: unknown | null;
+  error: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+}
+
+export interface GetExecutionStepsResponse {
+  steps: ExecutionStepTrace[];
+}
+
 export interface CompleteExecutionRequest {
-  status: 'completed' | 'failed';
+  status: 'completed' | 'failed' | 'cancelled';
   outputs?: Record<string, unknown>;
   steps?: ExecutionStep[];
   error?: string;
@@ -63,6 +85,7 @@ export const executionKeys = {
     [...executionKeys.all, 'infinite', filters] as const,
   details: () => [...executionKeys.all, 'detail'] as const,
   detail: (id: string) => [...executionKeys.details(), id] as const,
+  steps: (id: string) => [...executionKeys.detail(id), 'steps'] as const,
   byWorkflow: (workflowId: string) => [...executionKeys.all, 'workflow', workflowId] as const,
 };
 
@@ -119,6 +142,14 @@ export function useWorkflowExecutions(workflowId: string) {
   });
 }
 
+export function useExecutionSteps(executionId: string) {
+  return useQuery({
+    queryKey: executionKeys.steps(executionId),
+    queryFn: () => api.get<GetExecutionStepsResponse>(`/executions/${executionId}/steps`),
+    enabled: !!executionId,
+  });
+}
+
 export function useCompleteExecution() {
   const queryClient = useQueryClient();
 
@@ -130,6 +161,7 @@ export function useCompleteExecution() {
       ),
     onSuccess: (_, { executionId }) => {
       queryClient.invalidateQueries({ queryKey: executionKeys.detail(executionId) });
+      queryClient.invalidateQueries({ queryKey: executionKeys.steps(executionId) });
       queryClient.invalidateQueries({ queryKey: executionKeys.lists() });
     },
   });
@@ -146,6 +178,7 @@ export function useApproveExecution() {
       ),
     onSuccess: (_, { executionId }) => {
       queryClient.invalidateQueries({ queryKey: executionKeys.detail(executionId) });
+      queryClient.invalidateQueries({ queryKey: executionKeys.steps(executionId) });
       queryClient.invalidateQueries({ queryKey: executionKeys.lists() });
     },
   });
@@ -162,6 +195,7 @@ export function useCancelExecution() {
       ),
     onSuccess: (_, { executionId }) => {
       queryClient.invalidateQueries({ queryKey: executionKeys.detail(executionId) });
+      queryClient.invalidateQueries({ queryKey: executionKeys.steps(executionId) });
       queryClient.invalidateQueries({ queryKey: executionKeys.lists() });
     },
   });

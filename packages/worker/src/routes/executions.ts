@@ -7,19 +7,21 @@ import type { Env, Variables } from '../env.js';
 export const executionsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // Validation schemas
+const executionStepSchema = z.object({
+  stepId: z.string(),
+  status: z.enum(['pending', 'running', 'waiting_approval', 'completed', 'failed', 'cancelled', 'skipped']),
+  attempt: z.number().int().positive().optional(),
+  input: z.unknown().optional(),
+  output: z.unknown().optional(),
+  error: z.string().optional(),
+  startedAt: z.string().optional(),
+  completedAt: z.string().optional(),
+});
+
 const completionSchema = z.object({
-  status: z.enum(['completed', 'failed']),
+  status: z.enum(['completed', 'failed', 'cancelled']),
   outputs: z.record(z.unknown()).optional(),
-  steps: z
-    .array(
-      z.object({
-        stepId: z.string(),
-        status: z.string(),
-        output: z.unknown().optional(),
-        error: z.string().optional(),
-      })
-    )
-    .optional(),
+  steps: z.array(executionStepSchema).optional(),
   error: z.string().optional(),
   completedAt: z.string().optional(),
 });
@@ -33,6 +35,15 @@ const approvalSchema = z.object({
 const cancelSchema = z.object({
   reason: z.string().optional(),
 });
+
+function parseNullableJson(raw: string | null): unknown | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * GET /api/executions
@@ -128,6 +139,51 @@ executionsRouter.get('/:id', async (c) => {
 });
 
 /**
+ * GET /api/executions/:id/steps
+ * Get normalized step-level trace for an execution.
+ */
+executionsRouter.get('/:id/steps', async (c) => {
+  const { id } = c.req.param();
+  const user = c.get('user');
+
+  const execution = await c.env.DB.prepare(`
+    SELECT id, user_id
+    FROM workflow_executions
+    WHERE id = ?
+  `).bind(id).first<{ id: string; user_id: string }>();
+
+  if (!execution) {
+    throw new NotFoundError('Execution', id);
+  }
+  if (execution.user_id !== user.id) {
+    throw new UnauthorizedError('Unauthorized to access this execution');
+  }
+
+  const result = await c.env.DB.prepare(`
+    SELECT id, execution_id, step_id, attempt, status, input_json, output_json, error, started_at, completed_at, created_at
+    FROM workflow_execution_steps
+    WHERE execution_id = ?
+    ORDER BY attempt ASC, created_at ASC, step_id ASC
+  `).bind(id).all();
+
+  const steps = result.results.map((row) => ({
+    id: row.id,
+    executionId: row.execution_id,
+    stepId: row.step_id,
+    attempt: row.attempt,
+    status: row.status,
+    input: parseNullableJson((row.input_json as string | null) || null),
+    output: parseNullableJson((row.output_json as string | null) || null),
+    error: row.error,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    createdAt: row.created_at,
+  }));
+
+  return c.json({ steps });
+});
+
+/**
  * POST /api/executions/:id/complete
  * Called by the plugin to report execution completion
  * This endpoint is called from the container, so we verify using the API token
@@ -178,6 +234,35 @@ executionsRouter.post('/:id/complete', zValidator('json', completionSchema), asy
     completedAt,
     id
   ).run();
+
+  if (body.steps?.length) {
+    for (const step of body.steps) {
+      const attempt = step.attempt ?? 1;
+      await c.env.DB.prepare(`
+        INSERT INTO workflow_execution_steps
+          (id, execution_id, step_id, attempt, status, input_json, output_json, error, started_at, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(execution_id, step_id, attempt) DO UPDATE SET
+          status = excluded.status,
+          input_json = COALESCE(excluded.input_json, workflow_execution_steps.input_json),
+          output_json = COALESCE(excluded.output_json, workflow_execution_steps.output_json),
+          error = excluded.error,
+          started_at = COALESCE(excluded.started_at, workflow_execution_steps.started_at),
+          completed_at = COALESCE(excluded.completed_at, workflow_execution_steps.completed_at)
+      `).bind(
+        crypto.randomUUID(),
+        id,
+        step.stepId,
+        attempt,
+        step.status,
+        step.input !== undefined ? JSON.stringify(step.input) : null,
+        step.output !== undefined ? JSON.stringify(step.output) : null,
+        step.error || null,
+        step.startedAt || null,
+        step.completedAt || null,
+      ).run();
+    }
+  }
 
   return c.json({ success: true, status: body.status, completedAt });
 });
