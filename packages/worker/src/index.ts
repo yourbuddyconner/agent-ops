@@ -286,23 +286,68 @@ function matchesCronField(field: string, value: number, min: number, max: number
   return false;
 }
 
-function cronMatchesNow(cron: string, now: Date): boolean {
+function getZonedDateParts(now: Date, timeZone: string): {
+  minute: number;
+  hour: number;
+  day: number;
+  month: number;
+  dayOfWeek: number;
+} | null {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      minute: 'numeric',
+      hour: 'numeric',
+      day: 'numeric',
+      month: 'numeric',
+      weekday: 'short',
+      hour12: false,
+    });
+
+    const parts = formatter.formatToParts(now);
+    const valueFor = (type: string): string | null =>
+      parts.find((part) => part.type === type)?.value ?? null;
+
+    const weekdayMap: Record<string, number> = {
+      Sun: 0,
+      Mon: 1,
+      Tue: 2,
+      Wed: 3,
+      Thu: 4,
+      Fri: 5,
+      Sat: 6,
+    };
+
+    const minute = Number.parseInt(valueFor('minute') || '', 10);
+    const hour = Number.parseInt(valueFor('hour') || '', 10);
+    const day = Number.parseInt(valueFor('day') || '', 10);
+    const month = Number.parseInt(valueFor('month') || '', 10);
+    const dayOfWeek = weekdayMap[valueFor('weekday') || ''];
+
+    if (!Number.isInteger(minute) || !Number.isInteger(hour) || !Number.isInteger(day) || !Number.isInteger(month) || dayOfWeek === undefined) {
+      return null;
+    }
+
+    return { minute, hour, day, month, dayOfWeek };
+  } catch {
+    return null;
+  }
+}
+
+function cronMatchesNow(cron: string, now: Date, timeZone: string = 'UTC'): boolean {
   const parts = cron.trim().split(/\s+/);
   if (parts.length !== 5) return false;
 
   const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
-  const minuteValue = now.getUTCMinutes();
-  const hourValue = now.getUTCHours();
-  const dayValue = now.getUTCDate();
-  const monthValue = now.getUTCMonth() + 1;
-  const dowValue = now.getUTCDay();
+  const zoned = getZonedDateParts(now, timeZone);
+  if (!zoned) return false;
 
   return (
-    matchesCronField(minute, minuteValue, 0, 59) &&
-    matchesCronField(hour, hourValue, 0, 23) &&
-    matchesCronField(dayOfMonth, dayValue, 1, 31) &&
-    matchesCronField(month, monthValue, 1, 12) &&
-    (matchesCronField(dayOfWeek, dowValue, 0, 7) || matchesCronField(dayOfWeek, dowValue, 0, 7, true))
+    matchesCronField(minute, zoned.minute, 0, 59) &&
+    matchesCronField(hour, zoned.hour, 0, 23) &&
+    matchesCronField(dayOfMonth, zoned.day, 1, 31) &&
+    matchesCronField(month, zoned.month, 1, 12) &&
+    (matchesCronField(dayOfWeek, zoned.dayOfWeek, 0, 7) || matchesCronField(dayOfWeek, zoned.dayOfWeek, 0, 7, true))
   );
 }
 
@@ -344,7 +389,8 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
       continue;
     }
 
-    if (!config.cron || !cronMatchesNow(config.cron, now)) {
+    const timezone = config.timezone || 'UTC';
+    if (!config.cron || !cronMatchesNow(config.cron, now, timezone)) {
       continue;
     }
 
@@ -371,6 +417,7 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
         type: 'schedule',
         triggerId: row.trigger_id,
         cron: config.cron,
+        timezone,
         eventCron: event.cron,
         tickBucket,
         timestamp: now.toISOString(),
@@ -390,7 +437,7 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
       row.trigger_id,
       'pending',
       'schedule',
-      JSON.stringify({ cron: config.cron, tickBucket }),
+      JSON.stringify({ cron: config.cron, timezone, tickBucket }),
       JSON.stringify(variables),
       now.toISOString(),
       row.workflow_version || null,
