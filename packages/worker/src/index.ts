@@ -28,11 +28,13 @@ import { invitesRouter, invitesApiRouter } from './routes/invites.js';
 import { orgReposAdminRouter, orgReposReadRouter } from './routes/org-repos.js';
 import { personasRouter } from './routes/personas.js';
 import { orchestratorRouter } from './routes/orchestrator.js';
+import { createWorkflowSession, enqueueWorkflowExecution, sha256Hex } from './lib/workflow-runtime.js';
 
 // Durable Object exports
 export { APIKeysDurableObject } from './durable-objects/api-keys.js';
 export { SessionAgentDO } from './durable-objects/session-agent.js';
 export { EventBusDO } from './durable-objects/event-bus.js';
+export { WorkflowExecutorDO } from './durable-objects/workflow-executor.js';
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -142,7 +144,187 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (event, env, ctx) 
       ).catch((err: unknown) => console.error(`Failed to trigger sync for ${integration.id}:`, err))
     );
   }
+
+  try {
+    await dispatchScheduledWorkflows(event, env);
+  } catch (error) {
+    console.error('Scheduled workflow dispatch error:', error);
+  }
 };
+
+function matchesCronField(field: string, value: number, min: number, max: number, sundayAlias = false): boolean {
+  const normalizedValue = sundayAlias && value === 0 ? 7 : value;
+  const parts = field.split(',');
+
+  for (const partRaw of parts) {
+    const part = partRaw.trim();
+    if (!part) continue;
+
+    if (part === '*') return true;
+
+    if (part.startsWith('*/')) {
+      const step = Number.parseInt(part.slice(2), 10);
+      if (Number.isInteger(step) && step > 0 && value % step === 0) return true;
+      continue;
+    }
+
+    const [base, stepPart] = part.split('/');
+    const step = stepPart ? Number.parseInt(stepPart, 10) : 1;
+    if (!Number.isInteger(step) || step <= 0) continue;
+
+    if (base.includes('-')) {
+      const [startRaw, endRaw] = base.split('-');
+      const start = Number.parseInt(startRaw, 10);
+      const end = Number.parseInt(endRaw, 10);
+      if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
+      if (start < min || end > max || start > end) continue;
+      const target = sundayAlias ? normalizedValue : value;
+      if (target >= start && target <= end && (target - start) % step === 0) return true;
+      continue;
+    }
+
+    const exact = Number.parseInt(base, 10);
+    if (!Number.isInteger(exact)) continue;
+    if (exact < min || exact > max) continue;
+    const target = sundayAlias ? normalizedValue : value;
+    if (target === exact) return true;
+  }
+
+  return false;
+}
+
+function cronMatchesNow(cron: string, now: Date): boolean {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return false;
+
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
+  const minuteValue = now.getUTCMinutes();
+  const hourValue = now.getUTCHours();
+  const dayValue = now.getUTCDate();
+  const monthValue = now.getUTCMonth() + 1;
+  const dowValue = now.getUTCDay();
+
+  return (
+    matchesCronField(minute, minuteValue, 0, 59) &&
+    matchesCronField(hour, hourValue, 0, 23) &&
+    matchesCronField(dayOfMonth, dayValue, 1, 31) &&
+    matchesCronField(month, monthValue, 1, 12) &&
+    (matchesCronField(dayOfWeek, dowValue, 0, 7) || matchesCronField(dayOfWeek, dowValue, 0, 7, true))
+  );
+}
+
+async function dispatchScheduledWorkflows(event: ScheduledController, env: Env): Promise<void> {
+  const now = new Date();
+  const tickBucket = now.toISOString().slice(0, 16); // UTC minute precision
+
+  const result = await env.DB.prepare(`
+    SELECT
+      t.id as trigger_id,
+      t.user_id,
+      t.workflow_id,
+      t.config,
+      w.name as workflow_name,
+      w.version as workflow_version,
+      w.data as workflow_data
+    FROM triggers t
+    JOIN workflows w ON t.workflow_id = w.id
+    WHERE t.type = 'schedule'
+      AND t.enabled = 1
+      AND w.enabled = 1
+  `).all<{
+    trigger_id: string;
+    user_id: string;
+    workflow_id: string;
+    config: string;
+    workflow_name: string;
+    workflow_version: string | null;
+    workflow_data: string;
+  }>();
+
+  let dispatched = 0;
+
+  for (const row of result.results || []) {
+    let config: { cron?: string; timezone?: string };
+    try {
+      config = JSON.parse(row.config);
+    } catch {
+      continue;
+    }
+
+    if (!config.cron || !cronMatchesNow(config.cron, now)) {
+      continue;
+    }
+
+    const tickInsert = await env.DB.prepare(`
+      INSERT INTO workflow_schedule_ticks (id, trigger_id, tick_bucket)
+      VALUES (?, ?, ?)
+      ON CONFLICT(trigger_id, tick_bucket) DO NOTHING
+    `).bind(crypto.randomUUID(), row.trigger_id, tickBucket).run();
+
+    if ((tickInsert.meta.changes ?? 0) === 0) {
+      continue;
+    }
+
+    const executionId = crypto.randomUUID();
+    const workflowHash = await sha256Hex(String(row.workflow_data ?? '{}'));
+    const sessionId = await createWorkflowSession(env.DB, {
+      userId: row.user_id,
+      workflowId: row.workflow_id,
+      executionId,
+    });
+
+    const variables = {
+      _trigger: {
+        type: 'schedule',
+        triggerId: row.trigger_id,
+        cron: config.cron,
+        eventCron: event.cron,
+        tickBucket,
+        timestamp: now.toISOString(),
+      },
+    };
+
+    const idempotencyKey = `schedule:${row.trigger_id}:${tickBucket}`;
+    await env.DB.prepare(`
+      INSERT INTO workflow_executions
+        (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
+         workflow_version, workflow_hash, idempotency_key, session_id, initiator_type, initiator_user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      executionId,
+      row.workflow_id,
+      row.user_id,
+      row.trigger_id,
+      'pending',
+      'schedule',
+      JSON.stringify({ cron: config.cron, tickBucket }),
+      JSON.stringify(variables),
+      now.toISOString(),
+      row.workflow_version || null,
+      workflowHash,
+      idempotencyKey,
+      sessionId,
+      'schedule',
+      row.user_id
+    ).run();
+
+    await env.DB.prepare(`
+      UPDATE triggers SET last_run_at = ? WHERE id = ?
+    `).bind(now.toISOString(), row.trigger_id).run();
+
+    await enqueueWorkflowExecution(env, {
+      executionId,
+      workflowId: row.workflow_id,
+      userId: row.user_id,
+      sessionId,
+      triggerType: 'schedule',
+    });
+
+    dispatched++;
+  }
+
+  console.log(`Scheduled workflow dispatch complete: ${dispatched} execution(s) enqueued`);
+}
 
 export default {
   fetch: app.fetch,

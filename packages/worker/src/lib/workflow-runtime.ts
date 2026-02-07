@@ -1,5 +1,6 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import * as db from './db.js';
+import type { Env } from '../env.js';
 
 function buildWorkflowWorkspace(workflowId: string, executionId: string): string {
   const wf = workflowId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16) || 'workflow';
@@ -53,4 +54,29 @@ export async function createWorkflowSession(
   await db.updateSessionStatus(database, sessionId, 'hibernated');
 
   return sessionId;
+}
+
+export async function enqueueWorkflowExecution(
+  env: Env,
+  params: {
+    executionId: string;
+    workflowId: string;
+    userId: string;
+    sessionId?: string;
+    triggerType: 'manual' | 'webhook' | 'schedule';
+  }
+): Promise<boolean> {
+  try {
+    const doId = env.WORKFLOW_EXECUTOR.idFromName(params.executionId);
+    const stub = env.WORKFLOW_EXECUTOR.get(doId);
+    const response = await stub.fetch(new Request('https://workflow-executor/enqueue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    }));
+    return response.ok;
+  } catch (error) {
+    console.error('Failed to enqueue workflow execution', error);
+    return false;
+  }
 }

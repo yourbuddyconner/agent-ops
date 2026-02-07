@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { NotFoundError, ValidationError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
-import { createWorkflowSession, sha256Hex } from '../lib/workflow-runtime.js';
+import { createWorkflowSession, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 
 export const triggersRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -139,6 +139,14 @@ triggersRouter.post('/manual/run', zValidator('json', manualRunSchema), async (c
     user.id
   ).run();
 
+  const dispatched = await enqueueWorkflowExecution(c.env, {
+    executionId,
+    workflowId: workflow.id,
+    userId: user.id,
+    sessionId,
+    triggerType: 'manual',
+  });
+
   return c.json(
     {
       executionId,
@@ -147,7 +155,10 @@ triggersRouter.post('/manual/run', zValidator('json', manualRunSchema), async (c
       status: 'pending',
       variables,
       sessionId,
-      message: 'Workflow execution queued. OpenCode container integration pending.',
+      dispatched,
+      message: dispatched
+        ? 'Workflow execution queued and dispatched to workflow executor.'
+        : 'Workflow execution queued. Dispatch to workflow executor failed and will need retry.',
     },
     202
   );
@@ -537,6 +548,14 @@ triggersRouter.post('/:id/run', zValidator('json', triggerRunSchema), async (c) 
     user.id
   ).run();
 
+  const dispatched = await enqueueWorkflowExecution(c.env, {
+    executionId,
+    workflowId: row.wf_id,
+    userId: user.id,
+    sessionId,
+    triggerType: 'manual',
+  });
+
   // Update trigger last run time
   await c.env.DB.prepare(`
     UPDATE triggers SET last_run_at = ? WHERE id = ?
@@ -552,7 +571,10 @@ triggersRouter.post('/:id/run', zValidator('json', triggerRunSchema), async (c) 
       status: 'pending',
       variables,
       sessionId,
-      message: 'Workflow execution queued. OpenCode container integration pending.',
+      dispatched,
+      message: dispatched
+        ? 'Workflow execution queued and dispatched to workflow executor.'
+        : 'Workflow execution queued. Dispatch to workflow executor failed and will need retry.',
     },
     202
   );

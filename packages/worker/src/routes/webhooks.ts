@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Env, Variables } from '../env.js';
 import { integrationRegistry } from '../integrations/base.js';
 import * as db from '../lib/db.js';
-import { createWorkflowSession, sha256Hex } from '../lib/workflow-runtime.js';
+import { createWorkflowSession, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 
 export const webhooksRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -184,6 +184,14 @@ webhooksRouter.all('/*', async (c, next) => {
     trigger.user_id
   ).run();
 
+  const dispatched = await enqueueWorkflowExecution(c.env, {
+    executionId,
+    workflowId: trigger.workflow_id,
+    userId: trigger.user_id,
+    sessionId,
+    triggerType: 'webhook',
+  });
+
   // Update trigger last run time
   await c.env.DB.prepare(`
     UPDATE triggers SET last_run_at = ? WHERE id = ?
@@ -197,7 +205,10 @@ webhooksRouter.all('/*', async (c, next) => {
     workflowName: trigger.workflow_name,
     status: 'pending',
     sessionId,
-    message: 'Webhook received. Workflow execution queued.',
+    dispatched,
+    message: dispatched
+      ? 'Webhook received. Workflow execution queued and dispatched.'
+      : 'Webhook received. Workflow execution queued but dispatch failed.',
   }, 202);
 });
 

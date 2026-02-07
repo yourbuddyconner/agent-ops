@@ -33,10 +33,18 @@ class_name = "SessionAgentDO"
 name = "EVENT_BUS"
 class_name = "EventBusDO"
 
+[[durable_objects.bindings]]
+name = "WORKFLOW_EXECUTOR"
+class_name = "WorkflowExecutorDO"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["APIKeysDurableObject", "EventBusDO"]
 new_sqlite_classes = ["SessionAgentDO"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["WorkflowExecutorDO"]
 
 # D1 Database
 [[d1_databases]]
