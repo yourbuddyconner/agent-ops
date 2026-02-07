@@ -96,7 +96,10 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
           <SidebarSection label={`Tunnels (${tunnels.length})`}>
             <div className="space-y-2">
               {tunnels.map((tunnel) => (
-                <div key={tunnel.name} className="rounded-md border border-border/60 bg-surface-1/40 px-2 py-1.5 dark:bg-surface-2/40">
+                <div
+                  key={tunnel.name}
+                  className="min-w-0 overflow-hidden rounded-md border border-border/60 bg-surface-1/40 px-2 py-1.5 dark:bg-surface-2/40"
+                >
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-neutral-400 dark:text-neutral-500">
                       {tunnel.name}
@@ -122,7 +125,7 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
                       </button>
                     </div>
                   </div>
-                  <div className="mt-1">
+                  <div className="mt-1 min-w-0 overflow-hidden">
                     <CopyableText text={tunnel.url || tunnel.path || `/t/${tunnel.name}`} />
                   </div>
                 </div>
@@ -364,10 +367,10 @@ function CopyableText({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="group/copy flex items-center gap-1 font-mono text-[11px] text-neutral-600 hover:text-accent dark:text-neutral-400 dark:hover:text-accent transition-colors truncate"
+      className="group/copy flex w-full min-w-0 items-center gap-1 overflow-hidden font-mono text-[11px] text-neutral-600 transition-colors hover:text-accent dark:text-neutral-400 dark:hover:text-accent"
       title="Click to copy"
     >
-      <span className="truncate">{text}</span>
+      <span className="min-w-0 flex-1 truncate">{text}</span>
       {copied ? (
         <CheckIcon className="h-2.5 w-2.5 shrink-0 text-emerald-500" />
       ) : (
