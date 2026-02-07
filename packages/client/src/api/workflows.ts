@@ -60,12 +60,50 @@ export interface WorkflowConstraints {
   maxToolCalls?: number;
 }
 
+export interface WorkflowMutationProposal {
+  id: string;
+  workflowId: string;
+  executionId: string | null;
+  proposedBySessionId: string | null;
+  baseWorkflowHash: string;
+  proposal: Record<string, unknown>;
+  diffText: string | null;
+  status: 'pending' | 'approved' | 'rejected' | 'applied' | 'failed';
+  reviewNotes: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ListWorkflowsResponse {
   workflows: Workflow[];
 }
 
 export interface GetWorkflowResponse {
   workflow: Workflow;
+}
+
+export interface ListWorkflowProposalsResponse {
+  proposals: WorkflowMutationProposal[];
+}
+
+export interface CreateWorkflowProposalRequest {
+  executionId?: string;
+  proposedBySessionId?: string;
+  baseWorkflowHash: string;
+  proposal: Record<string, unknown>;
+  diffText?: string;
+  expiresAt?: string;
+}
+
+export interface ReviewWorkflowProposalRequest {
+  approve: boolean;
+  notes?: string;
+}
+
+export interface ApplyWorkflowProposalRequest {
+  reviewNotes?: string;
+  version?: string;
 }
 
 export interface SyncWorkflowRequest {
@@ -95,6 +133,7 @@ export const workflowKeys = {
   details: () => [...workflowKeys.all, 'detail'] as const,
   detail: (id: string) => [...workflowKeys.details(), id] as const,
   executions: (id: string) => [...workflowKeys.detail(id), 'executions'] as const,
+  proposals: (id: string) => [...workflowKeys.detail(id), 'proposals'] as const,
 };
 
 // Hooks
@@ -170,6 +209,82 @@ export function useRunWorkflow() {
       }),
     onSuccess: (_, { workflowId }) => {
       queryClient.invalidateQueries({ queryKey: workflowKeys.executions(workflowId) });
+    },
+  });
+}
+
+export function useWorkflowProposals(workflowId: string, status?: string) {
+  const queryParams = new URLSearchParams();
+  if (status) queryParams.set('status', status);
+  const query = queryParams.toString();
+
+  return useQuery({
+    queryKey: [...workflowKeys.proposals(workflowId), status] as const,
+    queryFn: () =>
+      api.get<ListWorkflowProposalsResponse>(
+        `/workflows/${workflowId}/proposals${query ? `?${query}` : ''}`
+      ),
+    enabled: !!workflowId,
+  });
+}
+
+export function useCreateWorkflowProposal() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ workflowId, ...data }: CreateWorkflowProposalRequest & { workflowId: string }) =>
+      api.post<{ proposal: WorkflowMutationProposal }>(`/workflows/${workflowId}/proposals`, data),
+    onSuccess: (_, { workflowId }) => {
+      queryClient.invalidateQueries({ queryKey: workflowKeys.proposals(workflowId) });
+    },
+  });
+}
+
+export function useReviewWorkflowProposal() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      workflowId,
+      proposalId,
+      data,
+    }: {
+      workflowId: string;
+      proposalId: string;
+      data: ReviewWorkflowProposalRequest;
+    }) =>
+      api.post<{ success: boolean; status: string; reviewedAt: string }>(
+        `/workflows/${workflowId}/proposals/${proposalId}/review`,
+        data
+      ),
+    onSuccess: (_, { workflowId }) => {
+      queryClient.invalidateQueries({ queryKey: workflowKeys.proposals(workflowId) });
+    },
+  });
+}
+
+export function useApplyWorkflowProposal() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      workflowId,
+      proposalId,
+      data,
+    }: {
+      workflowId: string;
+      proposalId: string;
+      data?: ApplyWorkflowProposalRequest;
+    }) =>
+      api.post<{ success: boolean; proposalId: string; workflow: Workflow }>(
+        `/workflows/${workflowId}/proposals/${proposalId}/apply`,
+        data || {}
+      ),
+    onSuccess: (response) => {
+      const workflow = response.workflow;
+      queryClient.invalidateQueries({ queryKey: workflowKeys.proposals(workflow.id) });
+      queryClient.setQueryData<GetWorkflowResponse>(workflowKeys.detail(workflow.id), { workflow });
+      queryClient.invalidateQueries({ queryKey: workflowKeys.lists() });
     },
   });
 }

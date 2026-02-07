@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { NotFoundError } from '@agent-ops/shared';
+import { NotFoundError, ValidationError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
+import { sha256Hex } from '../lib/workflow-runtime.js';
 
 export const workflowsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -29,6 +30,75 @@ const updateWorkflowSchema = z.object({
   tags: z.array(z.string()).optional(),
   data: z.record(z.unknown()).optional(),
 });
+
+const createProposalSchema = z.object({
+  executionId: z.string().optional(),
+  proposedBySessionId: z.string().optional(),
+  baseWorkflowHash: z.string().min(1),
+  proposal: z.record(z.unknown()),
+  diffText: z.string().optional(),
+  expiresAt: z.string().optional(),
+});
+
+const reviewProposalSchema = z.object({
+  approve: z.boolean(),
+  notes: z.string().optional(),
+});
+
+const applyProposalSchema = z.object({
+  reviewNotes: z.string().optional(),
+  version: z.string().optional(),
+});
+
+function normalizeHash(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return 'sha256:';
+  return trimmed.startsWith('sha256:') ? trimmed : `sha256:${trimmed}`;
+}
+
+function parseJsonObject(raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function extractProposedWorkflow(proposal: Record<string, unknown>): Record<string, unknown> | null {
+  const candidates: unknown[] = [
+    proposal.proposedWorkflow,
+    (proposal.proposal as Record<string, unknown> | undefined)?.proposedWorkflow,
+    proposal.workflow,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+      return candidate as Record<string, unknown>;
+    }
+  }
+
+  if (Array.isArray((proposal as Record<string, unknown>).steps)) {
+    return proposal;
+  }
+
+  return null;
+}
+
+function bumpPatchVersion(version: string | null): string {
+  const fallback = '1.0.0';
+  const source = (version || fallback).trim();
+  const parts = source.split('.');
+  if (parts.length !== 3) return `${source}.1`;
+
+  const major = Number.parseInt(parts[0], 10);
+  const minor = Number.parseInt(parts[1], 10);
+  const patch = Number.parseInt(parts[2], 10);
+  if (!Number.isInteger(major) || !Number.isInteger(minor) || !Number.isInteger(patch)) {
+    return `${source}.1`;
+  }
+  return `${major}.${minor}.${patch + 1}`;
+}
 
 /**
  * GET /api/workflows
@@ -353,4 +423,270 @@ workflowsRouter.get('/:id/executions', async (c) => {
   }));
 
   return c.json({ executions });
+});
+
+/**
+ * GET /api/workflows/:id/proposals
+ * List self-modification proposals for a workflow.
+ */
+workflowsRouter.get('/:id/proposals', async (c) => {
+  const { id } = c.req.param();
+  const user = c.get('user');
+  const { limit, offset, status } = c.req.query();
+
+  const workflow = await c.env.DB.prepare(`
+    SELECT id
+    FROM workflows
+    WHERE (id = ? OR slug = ?) AND user_id = ?
+  `).bind(id, id, user.id).first<{ id: string }>();
+
+  if (!workflow) {
+    throw new NotFoundError('Workflow', id);
+  }
+
+  const params: unknown[] = [workflow.id];
+  let query = `
+    SELECT id, workflow_id, execution_id, proposed_by_session_id, base_workflow_hash, proposal_json,
+           diff_text, status, review_notes, expires_at, created_at, updated_at
+    FROM workflow_mutation_proposals
+    WHERE workflow_id = ?
+  `;
+
+  if (status) {
+    query += ' AND status = ?';
+    params.push(status);
+  }
+
+  query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+  params.push(parseInt(limit || '50', 10), parseInt(offset || '0', 10));
+
+  const result = await c.env.DB.prepare(query).bind(...params).all();
+  const proposals = result.results.map((row) => ({
+    id: row.id,
+    workflowId: row.workflow_id,
+    executionId: row.execution_id,
+    proposedBySessionId: row.proposed_by_session_id,
+    baseWorkflowHash: row.base_workflow_hash,
+    proposal: parseJsonObject(row.proposal_json as string),
+    diffText: row.diff_text,
+    status: row.status,
+    reviewNotes: row.review_notes,
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+
+  return c.json({ proposals });
+});
+
+/**
+ * POST /api/workflows/:id/proposals
+ * Create a self-modification proposal.
+ */
+workflowsRouter.post('/:id/proposals', zValidator('json', createProposalSchema), async (c) => {
+  const { id } = c.req.param();
+  const user = c.get('user');
+  const body = c.req.valid('json');
+
+  const workflow = await c.env.DB.prepare(`
+    SELECT id
+    FROM workflows
+    WHERE (id = ? OR slug = ?) AND user_id = ?
+  `).bind(id, id, user.id).first<{ id: string }>();
+
+  if (!workflow) {
+    throw new NotFoundError('Workflow', id);
+  }
+
+  const proposalId = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  await c.env.DB.prepare(`
+    INSERT INTO workflow_mutation_proposals
+      (id, workflow_id, execution_id, proposed_by_session_id, base_workflow_hash, proposal_json, diff_text, status, review_notes, expires_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    proposalId,
+    workflow.id,
+    body.executionId || null,
+    body.proposedBySessionId || null,
+    normalizeHash(body.baseWorkflowHash),
+    JSON.stringify(body.proposal),
+    body.diffText || null,
+    'pending',
+    null,
+    body.expiresAt || null,
+    now,
+    now,
+  ).run();
+
+  return c.json({
+    proposal: {
+      id: proposalId,
+      workflowId: workflow.id,
+      executionId: body.executionId || null,
+      proposedBySessionId: body.proposedBySessionId || null,
+      baseWorkflowHash: normalizeHash(body.baseWorkflowHash),
+      proposal: body.proposal,
+      diffText: body.diffText || null,
+      status: 'pending',
+      reviewNotes: null,
+      expiresAt: body.expiresAt || null,
+      createdAt: now,
+      updatedAt: now,
+    },
+  }, 201);
+});
+
+/**
+ * POST /api/workflows/:id/proposals/:proposalId/review
+ * Approve or reject a proposal before apply.
+ */
+workflowsRouter.post('/:id/proposals/:proposalId/review', zValidator('json', reviewProposalSchema), async (c) => {
+  const { id, proposalId } = c.req.param();
+  const user = c.get('user');
+  const body = c.req.valid('json');
+
+  const workflow = await c.env.DB.prepare(`
+    SELECT id
+    FROM workflows
+    WHERE (id = ? OR slug = ?) AND user_id = ?
+  `).bind(id, id, user.id).first<{ id: string }>();
+
+  if (!workflow) {
+    throw new NotFoundError('Workflow', id);
+  }
+
+  const proposal = await c.env.DB.prepare(`
+    SELECT id, status
+    FROM workflow_mutation_proposals
+    WHERE id = ? AND workflow_id = ?
+  `).bind(proposalId, workflow.id).first<{ id: string; status: string }>();
+
+  if (!proposal) {
+    throw new NotFoundError('Workflow proposal', proposalId);
+  }
+
+  if (proposal.status !== 'pending') {
+    throw new ValidationError(`Proposal is already ${proposal.status}`);
+  }
+
+  const nextStatus = body.approve ? 'approved' : 'rejected';
+  const now = new Date().toISOString();
+
+  await c.env.DB.prepare(`
+    UPDATE workflow_mutation_proposals
+    SET status = ?, review_notes = ?, updated_at = ?
+    WHERE id = ?
+  `).bind(nextStatus, body.notes || null, now, proposalId).run();
+
+  return c.json({ success: true, status: nextStatus, reviewedAt: now });
+});
+
+/**
+ * POST /api/workflows/:id/proposals/:proposalId/apply
+ * Apply an approved proposal to the workflow definition.
+ */
+workflowsRouter.post('/:id/proposals/:proposalId/apply', zValidator('json', applyProposalSchema), async (c) => {
+  const { id, proposalId } = c.req.param();
+  const user = c.get('user');
+  const body = c.req.valid('json');
+
+  const workflow = await c.env.DB.prepare(`
+    SELECT id, version, data, slug, name, description, enabled, tags, created_at, updated_at
+    FROM workflows
+    WHERE (id = ? OR slug = ?) AND user_id = ?
+  `).bind(id, id, user.id).first<{
+    id: string;
+    version: string | null;
+    data: string;
+    slug: string | null;
+    name: string;
+    description: string | null;
+    enabled: number;
+    tags: string | null;
+    created_at: string;
+    updated_at: string;
+  }>();
+
+  if (!workflow) {
+    throw new NotFoundError('Workflow', id);
+  }
+
+  const proposal = await c.env.DB.prepare(`
+    SELECT id, workflow_id, base_workflow_hash, proposal_json, status, expires_at, review_notes
+    FROM workflow_mutation_proposals
+    WHERE id = ? AND workflow_id = ?
+  `).bind(proposalId, workflow.id).first<{
+    id: string;
+    workflow_id: string;
+    base_workflow_hash: string;
+    proposal_json: string;
+    status: string;
+    expires_at: string | null;
+    review_notes: string | null;
+  }>();
+
+  if (!proposal) {
+    throw new NotFoundError('Workflow proposal', proposalId);
+  }
+
+  if (proposal.status === 'applied') {
+    return c.json({ success: true, status: 'applied', message: 'Proposal already applied' });
+  }
+  if (proposal.status !== 'approved') {
+    throw new ValidationError(`Proposal must be approved before apply (current: ${proposal.status})`);
+  }
+  if (proposal.expires_at && new Date(proposal.expires_at).getTime() < Date.now()) {
+    throw new ValidationError('Proposal has expired');
+  }
+
+  const currentHash = normalizeHash(await sha256Hex(String(workflow.data ?? '{}')));
+  const baseHash = normalizeHash(proposal.base_workflow_hash);
+  if (currentHash !== baseHash) {
+    throw new ValidationError('Base workflow hash mismatch; proposal is stale');
+  }
+
+  const proposalJson = parseJsonObject(proposal.proposal_json);
+  const proposedWorkflow = extractProposedWorkflow(proposalJson);
+  if (!proposedWorkflow) {
+    throw new ValidationError('Proposal missing proposed workflow payload');
+  }
+  if (!Array.isArray(proposedWorkflow.steps)) {
+    throw new ValidationError('Proposed workflow is invalid: steps must be an array');
+  }
+
+  const now = new Date().toISOString();
+  const nextVersion = body.version || bumpPatchVersion(workflow.version);
+
+  await c.env.DB.prepare(`
+    UPDATE workflows
+    SET data = ?, version = ?, updated_at = ?
+    WHERE id = ?
+  `).bind(JSON.stringify(proposedWorkflow), nextVersion, now, workflow.id).run();
+
+  await c.env.DB.prepare(`
+    UPDATE workflow_mutation_proposals
+    SET status = 'applied',
+        review_notes = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).bind(body.reviewNotes || proposal.review_notes || null, now, proposal.id).run();
+
+  return c.json({
+    success: true,
+    proposalId: proposal.id,
+    workflow: {
+      id: workflow.id,
+      slug: workflow.slug,
+      name: workflow.name,
+      description: workflow.description,
+      version: nextVersion,
+      data: proposedWorkflow,
+      enabled: Boolean(workflow.enabled),
+      tags: workflow.tags ? JSON.parse(workflow.tags) : [],
+      createdAt: workflow.created_at,
+      updatedAt: now,
+    },
+  });
 });
