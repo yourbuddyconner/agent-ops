@@ -2993,7 +2993,7 @@ export class SessionAgentDO {
             systemTitle: childTitle,
             systemAvatarKey: 'child-session',
           },
-          wake: options?.wake ?? false,
+          wake: options?.wake ?? true,
         }),
       }));
     } catch (err) {
