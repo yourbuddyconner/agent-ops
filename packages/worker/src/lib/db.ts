@@ -763,14 +763,15 @@ export async function createSessionGitState(
     sourceRepoFullName?: string;
     sourceRepoUrl?: string;
     branch?: string;
+    ref?: string;
     baseBranch?: string;
   }
 ): Promise<SessionGitState> {
   const id = crypto.randomUUID();
   await db
     .prepare(
-      `INSERT INTO session_git_state (id, session_id, source_type, source_pr_number, source_issue_number, source_repo_full_name, source_repo_url, branch, base_branch)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO session_git_state (id, session_id, source_type, source_pr_number, source_issue_number, source_repo_full_name, source_repo_url, branch, ref, base_branch)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       id,
@@ -781,6 +782,7 @@ export async function createSessionGitState(
       data.sourceRepoFullName || null,
       data.sourceRepoUrl || null,
       data.branch || null,
+      data.ref || null,
       data.baseBranch || null
     )
     .run();
@@ -794,6 +796,7 @@ export async function createSessionGitState(
     source_repo_full_name: data.sourceRepoFullName || null,
     source_repo_url: data.sourceRepoUrl || null,
     branch: data.branch || null,
+    ref: data.ref || null,
     base_branch: data.baseBranch || null,
     commit_count: 0,
     pr_number: null,
@@ -813,6 +816,7 @@ export async function updateSessionGitState(
   sessionId: string,
   updates: Partial<{
     branch: string;
+    ref: string;
     baseBranch: string;
     commitCount: number;
     prNumber: number;
@@ -827,6 +831,7 @@ export async function updateSessionGitState(
   const params: (string | number | null)[] = [];
 
   if (updates.branch !== undefined) { sets.push('branch = ?'); params.push(updates.branch); }
+  if (updates.ref !== undefined) { sets.push('ref = ?'); params.push(updates.ref); }
   if (updates.baseBranch !== undefined) { sets.push('base_branch = ?'); params.push(updates.baseBranch); }
   if (updates.commitCount !== undefined) { sets.push('commit_count = ?'); params.push(updates.commitCount); }
   if (updates.prNumber !== undefined) { sets.push('pr_number = ?'); params.push(updates.prNumber); }
@@ -1821,6 +1826,7 @@ function mapSessionGitState(row: any): SessionGitState {
     sourceRepoFullName: row.source_repo_full_name || null,
     sourceRepoUrl: row.source_repo_url || null,
     branch: row.branch || null,
+    ref: row.ref || null,
     baseBranch: row.base_branch || null,
     commitCount: row.commit_count ?? 0,
     prNumber: row.pr_number ?? null,

@@ -90,6 +90,7 @@ export interface SessionGitState {
   sourceRepoFullName: string | null;
   sourceRepoUrl: string | null;
   branch: string | null;
+  ref: string | null;
   baseBranch: string | null;
   commitCount: number;
   prNumber: number | null;
@@ -359,6 +360,7 @@ export interface CreateSessionRequest {
   workspace: string;
   repoUrl?: string;
   branch?: string;
+  ref?: string;
   title?: string;
   parentSessionId?: string;
   config?: {

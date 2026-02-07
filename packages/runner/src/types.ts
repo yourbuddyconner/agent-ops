@@ -57,7 +57,7 @@ export type RunnerToDOMessage =
   | { type: "reverted"; messageIds: string[] }
   | { type: "diff"; requestId: string; data: { files: DiffFile[] } }
   | { type: "files-changed"; files: Array<{ path: string; status: string; additions?: number; deletions?: number }> }
-  | { type: "spawn-child"; requestId: string; task: string; workspace: string; repoUrl?: string; branch?: string; title?: string; sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string; model?: string }
+  | { type: "spawn-child"; requestId: string; task: string; workspace: string; repoUrl?: string; branch?: string; ref?: string; title?: string; sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string; model?: string }
   | { type: "session-message"; requestId: string; targetSessionId: string; content: string; interrupt?: boolean }
   | { type: "session-messages"; requestId: string; targetSessionId: string; limit?: number; after?: string }
   | { type: "terminate-child"; requestId: string; childSessionId: string }

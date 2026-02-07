@@ -15,6 +15,7 @@ const createSessionSchema = z.object({
   workspace: z.string().min(1).max(100),
   repoUrl: z.string().url().optional(),
   branch: z.string().optional(),
+  ref: z.string().optional(),
   title: z.string().max(200).optional(),
   parentSessionId: z.string().uuid().optional(),
   config: z
@@ -143,6 +144,7 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     sourceRepoFullName: sourceRepoFullName || undefined,
     sourceRepoUrl: body.repoUrl,
     branch: body.branch,
+    ref: body.ref,
   });
 
   // Construct WebSocket URL for the DO (used by Runner inside sandbox)
@@ -190,6 +192,9 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     envVars.REPO_URL = body.repoUrl;
     if (body.branch) {
       envVars.REPO_BRANCH = body.branch;
+    }
+    if (body.ref) {
+      envVars.REPO_REF = body.ref;
     }
     envVars.GIT_USER_NAME = userRow?.git_name || userRow?.name || userRow?.github_username || 'Agent Ops User';
     envVars.GIT_USER_EMAIL = userRow?.git_email || userRow?.email || user.email;

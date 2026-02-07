@@ -1466,6 +1466,7 @@ export class SessionAgentDO {
           workspace: msg.workspace!,
           repoUrl: msg.repoUrl,
           branch: msg.branch,
+          ref: msg.ref,
           title: msg.title,
           sourceType: msg.sourceType,
           sourcePrNumber: msg.sourcePrNumber,
@@ -1564,7 +1565,7 @@ export class SessionAgentDO {
   private async handleSpawnChild(
     requestId: string,
     params: {
-      task: string; workspace: string; repoUrl?: string; branch?: string; title?: string;
+      task: string; workspace: string; repoUrl?: string; branch?: string; ref?: string; title?: string;
       sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string;
       model?: string;
     },
@@ -1591,6 +1592,7 @@ export class SessionAgentDO {
       // Merge: explicit params override parent defaults
       const mergedRepoUrl = params.repoUrl || parentGitState?.sourceRepoUrl || undefined;
       const mergedBranch = params.branch || parentGitState?.branch || undefined;
+      const mergedRef = params.ref || parentGitState?.ref || undefined;
       const mergedSourceType = params.sourceType || parentGitState?.sourceType || undefined;
       const mergedSourcePrNumber = params.sourcePrNumber ?? parentGitState?.sourcePrNumber ?? undefined;
       const mergedSourceIssueNumber = params.sourceIssueNumber ?? parentGitState?.sourceIssueNumber ?? undefined;
@@ -1626,6 +1628,7 @@ export class SessionAgentDO {
           sourceRepoUrl: mergedRepoUrl,
           sourceRepoFullName: derivedRepoFullName,
           branch: mergedBranch,
+          ref: mergedRef,
           sourcePrNumber: mergedSourcePrNumber,
           sourceIssueNumber: mergedSourceIssueNumber,
         });
@@ -1658,6 +1661,9 @@ export class SessionAgentDO {
         };
         if (mergedBranch) {
           childSpawnRequest.envVars.REPO_BRANCH = mergedBranch;
+        }
+        if (mergedRef) {
+          childSpawnRequest.envVars.REPO_REF = mergedRef;
         }
 
         // Inject git credentials if the parent doesn't have them (e.g. orchestrator)

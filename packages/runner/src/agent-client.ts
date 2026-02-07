@@ -197,6 +197,7 @@ export class AgentClient {
     workspace: string;
     repoUrl?: string;
     branch?: string;
+    ref?: string;
     title?: string;
     sourceType?: string;
     sourcePrNumber?: number;

@@ -64,6 +64,10 @@ if [ -n "${REPO_URL:-}" ]; then
   else
     echo "[start.sh] ${CLONE_DIR} already exists, skipping clone"
   fi
+  if [ -n "${REPO_REF:-}" ]; then
+    echo "[start.sh] Checking out ref ${REPO_REF}"
+    git -C "${CLONE_DIR}" checkout "${REPO_REF}"
+  fi
   WORK_DIR="${CLONE_DIR}"
 fi
 
@@ -77,6 +81,9 @@ if [ -n "${REPO_URL:-}" ]; then
     echo "- Repo URL: ${REPO_URL}"
     if [ -n "${REPO_BRANCH:-}" ]; then
       echo "- Branch: ${REPO_BRANCH}"
+    fi
+    if [ -n "${REPO_REF:-}" ]; then
+      echo "- Ref: ${REPO_REF}"
     fi
     if [ -n "${CLONE_DIR:-}" ]; then
       echo "- Working directory: ${WORK_DIR}"

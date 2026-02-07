@@ -21,6 +21,10 @@ export default tool({
       .string()
       .optional()
       .describe("Git branch for the child to check out (optional)"),
+    ref: tool.schema
+      .string()
+      .optional()
+      .describe("Git ref (commit SHA or tag) for the child to check out (optional). If provided, takes precedence over branch."),
     title: tool.schema
       .string()
       .optional()
@@ -64,6 +68,7 @@ export default tool({
           workspace: args.workspace,
           repoUrl: args.repo_url,
           branch: args.branch,
+          ref: args.ref,
           title: args.title || args.workspace,
           sourceType: args.source_type,
           sourcePrNumber: args.source_pr_number,

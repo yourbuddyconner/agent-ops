@@ -86,7 +86,8 @@ When using \`spawn_session\`, ALWAYS include:
 - **\`source_repo_full_name\`** — \`owner/repo\` format for UI tracking
 
 Optional but recommended:
-- **\`branch\`** — if working on a specific branch
+- **\`branch\`** — if working on a specific branch (required for PR work).
+- **\`ref\`** — optional git ref (tag or commit SHA). Use this for exact revisions; it takes precedence over \`branch\`.
 - **\`source_type\`** / **\`source_pr_number\`** / **\`source_issue_number\`** — when working on a specific PR or issue
 
 **Finding repo URLs:**
