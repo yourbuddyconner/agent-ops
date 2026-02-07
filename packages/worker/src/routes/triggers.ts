@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { NotFoundError, ValidationError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
-import { createWorkflowSession, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
+import { checkWorkflowConcurrency, createWorkflowSession, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 
 export const triggersRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -81,6 +81,16 @@ triggersRouter.post('/manual/run', zValidator('json', manualRunSchema), async (c
 
   if (!workflow) {
     throw new NotFoundError('Workflow', workflowId);
+  }
+
+  const concurrency = await checkWorkflowConcurrency(c.env.DB, user.id);
+  if (!concurrency.allowed) {
+    return c.json({
+      error: 'Too many concurrent workflow executions',
+      reason: concurrency.reason,
+      activeUser: concurrency.activeUser,
+      activeGlobal: concurrency.activeGlobal,
+    }, 429);
   }
 
   const clientRequestId = body.clientRequestId || crypto.randomUUID();
@@ -468,6 +478,16 @@ triggersRouter.post('/:id/run', zValidator('json', triggerRunSchema), async (c) 
 
   if (!row) {
     throw new NotFoundError('Trigger', id);
+  }
+
+  const concurrency = await checkWorkflowConcurrency(c.env.DB, user.id);
+  if (!concurrency.allowed) {
+    return c.json({
+      error: 'Too many concurrent workflow executions',
+      reason: concurrency.reason,
+      activeUser: concurrency.activeUser,
+      activeGlobal: concurrency.activeGlobal,
+    }, 429);
   }
 
   // Extract variables from body using the trigger's variable mapping

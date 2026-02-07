@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Env, Variables } from '../env.js';
 import { integrationRegistry } from '../integrations/base.js';
 import * as db from '../lib/db.js';
-import { createWorkflowSession, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
+import { checkWorkflowConcurrency, createWorkflowSession, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 
 export const webhooksRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -150,6 +150,18 @@ webhooksRouter.all('/*', async (c, next) => {
       sessionId: existing.session_id,
       message: 'Webhook received. Existing workflow execution reused.',
     }, 200);
+  }
+
+  const concurrency = await checkWorkflowConcurrency(c.env.DB, trigger.user_id);
+  if (!concurrency.allowed) {
+    return c.json({
+      received: true,
+      queued: false,
+      error: 'Too many concurrent workflow executions',
+      reason: concurrency.reason,
+      activeUser: concurrency.activeUser,
+      activeGlobal: concurrency.activeGlobal,
+    }, 429);
   }
 
   const executionId = crypto.randomUUID();

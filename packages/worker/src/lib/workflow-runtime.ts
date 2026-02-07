@@ -81,3 +81,48 @@ export async function enqueueWorkflowExecution(
     return false;
   }
 }
+
+export async function checkWorkflowConcurrency(
+  database: D1Database,
+  userId: string,
+  limits: { perUser?: number; global?: number } = {},
+): Promise<{ allowed: boolean; reason?: string; activeUser: number; activeGlobal: number }> {
+  const perUserLimit = limits.perUser ?? 5;
+  const globalLimit = limits.global ?? 50;
+
+  const userRow = await database.prepare(`
+    SELECT COUNT(*) AS count
+    FROM workflow_executions
+    WHERE user_id = ?
+      AND status IN ('pending', 'running', 'waiting_approval')
+  `).bind(userId).first<{ count: number }>();
+
+  const globalRow = await database.prepare(`
+    SELECT COUNT(*) AS count
+    FROM workflow_executions
+    WHERE status IN ('pending', 'running', 'waiting_approval')
+  `).first<{ count: number }>();
+
+  const activeUser = userRow?.count ?? 0;
+  const activeGlobal = globalRow?.count ?? 0;
+
+  if (activeUser >= perUserLimit) {
+    return {
+      allowed: false,
+      reason: `per_user_limit_exceeded:${perUserLimit}`,
+      activeUser,
+      activeGlobal,
+    };
+  }
+
+  if (activeGlobal >= globalLimit) {
+    return {
+      allowed: false,
+      reason: `global_limit_exceeded:${globalLimit}`,
+      activeUser,
+      activeGlobal,
+    };
+  }
+
+  return { allowed: true, activeUser, activeGlobal };
+}

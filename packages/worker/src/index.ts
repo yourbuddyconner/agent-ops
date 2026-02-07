@@ -28,7 +28,7 @@ import { invitesRouter, invitesApiRouter } from './routes/invites.js';
 import { orgReposAdminRouter, orgReposReadRouter } from './routes/org-repos.js';
 import { personasRouter } from './routes/personas.js';
 import { orchestratorRouter } from './routes/orchestrator.js';
-import { createWorkflowSession, enqueueWorkflowExecution, sha256Hex } from './lib/workflow-runtime.js';
+import { checkWorkflowConcurrency, createWorkflowSession, enqueueWorkflowExecution, sha256Hex } from './lib/workflow-runtime.js';
 
 // Durable Object exports
 export { APIKeysDurableObject } from './durable-objects/api-keys.js';
@@ -611,6 +611,14 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
 
     const timezone = config.timezone || 'UTC';
     if (!config.cron || !cronMatchesNow(config.cron, now, timezone)) {
+      continue;
+    }
+
+    const concurrency = await checkWorkflowConcurrency(env.DB, row.user_id);
+    if (!concurrency.allowed) {
+      console.warn(
+        `Skipping scheduled workflow dispatch for trigger ${row.trigger_id}: ${concurrency.reason} (activeUser=${concurrency.activeUser}, activeGlobal=${concurrency.activeGlobal})`,
+      );
       continue;
     }
 
