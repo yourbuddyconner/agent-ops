@@ -170,6 +170,136 @@ function hasPromptDispatch(runtimeStateRaw: string | null): boolean {
   }
 }
 
+interface WorkflowResultEnvelope {
+  executionId?: string;
+  status?: 'ok' | 'needs_approval' | 'cancelled' | 'failed';
+  output?: Record<string, unknown>;
+  steps?: Array<{
+    stepId: string;
+    status: string;
+    attempt?: number;
+    startedAt?: string;
+    completedAt?: string;
+    input?: unknown;
+    output?: unknown;
+    error?: string;
+  }>;
+  requiresApproval?: {
+    stepId?: string;
+    prompt?: string;
+    resumeToken?: string;
+    items?: unknown[];
+  } | null;
+  error?: string | null;
+}
+
+function extractJsonCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    candidates.push(trimmed);
+  }
+
+  const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match: RegExpExecArray | null = fenceRegex.exec(text);
+  while (match) {
+    const block = match[1]?.trim();
+    if (block && block.startsWith('{') && block.endsWith('}')) {
+      candidates.push(block);
+    }
+    match = fenceRegex.exec(text);
+  }
+
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    const block = text.slice(firstBrace, lastBrace + 1).trim();
+    if (block.startsWith('{') && block.endsWith('}')) {
+      candidates.push(block);
+    }
+  }
+
+  return candidates;
+}
+
+function parseWorkflowResultEnvelope(text: string, executionId: string): WorkflowResultEnvelope | null {
+  for (const candidate of extractJsonCandidates(text)) {
+    try {
+      const parsed = JSON.parse(candidate) as WorkflowResultEnvelope;
+      if (!parsed || typeof parsed !== 'object') continue;
+      if (parsed.executionId && parsed.executionId !== executionId) continue;
+      if (!parsed.status) continue;
+      if (!['ok', 'needs_approval', 'cancelled', 'failed'].includes(parsed.status)) continue;
+      return parsed;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+async function fetchWorkflowResultEnvelope(
+  env: Env,
+  sessionId: string,
+  executionId: string,
+): Promise<WorkflowResultEnvelope | null> {
+  try {
+    const doId = env.SESSIONS.idFromName(sessionId);
+    const sessionDO = env.SESSIONS.get(doId);
+    const response = await sessionDO.fetch(new Request('http://do/messages?limit=200'));
+    if (!response.ok) return null;
+
+    const payload = await response.json<{
+      messages?: Array<{ role?: string; content?: string }>;
+    }>();
+
+    const messages = payload.messages || [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const msg = messages[index];
+      if (!msg?.content || (msg.role !== 'assistant' && msg.role !== 'system')) continue;
+      const envelope = parseWorkflowResultEnvelope(msg.content, executionId);
+      if (envelope) return envelope;
+    }
+    return null;
+  } catch (error) {
+    console.warn(`Failed to fetch workflow result envelope for session ${sessionId}`, error);
+    return null;
+  }
+}
+
+async function persistStepTrace(
+  env: Env,
+  executionId: string,
+  steps: NonNullable<WorkflowResultEnvelope['steps']>,
+): Promise<void> {
+  for (const step of steps) {
+    const attempt = step.attempt && step.attempt > 0 ? step.attempt : 1;
+    await env.DB.prepare(`
+      INSERT INTO workflow_execution_steps
+        (id, execution_id, step_id, attempt, status, input_json, output_json, error, started_at, completed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(execution_id, step_id, attempt) DO UPDATE SET
+        status = excluded.status,
+        input_json = COALESCE(excluded.input_json, workflow_execution_steps.input_json),
+        output_json = COALESCE(excluded.output_json, workflow_execution_steps.output_json),
+        error = excluded.error,
+        started_at = COALESCE(excluded.started_at, workflow_execution_steps.started_at),
+        completed_at = COALESCE(excluded.completed_at, workflow_execution_steps.completed_at)
+    `).bind(
+      crypto.randomUUID(),
+      executionId,
+      step.stepId,
+      attempt,
+      step.status,
+      step.input !== undefined ? JSON.stringify(step.input) : null,
+      step.output !== undefined ? JSON.stringify(step.output) : null,
+      step.error || null,
+      step.startedAt || null,
+      step.completedAt || null,
+    ).run();
+  }
+}
+
 async function reconcileWorkflowExecutions(env: Env): Promise<void> {
   const now = new Date().toISOString();
   const result = await env.DB.prepare(`
@@ -177,6 +307,7 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
       e.id,
       e.status,
       e.runtime_state,
+      e.session_id,
       s.status AS session_status
     FROM workflow_executions e
     JOIN sessions s ON s.id = e.session_id
@@ -187,10 +318,13 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
     id: string;
     status: string;
     runtime_state: string | null;
+    session_id: string | null;
     session_status: string;
   }>();
 
   let completed = 0;
+  let waitingApproval = 0;
+  let cancelled = 0;
   let failed = 0;
 
   for (const row of result.results || []) {
@@ -219,16 +353,7 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
     }
 
     const promptDispatched = hasPromptDispatch(row.runtime_state);
-    if (promptDispatched) {
-      await env.DB.prepare(`
-        UPDATE workflow_executions
-        SET status = 'completed',
-            error = NULL,
-            completed_at = ?
-        WHERE id = ?
-      `).bind(now, row.id).run();
-      completed++;
-    } else {
+    if (!promptDispatched) {
       await env.DB.prepare(`
         UPDATE workflow_executions
         SET status = 'failed',
@@ -237,11 +362,106 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
         WHERE id = ?
       `).bind('workflow_session_terminated_before_dispatch', now, row.id).run();
       failed++;
+      continue;
     }
+
+    const envelope = row.session_id
+      ? await fetchWorkflowResultEnvelope(env, row.session_id, row.id)
+      : null;
+
+    if (!envelope) {
+      await env.DB.prepare(`
+        UPDATE workflow_executions
+        SET status = 'completed',
+            error = NULL,
+            completed_at = ?
+        WHERE id = ?
+      `).bind(now, row.id).run();
+      completed++;
+      continue;
+    }
+
+    if (envelope.steps?.length) {
+      await persistStepTrace(env, row.id, envelope.steps);
+    }
+
+    const outputsJson = envelope.output ? JSON.stringify(envelope.output) : null;
+    const stepsJson = envelope.steps ? JSON.stringify(envelope.steps) : null;
+
+    if (envelope.status === 'needs_approval') {
+      const resumeToken = envelope.requiresApproval?.resumeToken;
+      if (!resumeToken) {
+        await env.DB.prepare(`
+          UPDATE workflow_executions
+          SET status = 'failed',
+              outputs = ?,
+              steps = ?,
+              error = ?,
+              completed_at = ?
+          WHERE id = ?
+        `).bind(outputsJson, stepsJson, 'approval_resume_token_missing', now, row.id).run();
+        failed++;
+        continue;
+      }
+
+      await env.DB.prepare(`
+        UPDATE workflow_executions
+        SET status = 'waiting_approval',
+            outputs = ?,
+            steps = ?,
+            resume_token = ?,
+            error = NULL,
+            completed_at = NULL
+        WHERE id = ?
+      `).bind(outputsJson, stepsJson, resumeToken, row.id).run();
+      waitingApproval++;
+      continue;
+    }
+
+    if (envelope.status === 'cancelled') {
+      await env.DB.prepare(`
+        UPDATE workflow_executions
+        SET status = 'cancelled',
+            outputs = ?,
+            steps = ?,
+            error = ?,
+            completed_at = ?
+        WHERE id = ?
+      `).bind(outputsJson, stepsJson, envelope.error || 'workflow_cancelled', now, row.id).run();
+      cancelled++;
+      continue;
+    }
+
+    if (envelope.status === 'failed') {
+      await env.DB.prepare(`
+        UPDATE workflow_executions
+        SET status = 'failed',
+            outputs = ?,
+            steps = ?,
+            error = ?,
+            completed_at = ?
+        WHERE id = ?
+      `).bind(outputsJson, stepsJson, envelope.error || 'workflow_failed', now, row.id).run();
+      failed++;
+      continue;
+    }
+
+    await env.DB.prepare(`
+      UPDATE workflow_executions
+      SET status = 'completed',
+          outputs = ?,
+          steps = ?,
+          error = NULL,
+          completed_at = ?
+      WHERE id = ?
+    `).bind(outputsJson, stepsJson, now, row.id).run();
+    completed++;
   }
 
-  if (completed > 0 || failed > 0) {
-    console.log(`Workflow reconcile finalized executions: completed=${completed} failed=${failed}`);
+  if (completed > 0 || waitingApproval > 0 || cancelled > 0 || failed > 0) {
+    console.log(
+      `Workflow reconcile finalized executions: completed=${completed} waiting_approval=${waitingApproval} cancelled=${cancelled} failed=${failed}`,
+    );
   }
 }
 

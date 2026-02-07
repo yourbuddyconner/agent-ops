@@ -574,6 +574,17 @@ export class WorkflowExecutorDO implements DurableObject {
 
     if (body.approve) {
       if (row.session_id) {
+        const ensured = await this.ensureWorkflowSessionReady({
+          sessionId: row.session_id,
+          userId: row.user_id,
+          workflowId: row.workflow_id,
+          executionId: row.id,
+          workerOrigin: this.resolveWorkerOrigin(existingState.executor?.workerOrigin),
+        });
+        if (!ensured.ok) {
+          return Response.json({ error: ensured.error || 'Failed to prepare workflow session for resume' }, { status: 502 });
+        }
+
         const prompt = this.buildWorkflowResumePrompt(body.executionId, body.resumeToken, true);
         const dispatched = await this.dispatchWorkflowPrompt(row.session_id, prompt);
         if (!dispatched.ok) {
