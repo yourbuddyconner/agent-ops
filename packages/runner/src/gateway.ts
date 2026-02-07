@@ -367,14 +367,25 @@ interface WSTarget {
   path: string;
 }
 
+function resolveTunnel(name: string): { entry: TunnelEntry; requestedName: string; fallback: boolean } | null {
+  const entry = tunnelRegistry.get(name);
+  if (entry) return { entry, requestedName: name, fallback: false };
+  if (tunnelRegistry.size === 1) {
+    const only = Array.from(tunnelRegistry.values())[0];
+    return { entry: only, requestedName: name, fallback: true };
+  }
+  return null;
+}
+
 function getWSTarget(pathname: string): WSTarget | null {
   const tunnelMatch = pathname.match(/^\/t\/([^/]+)(\/.*)?$/);
   if (tunnelMatch) {
     const name = tunnelMatch[1];
-    const entry = tunnelRegistry.get(name);
-    if (!entry) return null;
-    const path = tunnelMatch[2] || "/";
-    return { host: "127.0.0.1", port: entry.port, path };
+    const resolved = resolveTunnel(name);
+    if (!resolved) return null;
+    const tail = tunnelMatch[2] || "/";
+    const path = resolved.fallback ? `/${name}${tail}` : tail;
+    return { host: "127.0.0.1", port: resolved.entry.port, path };
   }
   if (pathname.startsWith("/vscode")) {
     return { host: "127.0.0.1", port: 8080, path: pathname.replace(/^\/vscode/, "") || "/" };
@@ -956,14 +967,15 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
   // Tunnel proxy
   app.all("/t/:name", async (c) => {
     const name = c.req.param("name");
-    const entry = tunnelRegistry.get(name);
-    if (!entry) return new Response("Tunnel not found", { status: 404 });
+    const resolved = resolveTunnel(name);
+    if (!resolved) return new Response("Tunnel not found", { status: 404 });
 
     const url = new URL(c.req.url);
     const searchParams = new URLSearchParams(url.search);
     searchParams.delete("token");
     const cleanSearch = searchParams.toString() ? `?${searchParams.toString()}` : "";
-    const target = `http://127.0.0.1:${entry.port}/${cleanSearch}`;
+    const backendPath = resolved.fallback ? `/${name}` : "/";
+    const target = `http://127.0.0.1:${resolved.entry.port}${backendPath}${cleanSearch}`;
 
     try {
       const res = await fetch(target, {
@@ -991,15 +1003,16 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
 
   app.all("/t/:name/*", async (c) => {
     const name = c.req.param("name");
-    const entry = tunnelRegistry.get(name);
-    if (!entry) return new Response("Tunnel not found", { status: 404 });
+    const resolved = resolveTunnel(name);
+    if (!resolved) return new Response("Tunnel not found", { status: 404 });
 
     const path = c.req.path.replace(new RegExp(`^/t/${name}`), "") || "/";
     const url = new URL(c.req.url);
     const searchParams = new URLSearchParams(url.search);
     searchParams.delete("token");
     const cleanSearch = searchParams.toString() ? `?${searchParams.toString()}` : "";
-    const target = `http://127.0.0.1:${entry.port}${path}${cleanSearch}`;
+    const backendPath = resolved.fallback ? `/${name}${path}` : path;
+    const target = `http://127.0.0.1:${resolved.entry.port}${backendPath}${cleanSearch}`;
 
     try {
       const res = await fetch(target, {
