@@ -291,7 +291,7 @@ Each sandbox container runs the following services:
 | Service | Port | Purpose |
 |---------|------|---------|
 | OpenCode agent | 4096 | AI coding agent (HTTP + SSE) |
-| VS Code (code-server) | 8080 | Web IDE |
+| VS Code (code-server) | 8765 | Web IDE |
 | noVNC | 6080 | Virtual display GUI (Xvfb on :99) |
 | TTYD | 7681 | Web terminal |
 | Auth gateway | 9000 | JWT proxy that routes to all services above |

@@ -71,10 +71,10 @@ WORKDIR /workspace
 
 # Ports:
 #   4096  OpenCode server
-#   8080  code-server (VS Code)
+#   8765  code-server (VS Code)
 #   6080  noVNC (websockify → x11vnc)
 #   7681  TTYD (web terminal)
 #   9000  Auth gateway proxy
-EXPOSE 4096 8080 6080 7681 9000
+EXPOSE 4096 8765 6080 7681 9000
 
 CMD ["/bin/bash", "/start.sh"]

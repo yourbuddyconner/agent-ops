@@ -2,7 +2,7 @@
  * Auth gateway proxy on port 9000 inside the sandbox.
  *
  * Routes:
- *   /vscode/*  → localhost:8080 (code-server)
+ *   /vscode/*  → localhost:8765 (code-server)
  *   /vnc/*     → localhost:6080 (noVNC via websockify)
  *   /ttyd/*    → localhost:7681 (TTYD web terminal)
  *   /health    → 200 OK (no auth)
@@ -264,7 +264,7 @@ app.all("/vscode/*", async (c) => {
   const searchParams = new URLSearchParams(url.search);
   searchParams.delete("token");
   const cleanSearch = searchParams.toString() ? `?${searchParams.toString()}` : "";
-  const target = `http://127.0.0.1:8080${path}${cleanSearch}`;
+  const target = `http://127.0.0.1:8765${path}${cleanSearch}`;
 
   try {
     const res = await fetch(target, {
@@ -388,7 +388,7 @@ function getWSTarget(pathname: string): WSTarget | null {
     return { host: "127.0.0.1", port: resolved.entry.port, path };
   }
   if (pathname.startsWith("/vscode")) {
-    return { host: "127.0.0.1", port: 8080, path: pathname.replace(/^\/vscode/, "") || "/" };
+    return { host: "127.0.0.1", port: 8765, path: pathname.replace(/^\/vscode/, "") || "/" };
   }
   if (pathname.startsWith("/vnc")) {
     return { host: "127.0.0.1", port: 6080, path: pathname.replace(/^\/vnc/, "") || "/" };
