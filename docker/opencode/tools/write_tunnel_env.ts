@@ -26,6 +26,18 @@ export default tool({
       .string()
       .optional()
       .describe("Env var prefix for tunnel URLs (default: TUNNEL_)"),
+    token: tool.schema
+      .string()
+      .optional()
+      .describe("Optional JWT token to append to tunnel URLs"),
+    token_env: tool.schema
+      .string()
+      .optional()
+      .describe("Env var name to read token from (default: SANDBOX_TOKEN)"),
+    include_token: tool.schema
+      .boolean()
+      .optional()
+      .describe("Append token to URLs when available (default: true)"),
     set_api_url_from: tool.schema
       .string()
       .optional()
@@ -54,6 +66,10 @@ export default tool({
         return "SESSION_ID is not set; pass session_id explicitly."
       }
 
+      const tokenEnvName = args.token_env || "SANDBOX_TOKEN"
+      const tokenValue = args.token || process.env[tokenEnvName]
+      const shouldAppendToken = args.include_token !== false && !!tokenValue
+
       const params = new URLSearchParams({ sessionId })
       const res = await fetch(`http://localhost:9000/api/session-status?${params}`)
       if (!res.ok) {
@@ -75,10 +91,26 @@ export default tool({
         lines.push(`GATEWAY_URL=${status.tunnelUrls.gateway}`)
       }
 
+      if (tokenValue) {
+        lines.push(`TUNNEL_TOKEN=${tokenValue}`)
+      }
+
+      const withToken = (url: string) => {
+        if (!shouldAppendToken) return url
+        try {
+          const parsed = new URL(url)
+          parsed.searchParams.set("token", tokenValue as string)
+          return parsed.toString()
+        } catch {
+          const sep = url.includes("?") ? "&" : "?"
+          return `${url}${sep}token=${encodeURIComponent(tokenValue as string)}`
+        }
+      }
+
       for (const tunnel of tunnels) {
         const url = tunnel.url || (tunnel.path ? `${status?.tunnelUrls?.gateway || ""}${tunnel.path}` : undefined)
         if (!url) continue
-        lines.push(`${toEnvKey(prefix, tunnel.name)}=${url}`)
+        lines.push(`${toEnvKey(prefix, tunnel.name)}=${withToken(url)}`)
       }
 
       const apiName = args.set_api_url_from ?? "api"
@@ -94,9 +126,9 @@ export default tool({
       const frontendUrl = frontendName ? findTunnelUrl(frontendName) : undefined
       const backendUrl = backendName ? findTunnelUrl(backendName) : undefined
 
-      if (apiUrl) lines.push(`API_URL=${apiUrl}`)
-      if (frontendUrl) lines.push(`FRONTEND_URL=${frontendUrl}`)
-      if (backendUrl) lines.push(`BACKEND_URL=${backendUrl}`)
+      if (apiUrl) lines.push(`API_URL=${withToken(apiUrl)}`)
+      if (frontendUrl) lines.push(`FRONTEND_URL=${withToken(frontendUrl)}`)
+      if (backendUrl) lines.push(`BACKEND_URL=${withToken(backendUrl)}`)
 
       const filePath = args.file_path || ".env.tunnels"
       const header = [
