@@ -2570,7 +2570,15 @@ export class SessionAgentDO {
       const recentMessages = await this.fetchMessagesFromDO(targetSessionId, 10);
 
       // Fetch live runner/sandbox status from target DO
-      let liveStatus: { runnerConnected?: boolean; runnerBusy?: boolean; queuedPrompts?: number; sandboxId?: string | null; status?: string } | null = null;
+      let liveStatus: {
+        runnerConnected?: boolean;
+        runnerBusy?: boolean;
+        queuedPrompts?: number;
+        sandboxId?: string | null;
+        status?: string;
+        tunnelUrls?: Record<string, string> | null;
+        tunnels?: Array<{ name: string; url?: string; path?: string; port?: number; protocol?: string }> | null;
+      } | null = null;
       try {
         const doId = this.env.SESSIONS.idFromName(targetSessionId);
         const targetDO = this.env.SESSIONS.get(doId);
@@ -2602,6 +2610,8 @@ export class SessionAgentDO {
           queuedPrompts,
           agentStatus,
           recentMessages,
+          tunnelUrls: liveStatus?.tunnelUrls ?? null,
+          tunnels: liveStatus?.tunnels ?? null,
         },
       } as any);
     } catch (err) {
