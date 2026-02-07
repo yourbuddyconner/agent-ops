@@ -7,8 +7,10 @@ import { ReviewDrawer } from '@/components/session/review-drawer';
 import { LogsPanel } from '@/components/panels/logs-panel';
 import { SessionMetadataSidebar } from '@/components/session/session-metadata-sidebar';
 import { OrchestratorMetadataSidebar } from '@/components/session/orchestrator-metadata-sidebar';
+import { SessionMetadataModal } from '@/components/session/session-metadata-modal';
 import { useSession } from '@/api/sessions';
 import type { LogEntry, ConnectedUser } from '@/hooks/use-chat';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 
 type DrawerPanel = 'editor' | 'files' | 'review' | 'logs' | null;
 
@@ -126,12 +128,14 @@ export const Route = createFileRoute('/sessions/$sessionId')({
 function SessionLayout() {
   const { sessionId } = Route.useParams();
   const { data: session } = useSession(sessionId);
+  const isMobile = useIsMobile();
   const [activePanel, setActivePanel] = useState<DrawerPanel>(loadDrawerState);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [overlay, setOverlay] = useState<SessionOverlay>(null);
   const [connectedUsers, setConnectedUsers] = useState<ConnectedUser[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | undefined>(undefined);
   const [pendingFilePath, setPendingFilePath] = useState<string | null>(null);
+  const [mobileMetadataOpen, setMobileMetadataOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     try {
       const val = localStorage.getItem(SIDEBAR_STORAGE_KEY);
@@ -197,12 +201,16 @@ function SessionLayout() {
   }, []);
 
   const toggleSidebar = useCallback(() => {
+    if (isMobile) {
+      setMobileMetadataOpen((prev) => !prev);
+      return;
+    }
     setSidebarOpen((prev) => {
       const next = !prev;
       try { localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next)); } catch { /* ignore */ }
       return next;
     });
-  }, []);
+  }, [isMobile]);
 
   const openFile = useCallback((path: string) => {
     setPendingFilePath(path);
@@ -230,7 +238,7 @@ function SessionLayout() {
     setLogEntries,
     overlay,
     setOverlay,
-    sidebarOpen,
+    sidebarOpen: isMobile ? false : sidebarOpen,
     toggleSidebar,
     connectedUsers,
     setConnectedUsers,
@@ -242,7 +250,7 @@ function SessionLayout() {
   };
 
   const defaultLayout = loadSavedLayout();
-  const isOpen = activePanel !== null;
+  const isOpen = !isMobile && activePanel !== null;
 
   return (
     <DrawerCtx.Provider value={ctx}>
@@ -285,16 +293,50 @@ function SessionLayout() {
             </Panel>
           </PanelGroup>
         ) : (
-          <div className="flex h-full">
-            <div className="flex-1 min-w-0">
-              <Outlet />
+          <>
+            <div className="flex h-full">
+              <div className="flex-1 min-w-0">
+                <Outlet />
+              </div>
+              {!isMobile && sidebarOpen && (
+                session?.isOrchestrator
+                  ? <OrchestratorMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} />
+                  : <SessionMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} />
+              )}
             </div>
-            {sidebarOpen && (
-              session?.isOrchestrator
-                ? <OrchestratorMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} />
-                : <SessionMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} />
+
+            {isMobile && activePanel === 'editor' && (
+              <div className="absolute inset-0 z-40 bg-surface-0">
+                <EditorDrawer sessionId={sessionId} />
+              </div>
             )}
-          </div>
+            {isMobile && activePanel === 'files' && (
+              <div className="absolute inset-0 z-40 bg-surface-0">
+                <FilesDrawer sessionId={sessionId} />
+              </div>
+            )}
+            {isMobile && activePanel === 'review' && (
+              <div className="absolute inset-0 z-40 bg-surface-0">
+                <ReviewDrawer sessionId={sessionId} />
+              </div>
+            )}
+            {isMobile && activePanel === 'logs' && (
+              <div className="absolute inset-0 z-40 bg-surface-0">
+                <LogsDrawerWrapper logEntries={logEntries} onClose={closeDrawer} />
+              </div>
+            )}
+
+            {isMobile && (
+              <SessionMetadataModal
+                sessionId={sessionId}
+                connectedUsers={connectedUsers}
+                selectedModel={selectedModel}
+                isOrchestrator={Boolean(session?.isOrchestrator)}
+                open={mobileMetadataOpen}
+                onOpenChange={setMobileMetadataOpen}
+              />
+            )}
+          </>
         )}
 
         {/* Full-viewport overlay for hibernate transitions */}

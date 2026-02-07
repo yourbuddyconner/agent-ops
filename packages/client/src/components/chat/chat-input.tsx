@@ -3,10 +3,10 @@ import { Button } from '@/components/ui/button';
 import { useFileFinder, type FileReadResponse } from '@/api/files';
 import { api } from '@/api/client';
 import { useWakeSession } from '@/api/sessions';
-import type { ProviderModels } from '@/hooks/use-chat';
+import type { PromptAttachment, ProviderModels } from '@/hooks/use-chat';
 
 interface ChatInputProps {
-  onSend: (content: string, model?: string) => void;
+  onSend: (content: string, model?: string, attachments?: PromptAttachment[]) => void;
   disabled?: boolean;
   /** Blocks sending but keeps textarea interactive (e.g. during hibernate transitions) */
   sendDisabled?: boolean;
@@ -21,6 +21,12 @@ interface ChatInputProps {
   sessionStatus?: string;
   /** When true, uses a more compact layout (hides hint text, tighter padding) */
   compact?: boolean;
+  /** Mobile-only: show + actions button in the composer row */
+  showActionsButton?: boolean;
+  /** Called when the + actions button is tapped */
+  onOpenActions?: () => void;
+  /** Notifies parent when textarea focus changes (useful for mobile keyboard layout) */
+  onFocusChange?: (focused: boolean) => void;
 }
 
 interface FlatModel {
@@ -28,6 +34,8 @@ interface FlatModel {
   name: string;
   provider: string;
 }
+
+const MAX_IMAGE_ATTACHMENTS = 8;
 
 /**
  * Given the current input value and cursor position, find an active @ mention query.
@@ -67,6 +75,19 @@ function truncatePath(path: string, maxLen = 60): string {
   return result;
 }
 
+function hasImageInDataTransfer(dataTransfer: DataTransfer | null): boolean {
+  if (!dataTransfer) return false;
+  if (dataTransfer.files && dataTransfer.files.length > 0) {
+    return Array.from(dataTransfer.files).some((file) => file.type.startsWith('image/'));
+  }
+  if (dataTransfer.items && dataTransfer.items.length > 0) {
+    return Array.from(dataTransfer.items).some(
+      (item) => item.kind === 'file' && item.type.startsWith('image/')
+    );
+  }
+  return false;
+}
+
 export function ChatInput({
   onSend,
   disabled = false,
@@ -81,15 +102,22 @@ export function ChatInput({
   sessionId,
   sessionStatus,
   compact = false,
+  showActionsButton = false,
+  onOpenActions,
+  onFocusChange,
 }: ChatInputProps) {
   const [value, setValue] = useState('');
+  const [attachments, setAttachments] = useState<PromptAttachment[]>([]);
   const [highlightIndex, setHighlightIndex] = useState(0);
   const [modelCommandDismissed, setModelCommandDismissed] = useState(false);
   const [cursorPos, setCursorPos] = useState(0);
   const [fileHighlightIndex, setFileHighlightIndex] = useState(0);
   const [atMenuDismissed, setAtMenuDismissed] = useState(false);
   const [isSendingFiles, setIsSendingFiles] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
   const internalRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragDepthRef = useRef(0);
   const textareaRef = inputRef ?? internalRef;
   const overlayRef = useRef<HTMLDivElement>(null);
   const fileOverlayRef = useRef<HTMLDivElement>(null);
@@ -97,10 +125,11 @@ export function ChatInput({
   // Wake session on focus if hibernated
   const wakeMutation = useWakeSession();
   const handleFocus = useCallback(() => {
+    onFocusChange?.(true);
     if (sessionId && sessionStatus === 'hibernated' && !wakeMutation.isPending) {
       wakeMutation.mutate(sessionId);
     }
-  }, [sessionId, sessionStatus, wakeMutation.isPending]);
+  }, [sessionId, sessionStatus, wakeMutation.isPending, onFocusChange]);
 
   // Track cursor position on every input change and selection change
   const updateCursorPos = useCallback(() => {
@@ -216,9 +245,100 @@ export function ChatInput({
     [atContext, value, cursorPos, textareaRef]
   );
 
+  const readFileAsDataUrl = useCallback((file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') resolve(reader.result);
+        else reject(new Error('Failed to read file'));
+      };
+      reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+      reader.readAsDataURL(file);
+    });
+  }, []);
+
+  const appendImageAttachments = useCallback(async (files: File[]) => {
+    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+    if (imageFiles.length === 0) return;
+
+    const next: PromptAttachment[] = [];
+    for (const file of imageFiles) {
+      try {
+        const url = await readFileAsDataUrl(file);
+        next.push({
+          type: 'file',
+          mime: file.type || 'image/png',
+          url,
+          filename: file.name,
+        });
+      } catch {
+        // Ignore unreadable files and continue.
+      }
+    }
+
+    if (next.length > 0) {
+      setAttachments((prev) => [...prev, ...next].slice(0, MAX_IMAGE_ATTACHMENTS));
+    }
+  }, [readFileAsDataUrl]);
+
+  const handleImageSelect = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    if (files.length === 0) return;
+    await appendImageAttachments(files);
+
+    // Allow selecting the same file again later.
+    event.target.value = '';
+  }, [appendImageAttachments]);
+
+  const resetDragState = useCallback(() => {
+    dragDepthRef.current = 0;
+    setIsDragOver(false);
+  }, []);
+
+  const handleDragEnter = useCallback((event: React.DragEvent<HTMLFormElement>) => {
+    if (!hasImageInDataTransfer(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current += 1;
+    setIsDragOver(true);
+  }, []);
+
+  const handleDragOver = useCallback((event: React.DragEvent<HTMLFormElement>) => {
+    if (!hasImageInDataTransfer(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+    if (!isDragOver) setIsDragOver(true);
+  }, [isDragOver]);
+
+  const handleDragLeave = useCallback((event: React.DragEvent<HTMLFormElement>) => {
+    if (!hasImageInDataTransfer(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((event: React.DragEvent<HTMLFormElement>) => {
+    if (!hasImageInDataTransfer(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const files = Array.from(event.dataTransfer.files || []);
+    resetDragState();
+    if (files.length === 0 || disabled || sendDisabled) return;
+    void appendImageAttachments(files);
+  }, [appendImageAttachments, disabled, resetDragState, sendDisabled]);
+
+  const removeAttachment = useCallback((index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!value.trim() || disabled || sendDisabled || isSendingFiles) return;
+    const hasText = !!value.trim();
+    if ((!hasText && attachments.length === 0) || disabled || sendDisabled || isSendingFiles) return;
 
     // If input is a /model command, treat as model selection if there's an exact or single match
     if (modelCommandMatch) {
@@ -269,18 +389,19 @@ export function ChatInput({
           ? contextBlocks + '\n\n' + messageText
           : messageText;
 
-        onSend(finalMessage, selectedModel || undefined);
+        onSend(finalMessage, selectedModel || undefined, attachments);
       } catch {
         // If file fetching fails, send the message as-is
-        onSend(messageText, selectedModel || undefined);
+        onSend(messageText, selectedModel || undefined, attachments);
       } finally {
         setIsSendingFiles(false);
       }
     } else {
-      onSend(messageText, selectedModel || undefined);
+      onSend(messageText, selectedModel || undefined, attachments);
     }
 
     setValue('');
+    setAttachments([]);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -380,8 +501,51 @@ export function ChatInput({
   return (
     <form
       onSubmit={handleSubmit}
-      className={`border-t border-border bg-surface-0 dark:bg-surface-0 ${compact ? 'px-3 py-2' : 'px-4 py-3'}`}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className={`relative border-t border-border bg-surface-0 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] dark:bg-surface-0 ${compact ? 'px-3 py-2' : 'px-4 py-3'}`}
     >
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        onChange={handleImageSelect}
+        className="hidden"
+      />
+      {isDragOver && (
+        <div className="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-xl border-2 border-dashed border-accent/50 bg-accent/8">
+          <span className="rounded-full bg-surface-0/90 px-3 py-1 font-mono text-[11px] font-medium text-accent shadow-sm dark:bg-surface-2/90">
+            Drop image to attach
+          </span>
+        </div>
+      )}
+      {attachments.length > 0 && (
+        <div className="mb-2 flex gap-2 overflow-x-auto pb-0.5">
+          {attachments.map((attachment, index) => (
+            <div
+              key={`${attachment.filename || 'image'}-${index}`}
+              className="relative h-14 w-14 shrink-0 overflow-hidden rounded-md border border-neutral-200 bg-surface-1 dark:border-neutral-700 dark:bg-surface-2"
+            >
+              <img
+                src={attachment.url}
+                alt={attachment.filename || `Attachment ${index + 1}`}
+                className="h-full w-full object-cover"
+              />
+              <button
+                type="button"
+                onClick={() => removeAttachment(index)}
+                className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/70 text-white"
+                aria-label="Remove image attachment"
+              >
+                <CloseIcon className="h-2.5 w-2.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="relative flex gap-2">
         {showModelOverlay && (
           <div
@@ -470,6 +634,30 @@ export function ChatInput({
             )}
           </div>
         )}
+        {showActionsButton && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={onOpenActions}
+            className="h-11 w-11 shrink-0 rounded-full p-0 md:h-7 md:w-7"
+            title="Open actions"
+            aria-label="Open actions"
+          >
+            <PlusIcon className="h-5 w-5 md:h-3.5 md:w-3.5" />
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={() => fileInputRef.current?.click()}
+          className="h-11 w-11 shrink-0 rounded-full p-0 md:h-7 md:w-7"
+          title="Attach images"
+          aria-label="Attach images"
+        >
+          <ImageIcon className="h-5 w-5 md:h-3.5 md:w-3.5" />
+        </Button>
         <textarea
           ref={textareaRef}
           value={value}
@@ -479,12 +667,13 @@ export function ChatInput({
           }}
           onKeyDown={handleKeyDown}
           onFocus={handleFocus}
+          onBlur={() => onFocusChange?.(false)}
           onSelect={updateCursorPos}
           onClick={updateCursorPos}
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none rounded-lg border border-neutral-200 bg-surface-1/40 px-3.5 py-2.5 text-[13px] text-neutral-900 placeholder:text-neutral-400 transition-colors focus-visible:border-accent/30 focus-visible:bg-surface-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:bg-surface-1 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus-visible:border-accent/30 dark:focus-visible:bg-surface-0"
+          className="flex-1 resize-none rounded-lg border border-neutral-200 bg-surface-1/40 px-3.5 py-2.5 text-base leading-5 text-neutral-900 placeholder:text-neutral-400 transition-colors focus-visible:border-accent/30 focus-visible:bg-surface-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:bg-surface-1 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus-visible:border-accent/30 dark:focus-visible:bg-surface-0 md:text-[13px] md:leading-normal"
         />
         {isAgentActive ? (
           <Button
@@ -492,11 +681,17 @@ export function ChatInput({
             size="sm"
             variant="secondary"
             onClick={onAbort}
+            className="h-11 min-w-[3.5rem] rounded-xl px-3 text-[14px] md:h-7 md:min-w-0 md:rounded-md md:px-2.5 md:text-[13px]"
           >
             Stop
           </Button>
         ) : (
-          <Button type="submit" disabled={!value.trim() || disabled || sendDisabled || isSendingFiles} size="sm">
+          <Button
+            type="submit"
+            disabled={(!value.trim() && attachments.length === 0) || disabled || sendDisabled || isSendingFiles}
+            size="sm"
+            className="h-11 min-w-[3.5rem] rounded-xl px-3 text-[15px] md:h-7 md:min-w-0 md:rounded-md md:px-2.5 md:text-[13px]"
+          >
             {isSendingFiles ? 'Loading...' : 'Send'}
           </Button>
         )}
@@ -508,11 +703,11 @@ export function ChatInput({
               ? 'restoring session...'
               : sessionStatus === 'hibernated'
                 ? 'hibernated — focus to restore'
-                : sessionStatus === 'hibernating'
-                  ? 'hibernating...'
+                  : sessionStatus === 'hibernating'
+                    ? 'hibernating...'
                   : isAgentActive
-                    ? 'esc to stop · shift+enter for new line · @ files · /model'
-                    : 'enter to send · shift+enter for new line · @ files · /model'}
+                    ? 'esc to stop · shift+enter for new line · @ files · /model · drag images'
+                    : 'enter to send · shift+enter for new line · @ files · /model · drag images'}
           </p>
         )}
         {compact && <div className="flex-1" />}
@@ -520,7 +715,7 @@ export function ChatInput({
           <select
             value={selectedModel}
             onChange={(e) => onModelChange?.(e.target.value)}
-            className="shrink-0 cursor-pointer appearance-none rounded-md border border-neutral-200/80 bg-surface-1/60 px-2 py-0.5 font-mono text-[9px] font-medium text-neutral-500 transition-colors hover:border-neutral-300 hover:text-neutral-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/30 dark:border-neutral-700 dark:bg-surface-2 dark:text-neutral-400 dark:hover:border-neutral-600"
+            className="shrink-0 cursor-pointer appearance-none rounded-md border border-neutral-200/80 bg-surface-1/60 px-2 py-1 font-mono text-xs font-medium text-neutral-500 transition-colors hover:border-neutral-300 hover:text-neutral-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/30 dark:border-neutral-700 dark:bg-surface-2 dark:text-neutral-400 dark:hover:border-neutral-600 md:py-0.5 md:text-[9px]"
           >
             <option value="">Default model</option>
             {availableModels.map((provider) => (
@@ -536,6 +731,67 @@ export function ChatInput({
         )}
       </div>
     </form>
+  );
+}
+
+function PlusIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </svg>
+  );
+}
+
+function ImageIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="9" cy="9" r="1.5" />
+      <path d="m21 15-3.8-3.8a1.5 1.5 0 0 0-2.1 0L7 19" />
+    </svg>
+  );
+}
+
+function CloseIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
   );
 }
 

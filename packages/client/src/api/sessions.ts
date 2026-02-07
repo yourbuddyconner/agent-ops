@@ -80,7 +80,35 @@ export function useAvailableModels() {
 
 interface SessionDetailResponse {
   session: AgentSession;
-  doStatus: Record<string, unknown>;
+  doStatus: SessionDoStatus;
+}
+
+export interface SessionDoStatus {
+  sessionId?: string;
+  userId?: string;
+  workspace?: string;
+  status?: string;
+  lifecycleStatus?: string;
+  sandboxId?: string | null;
+  tunnelUrls?: Record<string, string> | null;
+  tunnels?: Array<{ name: string; url?: string; path?: string; port?: number; protocol?: string }> | null;
+  runnerConnected?: boolean;
+  runnerBusy?: boolean;
+  agentState?: string;
+  sandboxState?: string;
+  jointState?: string;
+  messageCount?: number;
+  queuedPrompts?: number;
+  connectedClients?: number;
+  connectedUsers?: string[];
+  runningStartedAt?: number | null;
+  [key: string]: unknown;
+}
+
+export interface ChildSessionSummaryWithRuntime extends ChildSessionSummary {
+  prTitle?: string;
+  gatewayUrl?: string;
+  tunnels?: Array<{ name: string; url?: string; path?: string; port?: number; protocol?: string }>;
 }
 
 export function useSession(sessionId: string) {
@@ -190,6 +218,21 @@ export function useDeleteSessionTunnel(sessionId: string) {
   });
 }
 
+export function useDeleteAnySessionTunnel(parentSessionId?: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ sessionId, name }: { sessionId: string; name: string }) =>
+      api.delete<{ success: boolean }>(`/sessions/${sessionId}/tunnels/${encodeURIComponent(name)}`),
+    onSuccess: (_, { sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: sessionKeys.detail(sessionId) });
+      if (parentSessionId) {
+        queryClient.invalidateQueries({ queryKey: sessionKeys.children(parentSessionId) });
+      }
+    },
+  });
+}
+
 export function useHibernateSession() {
   const queryClient = useQueryClient();
 
@@ -230,7 +273,7 @@ export function useSessionChildren(sessionId: string) {
   return useQuery({
     queryKey: sessionKeys.children(sessionId),
     queryFn: () =>
-      api.get<{ children: ChildSessionSummary[] }>(`/sessions/${sessionId}/children`),
+      api.get<{ children: ChildSessionSummaryWithRuntime[] }>(`/sessions/${sessionId}/children`),
     enabled: !!sessionId,
     select: (data) => data.children,
     refetchInterval: (query) => {

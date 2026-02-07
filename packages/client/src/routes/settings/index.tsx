@@ -686,7 +686,7 @@ function ModelPreferencesSection() {
 
         {allModels.length === 0 && (
           <p className="text-xs text-neutral-400 dark:text-neutral-500">
-            Start a session to discover available models, or type a model ID manually (e.g. anthropic/claude-sonnet-4-5-20250929).
+            Start a session to discover available models, or type a model ID manually (e.g. provider/model-id).
           </p>
         )}
 

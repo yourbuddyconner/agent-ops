@@ -53,9 +53,24 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
               </span>
             </div>
           )}
-          <div className="rounded-2xl rounded-br-md bg-neutral-900 px-4 py-2.5 text-white shadow-sm dark:bg-neutral-100 dark:text-neutral-900 dark:shadow-none [&_.markdown-body]:text-white/95 [&_.markdown-body]:dark:text-neutral-900">
-            <MarkdownContent content={message.content} />
-          </div>
+          {screenshotParts.length > 0 && (
+            <div className="mb-2 space-y-1.5">
+              {screenshotParts.map((src, i) => (
+                <img
+                  key={i}
+                  src={src}
+                  alt="Uploaded image"
+                  loading="lazy"
+                  className="max-h-[260px] w-full rounded-lg border border-neutral-200 object-contain shadow-sm dark:border-neutral-700"
+                />
+              ))}
+            </div>
+          )}
+          {message.content.trim().length > 0 && (
+            <div className="rounded-2xl rounded-br-md bg-neutral-900 px-4 py-2.5 text-white shadow-sm dark:bg-neutral-100 dark:text-neutral-900 dark:shadow-none [&_.markdown-body]:text-white/95 [&_.markdown-body]:dark:text-neutral-900">
+              <MarkdownContent content={message.content} />
+            </div>
+          )}
           <div className="mt-1 flex items-center justify-end gap-2 px-1">
             <span className="font-mono text-[9px] tabular-nums text-neutral-300 dark:text-neutral-600">
               {formatTime(message.createdAt)}

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { NotFoundError } from '@agent-ops/shared';
+import { ForbiddenError, NotFoundError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
 
@@ -163,6 +163,9 @@ agentRouter.post('/:sessionId/share', async (c) => {
   const session = await db.getSession(c.env.DB, sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
+  }
+  if (session.isOrchestrator) {
+    throw new ForbiddenError('Orchestrator sessions cannot be shared');
   }
 
   const response = await proxyToAgent(c.env, sessionId, 'session/share', {

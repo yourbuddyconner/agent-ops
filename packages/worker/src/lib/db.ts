@@ -119,6 +119,11 @@ export async function getUserSessions(
     params.push(userId);
   }
 
+  // Orchestrator sessions are private to their owner and should never appear
+  // in other users' lists even if they were previously shared.
+  query += ' AND (s.is_orchestrator = 0 OR s.user_id = ?)';
+  params.push(userId);
+
   if (options.status) {
     query += ' AND s.status = ?';
     params.push(options.status);
@@ -895,7 +900,7 @@ export async function getChildSessions(db: D1Database, parentSessionId: string):
   const result = await db
     .prepare(
       `SELECT s.id, s.title, s.status, s.workspace, s.created_at,
-              g.pr_number, g.pr_state, g.pr_url
+              g.pr_number, g.pr_state, g.pr_url, g.pr_title
        FROM sessions s
        LEFT JOIN session_git_state g ON g.session_id = s.id
        WHERE s.parent_session_id = ?
@@ -912,6 +917,7 @@ export async function getChildSessions(db: D1Database, parentSessionId: string):
     prNumber: row.pr_number ?? undefined,
     prState: row.pr_state || undefined,
     prUrl: row.pr_url || undefined,
+    prTitle: row.pr_title || undefined,
     createdAt: row.created_at,
   }));
 }
@@ -1194,6 +1200,12 @@ export async function assertSessionAccess(
 
   // Owner always has access
   if (session.userId === userId) return session;
+
+  // Orchestrator sessions are never accessible to non-owners.
+  if (session.isOrchestrator) {
+    const { NotFoundError } = await import('@agent-ops/shared');
+    throw new NotFoundError('Session', sessionId);
+  }
 
   // Check participant table
   const participant = await getSessionParticipant(database, sessionId, userId);

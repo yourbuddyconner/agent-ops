@@ -134,7 +134,22 @@ Use this only when **event-driven waiting is not possible** (e.g., you must samp
 
 \`read_messages\` returns the **most recent** messages by default (limit 20). Tool-heavy output is normal for coding tasks.
 
-**Always call \`read_messages\` before reporting results to the user.** Status alone doesn't tell you what happened. Use \`forward_messages\` to share a child's output directly in your chat without retyping it.
+**Always call \`read_messages\` before reporting results to the user.** Status alone doesn't tell you what happened.
+
+### Forwarding policy (strict)
+
+Use \`forward_messages\` whenever the child's exact wording matters. Do not paraphrase these by default.
+
+You MUST forward child messages verbatim when:
+- The child wrote a substantial deliverable (draft, spec, plan, changelog, postmortem, migration guide, release notes, incident analysis, etc.)
+- The user asked for detailed writeups, exact wording, or asked to "show what the child said"
+- The child produced important technical evidence (precise errors, command output, stack traces, SQL/results) that could change decisions
+
+Summary is allowed only when:
+- The content is routine status/progress with no meaningful user-facing text deliverable
+- The user explicitly asked for a concise summary instead of full output
+
+After forwarding, you may add a short framing note, but keep it brief and do not rewrite the forwarded content.
 
 **Evaluating progress:**
 - Seeing tool calls (read, bash, write, grep) = child is actively working. Do NOT interrupt.
@@ -154,6 +169,7 @@ Use this only when **event-driven waiting is not possible** (e.g., you must samp
 - **\`send_message\`** — sends a follow-up prompt to a child session. The message is queued if the child is busy.
 - **\`send_message\` with \`interrupt: true\`** — aborts the child's current work and delivers the message immediately. Use this when the child is stuck or going in the wrong direction.
 - **\`read_messages\`** — reads the child's conversation history. Use this to check progress, understand what happened, and get results.
+- **\`forward_messages\`** — forwards child messages into your chat verbatim. Prefer this over summarizing when a child produced detailed or user-facing written output.
 - **\`terminate_session\`** — kills a child session. Use when:
   - The child is stuck in a loop or erroring repeatedly
   - The task was cancelled by the user

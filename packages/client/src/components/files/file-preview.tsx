@@ -6,11 +6,12 @@ import { MarkdownContent } from '@/components/chat/markdown/markdown-content';
 interface FilePreviewProps {
   sessionId: string;
   path: string;
+  showHeader?: boolean;
 }
 
 const MARKDOWN_EXTENSIONS = new Set(['md', 'mdx', 'markdown']);
 
-export function FilePreview({ sessionId, path }: FilePreviewProps) {
+export function FilePreview({ sessionId, path, showHeader = true }: FilePreviewProps) {
   const { data, isLoading, isError } = useFileRead(sessionId, path);
   const [renderMarkdown, setRenderMarkdown] = useState(true);
 
@@ -56,24 +57,26 @@ export function FilePreview({ sessionId, path }: FilePreviewProps) {
 
   return (
     <div className="h-full overflow-auto">
-      <div className="sticky top-0 flex items-center justify-between border-b border-neutral-200 bg-neutral-100 px-4 py-2 dark:border-neutral-700 dark:bg-neutral-800">
-        <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-          {path}
-        </span>
-        <div className="flex items-center gap-2">
-          {isMarkdown && (
-            <button
-              onClick={() => setRenderMarkdown((v) => !v)}
-              className="rounded border border-neutral-300 px-2 py-0.5 text-xs text-neutral-600 transition-colors hover:bg-neutral-200 dark:border-neutral-600 dark:text-neutral-400 dark:hover:bg-neutral-700"
-            >
-              {renderMarkdown ? 'Raw' : 'Preview'}
-            </button>
-          )}
-          <span className="text-xs text-neutral-500 dark:text-neutral-400">
-            {language}
+      {showHeader && (
+        <div className="sticky top-0 flex items-center justify-between border-b border-neutral-200 bg-neutral-100 px-4 py-2 dark:border-neutral-700 dark:bg-neutral-800">
+          <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+            {path}
           </span>
+          <div className="flex items-center gap-2">
+            {isMarkdown && (
+              <button
+                onClick={() => setRenderMarkdown((v) => !v)}
+                className="rounded border border-neutral-300 px-2 py-0.5 text-xs text-neutral-600 transition-colors hover:bg-neutral-200 dark:border-neutral-600 dark:text-neutral-400 dark:hover:bg-neutral-700"
+              >
+                {renderMarkdown ? 'Raw' : 'Preview'}
+              </button>
+            )}
+            <span className="text-xs text-neutral-500 dark:text-neutral-400">
+              {language}
+            </span>
+          </div>
         </div>
-      </div>
+      )}
       {isMarkdown && renderMarkdown ? (
         <div className="p-4">
           <MarkdownContent content={data.content} />

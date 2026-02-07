@@ -179,4 +179,28 @@
     color: var(--shiki-dark) !important;
     background-color: transparent !important;
   }
+
+  /* Mobile session-info sheet readability/tap sizing */
+  @media (max-width: 768px) {
+    .session-metadata-mobile .metadata-sidebar .metadata-scroll {
+      padding: 0.875rem 0.875rem 1.125rem;
+      gap: 0.875rem;
+    }
+
+    .session-metadata-mobile .metadata-sidebar .metadata-section-label {
+      font-size: 0.6875rem;
+      letter-spacing: 0.12em;
+      margin-bottom: 0.375rem;
+    }
+
+    .session-metadata-mobile .metadata-sidebar .font-mono {
+      font-size: 0.775rem;
+      line-height: 1.4;
+    }
+
+    .session-metadata-mobile .metadata-sidebar a,
+    .session-metadata-mobile .metadata-sidebar button {
+      min-height: 1.75rem;
+    }
+  }
 }

@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { useRouter } from '@tanstack/react-router';
+import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react';
+import { useNavigate, useRouter } from '@tanstack/react-router';
+import * as Dialog from '@radix-ui/react-dialog';
 import { useChat } from '@/hooks/use-chat';
 import { useSession, useSessionGitState, useUpdateSessionTitle, useSessionChildren } from '@/api/sessions';
 import { useDrawer } from '@/routes/sessions/$sessionId';
@@ -12,6 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuthStore } from '@/stores/auth';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 
 interface ChatContainerProps {
   sessionId: string;
@@ -19,6 +21,8 @@ interface ChatContainerProps {
 
 export function ChatContainer({ sessionId }: ChatContainerProps) {
   const router = useRouter();
+  const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const { data: session } = useSession(sessionId);
   const { data: gitState } = useSessionGitState(sessionId);
   const { data: childSessions } = useSessionChildren(sessionId);
@@ -31,6 +35,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     pendingQuestions,
     connectionStatus,
     isConnected,
+    runnerConnected,
     isAgentThinking,
     agentStatus,
     agentStatusDetail,
@@ -64,8 +69,11 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
 
   // Share dialog state
   const [shareOpen, setShareOpen] = useState(false);
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const [composerFocused, setComposerFocused] = useState(false);
   const authUser = useAuthStore((s) => s.user);
   const isOwner = session?.userId === authUser?.id;
+  const canShareSession = session?.isOrchestrator !== true;
 
   // Editable title state
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -92,6 +100,8 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   const isTerminated = sessionStatus === 'terminated';
   const isDisabled = !isConnected || isTerminated;
   const isAgentActive = (isAgentThinking && agentStatus !== 'queued') || agentStatus === 'thinking' || agentStatus === 'tool_calling' || agentStatus === 'streaming';
+  const displaySessionStatus = agentStatus === 'queued' && !runnerConnected ? 'restoring' : sessionStatus;
+  const hideChrome = isMobile && composerFocused;
 
   // Clear any stale overlay (no longer using layout-level transition overlays)
   useEffect(() => {
@@ -113,115 +123,124 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   return (
     <div className="flex h-full flex-col">
       {/* Header — Title bar */}
-      <header className="flex h-10 shrink-0 items-center justify-between border-b border-border bg-surface-0 px-3 dark:bg-surface-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <Button variant="ghost" size="sm" className="h-6 px-1.5 text-neutral-400 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-200" onClick={() => router.history.back()}>
-            <BackIcon className="h-3.5 w-3.5" />
-          </Button>
-          <div className="h-3 w-px bg-neutral-200 dark:bg-neutral-800" />
-
-          {/* Editable session title */}
-          {isEditingTitle ? (
-            <input
-              ref={titleInputRef}
-              value={editTitleValue}
-              onChange={(e) => setEditTitleValue(e.target.value)}
-              onBlur={saveTitle}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') saveTitle();
-                if (e.key === 'Escape') setIsEditingTitle(false);
-              }}
-              className="min-w-[120px] max-w-[300px] rounded-sm border border-accent/30 bg-transparent px-1.5 py-0.5 font-sans text-[13px] font-semibold text-neutral-900 outline-none selection:bg-accent/20 dark:text-neutral-100"
-              placeholder="Session title..."
-            />
-          ) : (
-            <button
-              onClick={startEditingTitle}
-              className="group flex items-center gap-1.5 truncate rounded-sm px-1 py-0.5 text-[13px] font-semibold text-neutral-900 transition-colors hover:bg-surface-1 dark:text-neutral-100 dark:hover:bg-surface-2"
-              title="Click to edit title"
-            >
-              <span className="truncate">{displayTitle}</span>
-              <PencilIcon className="h-2.5 w-2.5 shrink-0 text-neutral-300 opacity-0 transition-opacity group-hover:opacity-100 dark:text-neutral-600" />
-            </button>
-          )}
-
-          <SessionStatusBadge
-            status={sessionStatus}
-            errorMessage={session?.errorMessage}
-          />
-          <SessionStatusIndicator sessionStatus={sessionStatus} connectionStatus={connectionStatus} />
-        </div>
-        <div className="flex items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setShareOpen(true)}
-            className="h-6 gap-1 px-1.5 text-neutral-400 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-200"
-            title="Share session"
-          >
-            <ShareIcon className="h-3.5 w-3.5" />
-          </Button>
-          <ShareSessionDialog
-            sessionId={sessionId}
-            open={shareOpen}
-            onOpenChange={setShareOpen}
-            isOwner={isOwner}
-          />
-          {session && (
-            <SessionActionsMenu
-              session={{ id: sessionId, workspace: session.workspace, status: sessionStatus }}
-              isOrchestrator={session.isOrchestrator}
-              showOpen={false}
-              showEditorLink={false}
-            />
-          )}
-        </div>
-      </header>
-
-      {/* Action toolbar */}
-      <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-neutral-100 bg-surface-0 px-2 dark:border-neutral-800/50 dark:bg-surface-0">
-        <Button variant="ghost" size="sm" onClick={drawer.toggleEditor} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
-          <EditorIcon className="h-3 w-3" />
-          Editor
-        </Button>
-        <Button variant="ghost" size="sm" onClick={drawer.toggleFiles} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
-          <FilesIcon className="h-3 w-3" />
-          Files
-        </Button>
-        <Button variant="ghost" size="sm" onClick={drawer.toggleReview} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
-          <ReviewIcon className="h-3 w-3" />
-          Review
-        </Button>
-        <Button variant="ghost" size="sm" onClick={drawer.toggleLogs} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
-          <LogsIcon className="h-3 w-3" />
-          Logs
-        </Button>
-        {gitState?.prUrl && (
-          <a href={gitState.prUrl} target="_blank" rel="noopener noreferrer">
-            <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
-              <PRIcon className="h-3 w-3" />
-              PR
-              {gitState.prState && (
-                <Badge
-                  variant={
-                    gitState.prState === 'merged' ? 'default'
-                      : gitState.prState === 'open' ? 'success'
-                      : gitState.prState === 'draft' ? 'secondary'
-                      : 'error'
-                  }
-                  className="ml-0.5 text-2xs"
-                >
-                  {gitState.prState}
-                </Badge>
-              )}
+      {!hideChrome && (
+        <header className="flex h-10 shrink-0 items-center justify-between border-b border-border bg-surface-0 px-3 dark:bg-surface-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <Button variant="ghost" size="sm" className="h-6 px-1.5 text-neutral-400 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-200" onClick={() => session?.isOrchestrator ? navigate({ to: '/orchestrator' }) : router.history.back()}>
+              <BackIcon className="h-3.5 w-3.5" />
             </Button>
-          </a>
-        )}
-        <div className="flex-1" />
-        <Button variant="ghost" size="sm" onClick={drawer.toggleSidebar} title="Toggle session info sidebar" className="h-6 px-1.5 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300">
-          <InfoIcon className="h-3 w-3" />
-        </Button>
-      </div>
+            <div className="h-3 w-px bg-neutral-200 dark:bg-neutral-800" />
+
+            {/* Editable session title */}
+            {isEditingTitle ? (
+              <input
+                ref={titleInputRef}
+                value={editTitleValue}
+                onChange={(e) => setEditTitleValue(e.target.value)}
+                onBlur={saveTitle}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') saveTitle();
+                  if (e.key === 'Escape') setIsEditingTitle(false);
+                }}
+                className="min-w-[120px] max-w-[300px] rounded-sm border border-accent/30 bg-transparent px-1.5 py-0.5 font-sans text-[13px] font-semibold text-neutral-900 outline-none selection:bg-accent/20 dark:text-neutral-100"
+                placeholder="Session title..."
+              />
+            ) : (
+              <button
+                onClick={startEditingTitle}
+                className="group flex items-center gap-1.5 truncate rounded-sm px-1 py-0.5 text-[13px] font-semibold text-neutral-900 transition-colors hover:bg-surface-1 dark:text-neutral-100 dark:hover:bg-surface-2"
+                title="Click to edit title"
+              >
+                <span className="truncate">{displayTitle}</span>
+                <PencilIcon className="h-2.5 w-2.5 shrink-0 text-neutral-300 opacity-0 transition-opacity group-hover:opacity-100 dark:text-neutral-600" />
+              </button>
+            )}
+
+            <SessionStatusBadge
+              status={displaySessionStatus}
+              errorMessage={session?.errorMessage}
+            />
+            <SessionStatusIndicator sessionStatus={displaySessionStatus} connectionStatus={connectionStatus} />
+          </div>
+          <div className="flex items-center gap-0.5">
+            {canShareSession && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShareOpen(true)}
+                className="h-6 gap-1 px-1.5 text-neutral-400 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-200"
+                title="Share session"
+              >
+                <ShareIcon className="h-3.5 w-3.5" />
+              </Button>
+            )}
+            {session && (
+              <SessionActionsMenu
+                session={{ id: sessionId, workspace: session.workspace, status: sessionStatus }}
+                isOrchestrator={session.isOrchestrator}
+                showOpen={false}
+                showEditorLink={false}
+              />
+            )}
+          </div>
+        </header>
+      )}
+
+      {/* Desktop action toolbar */}
+      {!isMobile && (
+        <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-neutral-100 bg-surface-0 px-2 dark:border-neutral-800/50 dark:bg-surface-0">
+          <Button variant="ghost" size="sm" onClick={drawer.toggleEditor} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+            <EditorIcon className="h-3 w-3" />
+            Editor
+          </Button>
+          <Button variant="ghost" size="sm" onClick={drawer.toggleFiles} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+            <FilesIcon className="h-3 w-3" />
+            Files
+          </Button>
+          <Button variant="ghost" size="sm" onClick={drawer.toggleReview} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+            <ReviewIcon className="h-3 w-3" />
+            Review
+          </Button>
+          <Button variant="ghost" size="sm" onClick={drawer.toggleLogs} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+            <LogsIcon className="h-3 w-3" />
+            Logs
+          </Button>
+          {gitState?.prUrl && (
+            <a href={gitState.prUrl} target="_blank" rel="noopener noreferrer">
+              <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+                <PRIcon className="h-3 w-3" />
+                PR
+                {gitState.prState && (
+                  <Badge
+                    variant={
+                      gitState.prState === 'merged' ? 'default'
+                        : gitState.prState === 'open' ? 'success'
+                        : gitState.prState === 'draft' ? 'secondary'
+                        : 'error'
+                    }
+                    className="ml-0.5 text-2xs"
+                  >
+                    {gitState.prState}
+                  </Badge>
+                )}
+              </Button>
+            </a>
+          )}
+          <div className="flex-1" />
+          <Button variant="ghost" size="sm" onClick={drawer.toggleSidebar} title="Toggle session info sidebar" className="h-6 px-1.5 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300">
+            <InfoIcon className="h-3 w-3" />
+          </Button>
+        </div>
+      )}
+
+      {canShareSession && (
+        <ShareSessionDialog
+          sessionId={sessionId}
+          open={shareOpen}
+          onOpenChange={setShareOpen}
+          isOwner={isOwner}
+        />
+      )}
 
       {isLoading ? (
         <ChatSkeleton />
@@ -266,8 +285,24 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             isAgentActive={isAgentActive}
             sessionId={sessionId}
             sessionStatus={sessionStatus}
-            compact={drawer.activePanel !== null}
+            compact={drawer.activePanel !== null || isMobile}
+            showActionsButton={isMobile}
+            onOpenActions={() => setMobileActionsOpen(true)}
+            onFocusChange={setComposerFocused}
           />
+          {isMobile && (
+            <MobileActionsSheet
+              open={mobileActionsOpen}
+              onOpenChange={setMobileActionsOpen}
+              onEditor={() => drawer.openEditor()}
+              onFiles={() => drawer.openFiles()}
+              onReview={() => drawer.openReview()}
+              onLogs={() => drawer.openLogs()}
+              onInfo={() => drawer.toggleSidebar()}
+              onShare={canShareSession ? () => setShareOpen(true) : undefined}
+              prUrl={gitState?.prUrl || undefined}
+            />
+          )}
         </>
       )}
     </div>
@@ -375,6 +410,91 @@ function ChatSkeleton() {
   );
 }
 
+interface MobileActionsSheetProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onEditor: () => void;
+  onFiles: () => void;
+  onReview: () => void;
+  onLogs: () => void;
+  onInfo: () => void;
+  onShare?: () => void;
+  prUrl?: string;
+}
+
+function MobileActionsSheet({
+  open,
+  onOpenChange,
+  onEditor,
+  onFiles,
+  onReview,
+  onLogs,
+  onInfo,
+  onShare,
+  prUrl,
+}: MobileActionsSheetProps) {
+  const run = (fn: () => void) => {
+    onOpenChange(false);
+    fn();
+  };
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-[60] bg-black/45 backdrop-blur-[1px]" />
+        <Dialog.Content className="fixed inset-x-0 bottom-0 z-[61] rounded-t-2xl border-t border-neutral-200 bg-surface-0 p-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] shadow-2xl dark:border-neutral-800 dark:bg-surface-1">
+          <Dialog.Title className="mb-2 px-1 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-neutral-500 dark:text-neutral-400">
+            Actions
+          </Dialog.Title>
+          <div className="grid grid-cols-2 gap-2">
+            <MobileActionButton icon={<EditorIcon className="h-4 w-4" />} label="Editor" onClick={() => run(onEditor)} />
+            <MobileActionButton icon={<FilesIcon className="h-4 w-4" />} label="Files" onClick={() => run(onFiles)} />
+            <MobileActionButton icon={<ReviewIcon className="h-4 w-4" />} label="Review" onClick={() => run(onReview)} />
+            <MobileActionButton icon={<LogsIcon className="h-4 w-4" />} label="Logs" onClick={() => run(onLogs)} />
+            <MobileActionButton icon={<InfoIcon className="h-4 w-4" />} label="Session Info" onClick={() => run(onInfo)} />
+            {onShare && (
+              <MobileActionButton icon={<ShareIcon className="h-4 w-4" />} label="Share" onClick={() => run(onShare)} />
+            )}
+            {prUrl && (
+              <a
+                href={prUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="col-span-2 flex h-11 items-center justify-center gap-2 rounded-xl border border-neutral-200 bg-surface-1 px-3 text-[13px] font-medium text-neutral-700 dark:border-neutral-700 dark:bg-surface-2 dark:text-neutral-300"
+                onClick={() => onOpenChange(false)}
+              >
+                <PRIcon className="h-4 w-4" />
+                Open PR
+              </a>
+            )}
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function MobileActionButton({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex h-11 items-center justify-center gap-2 rounded-xl border border-neutral-200 bg-surface-1 px-3 text-[13px] font-medium text-neutral-700 active:scale-[0.98] dark:border-neutral-700 dark:bg-surface-2 dark:text-neutral-300"
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
 function BackIcon({ className }: { className?: string }) {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -469,4 +589,3 @@ function ShareIcon({ className }: { className?: string }) {
     </svg>
   );
 }
-

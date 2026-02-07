@@ -10,6 +10,7 @@ interface FileTreeProps {
   currentPath?: string;
   expandedPaths?: Set<string>;
   isLoading?: boolean;
+  mobile?: boolean;
 }
 
 export function FileTree({
@@ -21,6 +22,7 @@ export function FileTree({
   currentPath = '/',
   expandedPaths = new Set(),
   isLoading,
+  mobile = false,
 }: FileTreeProps) {
   if (isLoading) {
     return (
@@ -56,12 +58,15 @@ export function FileTree({
     <div className="space-y-0.5 p-1">
       {onNavigateUp && (
         <>
-          <div className="px-2 py-1 font-mono text-[10px] font-medium text-neutral-400 dark:text-neutral-500 truncate">
+          <div className="truncate px-2 py-1 font-mono text-[10px] font-medium text-neutral-400 dark:text-neutral-500">
             {currentPath}
           </div>
           <button
             onClick={onNavigateUp}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+            className={cn(
+              'flex w-full items-center gap-2 rounded-md px-2 text-left text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800',
+              mobile ? 'min-h-11 py-2.5 text-[15px]' : 'py-1.5 text-sm'
+            )}
           >
             <svg className="h-4 w-4 shrink-0 text-neutral-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" transform="rotate(180 12 12)" />
@@ -78,6 +83,7 @@ export function FileTree({
           isExpanded={expandedPaths.has(file.path)}
           onSelect={onSelect}
           onExpand={onExpand}
+          mobile={mobile}
         />
       ))}
     </div>
@@ -91,6 +97,7 @@ interface FileTreeItemProps {
   onSelect: (file: FileEntry) => void;
   onExpand?: (path: string) => void;
   depth?: number;
+  mobile?: boolean;
 }
 
 function FileTreeItem({
@@ -100,6 +107,7 @@ function FileTreeItem({
   onSelect,
   onExpand,
   depth = 0,
+  mobile = false,
 }: FileTreeItemProps) {
   const handleClick = () => {
     if (file.type === 'directory' && onExpand) {
@@ -113,7 +121,8 @@ function FileTreeItem({
     <button
       onClick={handleClick}
       className={cn(
-        'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors',
+        'flex w-full items-center gap-2 rounded-md px-2 text-left transition-colors',
+        mobile ? 'min-h-11 py-2.5 text-[15px]' : 'py-1.5 text-sm',
         isSelected
           ? 'bg-neutral-200 text-neutral-900 dark:bg-neutral-700 dark:text-neutral-100'
           : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800'

@@ -1,12 +1,14 @@
 import { useDrawer } from '@/routes/sessions/$sessionId';
 import { useSession } from '@/api/sessions';
 import { FileBrowser } from '@/components/files/file-browser';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 
 interface FilesDrawerProps {
   sessionId: string;
 }
 
 export function FilesDrawer({ sessionId }: FilesDrawerProps) {
+  const isMobile = useIsMobile();
   const { closeDrawer, pendingFilePath, clearPendingFile } = useDrawer();
   const { data: session } = useSession(sessionId);
   const initialFilePath = pendingFilePath;
@@ -15,20 +17,20 @@ export function FilesDrawer({ sessionId }: FilesDrawerProps) {
   return (
     <div className="flex h-full flex-col bg-neutral-50 dark:bg-neutral-900">
       {/* Header */}
-      <div className="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 bg-surface-1 px-2 dark:border-neutral-800 dark:bg-surface-1">
+      <div className={`shrink-0 border-b border-neutral-200 bg-surface-1 dark:border-neutral-800 dark:bg-surface-1 ${isMobile ? 'flex h-12 items-center justify-between px-3' : 'flex h-10 items-center justify-between px-2'}`}>
         <span className="px-2.5 font-mono text-[11px] font-medium text-neutral-900 dark:text-neutral-100">
           Files
         </span>
         <button
           type="button"
           onClick={closeDrawer}
-          className="flex items-center gap-1.5 rounded px-2.5 py-1 font-mono text-[11px] font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+          className={`flex items-center gap-1.5 rounded font-mono font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 ${isMobile ? 'px-2.5 py-1.5 text-[12px]' : 'px-2.5 py-1 text-[11px]'}`}
         >
           <PanelCloseIcon className="h-3.5 w-3.5" />
           Close Files
         </button>
       </div>
-      <div className="flex h-8 shrink-0 items-center border-b border-neutral-100 dark:border-neutral-800/50" />
+      {!isMobile && <div className="flex h-8 shrink-0 items-center border-b border-neutral-100 dark:border-neutral-800/50" />}
 
       {/* File browser or hibernate message */}
       {isHibernated ? (
@@ -38,7 +40,7 @@ export function FilesDrawer({ sessionId }: FilesDrawerProps) {
           </p>
         </div>
       ) : (
-        <div className="flex-1 overflow-hidden p-4">
+        <div className={`flex-1 overflow-hidden ${isMobile ? 'p-2.5' : 'p-4'}`}>
           <FileBrowser sessionId={sessionId} initialFilePath={initialFilePath} onFileConsumed={clearPendingFile} />
         </div>
       )}

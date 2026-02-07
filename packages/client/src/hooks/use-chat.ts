@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useWebSocket } from './use-websocket';
 import { sessionKeys } from '@/api/sessions';
 import type { Message, SessionStatus } from '@/api/types';
+import { useAuthStore } from '@/stores/auth';
 
 export interface PendingQuestion {
   questionId: string;
@@ -31,6 +32,13 @@ export interface DiffFile {
   path: string;
   status: 'added' | 'modified' | 'deleted';
   diff?: string;
+}
+
+export interface PromptAttachment {
+  type: 'file';
+  mime: string;
+  url: string;
+  filename?: string;
 }
 
 export interface ChildSessionEvent {
@@ -277,15 +285,10 @@ type WebSocketChatMessage =
   | { type: 'user.joined'; userId: string }
   | { type: 'user.left'; userId: string };
 
-export function useChat(sessionId: string) {
-  const queryClient = useQueryClient();
+const EMPTY_MODEL_PREFERENCES: string[] = [];
 
-  // Keep a ref to sessionId so WebSocket message handlers always read the current value
-  // without needing sessionId in their dependency arrays (which would cause reconnects).
-  const sessionIdRef = useRef(sessionId);
-  sessionIdRef.current = sessionId;
-
-  const initialState: ChatState = {
+function createInitialState(): ChatState {
+  return {
     messages: [],
     status: 'initializing',
     streamingContent: '',
@@ -306,17 +309,19 @@ export function useChat(sessionId: string) {
     reviewLoading: false,
     reviewDiffFiles: null,
   };
+}
 
-  const [state, setState] = useState<ChatState>(initialState);
+export function useChat(sessionId: string) {
+  const queryClient = useQueryClient();
+  const userModelPreferences = useAuthStore((s) => s.user?.modelPreferences);
+  const modelPreferences = userModelPreferences ?? EMPTY_MODEL_PREFERENCES;
 
-  // Reset state when sessionId changes (e.g. navigating between parent/child sessions).
-  // Without this, stale messages from the previous session remain visible until the
-  // new WebSocket init message arrives.
-  const prevSessionIdRef = useRef(sessionId);
-  if (prevSessionIdRef.current !== sessionId) {
-    prevSessionIdRef.current = sessionId;
-    setState(initialState);
-  }
+  // Keep a ref to sessionId so WebSocket message handlers always read the current value
+  // without needing sessionId in their dependency arrays (which would cause reconnects).
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+
+  const [state, setState] = useState<ChatState>(() => createInitialState());
 
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     try {
@@ -339,22 +344,71 @@ export function useChat(sessionId: string) {
     }
   }, [sessionId]);
 
-  // Auto-select an Anthropic model when models arrive and nothing is persisted
-  const autoSelectModel = useCallback((models: ProviderModels[]) => {
-    // Only auto-select if user hasn't already chosen a model
-    try {
-      if (localStorage.getItem(`agent-ops:model:${sessionId}`)) return;
-    } catch { /* ignore */ }
+  function findModelFromPreferences(models: ProviderModels[], preferences: string[]): string | null {
+    if (!preferences.length) return null;
+    const allIds = models.flatMap((p) => p.models.map((m) => m.id));
 
-    const anthropic = models.find((p) => p.provider.toLowerCase().includes('anthropic'));
-    if (anthropic && anthropic.models.length > 0) {
-      const defaultModel =
-        anthropic.models.find((m) => m.id.includes('claude-sonnet-4-5')) ||
-        anthropic.models.find((m) => m.id.includes('sonnet')) ||
-        anthropic.models[0];
-      handleModelChange(defaultModel.id);
+    for (const pref of preferences) {
+      // Exact match first (preferred path).
+      if (allIds.includes(pref)) return pref;
+
+      // Fallback: allow preference without provider prefix.
+      const slashIdx = pref.indexOf('/');
+      const modelIdOnly = slashIdx >= 0 ? pref.slice(slashIdx + 1) : pref;
+      const suffixMatch = allIds.find((id) => id.endsWith(`/${modelIdOnly}`) || id === modelIdOnly);
+      if (suffixMatch) return suffixMatch;
     }
-  }, [sessionId, handleModelChange]);
+
+    return null;
+  }
+
+  // Auto-select model using user preferences first.
+  const autoSelectModel = useCallback((models: ProviderModels[]) => {
+    const allIds = models.flatMap((p) => p.models.map((m) => m.id));
+    if (allIds.length === 0) return;
+
+    const preferred = findModelFromPreferences(models, modelPreferences);
+    if (preferred) {
+      if (selectedModel !== preferred) handleModelChange(preferred);
+      return;
+    }
+
+    // If no preference matches, keep persisted session choice when valid.
+    try {
+      const persisted = localStorage.getItem(`agent-ops:model:${sessionId}`) || '';
+      if (persisted && allIds.includes(persisted)) {
+        if (selectedModel !== persisted) handleModelChange(persisted);
+        return;
+      }
+    } catch {
+      // ignore
+    }
+
+    // Last resort: use the first discovered model to avoid implicit server defaults.
+    if (!selectedModel || !allIds.includes(selectedModel)) {
+      handleModelChange(allIds[0]);
+    }
+  }, [sessionId, handleModelChange, selectedModel, modelPreferences]);
+
+  const autoSelectModelRef = useRef(autoSelectModel);
+  useEffect(() => {
+    autoSelectModelRef.current = autoSelectModel;
+  }, [autoSelectModel]);
+
+  // Reset state when sessionId changes (e.g. navigating between parent/child sessions).
+  // Without this, stale messages from the previous session remain visible until the
+  // new WebSocket init message arrives.
+  const prevSessionIdRef = useRef(sessionId);
+  useEffect(() => {
+    if (prevSessionIdRef.current === sessionId) return;
+    prevSessionIdRef.current = sessionId;
+    setState(createInitialState());
+    try {
+      setSelectedModel(localStorage.getItem(`agent-ops:model:${sessionId}`) || '');
+    } catch {
+      setSelectedModel('');
+    }
+  }, [sessionId]);
 
   const wsUrl = sessionId ? `/api/sessions/${sessionId}/ws?role=client` : null;
 
@@ -443,7 +497,7 @@ export function useChat(sessionId: string) {
           reviewLoading: false,
           reviewDiffFiles: null,
         });
-        if (initModels.length > 0) autoSelectModel(initModels);
+        if (initModels.length > 0) autoSelectModelRef.current(initModels);
         break;
       }
 
@@ -619,7 +673,7 @@ export function useChat(sessionId: string) {
           ...prev,
           availableModels: modelsMsg.models,
         }));
-        autoSelectModel(modelsMsg.models);
+        autoSelectModelRef.current(modelsMsg.models);
         break;
       }
 
@@ -774,10 +828,15 @@ export function useChat(sessionId: string) {
   });
 
   const sendMessage = useCallback(
-    (content: string, model?: string) => {
+    (content: string, model?: string, attachments?: PromptAttachment[]) => {
       if (!isConnected) return;
 
-      send({ type: 'prompt', content, ...(model ? { model } : {}) });
+      send({
+        type: 'prompt',
+        content,
+        ...(model ? { model } : {}),
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      });
       // Start thinking indicator when user sends a message
       setState((prev) => ({ ...prev, isAgentThinking: true }));
     },

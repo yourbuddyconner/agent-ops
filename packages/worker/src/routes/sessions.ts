@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { NotFoundError, ValidationError } from '@agent-ops/shared';
+import { ForbiddenError, NotFoundError, ValidationError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
 import { signJWT } from '../lib/jwt.js';
@@ -56,6 +56,167 @@ function generateRunnerToken(): string {
   return Array.from(bytes)
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+}
+
+type ChildTunnelSummary = { name: string; url?: string; path?: string; port?: number; protocol?: string };
+type ChildSummaryWithRuntime = Awaited<ReturnType<typeof db.getChildSessions>>[number] & {
+  prTitle?: string;
+  gatewayUrl?: string;
+  tunnels?: ChildTunnelSummary[];
+};
+
+const NON_ACTIVE_TUNNEL_STATUSES = new Set(['terminated', 'error', 'hibernated']);
+const PR_REFRESH_INTERVAL_MS = 60_000;
+const childPrRefreshCache = new Map<string, number>();
+
+function assertSessionShareable(session: Awaited<ReturnType<typeof db.assertSessionAccess>>) {
+  if (session.isOrchestrator) {
+    throw new ForbiddenError('Orchestrator sessions cannot be shared');
+  }
+}
+
+async function getGitHubTokenIfConnected(env: Env, userId: string): Promise<string | null> {
+  try {
+    const oauthToken = await db.getOAuthToken(env.DB, userId, 'github');
+    if (!oauthToken) return null;
+    return await decryptString(oauthToken.encryptedAccessToken, env.ENCRYPTION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function parseGitHubPullRequestUrl(prUrl: string): { owner: string; repo: string; pullNumber: number } | null {
+  const match = prUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/i);
+  if (!match) return null;
+  const pullNumber = Number.parseInt(match[3], 10);
+  if (!Number.isFinite(pullNumber)) return null;
+  return {
+    owner: match[1],
+    repo: match[2],
+    pullNumber,
+  };
+}
+
+function mapGitHubPullRequestState(input: string | undefined, draft: boolean, merged: boolean): 'draft' | 'open' | 'closed' | 'merged' | null {
+  if (merged) return 'merged';
+  if (input === 'open') return draft ? 'draft' : 'open';
+  if (input === 'closed') return 'closed';
+  return null;
+}
+
+async function enrichChildrenWithRuntimeStatus(
+  env: Env,
+  children: Awaited<ReturnType<typeof db.getChildSessions>>
+): Promise<ChildSummaryWithRuntime[]> {
+  return Promise.all(
+    children.map(async (child) => {
+      if (NON_ACTIVE_TUNNEL_STATUSES.has(child.status)) {
+        return child;
+      }
+
+      try {
+        const childDoId = env.SESSIONS.idFromName(child.id);
+        const childDO = env.SESSIONS.get(childDoId);
+        const statusRes = await childDO.fetch(new Request('http://do/status'));
+        if (!statusRes.ok) return child;
+
+        const statusData = await statusRes.json() as {
+          tunnelUrls?: Record<string, string> | null;
+          tunnels?: Array<{ name: string; url?: string; path?: string; port?: number; protocol?: string }> | null;
+        };
+
+        const tunnels = Array.isArray(statusData.tunnels)
+          ? statusData.tunnels.filter((t): t is ChildTunnelSummary => typeof t?.name === 'string')
+          : [];
+
+        return {
+          ...child,
+          gatewayUrl: statusData.tunnelUrls?.gateway ?? undefined,
+          tunnels: tunnels.length > 0 ? tunnels : undefined,
+        };
+      } catch {
+        return child;
+      }
+    })
+  );
+}
+
+async function refreshOpenChildPullRequestStates(
+  env: Env,
+  userId: string,
+  children: ChildSummaryWithRuntime[],
+): Promise<ChildSummaryWithRuntime[]> {
+  const githubToken = await getGitHubTokenIfConnected(env, userId);
+  if (!githubToken) return children;
+
+  const now = Date.now();
+
+  return Promise.all(
+    children.map(async (child) => {
+      if (child.prState !== 'open' || typeof child.prNumber !== 'number' || !child.prUrl) {
+        return child;
+      }
+
+      const parsed = parseGitHubPullRequestUrl(child.prUrl);
+      if (!parsed) return child;
+
+      const cacheKey = `${child.id}:${child.prNumber}`;
+      const lastCheckedAt = childPrRefreshCache.get(cacheKey);
+      if (lastCheckedAt && now - lastCheckedAt < PR_REFRESH_INTERVAL_MS) {
+        return child;
+      }
+      childPrRefreshCache.set(cacheKey, now);
+
+      try {
+        const res = await fetch(
+          `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.pullNumber}`,
+          {
+            headers: {
+              Authorization: `Bearer ${githubToken}`,
+              Accept: 'application/vnd.github+json',
+              'User-Agent': 'Agent-Ops',
+            },
+          },
+        );
+
+        if (!res.ok) {
+          return child;
+        }
+
+        const pr = await res.json() as {
+          state?: string;
+          draft?: boolean;
+          merged?: boolean;
+          html_url?: string;
+          title?: string;
+        };
+
+        const refreshedState = mapGitHubPullRequestState(pr.state, Boolean(pr.draft), Boolean(pr.merged));
+        if (!refreshedState) return child;
+
+        const refreshedUrl = typeof pr.html_url === 'string' ? pr.html_url : child.prUrl;
+        const refreshedTitle = typeof pr.title === 'string' ? pr.title : undefined;
+        const nextTitle = refreshedTitle ?? child.prTitle;
+
+        if (refreshedState !== child.prState || refreshedUrl !== child.prUrl || (nextTitle && nextTitle !== child.prTitle)) {
+          await db.updateSessionGitState(env.DB, child.id, {
+            prState: refreshedState,
+            prUrl: refreshedUrl,
+            ...(nextTitle ? { prTitle: nextTitle } : {}),
+          });
+        }
+
+        return {
+          ...child,
+          prState: refreshedState,
+          prUrl: refreshedUrl,
+          ...(nextTitle ? { prTitle: nextTitle } : {}),
+        };
+      } catch {
+        return child;
+      }
+    })
+  );
 }
 
 /**
@@ -316,6 +477,19 @@ sessionsRouter.get('/available-models', async (c) => {
 sessionsRouter.post('/join/:token', async (c) => {
   const user = c.get('user');
   const { token } = c.req.param();
+
+  const link = await db.getShareLink(c.env.DB, token);
+  if (!link) {
+    return c.json({ error: 'Invalid, expired, or exhausted share link' }, 400);
+  }
+
+  const targetSession = await db.getSession(c.env.DB, link.sessionId);
+  if (!targetSession) {
+    return c.json({ error: 'Invalid, expired, or exhausted share link' }, 400);
+  }
+  if (targetSession.isOrchestrator) {
+    return c.json({ error: 'Orchestrator sessions cannot be shared' }, 403);
+  }
 
   const result = await db.redeemShareLink(c.env.DB, token, user.id);
   if (!result) {
@@ -754,7 +928,9 @@ sessionsRouter.get('/:id/children', async (c) => {
   await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
 
   const children = await db.getChildSessions(c.env.DB, id);
-  return c.json({ children });
+  const enrichedChildren = await enrichChildrenWithRuntimeStatus(c.env, children);
+  const refreshedChildren = await refreshOpenChildPullRequestStates(c.env, user.id, enrichedChildren);
+  return c.json({ children: refreshedChildren });
 });
 
 /**
@@ -846,6 +1022,7 @@ sessionsRouter.get('/:id/participants', async (c) => {
   const { id } = c.req.param();
 
   const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
+  assertSessionShareable(session);
 
   const participants = await db.getSessionParticipants(c.env.DB, id);
 
@@ -883,7 +1060,8 @@ sessionsRouter.post('/:id/participants', zValidator('json', addParticipantSchema
   const { id } = c.req.param();
   const body = c.req.valid('json');
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  assertSessionShareable(session);
 
   let targetUserId = body.userId;
   if (!targetUserId && body.email) {
@@ -907,7 +1085,8 @@ sessionsRouter.delete('/:id/participants/:userId', async (c) => {
   const user = c.get('user');
   const { id, userId: targetUserId } = c.req.param();
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  assertSessionShareable(session);
 
   await db.removeSessionParticipant(c.env.DB, id, targetUserId);
 
@@ -931,7 +1110,8 @@ sessionsRouter.post('/:id/share-link', zValidator('json', createShareLinkSchema)
   const { id } = c.req.param();
   const body = c.req.valid('json');
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  assertSessionShareable(session);
 
   const link = await db.createShareLink(c.env.DB, id, body.role, user.id, body.expiresAt, body.maxUses);
 
@@ -946,7 +1126,8 @@ sessionsRouter.get('/:id/share-links', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  assertSessionShareable(session);
 
   const links = await db.getSessionShareLinks(c.env.DB, id);
 
@@ -961,7 +1142,8 @@ sessionsRouter.delete('/:id/share-link/:linkId', async (c) => {
   const user = c.get('user');
   const { id, linkId } = c.req.param();
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  assertSessionShareable(session);
 
   await db.deactivateShareLink(c.env.DB, linkId);
 

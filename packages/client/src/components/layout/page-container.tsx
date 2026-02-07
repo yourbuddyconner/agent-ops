@@ -7,7 +7,7 @@ interface PageContainerProps {
 
 export function PageContainer({ children, className }: PageContainerProps) {
   return (
-    <div className={cn('p-6', className)}>{children}</div>
+    <div className={cn('p-3 md:p-6', className)}>{children}</div>
   );
 }
 
@@ -19,9 +19,9 @@ interface PageHeaderProps {
 
 export function PageHeader({ title, description, actions }: PageHeaderProps) {
   return (
-    <div className="mb-6 flex items-start justify-between">
+    <div className="mb-4 flex flex-col gap-3 sm:mb-6 sm:flex-row sm:items-start sm:justify-between">
       <div>
-        <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100 text-balance">
+        <h1 className="text-xl font-semibold text-neutral-900 text-balance dark:text-neutral-100 sm:text-2xl">
           {title}
         </h1>
         {description && (
@@ -30,7 +30,7 @@ export function PageHeader({ title, description, actions }: PageHeaderProps) {
           </p>
         )}
       </div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      {actions && <div className="flex items-center gap-2 sm:self-auto">{actions}</div>}
     </div>
   );
 }

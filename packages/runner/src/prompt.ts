@@ -18,7 +18,7 @@
 
 import { createTwoFilesPatch } from "diff";
 import { AgentClient } from "./agent-client.js";
-import type { AvailableModels, DiffFile, ReviewFileSummary, ReviewResultData } from "./types.js";
+import type { AvailableModels, DiffFile, PromptAttachment, ReviewFileSummary, ReviewResultData } from "./types.js";
 
 // OpenCode ToolState status values
 type ToolStatus = "pending" | "running" | "completed" | "error";
@@ -245,6 +245,7 @@ export class PromptHandler {
   private currentModelPreferences: string[] | undefined;
   private currentModelIndex = 0;
   private pendingRetryContent: string | null = null;
+  private pendingRetryAttachments: PromptAttachment[] = [];
   private pendingRetryAuthor: { gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string } | undefined;
   private waitForEventForced = false;
 
@@ -269,8 +270,8 @@ export class PromptHandler {
     });
   }
 
-  async handlePrompt(messageId: string, content: string, model?: string, author?: { gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }, modelPreferences?: string[]): Promise<void> {
-    console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length})` : ''}`);
+  async handlePrompt(messageId: string, content: string, model?: string, author?: { gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }, modelPreferences?: string[], attachments?: PromptAttachment[]): Promise<void> {
+    console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length})` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}`);
     try {
       // Set git config for author attribution before processing
       if (author?.gitName || author?.authorName) {
@@ -316,6 +317,7 @@ export class PromptHandler {
       // Store failover state
       this.currentModelPreferences = modelPreferences;
       this.pendingRetryContent = content;
+      this.pendingRetryAttachments = attachments ?? [];
       this.pendingRetryAuthor = author;
 
       // Determine which model to use: explicit model takes priority, then first preference
@@ -336,13 +338,13 @@ export class PromptHandler {
 
       // Send message async (fire-and-forget)
       try {
-        await this.sendPromptAsync(this.sessionId, content, effectiveModel);
+        await this.sendPromptAsync(this.sessionId, content, effectiveModel, attachments);
       } catch (err) {
         if (this.isSessionGone(err)) {
           console.warn("[PromptHandler] OpenCode session missing; recreating session and retrying prompt");
           this.sessionId = await this.createSession();
           await this.startEventStream();
-          await this.sendPromptAsync(this.sessionId, content, effectiveModel);
+          await this.sendPromptAsync(this.sessionId, content, effectiveModel, attachments);
         } else {
           throw err;
         }
@@ -395,7 +397,7 @@ export class PromptHandler {
     // Retry with next model
     try {
       this.agentClient.sendAgentStatus("thinking");
-      await this.sendPromptAsync(this.sessionId!, this.pendingRetryContent!, toModel);
+      await this.sendPromptAsync(this.sessionId!, this.pendingRetryContent!, toModel, this.pendingRetryAttachments);
       console.log(`[PromptHandler] Retry sent with model ${toModel}`);
       return true;
     } catch (err) {
@@ -721,12 +723,27 @@ export class PromptHandler {
     }
   }
 
-  private async sendPromptAsync(sessionId: string, content: string, model?: string): Promise<void> {
+  private async sendPromptAsync(sessionId: string, content: string, model?: string, attachments?: PromptAttachment[]): Promise<void> {
     const url = `${this.opencodeUrl}/session/${sessionId}/prompt_async`;
-    console.log(`[PromptHandler] POST ${url}${model ? ` (model: ${model})` : ''}`);
+    console.log(`[PromptHandler] POST ${url}${model ? ` (model: ${model})` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}`);
 
+    const promptParts: Array<Record<string, unknown>> = [];
+    for (const attachment of attachments ?? []) {
+      promptParts.push({
+        type: "file",
+        mime: attachment.mime,
+        url: attachment.url,
+        ...(attachment.filename ? { filename: attachment.filename } : {}),
+      });
+    }
+    if (content) {
+      promptParts.push({ type: "text", text: content });
+    }
+    if (promptParts.length === 0) {
+      throw new Error("Cannot send empty prompt: no text or attachments");
+    }
     const body: Record<string, unknown> = {
-      parts: [{ type: "text", text: content }],
+      parts: promptParts,
     };
     if (model) {
       // OpenCode expects model as { providerID, modelID }
@@ -1270,6 +1287,7 @@ export class PromptHandler {
     this.currentModelPreferences = undefined;
     this.currentModelIndex = 0;
     this.pendingRetryContent = null;
+    this.pendingRetryAttachments = [];
     this.pendingRetryAuthor = undefined;
     console.log(`[PromptHandler] Response finalized`);
   }

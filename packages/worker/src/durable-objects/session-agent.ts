@@ -4,11 +4,77 @@ import { decryptString } from '../lib/crypto.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
 
+interface PromptAttachment {
+  type: 'file';
+  mime: string;
+  url: string;
+  filename?: string;
+}
+
+const MAX_PROMPT_ATTACHMENTS = 8;
+const MAX_PROMPT_ATTACHMENT_URL_LENGTH = 12_000_000;
+
+function parseBase64DataUrl(url: string): string | null {
+  const commaIndex = url.indexOf(',');
+  if (commaIndex === -1) return null;
+  const data = url.slice(commaIndex + 1).replace(/\s+/g, '');
+  return data.length > 0 ? data : null;
+}
+
+function sanitizePromptAttachments(input: unknown): PromptAttachment[] {
+  if (!Array.isArray(input)) return [];
+  const result: PromptAttachment[] = [];
+
+  for (const item of input) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    if (record.type !== 'file') continue;
+    if (typeof record.mime !== 'string' || typeof record.url !== 'string') continue;
+
+    const mime = record.mime.trim().toLowerCase();
+    const url = record.url.trim();
+    if (!mime.startsWith('image/')) continue;
+    if (!url.startsWith('data:') || !url.includes(';base64,')) continue;
+    if (url.length > MAX_PROMPT_ATTACHMENT_URL_LENGTH) continue;
+
+    const filename = typeof record.filename === 'string' ? record.filename.slice(0, 255) : undefined;
+    result.push({ type: 'file', mime, url, filename });
+    if (result.length >= MAX_PROMPT_ATTACHMENTS) break;
+  }
+
+  return result;
+}
+
+function attachmentPartsForMessage(attachments: PromptAttachment[]): Array<Record<string, unknown>> {
+  return attachments
+    .map((attachment) => {
+      const data = parseBase64DataUrl(attachment.url);
+      if (!data) return null;
+      return {
+        type: 'image',
+        data,
+        mimeType: attachment.mime,
+        ...(attachment.filename ? { filename: attachment.filename } : {}),
+      } as Record<string, unknown>;
+    })
+    .filter((part): part is Record<string, unknown> => part !== null);
+}
+
+function parseQueuedPromptAttachments(raw: unknown): PromptAttachment[] {
+  if (typeof raw !== 'string' || !raw) return [];
+  try {
+    return sanitizePromptAttachments(JSON.parse(raw));
+  } catch {
+    return [];
+  }
+}
+
 /** Messages sent by browser clients to the DO */
 interface ClientMessage {
   type: 'prompt' | 'answer' | 'ping' | 'abort' | 'revert' | 'diff' | 'review';
   content?: string;
   model?: string;
+  attachments?: PromptAttachment[];
   questionId?: string;
   answer?: string | boolean;
   messageId?: string;
@@ -17,6 +83,68 @@ interface ClientMessage {
 
 /** Agent status values for activity indication */
 type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
+type SessionLifecycleStatus = 'initializing' | 'running' | 'idle' | 'hibernating' | 'hibernated' | 'restoring' | 'terminated' | 'error';
+type SandboxRuntimeState = 'starting' | 'running' | 'hibernating' | 'hibernated' | 'restoring' | 'stopped' | 'error';
+type AgentRuntimeState = 'starting' | 'busy' | 'idle' | 'queued' | 'sleeping' | 'standby' | 'stopped' | 'error';
+type JointRuntimeState = 'starting' | 'running_busy' | 'running_idle' | 'queued' | 'waking' | 'sleeping' | 'standby' | 'stopped' | 'error';
+
+function deriveRuntimeStates(args: {
+  lifecycleStatus: string;
+  sandboxId?: string | null;
+  runnerConnected: boolean;
+  runnerBusy: boolean;
+  queuedPrompts: number;
+}): {
+  sandboxState: SandboxRuntimeState;
+  agentState: AgentRuntimeState;
+  jointState: JointRuntimeState;
+} {
+  const lifecycle = args.lifecycleStatus as SessionLifecycleStatus;
+  const hasSandbox = !!args.sandboxId;
+  const hasQueue = args.queuedPrompts > 0;
+
+  const sandboxState: SandboxRuntimeState = (() => {
+    if (lifecycle === 'error') return 'error';
+    if (lifecycle === 'terminated') return 'stopped';
+    if (lifecycle === 'hibernating') return 'hibernating';
+    if (lifecycle === 'hibernated') return 'hibernated';
+    if (lifecycle === 'restoring') return 'restoring';
+    if (lifecycle === 'initializing') return 'starting';
+    if (hasSandbox) return 'running';
+    if (hasQueue) return 'restoring';
+    return 'stopped';
+  })();
+
+  const agentState: AgentRuntimeState = (() => {
+    if (lifecycle === 'error') return 'error';
+    if (lifecycle === 'terminated') return 'stopped';
+    if (lifecycle === 'hibernating' || lifecycle === 'hibernated') return 'sleeping';
+    if (lifecycle === 'initializing' || lifecycle === 'restoring') {
+      return hasQueue ? 'queued' : 'starting';
+    }
+    if (hasQueue && !args.runnerConnected) return 'queued';
+    if (args.runnerConnected && args.runnerBusy) return 'busy';
+    if (hasQueue) return 'queued';
+    if (hasSandbox && args.runnerConnected) return 'idle';
+    if (hasSandbox && !args.runnerConnected) return 'standby';
+    return 'standby';
+  })();
+
+  const jointState: JointRuntimeState = (() => {
+    if (agentState === 'error') return 'error';
+    if (agentState === 'stopped') return 'stopped';
+    if (agentState === 'sleeping') return 'sleeping';
+    if (sandboxState === 'starting') return 'starting';
+    if (sandboxState === 'restoring') return hasQueue ? 'waking' : 'starting';
+    if (agentState === 'busy') return 'running_busy';
+    if (agentState === 'idle') return 'running_idle';
+    if (agentState === 'queued') return hasSandbox ? 'queued' : 'waking';
+    if (agentState === 'standby') return 'standby';
+    return 'starting';
+  })();
+
+  return { sandboxState, agentState, jointState };
+}
 
 /** Messages sent by the runner to the DO */
 /** Tool call status values */
@@ -101,6 +229,7 @@ interface RunnerOutbound {
   messageId?: string;
   content?: string;
   model?: string;
+  attachments?: PromptAttachment[];
   questionId?: string;
   answer?: string | boolean;
   requestId?: string;
@@ -171,6 +300,7 @@ const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS prompt_queue (
     id TEXT PRIMARY KEY,
     content TEXT NOT NULL,
+    attachments TEXT, -- JSON array of prompt attachments
     status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'processing', 'completed')),
     author_id TEXT,
     author_email TEXT,
@@ -229,6 +359,7 @@ export class SessionAgentDO {
       // Migrate existing DOs: add author_avatar_url columns if missing
       try { this.ctx.storage.sql.exec('ALTER TABLE messages ADD COLUMN author_avatar_url TEXT'); } catch { /* already exists */ }
       try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN author_avatar_url TEXT'); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN attachments TEXT'); } catch { /* already exists */ }
 
       this.initialized = true;
     });
@@ -307,14 +438,16 @@ export class SessionAgentDO {
       }
       case '/prompt': {
         // HTTP-based prompt submission (alternative to WebSocket)
-        const body = await request.json() as { content: string; model?: string; interrupt?: boolean };
-        if (!body.content) {
-          return new Response(JSON.stringify({ error: 'Missing content' }), { status: 400 });
+        const body = await request.json() as { content?: string; model?: string; attachments?: PromptAttachment[]; interrupt?: boolean };
+        const content = body.content ?? '';
+        const attachments = sanitizePromptAttachments(body.attachments);
+        if (!content && attachments.length === 0) {
+          return new Response(JSON.stringify({ error: 'Missing content or attachments' }), { status: 400 });
         }
         if (body.interrupt) {
-          await this.handleInterruptPrompt(body.content, body.model);
+          await this.handleInterruptPrompt(content, body.model);
         } else {
-          await this.handlePrompt(body.content, body.model);
+          await this.handlePrompt(content, body.model, undefined, attachments);
         }
         return Response.json({ success: true });
       }
@@ -531,7 +664,7 @@ export class SessionAgentDO {
 
     // Check if there's a queued prompt to send immediately
     const queued = this.ctx.storage.sql
-      .exec("SELECT id, content, author_id, author_email, author_name FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
+      .exec("SELECT id, content, attachments, author_id, author_email, author_name FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
       .toArray();
 
     if (queued.length > 0) {
@@ -542,6 +675,7 @@ export class SessionAgentDO {
       );
       const authorId = prompt.author_id as string | null;
       const authorDetails = authorId ? this.userDetailsCache.get(authorId) : undefined;
+      const attachments = parseQueuedPromptAttachments(prompt.attachments);
       if (authorId) {
         this.setStateValue('currentPromptAuthorId', authorId);
       }
@@ -552,6 +686,7 @@ export class SessionAgentDO {
         type: 'prompt',
         messageId: prompt.id,
         content: prompt.content,
+        attachments: attachments.length > 0 ? attachments : undefined,
         authorId: authorId || undefined,
         authorEmail: prompt.author_email || undefined,
         authorName: prompt.author_name || undefined,
@@ -781,8 +916,9 @@ export class SessionAgentDO {
   private async handleClientMessage(ws: WebSocket, msg: ClientMessage) {
     switch (msg.type) {
       case 'prompt': {
-        if (!msg.content) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Missing content' }));
+        const attachments = sanitizePromptAttachments(msg.attachments);
+        if (!msg.content && attachments.length === 0) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Missing content or attachments' }));
           return;
         }
         // Extract userId from WebSocket tag for authorship tracking
@@ -797,7 +933,7 @@ export class SessionAgentDO {
           gitName: userDetails.gitName,
           gitEmail: userDetails.gitEmail,
         } : userId ? { id: userId, email: '', name: undefined, avatarUrl: undefined, gitName: undefined, gitEmail: undefined } : undefined;
-        await this.handlePrompt(msg.content, msg.model, author);
+        await this.handlePrompt(msg.content || '', msg.model, author, attachments);
         break;
       }
 
@@ -840,7 +976,8 @@ export class SessionAgentDO {
   private async handlePrompt(
     content: string,
     model?: string,
-    author?: { id: string; email: string; name?: string; avatarUrl?: string; gitName?: string; gitEmail?: string }
+    author?: { id: string; email: string; name?: string; avatarUrl?: string; gitName?: string; gitEmail?: string },
+    attachments?: PromptAttachment[]
   ) {
     // Update idle tracking
     this.setStateValue('lastUserActivityAt', String(Date.now()));
@@ -858,11 +995,16 @@ export class SessionAgentDO {
       this.ctx.waitUntil(this.performWake());
     }
 
+    const normalizedAttachments = sanitizePromptAttachments(attachments);
+    const attachmentParts = attachmentPartsForMessage(normalizedAttachments);
+    const serializedAttachmentParts = attachmentParts.length > 0 ? JSON.stringify(attachmentParts) : null;
+    const serializedQueuedAttachments = normalizedAttachments.length > 0 ? JSON.stringify(normalizedAttachments) : null;
+
     // Store user message with author info
     const messageId = crypto.randomUUID();
     this.ctx.storage.sql.exec(
-      'INSERT INTO messages (id, role, content, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      messageId, 'user', content,
+      'INSERT INTO messages (id, role, content, parts, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      messageId, 'user', content, serializedAttachmentParts,
       author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null
     );
 
@@ -873,6 +1015,7 @@ export class SessionAgentDO {
         id: messageId,
         role: 'user',
         content,
+        parts: attachmentParts.length > 0 ? attachmentParts : undefined,
         authorId: author?.id,
         authorEmail: author?.email,
         authorName: author?.name,
@@ -881,7 +1024,13 @@ export class SessionAgentDO {
       },
     });
 
-    this.appendAuditLog('user.prompt', content.slice(0, 120), author?.id);
+    this.appendAuditLog(
+      'user.prompt',
+      content
+        ? content.slice(0, 120)
+        : `[${normalizedAttachments.length} image attachment(s)]`,
+      author?.id
+    );
 
     // Check if runner is busy
     const runnerBusy = this.getStateValue('runnerBusy') === 'true';
@@ -898,8 +1047,8 @@ export class SessionAgentDO {
     if (!runnerConnected) {
       // No runner connected — queue the prompt with author info
       this.ctx.storage.sql.exec(
-        "INSERT INTO prompt_queue (id, content, status, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, 'queued', ?, ?, ?, ?)",
-        messageId, content,
+        "INSERT INTO prompt_queue (id, content, attachments, status, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
+        messageId, content, serializedQueuedAttachments,
         author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null
       );
       this.appendAuditLog(
@@ -917,8 +1066,8 @@ export class SessionAgentDO {
     if (runnerBusy) {
       // Runner is processing another prompt — queue with author info
       this.ctx.storage.sql.exec(
-        "INSERT INTO prompt_queue (id, content, status, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, 'queued', ?, ?, ?, ?)",
-        messageId, content,
+        "INSERT INTO prompt_queue (id, content, attachments, status, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
+        messageId, content, serializedQueuedAttachments,
         author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null
       );
       this.appendAuditLog(
@@ -944,6 +1093,7 @@ export class SessionAgentDO {
       messageId,
       content,
       model,
+      attachments: normalizedAttachments.length > 0 ? normalizedAttachments : undefined,
       authorId: author?.id,
       authorEmail: author?.email,
       authorName: author?.name,
@@ -3009,17 +3159,28 @@ export class SessionAgentDO {
         url: gatewayUrl ? `${gatewayUrl}${t.path}` : undefined,
       }))
       : null;
+    const runtimeStates = deriveRuntimeStates({
+      lifecycleStatus: status,
+      sandboxId: sandboxId || null,
+      runnerConnected,
+      runnerBusy,
+      queuedPrompts: queueLength,
+    });
 
     return Response.json({
       sessionId,
       userId,
       workspace,
       status,
+      lifecycleStatus: status,
       sandboxId: sandboxId || null,
       tunnelUrls: tunnelUrlsParsed,
       tunnels,
       runnerConnected,
       runnerBusy,
+      agentState: runtimeStates.agentState,
+      sandboxState: runtimeStates.sandboxState,
+      jointState: runtimeStates.jointState,
       messageCount,
       queuedPrompts: queueLength,
       connectedClients: clientCount,
@@ -3110,7 +3271,7 @@ export class SessionAgentDO {
     if (runnerSockets.length === 0) return false;
 
     const next = this.ctx.storage.sql
-      .exec("SELECT id, content, author_id, author_email, author_name FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
+      .exec("SELECT id, content, attachments, author_id, author_email, author_name FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
       .toArray();
 
     if (next.length === 0) return false;
@@ -3124,6 +3285,7 @@ export class SessionAgentDO {
     // Look up git details from cache for the prompt author
     const authorId = prompt.author_id as string | null;
     const authorDetails = authorId ? this.userDetailsCache.get(authorId) : undefined;
+    const attachments = parseQueuedPromptAttachments(prompt.attachments);
 
     // Track current prompt author for PR attribution
     if (authorId) {
@@ -3137,6 +3299,7 @@ export class SessionAgentDO {
       type: 'prompt',
       messageId: prompt.id as string,
       content: prompt.content as string,
+      attachments: attachments.length > 0 ? attachments : undefined,
       authorId: authorId || undefined,
       authorEmail: (prompt.author_email as string) || undefined,
       authorName: (prompt.author_name as string) || undefined,

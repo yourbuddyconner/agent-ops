@@ -138,9 +138,9 @@ async function main() {
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient);
 
   // Register handlers
-  agentClient.onPrompt(async (messageId, content, model, author, modelPreferences) => {
-    console.log(`[Runner] Received prompt: ${messageId}${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length} models)` : ''}`);
-    await promptHandler.handlePrompt(messageId, content, model, author, modelPreferences);
+  agentClient.onPrompt(async (messageId, content, model, author, modelPreferences, attachments) => {
+    console.log(`[Runner] Received prompt: ${messageId}${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length} models)` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}`);
+    await promptHandler.handlePrompt(messageId, content, model, author, modelPreferences, attachments);
   });
 
   agentClient.onAnswer(async (questionId, answer) => {

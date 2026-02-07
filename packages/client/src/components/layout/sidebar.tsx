@@ -19,7 +19,7 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        'flex h-dvh flex-col border-r border-neutral-200 bg-surface-1 transition-all duration-200 dark:border-neutral-800 dark:bg-surface-1',
+        'hidden h-dvh flex-col border-r border-neutral-200 bg-surface-1 transition-all duration-200 dark:border-neutral-800 dark:bg-surface-1 md:flex',
         sidebarCollapsed ? 'w-16' : 'w-60'
       )}
     >
@@ -169,4 +169,3 @@ function SettingsIcon({ className }: { className?: string }) {
     </svg>
   );
 }
-

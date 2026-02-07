@@ -2,6 +2,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { useAuthStore } from '@/stores/auth';
 import { useTheme } from '@/hooks/use-theme';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { MobileNavMenu } from './mobile-nav-menu';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -31,7 +32,9 @@ export function Header() {
 
   return (
     <header className="flex h-12 items-center justify-between border-b border-neutral-200 bg-surface-0 px-4 dark:border-neutral-800 dark:bg-surface-0">
-      <div />
+      <div className="flex items-center md:hidden">
+        <MobileNavMenu />
+      </div>
 
       <div className="flex items-center gap-2">
         <button

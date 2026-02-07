@@ -1,12 +1,14 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { cn } from '@/lib/cn';
 import { SessionMetadataSidebar } from './session-metadata-sidebar';
+import { OrchestratorMetadataSidebar } from './orchestrator-metadata-sidebar';
 import type { ConnectedUser } from '@/hooks/use-chat';
 
 interface SessionMetadataModalProps {
   sessionId: string;
   connectedUsers?: ConnectedUser[];
   selectedModel?: string;
+  isOrchestrator?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -20,6 +22,7 @@ export function SessionMetadataModal({
   sessionId,
   connectedUsers,
   selectedModel,
+  isOrchestrator = false,
   open,
   onOpenChange,
 }: SessionMetadataModalProps) {
@@ -37,7 +40,7 @@ export function SessionMetadataModal({
         />
         <Dialog.Content
           className={cn(
-            'fixed inset-x-3 top-[8%] bottom-[8%] z-[65]',
+            'session-metadata-mobile fixed inset-x-2 top-[6%] bottom-[4%] z-[65]',
             'flex flex-col',
             'rounded-xl border border-border/80 bg-surface-0',
             'shadow-2xl shadow-black/20',
@@ -55,7 +58,7 @@ export function SessionMetadataModal({
               <div className="flex h-6 w-6 items-center justify-center rounded-md bg-neutral-100 dark:bg-neutral-800">
                 <InfoIcon className="h-3.5 w-3.5 text-neutral-500 dark:text-neutral-400" />
               </div>
-              Session Info
+              {isOrchestrator ? 'Orchestrator Info' : 'Session Info'}
             </Dialog.Title>
             <Dialog.Close asChild>
               <button
@@ -81,12 +84,21 @@ export function SessionMetadataModal({
             // Better touch scrolling on iOS
             '-webkit-overflow-scrolling-touch'
           )}>
-            <SessionMetadataSidebar
-              sessionId={sessionId}
-              connectedUsers={connectedUsers}
-              selectedModel={selectedModel}
-              compact
-            />
+            {isOrchestrator ? (
+              <OrchestratorMetadataSidebar
+                sessionId={sessionId}
+                connectedUsers={connectedUsers}
+                selectedModel={selectedModel}
+                embedded
+              />
+            ) : (
+              <SessionMetadataSidebar
+                sessionId={sessionId}
+                connectedUsers={connectedUsers}
+                selectedModel={selectedModel}
+                embedded
+              />
+            )}
           </div>
 
           {/* Bottom safe area for gesture indicator */}

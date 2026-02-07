@@ -7,7 +7,7 @@
  * - Typed outbound/inbound message protocol
  */
 
-import type { AgentStatus, AvailableModels, DiffFile, DOToRunnerMessage, ReviewResultData, RunnerToDOMessage, ToolCallStatus } from "./types.js";
+import type { AgentStatus, AvailableModels, DiffFile, DOToRunnerMessage, PromptAttachment, ReviewResultData, RunnerToDOMessage, ToolCallStatus } from "./types.js";
 
 export interface PromptAuthor {
   gitName?: string;
@@ -32,7 +32,7 @@ export class AgentClient {
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private closing = false;
 
-  private promptHandler: ((messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[]) => void | Promise<void>) | null = null;
+  private promptHandler: ((messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[]) => void | Promise<void>) | null = null;
   private answerHandler: ((questionId: string, answer: string | boolean) => void | Promise<void>) | null = null;
   private stopHandler: (() => void) | null = null;
   private abortHandler: (() => void | Promise<void>) | null = null;
@@ -359,7 +359,7 @@ export class AgentClient {
 
   // ─── Inbound Handlers (DO → Runner) ─────────────────────────────────
 
-  onPrompt(handler: (messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[]) => void | Promise<void>): void {
+  onPrompt(handler: (messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[]) => void | Promise<void>): void {
     this.promptHandler = handler;
   }
 
@@ -442,7 +442,7 @@ export class AgentClient {
           const author: PromptAuthor | undefined = (msg.gitName || msg.gitEmail || msg.authorName || msg.authorEmail)
             ? { gitName: msg.gitName, gitEmail: msg.gitEmail, authorName: msg.authorName, authorEmail: msg.authorEmail }
             : undefined;
-          await this.promptHandler?.(msg.messageId, msg.content, msg.model, author, msg.modelPreferences);
+          await this.promptHandler?.(msg.messageId, msg.content, msg.model, author, msg.modelPreferences, msg.attachments);
           break;
         }
         case "answer":

@@ -1,8 +1,16 @@
 // ─── Runner ↔ DO WebSocket Protocol ────────────────────────────────────────
 
 /** Messages sent from DO to Runner */
+export interface PromptAttachment {
+  type: "file";
+  mime: string;
+  url: string;
+  filename?: string;
+}
+
 export type DOToRunnerMessage =
   | { type: "prompt"; messageId: string; content: string; model?: string;
+      attachments?: PromptAttachment[];
       modelPreferences?: string[];
       authorId?: string; authorEmail?: string; authorName?: string;
       gitName?: string; gitEmail?: string }
