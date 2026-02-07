@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { Env, Variables } from '../env.js';
 import { integrationRegistry } from '../integrations/base.js';
 import * as db from '../lib/db.js';
+import { createWorkflowSession, sha256Hex } from '../lib/workflow-runtime.js';
 
 export const webhooksRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -22,13 +23,22 @@ webhooksRouter.all('/*', async (c, next) => {
 
   // Look up trigger by webhook path
   const trigger = await c.env.DB.prepare(`
-    SELECT t.*, w.id as workflow_id, w.name as workflow_name, w.user_id
+    SELECT t.*, w.id as workflow_id, w.name as workflow_name, w.user_id, w.version, w.data
     FROM triggers t
     JOIN workflows w ON t.workflow_id = w.id
     WHERE t.type = 'webhook'
       AND t.enabled = 1
       AND json_extract(t.config, '$.path') = ?
-  `).bind(webhookPath).first();
+  `).bind(webhookPath).first<{
+    id: string;
+    workflow_id: string;
+    workflow_name: string;
+    user_id: string;
+    version: string | null;
+    data: string;
+    config: string;
+    variable_mapping: string | null;
+  }>();
 
   if (!trigger) {
     return c.json({ error: 'Webhook not found', path: webhookPath }, 404);
@@ -51,11 +61,13 @@ webhooksRouter.all('/*', async (c, next) => {
     // const isValid = await verifyWebhookSignature(signature, body, config.secret);
   }
 
+  const rawBody = c.req.method === 'GET' ? '' : await c.req.raw.clone().text().catch(() => '');
+
   // Parse request body
   let payload: Record<string, unknown> = {};
   try {
-    if (c.req.method !== 'GET') {
-      payload = await c.req.json();
+    if (rawBody) {
+      payload = JSON.parse(rawBody) as Record<string, unknown>;
     }
   } catch {
     // Body might be empty or not JSON
@@ -109,14 +121,51 @@ webhooksRouter.all('/*', async (c, next) => {
     _payload: payload,
   };
 
+  const deliveryId = c.req.header('X-GitHub-Delivery')
+    || c.req.header('X-Request-Id')
+    || c.req.header('X-Webhook-Id')
+    || null;
+  const signature = c.req.header('X-Webhook-Signature')
+    || c.req.header('X-Hub-Signature-256')
+    || '';
+  const fallbackBodyHash = await sha256Hex(`${signature}:${rawBody}`);
+  const idempotencyKey = `webhook:${trigger.id}:${deliveryId || fallbackBodyHash}`;
+
+  const existing = await c.env.DB.prepare(`
+    SELECT id, status, session_id
+    FROM workflow_executions
+    WHERE workflow_id = ? AND idempotency_key = ?
+    LIMIT 1
+  `).bind(trigger.workflow_id, idempotencyKey).first();
+
+  if (existing) {
+    return c.json({
+      received: true,
+      deduplicated: true,
+      executionId: existing.id,
+      workflowId: trigger.workflow_id,
+      workflowName: trigger.workflow_name,
+      status: existing.status,
+      sessionId: existing.session_id,
+      message: 'Webhook received. Existing workflow execution reused.',
+    }, 200);
+  }
+
   const executionId = crypto.randomUUID();
   const now = new Date().toISOString();
+  const workflowHash = await sha256Hex(String(trigger.data ?? '{}'));
+  const sessionId = await createWorkflowSession(c.env.DB, {
+    userId: trigger.user_id,
+    workflowId: trigger.workflow_id,
+    executionId,
+  });
 
   // Create execution record
   await c.env.DB.prepare(`
     INSERT INTO workflow_executions
-      (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
+       workflow_version, workflow_hash, idempotency_key, session_id, initiator_type, initiator_user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     executionId,
     trigger.workflow_id,
@@ -126,7 +175,13 @@ webhooksRouter.all('/*', async (c, next) => {
     'webhook',
     JSON.stringify({ path: webhookPath, method: c.req.method }),
     JSON.stringify(variables),
-    now
+    now,
+    trigger.version || null,
+    workflowHash,
+    idempotencyKey,
+    sessionId,
+    'webhook',
+    trigger.user_id
   ).run();
 
   // Update trigger last run time
@@ -141,6 +196,7 @@ webhooksRouter.all('/*', async (c, next) => {
     workflowId: trigger.workflow_id,
     workflowName: trigger.workflow_name,
     status: 'pending',
+    sessionId,
     message: 'Webhook received. Workflow execution queued.',
   }, 202);
 });

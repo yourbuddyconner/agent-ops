@@ -164,8 +164,8 @@ agentRouter.post('/:sessionId/share', async (c) => {
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
-  if (session.isOrchestrator) {
-    throw new ForbiddenError('Orchestrator sessions cannot be shared');
+  if (session.isOrchestrator || session.purpose === 'workflow') {
+    throw new ForbiddenError('This session type cannot be shared');
   }
 
   const response = await proxyToAgent(c.env, sessionId, 'session/share', {

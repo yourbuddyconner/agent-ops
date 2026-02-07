@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { NotFoundError, ValidationError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
+import { createWorkflowSession, sha256Hex } from '../lib/workflow-runtime.js';
 
 export const triggersRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -46,38 +47,80 @@ const updateTriggerSchema = z.object({
   variableMapping: z.record(z.string()).optional(),
 });
 
+const manualRunSchema = z.object({
+  workflowId: z.string().min(1),
+  clientRequestId: z.string().min(8).optional(),
+  variables: z.record(z.unknown()).optional(),
+});
+
+const triggerRunSchema = z.object({
+  clientRequestId: z.string().min(8).optional(),
+  variables: z.record(z.unknown()).optional(),
+}).passthrough();
+
 /**
  * POST /api/triggers/manual/run
  * Run a workflow directly without a trigger
  * NOTE: This route MUST be defined before /:id routes to avoid being matched as an ID
  */
-triggersRouter.post('/manual/run', async (c) => {
+triggersRouter.post('/manual/run', zValidator('json', manualRunSchema), async (c) => {
   const user = c.get('user');
-  const body = await c.req.json();
-
+  const body = c.req.valid('json');
   const { workflowId, variables = {} } = body;
-
-  if (!workflowId) {
-    throw new ValidationError('workflowId is required');
-  }
 
   // Verify user owns the workflow
   const workflow = await c.env.DB.prepare(`
-    SELECT id, name FROM workflows WHERE (id = ? OR slug = ?) AND user_id = ?
-  `).bind(workflowId, workflowId, user.id).first();
+    SELECT id, name, version, data FROM workflows WHERE (id = ? OR slug = ?) AND user_id = ?
+  `).bind(workflowId, workflowId, user.id).first<{
+    id: string;
+    name: string;
+    version: string | null;
+    data: string;
+  }>();
 
   if (!workflow) {
     throw new NotFoundError('Workflow', workflowId);
   }
 
+  const clientRequestId = body.clientRequestId || crypto.randomUUID();
+  const idempotencyKey = `manual:${workflow.id}:${user.id}:${clientRequestId}`;
+  const existing = await c.env.DB.prepare(`
+    SELECT id, status, session_id
+    FROM workflow_executions
+    WHERE workflow_id = ? AND idempotency_key = ?
+    LIMIT 1
+  `).bind(workflow.id, idempotencyKey).first();
+
+  if (existing) {
+    return c.json(
+      {
+        executionId: existing.id,
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        status: existing.status,
+        variables,
+        sessionId: existing.session_id,
+        message: 'Workflow execution already exists for this request.',
+      },
+      200
+    );
+  }
+
   const executionId = crypto.randomUUID();
   const now = new Date().toISOString();
+  const workflowHash = await sha256Hex(String(workflow.data ?? '{}'));
+  const sessionId = await createWorkflowSession(c.env.DB, {
+    userId: user.id,
+    workflowId: workflow.id,
+    executionId,
+  });
 
   // Log execution
   await c.env.DB.prepare(`
     INSERT INTO workflow_executions
-      (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
+       workflow_version, workflow_hash, idempotency_key, session_id, initiator_type, initiator_user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     executionId,
     workflow.id,
@@ -87,7 +130,13 @@ triggersRouter.post('/manual/run', async (c) => {
     'manual',
     JSON.stringify({ triggeredBy: 'api', direct: true }),
     JSON.stringify(variables),
-    now
+    now,
+    workflow.version || null,
+    workflowHash,
+    idempotencyKey,
+    sessionId,
+    'manual',
+    user.id
   ).run();
 
   return c.json(
@@ -97,6 +146,7 @@ triggersRouter.post('/manual/run', async (c) => {
       workflowName: workflow.name,
       status: 'pending',
       variables,
+      sessionId,
       message: 'Workflow execution queued. OpenCode container integration pending.',
     },
     202
@@ -383,17 +433,24 @@ triggersRouter.post('/:id/disable', async (c) => {
  * POST /api/triggers/:id/run
  * Manually run a trigger (creates session and runs workflow)
  */
-triggersRouter.post('/:id/run', async (c) => {
+triggersRouter.post('/:id/run', zValidator('json', triggerRunSchema), async (c) => {
   const { id } = c.req.param();
   const user = c.get('user');
-  const body = await c.req.json().catch(() => ({}));
+  const body = c.req.valid('json');
 
   const row = await c.env.DB.prepare(`
-    SELECT t.*, w.id as wf_id, w.name as workflow_name
+    SELECT t.*, w.id as wf_id, w.name as workflow_name, w.version as workflow_version, w.data as workflow_data
     FROM triggers t
     JOIN workflows w ON t.workflow_id = w.id
     WHERE t.id = ? AND t.user_id = ?
-  `).bind(id, user.id).first();
+  `).bind(id, user.id).first<{
+    id: string;
+    wf_id: string;
+    workflow_name: string;
+    workflow_version: string | null;
+    workflow_data: string;
+    variable_mapping: string | null;
+  }>();
 
   if (!row) {
     throw new NotFoundError('Trigger', id);
@@ -423,14 +480,45 @@ triggersRouter.post('/:id/run', async (c) => {
     _trigger: { type: 'manual', triggerId: id },
   };
 
+  const clientRequestId = body.clientRequestId || crypto.randomUUID();
+  const idempotencyKey = `manual-trigger:${id}:${user.id}:${clientRequestId}`;
+  const existing = await c.env.DB.prepare(`
+    SELECT id, status, session_id
+    FROM workflow_executions
+    WHERE workflow_id = ? AND idempotency_key = ?
+    LIMIT 1
+  `).bind(row.wf_id, idempotencyKey).first();
+
+  if (existing) {
+    return c.json(
+      {
+        executionId: existing.id,
+        workflowId: row.wf_id,
+        workflowName: row.workflow_name,
+        status: existing.status,
+        variables,
+        sessionId: existing.session_id,
+        message: 'Workflow execution already exists for this request.',
+      },
+      200
+    );
+  }
+
   const executionId = crypto.randomUUID();
   const now = new Date().toISOString();
+  const workflowHash = await sha256Hex(String(row.workflow_data ?? '{}'));
+  const sessionId = await createWorkflowSession(c.env.DB, {
+    userId: user.id,
+    workflowId: row.wf_id,
+    executionId,
+  });
 
   // Log execution as pending first
   await c.env.DB.prepare(`
     INSERT INTO workflow_executions
-      (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
+       workflow_version, workflow_hash, idempotency_key, session_id, initiator_type, initiator_user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     executionId,
     row.wf_id,
@@ -440,7 +528,13 @@ triggersRouter.post('/:id/run', async (c) => {
     'manual',
     JSON.stringify({ triggeredBy: 'api' }),
     JSON.stringify(variables),
-    now
+    now,
+    row.workflow_version || null,
+    workflowHash,
+    idempotencyKey,
+    sessionId,
+    'manual',
+    user.id
   ).run();
 
   // Update trigger last run time
@@ -457,9 +551,9 @@ triggersRouter.post('/:id/run', async (c) => {
       workflowName: row.workflow_name,
       status: 'pending',
       variables,
+      sessionId,
       message: 'Workflow execution queued. OpenCode container integration pending.',
     },
     202
   );
 });
-

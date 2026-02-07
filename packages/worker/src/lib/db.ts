@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionParticipantSummary, SessionShareLink, AuditLogEntry, OrgRepository, AgentPersona, AgentPersonaFile, PersonaVisibility, OrchestratorIdentity, OrchestratorMemory, OrchestratorMemoryCategory } from '@agent-ops/shared';
+import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionParticipantSummary, SessionShareLink, AuditLogEntry, OrgRepository, AgentPersona, AgentPersonaFile, PersonaVisibility, OrchestratorIdentity, OrchestratorMemory, OrchestratorMemoryCategory, SessionPurpose } from '@agent-ops/shared';
 
 /**
  * Database helper functions for D1
@@ -38,11 +38,11 @@ export async function getOrCreateUser(
 // Session operations
 export async function createSession(
   db: D1Database,
-  data: { id: string; userId: string; workspace: string; title?: string; parentSessionId?: string; containerId?: string; metadata?: Record<string, unknown>; personaId?: string; isOrchestrator?: boolean }
+  data: { id: string; userId: string; workspace: string; title?: string; parentSessionId?: string; containerId?: string; metadata?: Record<string, unknown>; personaId?: string; isOrchestrator?: boolean; purpose?: SessionPurpose }
 ): Promise<AgentSession> {
   await db
     .prepare(
-      'INSERT INTO sessions (id, user_id, workspace, status, container_id, metadata, title, parent_session_id, persona_id, is_orchestrator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO sessions (id, user_id, workspace, status, container_id, metadata, title, parent_session_id, persona_id, is_orchestrator, purpose) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )
     .bind(
       data.id,
@@ -54,7 +54,8 @@ export async function createSession(
       data.title || null,
       data.parentSessionId || null,
       data.personaId || null,
-      data.isOrchestrator ? 1 : 0
+      data.isOrchestrator ? 1 : 0,
+      data.purpose || (data.isOrchestrator ? 'orchestrator' : 'interactive')
     )
     .run();
 
@@ -69,6 +70,7 @@ export async function createSession(
     metadata: data.metadata,
     personaId: data.personaId,
     isOrchestrator: data.isOrchestrator,
+    purpose: data.purpose || (data.isOrchestrator ? 'orchestrator' : 'interactive'),
     createdAt: new Date(),
     lastActiveAt: new Date(),
   };
@@ -123,6 +125,9 @@ export async function getUserSessions(
   // in other users' lists even if they were previously shared.
   query += ' AND (s.is_orchestrator = 0 OR s.user_id = ?)';
   params.push(userId);
+
+  // Workflow sessions are internal runtime sessions and are hidden from standard lists.
+  query += " AND COALESCE(s.purpose, 'interactive') != 'workflow'";
 
   if (options.status) {
     query += ' AND s.status = ?';
@@ -1202,7 +1207,7 @@ export async function assertSessionAccess(
   if (session.userId === userId) return session;
 
   // Orchestrator sessions are never accessible to non-owners.
-  if (session.isOrchestrator) {
+  if (session.isOrchestrator || session.purpose === 'workflow') {
     const { NotFoundError } = await import('@agent-ops/shared');
     throw new NotFoundError('Session', sessionId);
   }
@@ -1895,6 +1900,7 @@ function mapSession(row: any): AgentSession {
     personaId: row.persona_id || undefined,
     personaName: row.persona_name || undefined,
     isOrchestrator: !!row.is_orchestrator || undefined,
+    purpose: row.purpose || 'interactive',
     createdAt: new Date(row.created_at),
     lastActiveAt: new Date(row.last_active_at),
   };

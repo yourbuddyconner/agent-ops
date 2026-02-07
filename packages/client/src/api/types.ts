@@ -5,6 +5,7 @@ export type {
   SyncResult,
   SyncError,
   SessionStatus,
+  SessionPurpose,
   AgentSession,
   Message,
   ToolCall,

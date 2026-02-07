@@ -6,6 +6,7 @@ export interface Execution {
   id: string;
   workflowId: string;
   workflowName: string | null;
+  sessionId?: string | null;
   triggerId: string | null;
   triggerName?: string | null;
   status: 'pending' | 'running' | 'waiting_approval' | 'completed' | 'failed';

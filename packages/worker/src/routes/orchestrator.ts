@@ -132,6 +132,7 @@ orchestratorRouter.post('/orchestrator', zValidator('json', createOrchestratorSc
         workspace: 'orchestrator',
         title: `${identity.name} (Orchestrator)`,
         isOrchestrator: true,
+        purpose: 'orchestrator',
       });
 
   // Build env vars (LLM keys + orchestrator flag — no repo for orchestrator)

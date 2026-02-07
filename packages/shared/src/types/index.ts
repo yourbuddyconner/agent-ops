@@ -139,6 +139,7 @@ export interface ChildSessionSummary {
 
 // Session types
 export type SessionStatus = 'initializing' | 'running' | 'idle' | 'hibernating' | 'hibernated' | 'restoring' | 'terminated' | 'error';
+export type SessionPurpose = 'interactive' | 'orchestrator' | 'workflow';
 
 // Lightweight participant info for list views
 export interface SessionParticipantSummary {
@@ -154,6 +155,7 @@ export interface AgentSession {
   userId: string;
   workspace: string;
   status: SessionStatus;
+  purpose?: SessionPurpose;
   title?: string;
   parentSessionId?: string;
   containerId?: string;

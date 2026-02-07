@@ -328,7 +328,7 @@ workflowsRouter.get('/:id/executions', async (c) => {
   }
 
   const result = await c.env.DB.prepare(`
-    SELECT id, workflow_id, trigger_id, status, trigger_type, trigger_metadata,
+    SELECT id, workflow_id, session_id, trigger_id, status, trigger_type, trigger_metadata,
            variables, outputs, steps, error, started_at, completed_at
     FROM workflow_executions
     WHERE workflow_id = ? AND user_id = ?
@@ -339,6 +339,7 @@ workflowsRouter.get('/:id/executions', async (c) => {
   const executions = result.results.map((row) => ({
     id: row.id,
     workflowId: row.workflow_id,
+    sessionId: row.session_id,
     triggerId: row.trigger_id,
     status: row.status,
     triggerType: row.trigger_type,

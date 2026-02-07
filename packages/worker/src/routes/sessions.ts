@@ -70,8 +70,8 @@ const PR_REFRESH_INTERVAL_MS = 60_000;
 const childPrRefreshCache = new Map<string, number>();
 
 function assertSessionShareable(session: Awaited<ReturnType<typeof db.assertSessionAccess>>) {
-  if (session.isOrchestrator) {
-    throw new ForbiddenError('Orchestrator sessions cannot be shared');
+  if (session.isOrchestrator || session.purpose === 'workflow') {
+    throw new ForbiddenError('This session type cannot be shared');
   }
 }
 
@@ -487,8 +487,8 @@ sessionsRouter.post('/join/:token', async (c) => {
   if (!targetSession) {
     return c.json({ error: 'Invalid, expired, or exhausted share link' }, 400);
   }
-  if (targetSession.isOrchestrator) {
-    return c.json({ error: 'Orchestrator sessions cannot be shared' }, 403);
+  if (targetSession.isOrchestrator || targetSession.purpose === 'workflow') {
+    return c.json({ error: 'This session type cannot be shared' }, 403);
   }
 
   const result = await db.redeemShareLink(c.env.DB, token, user.id);
@@ -644,14 +644,14 @@ sessionsRouter.delete('/:id/tunnels/:name', async (c) => {
       action: 'delete',
       name,
       actorId: user.id,
-      actorName: user.name,
+      actorName: user.email,
       actorEmail: user.email,
     }),
   }));
 
   if (!resp.ok) {
     const errText = await resp.text();
-    return c.json({ error: errText || 'Failed to delete tunnel' }, resp.status);
+    return c.json({ error: errText || 'Failed to delete tunnel' }, resp.status as 400 | 401 | 403 | 404 | 409 | 422 | 500);
   }
 
   return c.json({ success: true });

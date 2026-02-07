@@ -50,7 +50,12 @@ dashboardRouter.get('/stats', async (c) => {
   // Lazy backfill: find sessions with message_count still at 0 and trigger DO flush.
   // This handles pre-migration sessions. Once flushed, they won't be picked up again.
   const unflushed = await c.env.DB.prepare(
-    `SELECT id FROM sessions WHERE user_id = ? AND message_count = 0 AND status != 'initializing' LIMIT 20`
+    `SELECT id FROM sessions
+     WHERE user_id = ?
+       AND message_count = 0
+       AND status != 'initializing'
+       AND COALESCE(purpose, 'interactive') != 'workflow'
+     LIMIT 20`
   ).bind(user.id).all();
 
   const unflushedIds = (unflushed.results ?? []).map((r: Record<string, unknown>) => String(r.id));
@@ -88,6 +93,7 @@ dashboardRouter.get('/stats', async (c) => {
         COALESCE(SUM(active_seconds), 0) as total_duration
       FROM sessions
       WHERE created_at >= ?
+        AND COALESCE(purpose, 'interactive') != 'workflow'
     `).bind(periodStartStr).first<AggRow>(),
 
     // Per-user aggregate stats for current period
@@ -100,7 +106,9 @@ dashboardRouter.get('/stats', async (c) => {
         COALESCE(SUM(tool_call_count), 0) as total_tool_calls,
         COALESCE(SUM(active_seconds), 0) as total_duration
       FROM sessions
-      WHERE user_id = ? AND created_at >= ?
+      WHERE user_id = ?
+        AND created_at >= ?
+        AND COALESCE(purpose, 'interactive') != 'workflow'
     `).bind(user.id, periodStartStr).first<AggRow>(),
 
     // Previous period aggregates (org-wide for delta)
@@ -109,7 +117,9 @@ dashboardRouter.get('/stats', async (c) => {
         COUNT(*) as count,
         COALESCE(SUM(message_count), 0) as messages
       FROM sessions
-      WHERE created_at >= ? AND created_at < ?
+      WHERE created_at >= ?
+        AND created_at < ?
+        AND COALESCE(purpose, 'interactive') != 'workflow'
     `).bind(prevPeriodStartStr, periodStartStr).first<{ count: number; messages: number }>(),
 
     // Daily activity with message counts (org-wide)
@@ -126,7 +136,9 @@ dashboardRouter.get('/stats', async (c) => {
       FROM dates d
       LEFT JOIN (
         SELECT date(created_at) as day, COUNT(*) as cnt, COALESCE(SUM(message_count), 0) as msgs
-        FROM sessions WHERE created_at >= ?
+        FROM sessions
+        WHERE created_at >= ?
+          AND COALESCE(purpose, 'interactive') != 'workflow'
         GROUP BY day
       ) sc ON sc.day = d.date
       ORDER BY d.date
@@ -140,6 +152,7 @@ dashboardRouter.get('/stats', async (c) => {
         COALESCE(SUM(message_count), 0) as message_count
       FROM sessions
       WHERE created_at >= ?
+        AND COALESCE(purpose, 'interactive') != 'workflow'
       GROUP BY workspace
       ORDER BY session_count DESC
       LIMIT 8
@@ -152,6 +165,7 @@ dashboardRouter.get('/stats', async (c) => {
         active_seconds as duration_seconds,
         created_at, last_active_at, error_message
       FROM sessions
+      WHERE COALESCE(purpose, 'interactive') != 'workflow'
       ORDER BY created_at DESC
       LIMIT 10
     `).all(),
@@ -161,6 +175,7 @@ dashboardRouter.get('/stats', async (c) => {
       SELECT id, workspace, status, created_at, last_active_at
       FROM sessions
       WHERE status IN ('running', 'idle', 'initializing', 'restoring')
+        AND COALESCE(purpose, 'interactive') != 'workflow'
       ORDER BY last_active_at DESC
     `).all(),
   ]);

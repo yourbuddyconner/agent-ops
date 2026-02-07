@@ -1,6 +1,14 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
 
+function createClientRequestId(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  }
+}
+
 // Types
 export interface Workflow {
   id: string;
@@ -153,8 +161,13 @@ export function useRunWorkflow() {
         workflowName: string;
         status: string;
         variables: Record<string, unknown>;
+        sessionId?: string;
         message: string;
-      }>('/triggers/manual/run', { workflowId, variables }),
+      }>('/triggers/manual/run', {
+        workflowId,
+        variables,
+        clientRequestId: createClientRequestId(),
+      }),
     onSuccess: (_, { workflowId }) => {
       queryClient.invalidateQueries({ queryKey: workflowKeys.executions(workflowId) });
     },
