@@ -3983,7 +3983,7 @@ export class SessionAgentDO {
       if (unflushed.length > 0) {
         const stmts = unflushed.map((row) =>
           this.env.DB.prepare(
-            'INSERT INTO session_audit_log (id, session_id, event_type, summary, actor_id, metadata, created_at, flushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))'
+            'INSERT OR IGNORE INTO session_audit_log (id, session_id, event_type, summary, actor_id, metadata, created_at, flushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))'
           ).bind(
             `${sessionId}:${row.id}`,
             sessionId,
