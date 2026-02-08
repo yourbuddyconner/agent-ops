@@ -145,6 +145,22 @@ function isForwardedMessage(msg: Message): boolean {
   return (msg.parts as Record<string, unknown>).forwarded === true;
 }
 
+function mergeWithOverlap(base: string, incoming: string): string {
+  if (!incoming) return base;
+  if (!base) return incoming;
+  if (base === incoming) return base;
+  if (incoming.startsWith(base)) return incoming;
+  if (base.endsWith(incoming)) return base;
+
+  const maxOverlap = Math.min(base.length, incoming.length);
+  for (let overlap = maxOverlap; overlap > 0; overlap--) {
+    if (base.slice(-overlap) === incoming.slice(0, overlap)) {
+      return base + incoming.slice(overlap);
+    }
+  }
+  return base + incoming;
+}
+
 function mergeAssistantSegments(messages: Message[]): TurnSegment[] {
   const segments: TurnSegment[] = [];
 
@@ -163,8 +179,8 @@ function mergeAssistantSegments(messages: Message[]): TurnSegment[] {
     } else if (msg.content) {
       const last = segments[segments.length - 1];
       if (last && last.kind === 'text') {
-        // Accumulate consecutive text into one segment (no separator — they're often mid-sentence)
-        last.content += msg.content;
+        // Merge incrementally with overlap-aware dedupe to avoid replayed snapshots.
+        last.content = mergeWithOverlap(last.content, msg.content);
       } else {
         segments.push({ kind: 'text', content: msg.content, id: msg.id });
       }

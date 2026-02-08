@@ -2,11 +2,41 @@ import type { D1Database } from '@cloudflare/workers-types';
 import * as db from './db.js';
 import type { Env } from '../env.js';
 
+const ENQUEUE_MAX_ATTEMPTS = 5;
+const ENQUEUE_BASE_DELAY_MS = 150;
+
 function buildWorkflowWorkspace(workflowId: string, executionId: string): string {
   const wf = workflowId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16) || 'workflow';
   const ex = executionId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16) || 'execution';
   return `workflow-${wf}-${ex}`.slice(0, 100);
 }
+
+function shouldRetryEnqueueStatus(status: number): boolean {
+  return (
+    status === 404 || // D1 read-after-write race across colo
+    status === 408 ||
+    status === 409 ||
+    status === 425 ||
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+type EnqueueResponseBody = {
+  ok?: boolean;
+  promptDispatched?: boolean;
+  status?: string;
+  ignored?: boolean;
+  reason?: string;
+  error?: string;
+};
 
 export async function sha256Hex(input: string): Promise<string> {
   const data = new TextEncoder().encode(input);
@@ -67,19 +97,80 @@ export async function enqueueWorkflowExecution(
     workerOrigin?: string;
   }
 ): Promise<boolean> {
-  try {
-    const doId = env.WORKFLOW_EXECUTOR.idFromName(params.executionId);
-    const stub = env.WORKFLOW_EXECUTOR.get(doId);
-    const response = await stub.fetch(new Request('https://workflow-executor/enqueue', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    }));
-    return response.ok;
-  } catch (error) {
-    console.error('Failed to enqueue workflow execution', error);
-    return false;
+  const doId = env.WORKFLOW_EXECUTOR.idFromName(params.executionId);
+  const stub = env.WORKFLOW_EXECUTOR.get(doId);
+
+  for (let attempt = 1; attempt <= ENQUEUE_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await stub.fetch(new Request('https://workflow-executor/enqueue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      }));
+
+      if (response.ok) {
+        let body: EnqueueResponseBody | null = null;
+        try {
+          body = await response.clone().json<EnqueueResponseBody>();
+        } catch {
+          body = null;
+        }
+
+        // Defensive: explicit non-dispatch should not be treated as success for fresh runs.
+        if (body?.promptDispatched === false && !body.ignored) {
+          const shouldRetry = attempt < ENQUEUE_MAX_ATTEMPTS;
+          if (!shouldRetry) {
+            console.error(
+              `[WorkflowRuntime] Enqueue returned promptDispatched=false for ${params.executionId} ` +
+              `after ${attempt} attempt(s): ${body.error || '<no error>'}`
+            );
+            return false;
+          }
+          const waitMs = ENQUEUE_BASE_DELAY_MS * attempt;
+          console.warn(
+            `[WorkflowRuntime] Enqueue response not dispatched for ${params.executionId} ` +
+            `(attempt ${attempt}/${ENQUEUE_MAX_ATTEMPTS}, status=${body.status || 'unknown'}). ` +
+            `Retrying in ${waitMs}ms`
+          );
+          await delay(waitMs);
+          continue;
+        }
+
+        return true;
+      }
+
+      const errText = (await response.text().catch(() => '')).slice(0, 500);
+      const shouldRetry = attempt < ENQUEUE_MAX_ATTEMPTS && shouldRetryEnqueueStatus(response.status);
+      if (!shouldRetry) {
+        console.error(
+          `[WorkflowRuntime] Failed to enqueue execution ${params.executionId} ` +
+          `after ${attempt} attempt(s): status=${response.status} body=${errText || '<empty>'}`
+        );
+        return false;
+      }
+
+      const waitMs = ENQUEUE_BASE_DELAY_MS * attempt;
+      console.warn(
+        `[WorkflowRuntime] Enqueue attempt ${attempt}/${ENQUEUE_MAX_ATTEMPTS} failed for ${params.executionId} ` +
+        `(status=${response.status}). Retrying in ${waitMs}ms`
+      );
+      await delay(waitMs);
+    } catch (error) {
+      if (attempt >= ENQUEUE_MAX_ATTEMPTS) {
+        console.error(`[WorkflowRuntime] Failed to enqueue execution ${params.executionId}`, error);
+        return false;
+      }
+      const waitMs = ENQUEUE_BASE_DELAY_MS * attempt;
+      console.warn(
+        `[WorkflowRuntime] Enqueue attempt ${attempt}/${ENQUEUE_MAX_ATTEMPTS} errored for ${params.executionId}. ` +
+        `Retrying in ${waitMs}ms`,
+        error
+      );
+      await delay(waitMs);
+    }
   }
+
+  return false;
 }
 
 export async function checkWorkflowConcurrency(

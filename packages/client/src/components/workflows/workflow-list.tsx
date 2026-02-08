@@ -57,7 +57,11 @@ export function WorkflowList() {
             No workflows yet
           </h3>
           <p className="mt-1 text-sm text-pretty text-neutral-500 dark:text-neutral-400">
-            Workflows are synced from OpenCode plugins. Create a workflow in your{' '}
+            Create a workflow with the agent using{' '}
+            <code className="rounded bg-neutral-100 px-1 py-0.5 text-xs dark:bg-neutral-700">
+              sync_workflow
+            </code>{' '}
+            or add one in your{' '}
             <code className="rounded bg-neutral-100 px-1 py-0.5 text-xs dark:bg-neutral-700">
               .opencode/workflows/
             </code>{' '}

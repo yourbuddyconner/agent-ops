@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
+import { executionKeys } from './executions';
 
 function createClientRequestId(): string {
   try {
@@ -52,6 +53,7 @@ export interface WorkflowStep {
   condition?: unknown;
   then?: WorkflowStep[];
   else?: WorkflowStep[];
+  steps?: WorkflowStep[];
 }
 
 export interface WorkflowConstraints {
@@ -75,6 +77,19 @@ export interface WorkflowMutationProposal {
   updatedAt: string;
 }
 
+export interface WorkflowVersionHistoryEntry {
+  id: string;
+  workflowId: string;
+  version: string | null;
+  workflowHash: string;
+  workflowData: Record<string, unknown>;
+  source: 'sync' | 'update' | 'proposal_apply' | 'rollback' | 'system';
+  sourceProposalId: string | null;
+  notes: string | null;
+  createdBy: string | null;
+  createdAt: string;
+}
+
 export interface ListWorkflowsResponse {
   workflows: Workflow[];
 }
@@ -85,6 +100,11 @@ export interface GetWorkflowResponse {
 
 export interface ListWorkflowProposalsResponse {
   proposals: WorkflowMutationProposal[];
+}
+
+export interface WorkflowHistoryResponse {
+  currentWorkflowHash: string;
+  history: WorkflowVersionHistoryEntry[];
 }
 
 export interface CreateWorkflowProposalRequest {
@@ -104,6 +124,12 @@ export interface ReviewWorkflowProposalRequest {
 export interface ApplyWorkflowProposalRequest {
   reviewNotes?: string;
   version?: string;
+}
+
+export interface RollbackWorkflowRequest {
+  targetWorkflowHash: string;
+  version?: string;
+  notes?: string;
 }
 
 export interface SyncWorkflowRequest {
@@ -134,6 +160,7 @@ export const workflowKeys = {
   detail: (id: string) => [...workflowKeys.details(), id] as const,
   executions: (id: string) => [...workflowKeys.detail(id), 'executions'] as const,
   proposals: (id: string) => [...workflowKeys.detail(id), 'proposals'] as const,
+  history: (id: string) => [...workflowKeys.detail(id), 'history'] as const,
 };
 
 // Hooks
@@ -209,6 +236,8 @@ export function useRunWorkflow() {
       }),
     onSuccess: (_, { workflowId }) => {
       queryClient.invalidateQueries({ queryKey: workflowKeys.executions(workflowId) });
+      queryClient.invalidateQueries({ queryKey: executionKeys.byWorkflow(workflowId) });
+      queryClient.invalidateQueries({ queryKey: executionKeys.lists() });
     },
   });
 }
@@ -224,6 +253,14 @@ export function useWorkflowProposals(workflowId: string, status?: string) {
       api.get<ListWorkflowProposalsResponse>(
         `/workflows/${workflowId}/proposals${query ? `?${query}` : ''}`
       ),
+    enabled: !!workflowId,
+  });
+}
+
+export function useWorkflowHistory(workflowId: string) {
+  return useQuery({
+    queryKey: workflowKeys.history(workflowId),
+    queryFn: () => api.get<WorkflowHistoryResponse>(`/workflows/${workflowId}/history`),
     enabled: !!workflowId,
   });
 }
@@ -284,6 +321,29 @@ export function useApplyWorkflowProposal() {
       const workflow = response.workflow;
       queryClient.invalidateQueries({ queryKey: workflowKeys.proposals(workflow.id) });
       queryClient.setQueryData<GetWorkflowResponse>(workflowKeys.detail(workflow.id), { workflow });
+      queryClient.invalidateQueries({ queryKey: workflowKeys.lists() });
+    },
+  });
+}
+
+export function useRollbackWorkflowVersion() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      workflowId,
+      data,
+    }: {
+      workflowId: string;
+      data: RollbackWorkflowRequest;
+    }) =>
+      api.post<{ success: boolean; workflow: Workflow }>(`/workflows/${workflowId}/rollback`, data),
+    onSuccess: (response) => {
+      const workflow = response.workflow;
+      queryClient.setQueryData<GetWorkflowResponse>(workflowKeys.detail(workflow.id), { workflow });
+      queryClient.invalidateQueries({ queryKey: workflowKeys.history(workflow.id) });
+      queryClient.invalidateQueries({ queryKey: workflowKeys.proposals(workflow.id) });
+      queryClient.invalidateQueries({ queryKey: workflowKeys.executions(workflow.id) });
       queryClient.invalidateQueries({ queryKey: workflowKeys.lists() });
     },
   });

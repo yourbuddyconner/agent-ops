@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { parseArgs } from 'util';
 import { compileWorkflowDefinition } from './workflow-compiler.js';
-import { executeWorkflowRun, type WorkflowRunPayload } from './workflow-engine.js';
+import { executeWorkflowRun, executeWorkflowResume, type WorkflowRunPayload } from './workflow-engine.js';
 
 type WorkflowCommand = 'run' | 'resume' | 'validate' | 'propose';
 type WorkflowStatus = 'ok' | 'needs_approval' | 'cancelled' | 'failed';
@@ -117,6 +117,7 @@ async function handleRun(flags: Record<string, string | boolean | undefined>): P
       variables: payload.variables,
       runtime: payload.runtime,
     },
+    undefined,
     (event) => emitEvent(event),
   );
 
@@ -128,6 +129,8 @@ async function handleResume(flags: Record<string, string | boolean | undefined>)
   const executionId = String(flags['execution-id'] || '');
   const resumeToken = String(flags['resume-token'] || '');
   const decision = String(flags['decision'] || 'approve');
+  const workflowHash = normalizeHash(String(flags['workflow-hash'] || ''));
+  const workspace = String(flags.workspace || '');
 
   if (!executionId || !resumeToken) {
     fail('Missing required flags for resume: --execution-id --resume-token', 20);
@@ -137,21 +140,76 @@ async function handleResume(flags: Record<string, string | boolean | undefined>)
     fail('Invalid --decision value. Expected approve|deny', 10);
   }
 
-  emitEvent({ type: 'execution.resumed', executionId, decision, ts: nowIso() });
+  if (decision === 'deny') {
+    emitEvent({ type: 'execution.resumed', executionId, decision, ts: nowIso() });
+    const result: RunResumeEnvelope = {
+      ok: true,
+      status: 'cancelled',
+      executionId,
+      output: {},
+      steps: [],
+      requiresApproval: null,
+      error: 'approval_denied',
+    };
+    emitEvent({ type: 'execution.finished', executionId, status: result.status, ts: nowIso() });
+    await printJson(result);
+    process.exit(0);
+  }
 
-  const result: RunResumeEnvelope = {
-    ok: true,
-    status: decision === 'approve' ? 'ok' : 'cancelled',
+  if (!workflowHash || !workspace) {
+    fail('Missing required flags for resume approval: --workflow-hash --workspace', 20);
+  }
+
+  const rawInput = (await readStdin()).trim();
+  if (!rawInput) {
+    fail('resume approve requires JSON payload on stdin', 20);
+  }
+
+  let payload: WorkflowRunPayload & { workflow?: unknown };
+  try {
+    payload = JSON.parse(rawInput) as WorkflowRunPayload & { workflow?: unknown };
+  } catch {
+    fail('Invalid JSON input for resume payload', 10);
+  }
+
+  if (!payload.workflow) {
+    fail('resume payload must include workflow object', 10);
+  }
+
+  const compiled = await compileWorkflowDefinition(payload.workflow);
+  if (!compiled.ok || !compiled.workflow || !compiled.workflowHash) {
+    await printJson({
+      ok: false,
+      status: 'failed',
+      executionId,
+      output: {},
+      steps: [],
+      requiresApproval: null,
+      error: compiled.errors[0]?.message || 'Workflow compilation failed',
+    });
+    process.exit(10);
+  }
+
+  if (normalizeHash(compiled.workflowHash) !== workflowHash) {
+    fail(`Workflow hash mismatch: expected ${workflowHash}, got ${compiled.workflowHash}`, 20);
+  }
+
+  const result = await executeWorkflowResume(
     executionId,
-    output: {},
-    steps: [],
-    requiresApproval: null,
-    error: null,
-  };
+    compiled.workflow,
+    {
+      trigger: payload.trigger,
+      variables: payload.variables,
+      runtime: payload.runtime,
+    },
+    resumeToken,
+    'approve',
+    undefined,
+    (event) => emitEvent(event),
+  );
 
-  emitEvent({ type: 'execution.finished', executionId, status: result.status, ts: nowIso() });
   await printJson(result);
-  process.exit(0);
+  process.exit(result.status === 'failed' ? 40 : 0);
 }
 
 async function handleValidate(flags: Record<string, string | boolean | undefined>): Promise<void> {
@@ -240,7 +298,7 @@ function usage(): string {
     '',
     'Commands:',
     '  run       --execution-id <id> --workflow-hash <hash> --workspace <path>',
-    '  resume    --execution-id <id> --resume-token <token> [--decision approve|deny]',
+    '  resume    --execution-id <id> --resume-token <token> [--decision approve|deny] [--workflow-hash <hash> --workspace <path>]',
     '  validate  --workflow-path <path> | --workflow-json -',
     '  propose   --workflow-id <id> --base-hash <hash> --intent "<text>"',
   ].join('\n');

@@ -49,7 +49,7 @@ interface ExecutionRow {
   idempotency_key: string | null;
   user_id: string;
   workflow_id: string;
-  workflow_data: string;
+  workflow_data: string | null;
 }
 
 interface EnsureSessionResult {
@@ -57,6 +57,8 @@ interface EnsureSessionResult {
   startedAt?: string;
   error?: string;
 }
+
+const WORKFLOW_EXECUTE_PROMPT_PREFIX = '__AGENT_OPS_WORKFLOW_EXECUTE_V1__';
 
 export class WorkflowExecutorDO implements DurableObject {
   private state: DurableObjectState;
@@ -108,9 +110,9 @@ export class WorkflowExecutorDO implements DurableObject {
         e.idempotency_key,
         e.user_id,
         e.workflow_id,
-        w.data AS workflow_data
+        COALESCE(e.workflow_snapshot, w.data) AS workflow_data
       FROM workflow_executions e
-      JOIN workflows w ON w.id = e.workflow_id
+      LEFT JOIN workflows w ON w.id = e.workflow_id
       WHERE e.id = ?
       LIMIT 1
     `).bind(body.executionId).first<ExecutionRow>();
@@ -204,7 +206,7 @@ export class WorkflowExecutorDO implements DurableObject {
       }
     );
 
-    return Response.json({
+    const responseBody = {
       ok: true,
       executionId: body.executionId,
       dispatchCount,
@@ -212,7 +214,16 @@ export class WorkflowExecutorDO implements DurableObject {
       promptDispatched: !!promptDispatchedAt,
       sessionStarted: !!sessionStartedAt,
       ...(lastError ? { error: lastError } : {}),
-    });
+    };
+
+    if (!promptDispatchedAt && row.status === 'pending') {
+      console.warn(
+        `[WorkflowExecutorDO] Enqueue did not dispatch prompt for execution ${body.executionId}: ${lastError || 'unknown_error'}`
+      );
+      return Response.json(responseBody, { status: 502 });
+    }
+
+    return Response.json(responseBody);
   }
 
   private async ensureWorkflowSessionReady(params: {
@@ -292,8 +303,8 @@ export class WorkflowExecutorDO implements DurableObject {
       await this.env.DB.prepare(`
         UPDATE sessions
         SET status = 'initializing',
-            updated_at = ?,
-            error = NULL
+            last_active_at = ?,
+            error_message = NULL
         WHERE id = ?
       `).bind(new Date().toISOString(), params.sessionId).run();
 
@@ -399,33 +410,32 @@ export class WorkflowExecutorDO implements DurableObject {
 
   private buildWorkflowRunPrompt(row: ExecutionRow): string {
     const payload = this.buildWorkflowRunPayload(row);
-    const payloadJson = JSON.stringify(payload, null, 2);
     const workflowHash = this.normalizeWorkflowHash(row.workflow_hash);
-
     return [
-      'Execute this workflow run in the local sandbox.',
-      'Run the shell script exactly as written:',
-      '```bash',
-      "cat > /tmp/workflow-run-input.json <<'JSON'",
-      payloadJson,
-      'JSON',
-      `workflow run --execution-id "${row.id}" --workflow-hash "${workflowHash}" --workspace "$(pwd)" < /tmp/workflow-run-input.json`,
-      '```',
-      'Return only the JSON output produced by the workflow command.',
-      'After returning the JSON output, call complete_session.',
+      WORKFLOW_EXECUTE_PROMPT_PREFIX,
+      JSON.stringify({
+        kind: 'run',
+        executionId: row.id,
+        workflowHash,
+        payload,
+      }),
     ].join('\n');
   }
 
-  private buildWorkflowResumePrompt(executionId: string, resumeToken: string, approve: boolean): string {
+  private buildWorkflowResumePrompt(row: ExecutionRow, resumeToken: string, approve: boolean): string {
     const decision = approve ? 'approve' : 'deny';
+    const payload = this.buildWorkflowRunPayload(row);
+    const workflowHash = this.normalizeWorkflowHash(row.workflow_hash);
     return [
-      'Resume this workflow execution in the local sandbox.',
-      'Run the command exactly as written:',
-      '```bash',
-      `workflow resume --execution-id \"${executionId}\" --resume-token \"${resumeToken}\" --decision \"${decision}\"`,
-      '```',
-      'Return only the JSON output produced by the workflow command.',
-      'After returning the JSON output, call complete_session.',
+      WORKFLOW_EXECUTE_PROMPT_PREFIX,
+      JSON.stringify({
+        kind: 'resume',
+        executionId: row.id,
+        resumeToken,
+        decision,
+        workflowHash,
+        payload,
+      }),
     ].join('\n');
   }
 
@@ -529,9 +539,23 @@ export class WorkflowExecutorDO implements DurableObject {
     }
 
     const row = await this.env.DB.prepare(`
-      SELECT id, status, resume_token, runtime_state, user_id, workflow_id, session_id
-      FROM workflow_executions
-      WHERE id = ?
+      SELECT
+        e.id,
+        e.status,
+        e.resume_token,
+        e.runtime_state,
+        e.user_id,
+        e.workflow_id,
+        e.session_id,
+        e.workflow_hash,
+        e.variables,
+        e.trigger_metadata,
+        e.attempt_count,
+        e.idempotency_key,
+        COALESCE(e.workflow_snapshot, w.data) AS workflow_data
+      FROM workflow_executions e
+      LEFT JOIN workflows w ON w.id = e.workflow_id
+      WHERE e.id = ?
       LIMIT 1
     `).bind(body.executionId).first<{
       id: string;
@@ -541,6 +565,12 @@ export class WorkflowExecutorDO implements DurableObject {
       user_id: string;
       workflow_id: string;
       session_id: string | null;
+      workflow_hash: string | null;
+      variables: string | null;
+      trigger_metadata: string | null;
+      attempt_count: number | null;
+      idempotency_key: string | null;
+      workflow_data: string | null;
     }>();
 
     if (!row) {
@@ -585,7 +615,7 @@ export class WorkflowExecutorDO implements DurableObject {
           return Response.json({ error: ensured.error || 'Failed to prepare workflow session for resume' }, { status: 502 });
         }
 
-        const prompt = this.buildWorkflowResumePrompt(body.executionId, body.resumeToken, true);
+        const prompt = this.buildWorkflowResumePrompt(row, body.resumeToken, true);
         const dispatched = await this.dispatchWorkflowPrompt(row.session_id, prompt);
         if (!dispatched.ok) {
           return Response.json({ error: dispatched.error || 'Failed to dispatch workflow resume prompt' }, { status: 502 });
@@ -608,7 +638,7 @@ export class WorkflowExecutorDO implements DurableObject {
     const reason = body.reason || 'approval_denied';
     await this.env.DB.prepare(`
       UPDATE workflow_executions
-      SET status = 'failed',
+      SET status = 'cancelled',
           resume_token = NULL,
           runtime_state = ?,
           error = ?,
@@ -617,7 +647,7 @@ export class WorkflowExecutorDO implements DurableObject {
     `).bind(JSON.stringify(nextState), reason, now, body.executionId).run();
 
     await this.publishLifecycleEvent(row.user_id, row.workflow_id, body.executionId, 'denied', reason);
-    return Response.json({ ok: true, executionId: body.executionId, status: 'failed' });
+    return Response.json({ ok: true, executionId: body.executionId, status: 'cancelled' });
   }
 
   private async handleCancel(request: Request): Promise<Response> {
@@ -644,7 +674,7 @@ export class WorkflowExecutorDO implements DurableObject {
       return Response.json({ error: 'Execution not found' }, { status: 404 });
     }
 
-    if (row.status === 'completed' || row.status === 'failed') {
+    if (row.status === 'completed' || row.status === 'failed' || row.status === 'cancelled') {
       return Response.json({ ok: true, ignored: true, reason: 'already_finalized', status: row.status });
     }
 
@@ -654,7 +684,7 @@ export class WorkflowExecutorDO implements DurableObject {
 
     await this.env.DB.prepare(`
       UPDATE workflow_executions
-      SET status = 'failed',
+      SET status = 'cancelled',
           runtime_state = ?,
           error = ?,
           completed_at = ?
@@ -666,7 +696,7 @@ export class WorkflowExecutorDO implements DurableObject {
     }
 
     await this.publishLifecycleEvent(row.user_id, row.workflow_id, body.executionId, 'cancelled', reason);
-    return Response.json({ ok: true, executionId: body.executionId, status: 'failed' });
+    return Response.json({ ok: true, executionId: body.executionId, status: 'cancelled' });
   }
 
   private parseRuntimeState(raw: string | null): RuntimeState {

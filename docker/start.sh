@@ -174,9 +174,9 @@ echo "[start.sh] Registered $(echo "$AUTH_JSON" | jq 'keys | length') provider(s
 # ─── OpenCode Config & Tools ─────────────────────────────────────────
 
 echo "[start.sh] Setting up OpenCode config, custom tools, and skills"
-cp /opencode-config/opencode.json "${WORK_DIR}/opencode.json"
 mkdir -p "${WORK_DIR}/.opencode/tools"
 cp /opencode-config/tools/* "${WORK_DIR}/.opencode/tools/"
+cp /opencode-config/opencode.json "${WORK_DIR}/.opencode/opencode.json"
 
 # Orchestrators should never self-terminate and have no parent
 if [ "${IS_ORCHESTRATOR:-}" = "true" ]; then
@@ -192,6 +192,7 @@ cp -r /opencode-config/skills/* "${WORK_DIR}/.opencode/skills/"
 
 echo "[start.sh] Starting OpenCode server on port ${OPENCODE_PORT}"
 cd "${WORK_DIR}"
+echo "[start.sh] OpenCode version: $(opencode --version 2>/dev/null || echo unknown)"
 opencode serve --port ${OPENCODE_PORT} &
 OPENCODE_PID=$!
 

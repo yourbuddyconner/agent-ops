@@ -4,6 +4,7 @@ import { zValidator } from '@hono/zod-validator';
 import { NotFoundError, ValidationError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
 import { sha256Hex } from '../lib/workflow-runtime.js';
+import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
 
 export const workflowsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -49,6 +50,14 @@ const applyProposalSchema = z.object({
   reviewNotes: z.string().optional(),
   version: z.string().optional(),
 });
+
+const rollbackWorkflowSchema = z.object({
+  targetWorkflowHash: z.string().min(1),
+  version: z.string().optional(),
+  notes: z.string().optional(),
+});
+
+const DEFAULT_PROPOSAL_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 function normalizeHash(value: string): string {
   const trimmed = value.trim();
@@ -98,6 +107,68 @@ function bumpPatchVersion(version: string | null): string {
     return `${source}.1`;
   }
   return `${major}.${minor}.${patch + 1}`;
+}
+
+function workflowAllowsSelfModification(rawWorkflowData: string): boolean {
+  const workflowData = parseJsonObject(rawWorkflowData);
+  const constraints = workflowData.constraints;
+  if (!constraints || typeof constraints !== 'object' || Array.isArray(constraints)) {
+    return false;
+  }
+
+  return (constraints as Record<string, unknown>).allowSelfModification === true;
+}
+
+function resolveProposalExpiry(expiresAt?: string): string {
+  if (!expiresAt) {
+    return new Date(Date.now() + DEFAULT_PROPOSAL_TTL_MS).toISOString();
+  }
+
+  const parsed = new Date(expiresAt);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new ValidationError('Invalid expiresAt timestamp');
+  }
+  if (parsed.getTime() <= Date.now()) {
+    throw new ValidationError('Proposal expiry must be in the future');
+  }
+  return parsed.toISOString();
+}
+
+async function saveWorkflowHistorySnapshot(
+  env: Env,
+  params: {
+    workflowId: string;
+    workflowVersion: string | null;
+    workflowData: string;
+    source: 'sync' | 'update' | 'proposal_apply' | 'rollback' | 'system';
+    sourceProposalId?: string | null;
+    notes?: string | null;
+    createdBy?: string | null;
+    createdAt?: string;
+  }
+): Promise<string> {
+  const workflowHash = normalizeHash(await sha256Hex(params.workflowData));
+  const createdAt = params.createdAt || new Date().toISOString();
+
+  await env.DB.prepare(`
+    INSERT INTO workflow_version_history
+      (id, workflow_id, workflow_version, workflow_hash, workflow_data, source, source_proposal_id, notes, created_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(workflow_id, workflow_hash) DO NOTHING
+  `).bind(
+    crypto.randomUUID(),
+    params.workflowId,
+    params.workflowVersion,
+    workflowHash,
+    params.workflowData,
+    params.source,
+    params.sourceProposalId || null,
+    params.notes || null,
+    params.createdBy || null,
+    createdAt,
+  ).run();
+
+  return workflowHash;
 }
 
 /**
@@ -173,6 +244,10 @@ workflowsRouter.post('/sync', zValidator('json', syncWorkflowSchema), async (c) 
   const user = c.get('user');
   const body = c.req.valid('json');
   const now = new Date().toISOString();
+  const validation = validateWorkflowDefinition(body.data);
+  if (!validation.valid) {
+    throw new ValidationError(`Invalid workflow definition: ${validation.errors[0]}`);
+  }
 
   await c.env.DB.prepare(`
     INSERT INTO workflows (id, user_id, slug, name, description, version, data, enabled, updated_at, created_at)
@@ -196,6 +271,15 @@ workflowsRouter.post('/sync', zValidator('json', syncWorkflowSchema), async (c) 
     now
   ).run();
 
+  await saveWorkflowHistorySnapshot(c.env, {
+    workflowId: body.id,
+    workflowVersion: body.version,
+    workflowData: JSON.stringify(body.data),
+    source: 'sync',
+    createdBy: user.id,
+    createdAt: now,
+  });
+
   return c.json({ success: true, id: body.id });
 });
 
@@ -217,6 +301,11 @@ workflowsRouter.post('/sync-all', zValidator('json', syncAllWorkflowsSchema), as
   // Sync each workflow
   const incomingIds = new Set<string>();
   for (const wf of workflows) {
+    const validation = validateWorkflowDefinition(wf.data);
+    if (!validation.valid) {
+      throw new ValidationError(`Invalid workflow definition for "${wf.name}": ${validation.errors[0]}`);
+    }
+
     incomingIds.add(wf.id);
     await c.env.DB.prepare(`
       INSERT INTO workflows (id, user_id, slug, name, description, version, data, enabled, updated_at, created_at)
@@ -239,6 +328,15 @@ workflowsRouter.post('/sync-all', zValidator('json', syncAllWorkflowsSchema), as
       now,
       now
     ).run();
+
+    await saveWorkflowHistorySnapshot(c.env, {
+      workflowId: wf.id,
+      workflowVersion: wf.version,
+      workflowData: JSON.stringify(wf.data),
+      source: 'sync',
+      createdBy: user.id,
+      createdAt: now,
+    });
   }
 
   // Remove workflows that no longer exist in the plugin
@@ -338,6 +436,15 @@ workflowsRouter.put('/:id', zValidator('json', updateWorkflowSchema), async (c) 
     FROM workflows WHERE id = ?
   `).bind(existing.id).first();
 
+  await saveWorkflowHistorySnapshot(c.env, {
+    workflowId: updated!.id as string,
+    workflowVersion: (updated!.version as string | null) || null,
+    workflowData: String(updated!.data || '{}'),
+    source: 'update',
+    createdBy: user.id,
+    createdAt: String(updated!.updated_at || new Date().toISOString()),
+  });
+
   return c.json({
     workflow: {
       id: updated!.id,
@@ -399,6 +506,7 @@ workflowsRouter.get('/:id/executions', async (c) => {
 
   const result = await c.env.DB.prepare(`
     SELECT id, workflow_id, session_id, trigger_id, status, trigger_type, trigger_metadata,
+           resume_token,
            variables, outputs, steps, error, started_at, completed_at
     FROM workflow_executions
     WHERE workflow_id = ? AND user_id = ?
@@ -414,6 +522,7 @@ workflowsRouter.get('/:id/executions', async (c) => {
     status: row.status,
     triggerType: row.trigger_type,
     triggerMetadata: row.trigger_metadata ? JSON.parse(row.trigger_metadata as string) : null,
+    resumeToken: row.resume_token || null,
     variables: row.variables ? JSON.parse(row.variables as string) : null,
     outputs: row.outputs ? JSON.parse(row.outputs as string) : null,
     steps: row.steps ? JSON.parse(row.steps as string) : null,
@@ -423,6 +532,63 @@ workflowsRouter.get('/:id/executions', async (c) => {
   }));
 
   return c.json({ executions });
+});
+
+/**
+ * GET /api/workflows/:id/history
+ * List immutable workflow definition snapshots for rollback and auditing.
+ */
+workflowsRouter.get('/:id/history', async (c) => {
+  const { id } = c.req.param();
+  const user = c.get('user');
+  const { limit, offset } = c.req.query();
+
+  const workflow = await c.env.DB.prepare(`
+    SELECT id, version, data, updated_at
+    FROM workflows
+    WHERE (id = ? OR slug = ?) AND user_id = ?
+  `).bind(id, id, user.id).first<{
+    id: string;
+    version: string | null;
+    data: string;
+    updated_at: string;
+  }>();
+
+  if (!workflow) {
+    throw new NotFoundError('Workflow', id);
+  }
+
+  const currentWorkflowHash = await saveWorkflowHistorySnapshot(c.env, {
+    workflowId: workflow.id,
+    workflowVersion: workflow.version,
+    workflowData: workflow.data,
+    source: 'system',
+    createdBy: user.id,
+    createdAt: workflow.updated_at || new Date().toISOString(),
+  });
+
+  const list = await c.env.DB.prepare(`
+    SELECT id, workflow_id, workflow_version, workflow_hash, workflow_data, source, source_proposal_id, notes, created_by, created_at
+    FROM workflow_version_history
+    WHERE workflow_id = ?
+    ORDER BY created_at DESC
+    LIMIT ? OFFSET ?
+  `).bind(workflow.id, parseInt(limit || '50', 10), parseInt(offset || '0', 10)).all();
+
+  const history = list.results.map((row) => ({
+    id: row.id,
+    workflowId: row.workflow_id,
+    version: row.workflow_version,
+    workflowHash: row.workflow_hash,
+    workflowData: parseJsonObject(String(row.workflow_data || '{}')),
+    source: row.source,
+    sourceProposalId: row.source_proposal_id,
+    notes: row.notes,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+  }));
+
+  return c.json({ currentWorkflowHash, history });
 });
 
 /**
@@ -489,17 +655,27 @@ workflowsRouter.post('/:id/proposals', zValidator('json', createProposalSchema),
   const body = c.req.valid('json');
 
   const workflow = await c.env.DB.prepare(`
-    SELECT id
+    SELECT id, data
     FROM workflows
     WHERE (id = ? OR slug = ?) AND user_id = ?
-  `).bind(id, id, user.id).first<{ id: string }>();
+  `).bind(id, id, user.id).first<{ id: string; data: string }>();
 
   if (!workflow) {
     throw new NotFoundError('Workflow', id);
   }
+  if (!workflowAllowsSelfModification(workflow.data)) {
+    throw new ValidationError('Self-modification is disabled for this workflow');
+  }
+
+  const currentHash = normalizeHash(await sha256Hex(String(workflow.data ?? '{}')));
+  const baseHash = normalizeHash(body.baseWorkflowHash);
+  if (currentHash !== baseHash) {
+    throw new ValidationError('Base workflow hash mismatch; proposal is stale');
+  }
 
   const proposalId = crypto.randomUUID();
   const now = new Date().toISOString();
+  const expiresAt = resolveProposalExpiry(body.expiresAt);
 
   await c.env.DB.prepare(`
     INSERT INTO workflow_mutation_proposals
@@ -510,12 +686,12 @@ workflowsRouter.post('/:id/proposals', zValidator('json', createProposalSchema),
     workflow.id,
     body.executionId || null,
     body.proposedBySessionId || null,
-    normalizeHash(body.baseWorkflowHash),
+    baseHash,
     JSON.stringify(body.proposal),
     body.diffText || null,
     'pending',
     null,
-    body.expiresAt || null,
+    expiresAt,
     now,
     now,
   ).run();
@@ -526,12 +702,12 @@ workflowsRouter.post('/:id/proposals', zValidator('json', createProposalSchema),
       workflowId: workflow.id,
       executionId: body.executionId || null,
       proposedBySessionId: body.proposedBySessionId || null,
-      baseWorkflowHash: normalizeHash(body.baseWorkflowHash),
+      baseWorkflowHash: baseHash,
       proposal: body.proposal,
       diffText: body.diffText || null,
       status: 'pending',
       reviewNotes: null,
-      expiresAt: body.expiresAt || null,
+      expiresAt,
       createdAt: now,
       updatedAt: now,
     },
@@ -612,6 +788,9 @@ workflowsRouter.post('/:id/proposals/:proposalId/apply', zValidator('json', appl
   if (!workflow) {
     throw new NotFoundError('Workflow', id);
   }
+  if (!workflowAllowsSelfModification(workflow.data)) {
+    throw new ValidationError('Self-modification is disabled for this workflow');
+  }
 
   const proposal = await c.env.DB.prepare(`
     SELECT id, workflow_id, base_workflow_hash, proposal_json, status, expires_at, review_notes
@@ -659,6 +838,17 @@ workflowsRouter.post('/:id/proposals/:proposalId/apply', zValidator('json', appl
   const now = new Date().toISOString();
   const nextVersion = body.version || bumpPatchVersion(workflow.version);
 
+  await saveWorkflowHistorySnapshot(c.env, {
+    workflowId: workflow.id,
+    workflowVersion: workflow.version,
+    workflowData: workflow.data,
+    source: 'proposal_apply',
+    sourceProposalId: proposal.id,
+    notes: 'Pre-apply snapshot',
+    createdBy: user.id,
+    createdAt: now,
+  });
+
   await c.env.DB.prepare(`
     UPDATE workflows
     SET data = ?, version = ?, updated_at = ?
@@ -673,6 +863,17 @@ workflowsRouter.post('/:id/proposals/:proposalId/apply', zValidator('json', appl
     WHERE id = ?
   `).bind(body.reviewNotes || proposal.review_notes || null, now, proposal.id).run();
 
+  await saveWorkflowHistorySnapshot(c.env, {
+    workflowId: workflow.id,
+    workflowVersion: nextVersion,
+    workflowData: JSON.stringify(proposedWorkflow),
+    source: 'proposal_apply',
+    sourceProposalId: proposal.id,
+    notes: body.reviewNotes || proposal.review_notes || null,
+    createdBy: user.id,
+    createdAt: now,
+  });
+
   return c.json({
     success: true,
     proposalId: proposal.id,
@@ -683,6 +884,120 @@ workflowsRouter.post('/:id/proposals/:proposalId/apply', zValidator('json', appl
       description: workflow.description,
       version: nextVersion,
       data: proposedWorkflow,
+      enabled: Boolean(workflow.enabled),
+      tags: workflow.tags ? JSON.parse(workflow.tags) : [],
+      createdAt: workflow.created_at,
+      updatedAt: now,
+    },
+  });
+});
+
+/**
+ * POST /api/workflows/:id/rollback
+ * Roll back workflow definition to a historical snapshot hash.
+ */
+workflowsRouter.post('/:id/rollback', zValidator('json', rollbackWorkflowSchema), async (c) => {
+  const { id } = c.req.param();
+  const user = c.get('user');
+  const body = c.req.valid('json');
+
+  const workflow = await c.env.DB.prepare(`
+    SELECT id, slug, name, description, version, data, enabled, tags, created_at
+    FROM workflows
+    WHERE (id = ? OR slug = ?) AND user_id = ?
+  `).bind(id, id, user.id).first<{
+    id: string;
+    slug: string | null;
+    name: string;
+    description: string | null;
+    version: string | null;
+    data: string;
+    enabled: number;
+    tags: string | null;
+    created_at: string;
+  }>();
+
+  if (!workflow) {
+    throw new NotFoundError('Workflow', id);
+  }
+
+  await saveWorkflowHistorySnapshot(c.env, {
+    workflowId: workflow.id,
+    workflowVersion: workflow.version,
+    workflowData: workflow.data,
+    source: 'system',
+    createdBy: user.id,
+  });
+
+  const targetHash = normalizeHash(body.targetWorkflowHash);
+  const target = await c.env.DB.prepare(`
+    SELECT workflow_version, workflow_hash, workflow_data
+    FROM workflow_version_history
+    WHERE workflow_id = ? AND workflow_hash = ?
+    LIMIT 1
+  `).bind(workflow.id, targetHash).first<{
+    workflow_version: string | null;
+    workflow_hash: string;
+    workflow_data: string;
+  }>();
+
+  if (!target) {
+    throw new NotFoundError('Workflow history entry', targetHash);
+  }
+
+  const parsedTarget = parseJsonObject(target.workflow_data);
+  if (!Array.isArray(parsedTarget.steps)) {
+    throw new ValidationError('Historical workflow snapshot is invalid');
+  }
+
+  const currentHash = normalizeHash(await sha256Hex(String(workflow.data ?? '{}')));
+  if (currentHash === targetHash) {
+    return c.json({
+      success: true,
+      message: 'Workflow already at requested version',
+      workflow: {
+        id: workflow.id,
+        slug: workflow.slug,
+        name: workflow.name,
+        description: workflow.description,
+        version: workflow.version,
+        data: parseJsonObject(workflow.data),
+        enabled: Boolean(workflow.enabled),
+        tags: workflow.tags ? JSON.parse(workflow.tags) : [],
+        createdAt: workflow.created_at,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  const now = new Date().toISOString();
+  const nextVersion = body.version || bumpPatchVersion(workflow.version);
+
+  await c.env.DB.prepare(`
+    UPDATE workflows
+    SET data = ?, version = ?, updated_at = ?
+    WHERE id = ?
+  `).bind(target.workflow_data, nextVersion, now, workflow.id).run();
+
+  await saveWorkflowHistorySnapshot(c.env, {
+    workflowId: workflow.id,
+    workflowVersion: nextVersion,
+    workflowData: target.workflow_data,
+    source: 'rollback',
+    notes: body.notes || `Rollback to ${target.workflow_hash}`,
+    createdBy: user.id,
+    createdAt: now,
+  });
+
+  return c.json({
+    success: true,
+    workflow: {
+      id: workflow.id,
+      slug: workflow.slug,
+      name: workflow.name,
+      description: workflow.description,
+      version: nextVersion,
+      data: parsedTarget,
       enabled: Boolean(workflow.enabled),
       tags: workflow.tags ? JSON.parse(workflow.tags) : [],
       createdAt: workflow.created_at,

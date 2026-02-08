@@ -479,6 +479,20 @@ export interface MemoryReadParams {
   limit?: number;
 }
 
+export interface WorkflowSyncParams {
+  id?: string;
+  slug?: string;
+  name: string;
+  description?: string;
+  version?: string;
+  data: Record<string, unknown>;
+}
+
+export interface WorkflowRunParams {
+  workflowId: string;
+  variables?: Record<string, unknown>;
+}
+
 export interface GatewayCallbacks {
   onImage?: (data: string, description: string) => void;
   onSpawnChild?: (params: SpawnChildParams) => Promise<{ childSessionId: string }>;
@@ -500,6 +514,10 @@ export interface GatewayCallbacks {
   onListChildSessions?: () => Promise<{ children: unknown[] }>;
   onForwardMessages?: (targetSessionId: string, limit?: number, after?: string) => Promise<{ count: number; sourceSessionId: string }>;
   onReadRepoFile?: (params: { owner?: string; repo?: string; repoUrl?: string; path: string; ref?: string }) => Promise<{ content: string; encoding?: string; truncated?: boolean; path?: string; repo?: string; ref?: string }>;
+  onListWorkflows?: () => Promise<{ workflows: unknown[] }>;
+  onSyncWorkflow?: (params: WorkflowSyncParams) => Promise<{ success: boolean; workflow?: unknown }>;
+  onRunWorkflow?: (params: WorkflowRunParams) => Promise<{ execution: unknown }>;
+  onListWorkflowExecutions?: (workflowId?: string, limit?: number) => Promise<{ executions: unknown[] }>;
   onTunnelsUpdated?: (tunnels: TunnelDescriptor[]) => void;
 }
 
@@ -956,6 +974,94 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] Read repo file error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // ─── Workflow API ───────────────────────────────────────────────────
+
+  app.get("/api/workflows", async (c) => {
+    if (!callbacks.onListWorkflows) {
+      return c.json({ error: "List workflows handler not configured" }, 500);
+    }
+    try {
+      const result = await callbacks.onListWorkflows();
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] List workflows error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/workflows/sync", async (c) => {
+    if (!callbacks.onSyncWorkflow) {
+      return c.json({ error: "Sync workflow handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as {
+        id?: string;
+        slug?: string;
+        name?: string;
+        description?: string;
+        version?: string;
+        data?: Record<string, unknown>;
+      };
+      if (!body.name || !body.data || typeof body.data !== "object") {
+        return c.json({ error: "Missing required fields: name, data" }, 400);
+      }
+      const result = await callbacks.onSyncWorkflow({
+        id: body.id,
+        slug: body.slug,
+        name: body.name,
+        description: body.description,
+        version: body.version,
+        data: body.data,
+      });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Sync workflow error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/workflows/run", async (c) => {
+    if (!callbacks.onRunWorkflow) {
+      return c.json({ error: "Run workflow handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as {
+        workflowId?: string;
+        variables?: Record<string, unknown>;
+      };
+      if (!body.workflowId) {
+        return c.json({ error: "Missing required field: workflowId" }, 400);
+      }
+      const result = await callbacks.onRunWorkflow({
+        workflowId: body.workflowId,
+        variables: body.variables,
+      });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Run workflow error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.get("/api/workflows/executions", async (c) => {
+    if (!callbacks.onListWorkflowExecutions) {
+      return c.json({ error: "List workflow executions handler not configured" }, 500);
+    }
+    try {
+      const workflowId = c.req.query("workflowId") || undefined;
+      const limitRaw = c.req.query("limit");
+      const limit = limitRaw ? parseInt(limitRaw, 10) : undefined;
+      if (limit !== undefined && (Number.isNaN(limit) || limit < 1 || limit > 200)) {
+        return c.json({ error: "limit must be between 1 and 200" }, 400);
+      }
+      const result = await callbacks.onListWorkflowExecutions(workflowId, limit);
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] List workflow executions error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });

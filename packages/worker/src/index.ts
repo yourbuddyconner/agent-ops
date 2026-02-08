@@ -300,8 +300,37 @@ async function persistStepTrace(
   }
 }
 
+async function expireWaitingApprovalExecutions(env: Env): Promise<number> {
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - (24 * 60 * 60 * 1000)).toISOString();
+  const nowIso = now.toISOString();
+
+  const result = await env.DB.prepare(`
+    SELECT id
+    FROM workflow_executions
+    WHERE status = 'waiting_approval'
+      AND started_at <= ?
+  `).bind(cutoff).all<{ id: string }>();
+
+  let expired = 0;
+  for (const row of result.results || []) {
+    await env.DB.prepare(`
+      UPDATE workflow_executions
+      SET status = 'cancelled',
+          error = 'approval_timeout',
+          resume_token = NULL,
+          completed_at = ?
+      WHERE id = ?
+    `).bind(nowIso, row.id).run();
+    expired++;
+  }
+
+  return expired;
+}
+
 async function reconcileWorkflowExecutions(env: Env): Promise<void> {
   const now = new Date().toISOString();
+  const approvalsExpired = await expireWaitingApprovalExecutions(env);
   const result = await env.DB.prepare(`
     SELECT
       e.id,
@@ -462,6 +491,9 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
     console.log(
       `Workflow reconcile finalized executions: completed=${completed} waiting_approval=${waitingApproval} cancelled=${cancelled} failed=${failed}`,
     );
+  }
+  if (approvalsExpired > 0) {
+    console.log(`Workflow approval timeout sweep cancelled ${approvalsExpired} execution(s)`);
   }
 }
 
@@ -656,8 +688,8 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
     await env.DB.prepare(`
       INSERT INTO workflow_executions
         (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
-         workflow_version, workflow_hash, idempotency_key, session_id, initiator_type, initiator_user_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         workflow_version, workflow_hash, workflow_snapshot, idempotency_key, session_id, initiator_type, initiator_user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       executionId,
       row.workflow_id,
@@ -670,6 +702,7 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
       now.toISOString(),
       row.workflow_version || null,
       workflowHash,
+      row.workflow_data,
       idempotencyKey,
       sessionId,
       'schedule',

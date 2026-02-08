@@ -10,6 +10,7 @@ export interface Execution {
   triggerId: string | null;
   triggerName?: string | null;
   status: 'pending' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled';
+  resumeToken?: string | null;
   triggerType: 'webhook' | 'schedule' | 'manual';
   triggerMetadata: Record<string, unknown> | null;
   variables: Record<string, unknown> | null;
@@ -139,6 +140,8 @@ export function useWorkflowExecutions(workflowId: string) {
     queryKey: executionKeys.byWorkflow(workflowId),
     queryFn: () => api.get<ListExecutionsResponse>(`/workflows/${workflowId}/executions`),
     enabled: !!workflowId,
+    refetchInterval: 2500,
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -147,6 +150,8 @@ export function useExecutionSteps(executionId: string) {
     queryKey: executionKeys.steps(executionId),
     queryFn: () => api.get<GetExecutionStepsResponse>(`/executions/${executionId}/steps`),
     enabled: !!executionId,
+    refetchInterval: executionId ? 2500 : false,
+    refetchIntervalInBackground: true,
   });
 }
 

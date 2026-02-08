@@ -19,6 +19,14 @@
 import { createTwoFilesPatch } from "diff";
 import { AgentClient } from "./agent-client.js";
 import type { AvailableModels, DiffFile, PromptAttachment, ReviewFileSummary, ReviewResultData } from "./types.js";
+import { compileWorkflowDefinition, type NormalizedWorkflowStep } from "./workflow-compiler.js";
+import {
+  executeWorkflowResume,
+  executeWorkflowRun,
+  type WorkflowRunPayload,
+  type WorkflowStepExecutionContext,
+  type WorkflowStepExecutionResult,
+} from "./workflow-engine.js";
 
 // OpenCode ToolState status values
 type ToolStatus = "pending" | "running" | "completed" | "error";
@@ -57,13 +65,113 @@ interface SessionStatus {
   [key: string]: unknown;
 }
 
-type OpenCodeEvent = {
-  type: string;
-  properties?: Record<string, unknown>;
-};
+interface OpenCodeErrorLike {
+  name?: string;
+  data?: Record<string, unknown>;
+  message?: string;
+  [key: string]: unknown;
+}
+
+interface OpenCodeMessageInfo {
+  id?: string;
+  role?: string;
+  sessionID?: string;
+  parts?: unknown[];
+  content?: string;
+  error?: OpenCodeErrorLike | string;
+  [key: string]: unknown;
+}
+
+type OpenCodeEvent =
+  | {
+      type: "message.part.updated";
+      properties: {
+        part: Part;
+        delta?: string;
+      } & Record<string, unknown>;
+    }
+  | {
+      type: "message.updated";
+      properties: {
+        info: OpenCodeMessageInfo;
+      } & Record<string, unknown>;
+    }
+  | {
+      type: "session.status";
+      properties: {
+        sessionID?: string;
+        status: SessionStatus;
+      } & Record<string, unknown>;
+    }
+  | {
+      type: "session.idle";
+      properties: {
+        sessionID?: string;
+      } & Record<string, unknown>;
+    }
+  | {
+      type: "session.error";
+      properties: {
+        sessionID?: string;
+        error?: OpenCodeErrorLike | string;
+      } & Record<string, unknown>;
+    }
+  | {
+      type: string;
+      properties?: Record<string, unknown>;
+    };
+
+interface AssistantMessageRecovery {
+  text: string | null;
+  error: string | null;
+  modelLabel?: string;
+  finish?: string;
+  outputTokens?: number | null;
+}
+
+interface WorkflowExecutionDispatchPayload {
+  kind: "run" | "resume";
+  executionId: string;
+  workflowHash?: string;
+  resumeToken?: string;
+  decision?: "approve" | "deny";
+  payload: Record<string, unknown>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object";
+}
+
+function normalizeOpenCodeEvent(raw: unknown): OpenCodeEvent | null {
+  if (!isRecord(raw)) return null;
+  const maybePayload = isRecord(raw.payload) ? raw.payload : raw;
+  const type = maybePayload.type;
+  if (typeof type !== "string") return null;
+  const properties = isRecord(maybePayload.properties) ? maybePayload.properties : {};
+  return {
+    type,
+    properties,
+  };
+}
+
+function openCodeErrorToMessage(raw: unknown): string | null {
+  if (!raw) return null;
+  if (typeof raw === "string") return raw;
+  if (!isRecord(raw)) return null;
+
+  const data = isRecord(raw.data) ? raw.data : undefined;
+  const namedMessage =
+    (data && typeof data.message === "string" ? data.message : undefined) ??
+    (typeof raw.message === "string" ? raw.message : undefined);
+  if (namedMessage && namedMessage.trim()) return namedMessage.trim();
+
+  const fallback = JSON.stringify(raw);
+  return fallback && fallback !== "{}" ? fallback : null;
+}
 
 // Emergency fallback timeout — only fires if no idle/completion event arrives
 const EMERGENCY_TIMEOUT_MS = 60_000;
+const WORKFLOW_EXECUTE_PROMPT_PREFIX = "__AGENT_OPS_WORKFLOW_EXECUTE_V1__";
 
 // Review polling configuration
 const REVIEW_POLL_INTERVAL_MS = 500;
@@ -208,6 +316,10 @@ const RETRIABLE_ERROR_PATTERNS = [
   /unauthorized/i,
   /api key.*invalid/i,
   /permission.*denied/i,
+  // Provider/model returned an empty completion with no tokens
+  /returned an empty completion/i,
+  /outputtokens=0/i,
+  /model returned an empty response/i,
 ];
 
 function isRetriableProviderError(errorMsg: string): boolean {
@@ -223,12 +335,26 @@ export class PromptHandler {
   // Track current prompt so we can route events back to the DO
   private activeMessageId: string | null = null;
   private streamedContent = "";
+  private committedAssistantContent = "";
   private hasActivity = false; // true if any text or tool events were received
   private lastChunkTime = 0;
   private responseTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
   // Track tool states to detect completion (pending/running → completed)
   private toolStates = new Map<string, { status: ToolStatus; toolName: string }>();
+  // Track last full text by part ID when SSE omits incremental `delta`
+  private textPartSnapshots = new Map<string, string>();
+  // Track last full text by message ID to handle providers that rotate part IDs
+  // while emitting full-text snapshots (no true deltas).
+  private messageTextSnapshots = new Map<string, string>();
+  // Track message roles so we can ignore user parts in SSE updates
+  private messageRoles = new Map<string, string>();
+  // Assistant message IDs seen for the active DO prompt
+  private activeAssistantMessageIds = new Set<string>();
+  // Latest full assistant text snapshot observed via message.updated
+  private latestAssistantTextSnapshot = "";
+  // Compact event trace for debugging empty-response classification
+  private recentEventTrace: string[] = [];
   private lastError: string | null = null; // Track session errors
   private hadToolSinceLastText = false; // Track if tools ran since last text chunk
   private idleNotified = false;
@@ -248,10 +374,194 @@ export class PromptHandler {
   private pendingRetryAttachments: PromptAttachment[] = [];
   private pendingRetryAuthor: { gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string } | undefined;
   private waitForEventForced = false;
+  private failoverInProgress = false;
+  private retryPending = false;
+  private finalizeInFlight = false;
+  private awaitingAssistantForAttempt = false;
 
   constructor(opencodeUrl: string, agentClient: AgentClient) {
     this.opencodeUrl = opencodeUrl;
     this.agentClient = agentClient;
+  }
+
+  private normalizeWorkflowHash(hash: string | undefined): string {
+    const cleaned = (hash || "").trim();
+    if (!cleaned) return "";
+    return cleaned.startsWith("sha256:") ? cleaned : `sha256:${cleaned}`;
+  }
+
+  private parseWorkflowExecutionPrompt(content: string): WorkflowExecutionDispatchPayload | null {
+    if (!content.startsWith(WORKFLOW_EXECUTE_PROMPT_PREFIX)) {
+      return null;
+    }
+
+    const raw = content.slice(WORKFLOW_EXECUTE_PROMPT_PREFIX.length).trim();
+    if (!raw) return null;
+
+    try {
+      const parsed = JSON.parse(raw) as WorkflowExecutionDispatchPayload;
+      if (!parsed || typeof parsed !== "object") return null;
+      if (parsed.kind !== "run" && parsed.kind !== "resume") return null;
+      if (typeof parsed.executionId !== "string" || !parsed.executionId) return null;
+      if (!parsed.payload || typeof parsed.payload !== "object" || Array.isArray(parsed.payload)) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  private async handleWorkflowExecutionPrompt(
+    messageId: string,
+    request: WorkflowExecutionDispatchPayload,
+  ): Promise<void> {
+    const executionId = request.executionId;
+    this.agentClient.sendAgentStatus("thinking");
+
+    const fail = async (error: string) => {
+      this.agentClient.sendWorkflowExecutionResult(executionId, {
+        ok: false,
+        status: "failed",
+        executionId,
+        output: {},
+        steps: [],
+        requiresApproval: null,
+        error,
+      });
+      this.agentClient.sendError(messageId, error);
+      this.agentClient.sendAgentStatus("idle");
+      this.agentClient.sendComplete();
+    };
+
+    try {
+      const workflowValue = request.payload.workflow;
+      if (!workflowValue || typeof workflowValue !== "object" || Array.isArray(workflowValue)) {
+        await fail("Workflow execution payload missing workflow object");
+        return;
+      }
+
+      const compiled = await compileWorkflowDefinition(workflowValue);
+      if (!compiled.ok || !compiled.workflow || !compiled.workflowHash) {
+        await fail(compiled.errors[0]?.message || "Workflow compilation failed");
+        return;
+      }
+
+      const expectedHash = this.normalizeWorkflowHash(request.workflowHash);
+      const compiledHash = this.normalizeWorkflowHash(compiled.workflowHash);
+      if (expectedHash && expectedHash !== compiledHash) {
+        await fail(`Workflow hash mismatch: expected ${expectedHash}, got ${compiledHash}`);
+        return;
+      }
+
+      const payload = request.payload as WorkflowRunPayload & Record<string, unknown>;
+      const runPayload: WorkflowRunPayload = {
+        trigger: payload.trigger as Record<string, unknown> | undefined,
+        variables: payload.variables as Record<string, unknown> | undefined,
+        runtime: payload.runtime as WorkflowRunPayload["runtime"] | undefined,
+      };
+      const hooks = {
+        onToolStep: (step: NormalizedWorkflowStep, context: WorkflowStepExecutionContext) =>
+          this.executeWorkflowToolStep(step, context),
+      };
+
+      const envelope = request.kind === "run"
+        ? await executeWorkflowRun(executionId, compiled.workflow, runPayload, hooks)
+        : await executeWorkflowResume(
+            executionId,
+            compiled.workflow,
+            runPayload,
+            request.resumeToken || "",
+            request.decision === "deny" ? "deny" : "approve",
+            hooks,
+          );
+
+      this.agentClient.sendWorkflowExecutionResult(executionId, {
+        ok: envelope.ok,
+        status: envelope.status,
+        executionId: envelope.executionId,
+        output: envelope.output,
+        steps: envelope.steps,
+        requiresApproval: envelope.requiresApproval,
+        error: envelope.error,
+      });
+      this.agentClient.sendAgentStatus("idle");
+      this.agentClient.sendComplete();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await fail(message);
+    }
+  }
+
+  private async executeWorkflowToolStep(
+    step: NormalizedWorkflowStep,
+    _context: WorkflowStepExecutionContext,
+  ): Promise<WorkflowStepExecutionResult | void> {
+    if (typeof step.tool !== "string") {
+      return;
+    }
+
+    const tool = step.tool;
+    const args = isRecord(step.arguments) ? step.arguments : {};
+
+    switch (tool) {
+      case "spawn_session": {
+        const task = typeof args.task === "string" ? args.task.trim() : "";
+        const workspace = typeof args.workspace === "string" ? args.workspace.trim() : "";
+        if (!task || !workspace) {
+          return { status: "failed", error: "spawn_session requires task and workspace" };
+        }
+        const result = await this.agentClient.requestSpawnChild({
+          task,
+          workspace,
+          repoUrl: typeof args.repoUrl === "string" ? args.repoUrl : undefined,
+          branch: typeof args.branch === "string" ? args.branch : undefined,
+          ref: typeof args.ref === "string" ? args.ref : undefined,
+          title: typeof args.title === "string" ? args.title : undefined,
+          model: typeof args.model === "string" ? args.model : undefined,
+        });
+        return {
+          status: "completed",
+          output: { tool, childSessionId: result.childSessionId },
+        };
+      }
+
+      case "send_message": {
+        const targetSessionId = typeof args.targetSessionId === "string" ? args.targetSessionId.trim() : "";
+        const content = typeof args.content === "string" ? args.content : "";
+        if (!targetSessionId || !content) {
+          return { status: "failed", error: "send_message requires targetSessionId and content" };
+        }
+        const interrupt = args.interrupt === true;
+        const result = await this.agentClient.requestSendMessage(targetSessionId, content, interrupt);
+        return {
+          status: "completed",
+          output: { tool, targetSessionId, success: result.success },
+        };
+      }
+
+      case "list_workflows": {
+        const result = await this.agentClient.requestListWorkflows();
+        return { status: "completed", output: { tool, workflows: result.workflows } };
+      }
+
+      case "run_workflow": {
+        const workflowId = typeof args.workflowId === "string" ? args.workflowId.trim() : "";
+        if (!workflowId) {
+          return { status: "failed", error: "run_workflow requires workflowId" };
+        }
+        const variables = isRecord(args.variables) ? args.variables : undefined;
+        const result = await this.agentClient.requestRunWorkflow(workflowId, variables);
+        return { status: "completed", output: { tool, execution: result.execution } };
+      }
+
+      case "list_workflow_executions": {
+        const workflowId = typeof args.workflowId === "string" ? args.workflowId : undefined;
+        const limit = typeof args.limit === "number" ? args.limit : undefined;
+        const result = await this.agentClient.requestListWorkflowExecutions(workflowId, limit);
+        return { status: "completed", output: { tool, executions: result.executions } };
+      }
+    }
+
+    return;
   }
 
   /**
@@ -272,6 +582,12 @@ export class PromptHandler {
 
   async handlePrompt(messageId: string, content: string, model?: string, author?: { gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }, modelPreferences?: string[], attachments?: PromptAttachment[]): Promise<void> {
     console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length})` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}`);
+    const workflowExecutionRequest = this.parseWorkflowExecutionPrompt(content);
+    if (workflowExecutionRequest) {
+      await this.handleWorkflowExecutionPrompt(messageId, workflowExecutionRequest);
+      return;
+    }
+
     try {
       // Set git config for author attribution before processing
       if (author?.gitName || author?.authorName) {
@@ -307,34 +623,47 @@ export class PromptHandler {
 
       this.activeMessageId = messageId;
       this.streamedContent = "";
+      this.committedAssistantContent = "";
       this.hasActivity = false;
       this.hadToolSinceLastText = false;
       this.lastChunkTime = 0;
       this.lastError = null;
       this.toolStates.clear();
+      this.textPartSnapshots.clear();
+      this.messageTextSnapshots.clear();
+      this.messageRoles.clear();
+      this.activeAssistantMessageIds.clear();
+      this.latestAssistantTextSnapshot = "";
+      this.recentEventTrace = [];
       this.waitForEventForced = false;
+      this.awaitingAssistantForAttempt = false;
+
+      // Build failover chain with explicit model first (if provided), then
+      // user preferences. This keeps failover anchored to the actual selected model.
+      const failoverChain: string[] = [];
+      if (model) failoverChain.push(model);
+      for (const pref of modelPreferences ?? []) {
+        if (!failoverChain.includes(pref)) {
+          failoverChain.push(pref);
+        }
+      }
 
       // Store failover state
-      this.currentModelPreferences = modelPreferences;
+      this.currentModelPreferences = failoverChain.length > 0 ? failoverChain : undefined;
       this.pendingRetryContent = content;
       this.pendingRetryAttachments = attachments ?? [];
       this.pendingRetryAuthor = author;
 
       // Determine which model to use: explicit model takes priority, then first preference
       let effectiveModel = model;
-      if (!effectiveModel && modelPreferences && modelPreferences.length > 0) {
-        effectiveModel = modelPreferences[0];
-        this.currentModelIndex = 0;
-      } else if (effectiveModel && modelPreferences) {
-        // Find where the explicit model sits in preferences
-        const idx = modelPreferences.indexOf(effectiveModel);
-        this.currentModelIndex = idx >= 0 ? idx : 0;
-      } else {
-        this.currentModelIndex = 0;
+      if (!effectiveModel && failoverChain.length > 0) {
+        effectiveModel = failoverChain[0];
       }
+      this.currentModelIndex = 0;
 
       // Notify client that agent is thinking
       this.agentClient.sendAgentStatus("thinking");
+      this.awaitingAssistantForAttempt = true;
 
       // Send message async (fire-and-forget)
       try {
@@ -388,15 +717,24 @@ export class PromptHandler {
 
     // Reset stream state for retry (keep activeMessageId)
     this.streamedContent = "";
+    this.committedAssistantContent = "";
     this.hasActivity = false;
     this.hadToolSinceLastText = false;
     this.lastChunkTime = 0;
     this.lastError = null;
     this.toolStates.clear();
+    this.textPartSnapshots.clear();
+    this.messageTextSnapshots.clear();
+    this.messageRoles.clear();
+    this.activeAssistantMessageIds.clear();
+    this.latestAssistantTextSnapshot = "";
+    this.recentEventTrace = [];
+    this.awaitingAssistantForAttempt = false;
 
     // Retry with next model
     try {
       this.agentClient.sendAgentStatus("thinking");
+      this.awaitingAssistantForAttempt = true;
       await this.sendPromptAsync(this.sessionId!, this.pendingRetryContent!, toModel, this.pendingRetryAttachments);
       console.log(`[PromptHandler] Retry sent with model ${toModel}`);
       return true;
@@ -445,11 +783,19 @@ export class PromptHandler {
     this.clearResponseTimeout();
     this.activeMessageId = null;
     this.streamedContent = "";
+    this.committedAssistantContent = "";
     this.hasActivity = false;
     this.hadToolSinceLastText = false;
     this.lastChunkTime = 0;
     this.lastError = null;
     this.toolStates.clear();
+    this.textPartSnapshots.clear();
+    this.messageTextSnapshots.clear();
+    this.messageRoles.clear();
+    this.activeAssistantMessageIds.clear();
+    this.latestAssistantTextSnapshot = "";
+    this.recentEventTrace = [];
+    this.awaitingAssistantForAttempt = false;
 
     // Tell DO first so clients get immediate feedback
     this.agentClient.sendAborted();
@@ -647,6 +993,167 @@ export class PromptHandler {
     return undefined;
   }
 
+  private appendEventTrace(entry: string): void {
+    this.recentEventTrace.push(entry);
+    if (this.recentEventTrace.length > 40) {
+      this.recentEventTrace.shift();
+    }
+  }
+
+  private computeNonOverlappingSuffix(base: string, incoming: string): string {
+    if (!incoming) return "";
+    if (!base) return incoming;
+    if (incoming.startsWith(base)) return incoming.slice(base.length);
+    if (base.endsWith(incoming)) return "";
+
+    const maxOverlap = Math.min(base.length, incoming.length);
+    for (let overlap = maxOverlap; overlap > 0; overlap--) {
+      if (base.slice(-overlap) === incoming.slice(0, overlap)) {
+        return incoming.slice(overlap);
+      }
+    }
+    return incoming;
+  }
+
+  private sendAssistantResultSegment(messageId: string, rawSegment: string, source: string): void {
+    const segment = rawSegment || "";
+    const deduped = this.computeNonOverlappingSuffix(this.committedAssistantContent, segment);
+    if (!deduped) {
+      console.log(`[PromptHandler] Skipping duplicate assistant segment from ${source} (${segment.length} chars)`);
+      return;
+    }
+    this.agentClient.sendResult(messageId, deduped);
+    this.committedAssistantContent += deduped;
+  }
+
+  private extractAssistantTextFromMessageInfo(info: Record<string, unknown>): string | null {
+    const parts = info.parts;
+    if (Array.isArray(parts)) {
+      let merged = "";
+      for (const rawPart of parts) {
+        if (!rawPart || typeof rawPart !== "object") continue;
+        const part = rawPart as Record<string, unknown>;
+        if (part.type !== "text") continue;
+        const textSegment = typeof part.text === "string"
+          ? part.text
+          : typeof part.content === "string"
+            ? part.content
+            : "";
+        if (textSegment) merged += textSegment;
+      }
+      if (merged.trim()) return merged;
+    }
+
+    if (typeof info.content === "string" && info.content.trim()) {
+      return info.content;
+    }
+
+    return null;
+  }
+
+  private extractAssistantErrorFromMessageInfo(info: Record<string, unknown>): string | null {
+    return openCodeErrorToMessage(info.error);
+  }
+
+  private extractTextFromParts(parts: unknown[]): string {
+    let merged = "";
+    for (const rawPart of parts) {
+      if (!rawPart || typeof rawPart !== "object") continue;
+      const part = rawPart as Record<string, unknown>;
+      if (part.type !== "text") continue;
+      const textSegment = typeof part.text === "string"
+        ? part.text
+        : typeof part.content === "string"
+          ? part.content
+          : "";
+      if (textSegment) merged += textSegment;
+    }
+    return merged;
+  }
+
+  private async fetchAssistantMessageDetail(messageId: string): Promise<AssistantMessageRecovery> {
+    if (!this.sessionId) return { text: null, error: null };
+    try {
+      const res = await fetch(`${this.opencodeUrl}/session/${this.sessionId}/message/${messageId}`);
+      if (!res.ok) {
+        console.warn(`[PromptHandler] Message detail fetch failed for ${messageId}: ${res.status}`);
+        return { text: null, error: null };
+      }
+
+      const payload = await res.json() as {
+        info?: OpenCodeMessageInfo;
+        parts?: unknown[];
+        content?: string;
+      };
+      const infoObj = (payload.info && typeof payload.info === "object")
+        ? payload.info as Record<string, unknown>
+        : payload as Record<string, unknown>;
+      const role = typeof infoObj.role === "string" ? infoObj.role : undefined;
+      const providerID = typeof infoObj.providerID === "string" ? infoObj.providerID : undefined;
+      const modelID = typeof infoObj.modelID === "string" ? infoObj.modelID : undefined;
+      const modelLabel = providerID && modelID ? `${providerID}/${modelID}` : undefined;
+      const finish = typeof infoObj.finish === "string" ? infoObj.finish : undefined;
+      const parts =
+        Array.isArray(payload.parts) ? payload.parts
+        : Array.isArray(infoObj.parts) ? infoObj.parts as unknown[]
+        : [];
+      const partTypes = parts
+        .map((part) => (part && typeof part === "object" && "type" in part ? String((part as Record<string, unknown>).type) : "?"))
+        .join(",");
+      const partsText = this.extractTextFromParts(parts);
+      const infoContent = typeof infoObj.content === "string"
+        ? infoObj.content
+        : typeof payload.content === "string"
+          ? payload.content
+          : "";
+      const text = (partsText || infoContent || "").trim();
+      const assistantError = this.extractAssistantErrorFromMessageInfo(infoObj);
+      const errorName = isRecord(infoObj.error) && typeof infoObj.error.name === "string"
+        ? infoObj.error.name
+        : undefined;
+      const tokenObj = isRecord(infoObj.tokens) ? infoObj.tokens : undefined;
+      const outputTokens =
+        tokenObj && typeof tokenObj.output === "number" && Number.isFinite(tokenObj.output)
+          ? tokenObj.output
+          : null;
+      const derivedEmptyError =
+        !assistantError && !text && role === "assistant"
+          ? `Model ${modelLabel ?? "unknown"} returned an empty completion (finish=${finish ?? "none"}, outputTokens=${outputTokens ?? "unknown"}).`
+          : null;
+
+      console.log(
+        `[PromptHandler] Message detail ${messageId}: role=${role || "unknown"} ` +
+        `parts=[${partTypes}] partsText=${partsText.length} infoContent=${infoContent.length} text=${text.length} ` +
+        `error=${assistantError ? "yes" : "no"}${errorName ? `(${errorName})` : ""} ` +
+        `model=${modelLabel ?? "unknown"} finish=${finish ?? "none"} outputTokens=${outputTokens ?? "unknown"} ` +
+        `infoKeys=[${Object.keys(infoObj).join(",")}]`
+      );
+
+      if (role !== "assistant") return { text: null, error: null };
+      return {
+        text: text ? text : null,
+        error: assistantError ?? derivedEmptyError,
+        modelLabel,
+        finish,
+        outputTokens,
+      };
+    } catch (err) {
+      console.warn(`[PromptHandler] Message detail fetch error for ${messageId}:`, err);
+      return { text: null, error: null };
+    }
+  }
+
+  private async recoverAssistantOutcomeFromApi(): Promise<AssistantMessageRecovery | null> {
+    if (!this.sessionId || this.activeAssistantMessageIds.size === 0) return null;
+    const assistantIds = Array.from(this.activeAssistantMessageIds).reverse();
+
+    for (const ocMessageId of assistantIds) {
+      const result = await this.fetchAssistantMessageDetail(ocMessageId);
+      if (result.text || result.error) return result;
+    }
+    return null;
+  }
+
   private async deleteSession(sessionId: string): Promise<void> {
     const res = await fetch(`${this.opencodeUrl}/session/${sessionId}`, {
       method: "DELETE",
@@ -833,7 +1340,14 @@ export class PromptHandler {
         if (!eventData) continue;
 
         try {
-          const event = JSON.parse(eventData) as OpenCodeEvent;
+          const raw = JSON.parse(eventData) as unknown;
+          const event = normalizeOpenCodeEvent(raw);
+          if (!event) {
+            if (eventCount < 10) {
+              console.warn(`[PromptHandler] Ignoring malformed SSE event: ${eventData.slice(0, 150)}`);
+            }
+            continue;
+          }
           eventCount++;
 
           if (eventCount <= 10 || eventCount % 50 === 0) {
@@ -908,6 +1422,17 @@ export class PromptHandler {
     // Filter to our session
     if (eventSessionId && eventSessionId !== this.sessionId) return;
 
+    const tracePart = props.part as Record<string, unknown> | undefined;
+    const traceInfo = (props.info ?? props) as Record<string, unknown>;
+    const traceMsgId =
+      (tracePart?.messageID as string | undefined) ??
+      (tracePart?.messageId as string | undefined) ??
+      (traceInfo?.id as string | undefined);
+    const traceRole = traceInfo?.role as string | undefined;
+    const traceDelta = typeof props.delta === "string" ? props.delta.length : 0;
+    const traceType = tracePart?.type ? String(tracePart.type) : undefined;
+    this.appendEventTrace(`${event.type}${traceType ? `:${traceType}` : ""}${traceRole ? ` role=${traceRole}` : ""}${traceMsgId ? ` msg=${traceMsgId}` : ""}${traceDelta ? ` d=${traceDelta}` : ""}`);
+
     switch (event.type) {
       case "message.part.updated": {
         this.handlePartUpdated(props);
@@ -925,11 +1450,15 @@ export class PromptHandler {
       }
 
       case "session.idle": {
-        // Dedicated idle event — finalize if we have activity
+        // Dedicated idle event — finalize response (even if no activity, to handle empty responses)
         console.log(`[PromptHandler] session.idle (activeMessageId: ${this.activeMessageId ? 'yes' : 'no'}, hasActivity: ${this.hasActivity})`);
-        if (this.activeMessageId && this.hasActivity) {
+        if (this.activeMessageId && !this.retryPending && !this.awaitingAssistantForAttempt) {
           console.log(`[PromptHandler] Session idle, finalizing response`);
           this.finalizeResponse();
+        } else if (this.retryPending || this.awaitingAssistantForAttempt) {
+          console.log(
+            `[PromptHandler] session.idle ignored (retryPending=${this.retryPending}, awaitingAssistant=${this.awaitingAssistantForAttempt})`
+          );
         }
         if (!this.idleNotified) {
           this.agentClient.sendAgentStatus("idle");
@@ -957,21 +1486,8 @@ export class PromptHandler {
 
       case "session.error": {
         // OpenCode session error — extract error message
-        // props.error may be an object (e.g. { message: "...", code: "..." }),
-        // so we need to drill into it rather than just String()-ing it.
         const rawError = props.error ?? props.message ?? props.description;
-        let errorMsg: string;
-        if (rawError === undefined || rawError === null) {
-          errorMsg = "Unknown agent error";
-        } else if (typeof rawError === "string") {
-          errorMsg = rawError;
-        } else if (typeof rawError === "object") {
-          // Try common error shape: { message: string } or { error: string }
-          const obj = rawError as Record<string, unknown>;
-          errorMsg = String(obj.message ?? obj.error ?? obj.description ?? JSON.stringify(rawError));
-        } else {
-          errorMsg = String(rawError);
-        }
+        const errorMsg = openCodeErrorToMessage(rawError) ?? "Unknown agent error";
         console.error(`[PromptHandler] session.error: ${errorMsg}`);
         // Also log the raw structure for debugging
         console.error(`[PromptHandler] session.error raw:`, JSON.stringify(props));
@@ -1029,11 +1545,79 @@ export class PromptHandler {
     const part = props.part as Record<string, unknown> | undefined;
     if (!part) return;
 
+    const messageIdRaw =
+      part.messageID ??
+      part.messageId ??
+      props.messageID ??
+      props.messageId;
+    const partMessageId = messageIdRaw ? String(messageIdRaw) : undefined;
+    const partRole = partMessageId ? this.messageRoles.get(partMessageId) : undefined;
     const partType = String(part.type ?? "");
+
+    // Guard rail: ignore non-assistant parts once role is known.
+    if (partRole && partRole !== "assistant") {
+      return;
+    }
+
+    // If this text part belongs to a known assistant message from a prior turn, ignore it.
+    if (partType === "text" && partMessageId && this.activeAssistantMessageIds.size > 0) {
+      if (!this.activeAssistantMessageIds.has(partMessageId) && partRole !== undefined) {
+        return;
+      }
+    }
+
     const delta = props.delta as string | undefined;
 
     if (partType === "text") {
-      if (delta) {
+      const partIdRaw = part.id ?? part.messageID ?? "text";
+      const partId = String(partIdRaw);
+      const messageSnapshotKey = partMessageId ?? this.activeMessageId ?? "active";
+      const partText = typeof part.text === "string"
+        ? part.text
+        : typeof part.content === "string"
+          ? String(part.content)
+        : typeof props.text === "string"
+          ? String(props.text)
+          : undefined;
+
+      // Treat full part snapshots as canonical when available.
+      // Some providers/reconnect paths may replay events with a repeated delta.
+      // Using snapshots first keeps us aligned with OpenCode's replace-by-part-id model.
+      let chunk = "";
+      if (typeof partText === "string") {
+        const prevByPart = this.textPartSnapshots.get(partId) ?? "";
+        const prevByMessage = this.messageTextSnapshots.get(messageSnapshotKey) ?? "";
+        const prevGlobal = `${this.committedAssistantContent}${this.streamedContent}`;
+        const candidates = [prevByPart, prevByMessage, prevGlobal].filter(Boolean);
+        const prefixMatch = candidates
+          .filter((candidate) => partText.startsWith(candidate))
+          .sort((a, b) => b.length - a.length)[0];
+        const prev = prefixMatch ?? "";
+        if (partText.startsWith(prev)) {
+          chunk = partText.slice(prev.length);
+        } else if (
+          partText === prev ||
+          prev.startsWith(partText) ||
+          this.committedAssistantContent.endsWith(partText)
+        ) {
+          // Duplicate or out-of-order stale snapshot.
+          chunk = "";
+        } else if (this.streamedContent.endsWith(partText)) {
+          // Exact replay of the same full snapshot.
+          chunk = "";
+        } else {
+          // Snapshot changed without sharing a clean prefix (rewrite/out-of-order).
+          // Emit only the non-overlapping suffix so replayed snapshots don't duplicate text.
+          chunk = this.computeNonOverlappingSuffix(prevGlobal, partText);
+        }
+        this.textPartSnapshots.set(partId, partText);
+        this.messageTextSnapshots.set(messageSnapshotKey, partText);
+      } else if (delta) {
+        // Snapshot missing: fall back to delta mode.
+        chunk = delta;
+      }
+
+      if (chunk) {
         if (this.streamedContent === "") {
           this.agentClient.sendAgentStatus("streaming");
         }
@@ -1043,9 +1627,9 @@ export class PromptHandler {
         if (this.hadToolSinceLastText) {
           this.hadToolSinceLastText = false;
         }
-        this.streamedContent += delta;
+        this.streamedContent += chunk;
         this.lastChunkTime = Date.now();
-        this.agentClient.sendStreamChunk(this.activeMessageId, delta);
+        this.agentClient.sendStreamChunk(this.activeMessageId, chunk);
         this.resetResponseTimeout();
       }
     } else if (partType === "tool") {
@@ -1125,7 +1709,7 @@ export class PromptHandler {
     // The client merges consecutive assistant text messages back together.
     if (!prevStatus && this.streamedContent.trim() && this.activeMessageId) {
       console.log(`[PromptHandler] Committing text segment (${this.streamedContent.length} chars) before tool "${toolName}"`);
-      this.agentClient.sendResult(this.activeMessageId, this.streamedContent);
+      this.sendAssistantResultSegment(this.activeMessageId, this.streamedContent, "tool-boundary");
       this.streamedContent = "";
     }
 
@@ -1181,12 +1765,20 @@ export class PromptHandler {
     // OpenCode wraps the message in an "info" property: { info: { role, ... } }
     const info = (props.info ?? props) as Record<string, unknown>;
     const role = info.role as string | undefined;
+    const assistantError = role === "assistant" ? this.extractAssistantErrorFromMessageInfo(info) : null;
 
     console.log(`[PromptHandler] message.updated: role=${role} (active: ${this.activeMessageId ? 'yes' : 'no'}, content: ${this.streamedContent.length} chars, activity: ${this.hasActivity})`);
 
     // Capture OpenCode message ID mapping for revert support
     const ocMessageId = info.id as string | undefined;
-    if (ocMessageId && this.activeMessageId) {
+    if (ocMessageId && role) {
+      this.messageRoles.set(ocMessageId, role);
+    }
+    if (ocMessageId && role === "assistant") {
+      this.activeAssistantMessageIds.add(ocMessageId);
+      this.awaitingAssistantForAttempt = false;
+    }
+    if (ocMessageId && this.activeMessageId && role === "assistant") {
       if (!this.doToOcMessageId.has(this.activeMessageId)) {
         this.doToOcMessageId.set(this.activeMessageId, ocMessageId);
         this.ocToDOMessageId.set(ocMessageId, this.activeMessageId);
@@ -1200,6 +1792,14 @@ export class PromptHandler {
     // drops all subsequent tool events (like browser_screenshot).
     // Instead, rely solely on session.idle / session.status: idle to finalize.
     if (role === "assistant" && this.activeMessageId) {
+      const snapshotText = this.extractAssistantTextFromMessageInfo(info);
+      if (snapshotText) {
+        this.latestAssistantTextSnapshot = snapshotText;
+      }
+      if (assistantError) {
+        this.lastError = assistantError;
+        this.appendEventTrace(`assistant.error:${assistantError.slice(0, 120)}`);
+      }
       this.hasActivity = true;
       this.lastChunkTime = Date.now();
       this.resetResponseTimeout();
@@ -1220,76 +1820,181 @@ export class PromptHandler {
     console.log(`[PromptHandler] session.status: "${statusType}" (active: ${this.activeMessageId ? 'yes' : 'no'}, content: ${this.streamedContent.length} chars, activity: ${this.hasActivity})`);
 
     if (statusType === "idle") {
-      if (this.activeMessageId && this.hasActivity) {
+      if (this.activeMessageId && !this.retryPending && !this.awaitingAssistantForAttempt) {
         console.log(`[PromptHandler] Session idle, finalizing response`);
         this.finalizeResponse();
+      } else if (this.retryPending || this.awaitingAssistantForAttempt) {
+        console.log(
+          `[PromptHandler] session.status=idle ignored (retryPending=${this.retryPending}, awaitingAssistant=${this.awaitingAssistantForAttempt})`
+        );
       }
       if (!this.idleNotified) {
         this.agentClient.sendAgentStatus("idle");
         this.idleNotified = true;
       }
     } else if (statusType === "busy") {
+      if (this.retryPending) {
+        this.retryPending = false;
+      }
       this.idleNotified = false;
     }
   }
 
-  private finalizeResponse(force = false): void {
-    if (!this.activeMessageId || (!this.hasActivity && !force)) {
-      console.log(`[PromptHandler] finalizeResponse: skipping (activeMessageId: ${this.activeMessageId ? 'yes' : 'no'}, hasActivity: ${this.hasActivity}, force: ${force})`);
+  private async finalizeResponse(force = false): Promise<void> {
+    if (!this.activeMessageId || this.failoverInProgress) {
       return;
     }
-
-    // Clear any pending timeout
-    this.clearResponseTimeout();
-
-    const messageId = this.activeMessageId;
-    const content = this.streamedContent;
-
-    // Send result, error, or nothing depending on what happened
-    if (content) {
-      console.log(`[PromptHandler] Sending result for ${messageId} (${content.length} chars): "${content.slice(0, 100)}..."`);
-      this.agentClient.sendResult(messageId, content);
-    } else if (this.lastError) {
-      console.log(`[PromptHandler] Sending error for ${messageId}: ${this.lastError}`);
-      this.agentClient.sendError(messageId, this.lastError);
-    } else {
-      console.log(`[PromptHandler] No text content for ${messageId}, skipping result (tools-only response)`);
+    if (this.finalizeInFlight) {
+      return;
     }
+    this.finalizeInFlight = true;
 
-    // Flush any tools still in non-terminal state as "completed".
-    // This handles cases where the completed event was missed or arrived out-of-order.
-    for (const [callID, { status, toolName }] of this.toolStates) {
-      if (status === "pending" || status === "running") {
-        console.log(`[PromptHandler] Flushing stuck tool "${toolName}" [${callID}] as completed (was: ${status})`);
-        this.agentClient.sendToolCall(callID, toolName, "completed", null, null);
+    try {
+
+      // Clear any pending timeout
+      this.clearResponseTimeout();
+
+      const messageId = this.activeMessageId;
+      let content = this.streamedContent || this.latestAssistantTextSnapshot;
+
+      // Send result, error, or fallback depending on what happened
+      if (content) {
+        console.log(`[PromptHandler] Sending result for ${messageId} (${content.length} chars): "${content.slice(0, 100)}..."`);
+        this.sendAssistantResultSegment(messageId, content, "finalize");
+      } else if (this.lastError) {
+        if (isRetriableProviderError(this.lastError)) {
+          console.log(`[PromptHandler] Retriable assistant error for ${messageId} — attempting model failover`);
+          this.failoverInProgress = true;
+          this.retryPending = true;
+          let didFailover = false;
+          try {
+            didFailover = await this.attemptModelFailover(this.lastError);
+            if (didFailover) {
+              console.log(`[PromptHandler] Failover initiated for ${messageId} after assistant error — waiting for retry`);
+              return;
+            }
+          } finally {
+            this.failoverInProgress = false;
+            if (!didFailover) {
+              this.retryPending = false;
+            }
+          }
+        }
+        console.log(`[PromptHandler] Sending error for ${messageId}: ${this.lastError}`);
+        this.agentClient.sendError(messageId, this.lastError);
+      } else if (this.toolStates.size > 0) {
+        // Tools ran but no text was produced — this is normal for tool-only turns
+        console.log(`[PromptHandler] Tools-only response for ${messageId} (${this.toolStates.size} tools ran)`);
+      } else {
+        const recovered = await this.recoverAssistantOutcomeFromApi();
+        if (recovered?.error) {
+          this.lastError = recovered.error;
+        }
+        if (recovered?.text) {
+          content = recovered.text;
+          console.log(
+            `[PromptHandler] Recovered assistant text for ${messageId} from message API (${recovered.text.length} chars)`
+          );
+          this.sendAssistantResultSegment(messageId, recovered.text, "recovery");
+        } else if (this.lastError) {
+          if (isRetriableProviderError(this.lastError)) {
+            console.log(`[PromptHandler] Retriable recovered error for ${messageId} — attempting model failover`);
+            this.failoverInProgress = true;
+            this.retryPending = true;
+            let didFailover = false;
+            try {
+              didFailover = await this.attemptModelFailover(this.lastError);
+              if (didFailover) {
+                console.log(`[PromptHandler] Failover initiated for ${messageId} after recovery error — waiting for retry`);
+                return;
+              }
+            } finally {
+              this.failoverInProgress = false;
+              if (!didFailover) {
+                this.retryPending = false;
+              }
+            }
+          }
+          console.log(`[PromptHandler] Sending recovered error for ${messageId}: ${this.lastError}`);
+          this.agentClient.sendError(messageId, this.lastError);
+        } else {
+          // Model produced nothing — try failover to next model before giving up
+          console.warn(
+            `[PromptHandler] Empty-response diagnostics for ${messageId}: ` +
+            `snapshot=${this.latestAssistantTextSnapshot.length} ` +
+            `assistantMsgs=${this.activeAssistantMessageIds.size} ` +
+            `roles=${this.messageRoles.size} ` +
+            `trace=${this.recentEventTrace.join(" | ")}`
+          );
+          console.log(`[PromptHandler] Empty response for ${messageId} — attempting model failover`);
+          this.failoverInProgress = true;
+          this.retryPending = true;
+          let didFailover = false;
+          try {
+            didFailover = await this.attemptModelFailover("Model returned an empty response");
+            if (didFailover) {
+              console.log(`[PromptHandler] Failover initiated for ${messageId} — waiting for retry`);
+              return; // Don't complete — retry in progress with next model
+            }
+          } finally {
+            this.failoverInProgress = false;
+            if (!didFailover) {
+              this.retryPending = false;
+            }
+          }
+          // No more models to try — send error
+          console.log(`[PromptHandler] No failover available for ${messageId} — sending empty response error`);
+          this.agentClient.sendError(messageId, "The model returned an empty response. Try again or switch to a different model.");
+        }
       }
+
+      // Flush any tools still in non-terminal state as "completed".
+      // This handles cases where the completed event was missed or arrived out-of-order.
+      for (const [callID, { status, toolName }] of this.toolStates) {
+        if (status === "pending" || status === "running") {
+          console.log(`[PromptHandler] Flushing stuck tool "${toolName}" [${callID}] as completed (was: ${status})`);
+          this.agentClient.sendToolCall(callID, toolName, "completed", null, null);
+        }
+      }
+
+      console.log(`[PromptHandler] Sending complete`);
+      this.agentClient.sendComplete();
+
+      // Notify client that agent is idle
+      this.agentClient.sendAgentStatus("idle");
+
+      // Report files changed after each turn
+      this.reportFilesChanged().catch((err) =>
+        console.error("[PromptHandler] Error reporting files changed:", err)
+      );
+
+      this.streamedContent = "";
+      this.committedAssistantContent = "";
+      this.hasActivity = false;
+      this.hadToolSinceLastText = false;
+      this.activeMessageId = null;
+      this.lastChunkTime = 0;
+      this.lastError = null;
+      this.toolStates.clear();
+      this.textPartSnapshots.clear();
+      this.messageTextSnapshots.clear();
+      this.messageRoles.clear();
+      this.activeAssistantMessageIds.clear();
+      this.latestAssistantTextSnapshot = "";
+      this.recentEventTrace = [];
+      this.awaitingAssistantForAttempt = false;
+      // Clear failover state
+      this.currentModelPreferences = undefined;
+      this.currentModelIndex = 0;
+      this.pendingRetryContent = null;
+      this.pendingRetryAttachments = [];
+      this.pendingRetryAuthor = undefined;
+      this.retryPending = false;
+      this.awaitingAssistantForAttempt = false;
+      console.log(`[PromptHandler] Response finalized`);
+    } finally {
+      this.finalizeInFlight = false;
     }
-
-    console.log(`[PromptHandler] Sending complete`);
-    this.agentClient.sendComplete();
-
-    // Notify client that agent is idle
-    this.agentClient.sendAgentStatus("idle");
-
-    // Report files changed after each turn
-    this.reportFilesChanged().catch((err) =>
-      console.error("[PromptHandler] Error reporting files changed:", err)
-    );
-
-    this.streamedContent = "";
-    this.hasActivity = false;
-    this.hadToolSinceLastText = false;
-    this.activeMessageId = null;
-    this.lastChunkTime = 0;
-    this.lastError = null;
-    this.toolStates.clear();
-    // Clear failover state
-    this.currentModelPreferences = undefined;
-    this.currentModelIndex = 0;
-    this.pendingRetryContent = null;
-    this.pendingRetryAttachments = [];
-    this.pendingRetryAuthor = undefined;
-    console.log(`[PromptHandler] Response finalized`);
   }
 
   private resetResponseTimeout(): void {

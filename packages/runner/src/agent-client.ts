@@ -7,7 +7,17 @@
  * - Typed outbound/inbound message protocol
  */
 
-import type { AgentStatus, AvailableModels, DiffFile, DOToRunnerMessage, PromptAttachment, ReviewResultData, RunnerToDOMessage, ToolCallStatus } from "./types.js";
+import type {
+  AgentStatus,
+  AvailableModels,
+  DiffFile,
+  DOToRunnerMessage,
+  PromptAttachment,
+  ReviewResultData,
+  RunnerToDOMessage,
+  ToolCallStatus,
+  WorkflowRunResultEnvelope,
+} from "./types.js";
 
 export interface PromptAuthor {
   gitName?: string;
@@ -23,6 +33,9 @@ const SPAWN_CHILD_TIMEOUT_MS = 60_000;
 const TERMINATE_CHILD_TIMEOUT_MS = 30_000;
 const MESSAGE_OP_TIMEOUT_MS = 15_000;
 const PR_OP_TIMEOUT_MS = 30_000;
+// If the server rejects the WebSocket upgrade N times in a row (e.g. 401 due to
+// rotated token), stop retrying and exit — the sandbox has been replaced.
+const MAX_CONSECUTIVE_UPGRADE_FAILURES = 5;
 
 export class AgentClient {
   private ws: WebSocket | null = null;
@@ -31,6 +44,8 @@ export class AgentClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private closing = false;
+  private consecutiveUpgradeFailures = 0;
+  private hasEverConnected = false;
 
   private promptHandler: ((messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[]) => void | Promise<void>) | null = null;
   private answerHandler: ((questionId: string, answer: string | boolean) => void | Promise<void>) | null = null;
@@ -40,6 +55,14 @@ export class AgentClient {
   private diffHandler: ((requestId: string) => void | Promise<void>) | null = null;
   private reviewHandler: ((requestId: string) => void | Promise<void>) | null = null;
   private tunnelDeleteHandler: ((name: string, actor?: { id?: string; name?: string; email?: string }) => void | Promise<void>) | null = null;
+  private workflowExecuteHandler: ((executionId: string, payload: {
+    kind: "run" | "resume";
+    executionId: string;
+    workflowHash?: string;
+    resumeToken?: string;
+    decision?: "approve" | "deny";
+    payload: Record<string, unknown>;
+  }) => void | Promise<void>) | null = null;
 
   private pendingRequests = new Map<string, {
     resolve: (value: any) => void;
@@ -55,9 +78,20 @@ export class AgentClient {
   // ─── Lifecycle ───────────────────────────────────────────────────────
 
   async connect(): Promise<void> {
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     return new Promise((resolve, reject) => {
       const url = `${this.doUrl}?role=runner&token=${encodeURIComponent(this.runnerToken)}`;
       console.log(`[AgentClient] Connecting to DO: ${this.doUrl}`);
+
+      let settled = false;
 
       try {
         this.ws = new WebSocket(url);
@@ -66,30 +100,74 @@ export class AgentClient {
         return;
       }
 
-      this.ws.addEventListener("open", () => {
+      const socket = this.ws;
+
+      socket.addEventListener("open", () => {
+        if (this.ws !== socket) return;
+        settled = true;
         console.log("[AgentClient] Connected to SessionAgent DO");
         this.reconnectAttempts = 0;
+        this.consecutiveUpgradeFailures = 0;
+        this.hasEverConnected = true;
         this.flushBuffer();
         this.startPing();
         resolve();
       });
 
-      this.ws.addEventListener("message", (event) => {
+      socket.addEventListener("message", (event) => {
+        if (this.ws !== socket) return;
         this.handleMessage(event.data as string);
       });
 
-      this.ws.addEventListener("close", (event) => {
+      socket.addEventListener("close", (event) => {
+        if (this.ws === socket) {
+          this.ws = null;
+        }
         console.log(`[AgentClient] Connection closed: ${event.code} ${event.reason}`);
         this.stopPing();
-        this.ws = null;
+
+        // SessionAgent closes previous runner sockets with a normal close when a
+        // replacement runner takes over. This runner is now stale and should
+        // terminate immediately rather than trying to reconnect with an invalid token.
+        const replacedByNewRunner =
+          event.code === 1000 &&
+          typeof event.reason === "string" &&
+          event.reason.includes("Replaced by new runner connection");
+        if (replacedByNewRunner) {
+          console.log("[AgentClient] Superseded by newer runner connection; exiting");
+          this.closing = true;
+          process.exit(0);
+        }
+
+        // Code 1002 = WebSocket upgrade rejected by server (HTTP 401/403/503 etc.)
+        // Track consecutive upgrade failures — if the token was rotated (sandbox replaced),
+        // exit the process so this stale sandbox stops consuming resources.
+        if (event.code === 1002) {
+          this.consecutiveUpgradeFailures++;
+          if (this.consecutiveUpgradeFailures >= MAX_CONSECUTIVE_UPGRADE_FAILURES) {
+            console.log(`[AgentClient] ${this.consecutiveUpgradeFailures} consecutive upgrade failures — token likely rotated, exiting`);
+            this.closing = true;
+            process.exit(1);
+          }
+        }
+
+        if (!settled) {
+          settled = true;
+          reject(new Error(event.reason || `WebSocket closed with code ${event.code}`));
+          return;
+        }
         if (!this.closing) {
           this.scheduleReconnect();
         }
       });
 
-      this.ws.addEventListener("error", (event) => {
+      socket.addEventListener("error", (event) => {
         console.error("[AgentClient] WebSocket error:", event);
-        // Close event will follow and trigger reconnect
+        if (!settled) {
+          settled = true;
+          reject(new Error("WebSocket connection failed"));
+        }
+        // Close event may follow and trigger reconnect
       });
     });
   }
@@ -169,6 +247,10 @@ export class AgentClient {
 
   sendTunnels(tunnels: Array<{ name: string; port: number; protocol?: string; path: string }>): void {
     this.send({ type: "tunnels", tunnels });
+  }
+
+  sendWorkflowExecutionResult(executionId: string, envelope: WorkflowRunResultEnvelope): void {
+    this.send({ type: "workflow-execution-result", executionId, envelope });
   }
 
   sendAborted(): void {
@@ -318,6 +400,41 @@ export class AgentClient {
     });
   }
 
+  requestListWorkflows(): Promise<{ workflows: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "workflow-list", requestId });
+    });
+  }
+
+  requestSyncWorkflow(params: {
+    id?: string;
+    slug?: string;
+    name: string;
+    description?: string;
+    version?: string;
+    data: Record<string, unknown>;
+  }): Promise<{ success: boolean; workflow?: unknown }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "workflow-sync", requestId, ...params });
+    });
+  }
+
+  requestRunWorkflow(workflowId: string, variables?: Record<string, unknown>): Promise<{ execution: unknown }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "workflow-run", requestId, workflowId, variables });
+    });
+  }
+
+  requestListWorkflowExecutions(workflowId?: string, limit?: number): Promise<{ executions: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "workflow-executions", requestId, workflowId, limit });
+    });
+  }
+
   requestSelfTerminate(): void {
     this.send({ type: "self-terminate" });
     // Disconnect and exit — the DO will handle sandbox termination
@@ -389,6 +506,17 @@ export class AgentClient {
 
   onTunnelDelete(handler: (name: string, actor?: { id?: string; name?: string; email?: string }) => void | Promise<void>): void {
     this.tunnelDeleteHandler = handler;
+  }
+
+  onWorkflowExecute(handler: (executionId: string, payload: {
+    kind: "run" | "resume";
+    executionId: string;
+    workflowHash?: string;
+    resumeToken?: string;
+    decision?: "approve" | "deny";
+    payload: Record<string, unknown>;
+  }) => void | Promise<void>): void {
+    this.workflowExecuteHandler = handler;
   }
 
   // ─── Keepalive ──────────────────────────────────────────────────────
@@ -608,12 +736,46 @@ export class AgentClient {
             });
           }
           break;
+        case "workflow-list-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { workflows: msg.workflows ?? [] });
+          }
+          break;
+        case "workflow-sync-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, {
+              success: msg.success ?? true,
+              workflow: msg.workflow,
+            });
+          }
+          break;
+        case "workflow-run-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { execution: msg.execution ?? null });
+          }
+          break;
+        case "workflow-executions-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { executions: msg.executions ?? [] });
+          }
+          break;
         case "tunnel-delete":
           await this.tunnelDeleteHandler?.(msg.name, {
             id: msg.actorId,
             name: msg.actorName,
             email: msg.actorEmail,
           });
+          break;
+        case "workflow-execute":
+          await this.workflowExecuteHandler?.(msg.executionId, msg.payload);
           break;
       }
     } catch (err) {
@@ -622,6 +784,13 @@ export class AgentClient {
   }
 
   private scheduleReconnect(): void {
+    if (this.reconnectTimer || this.closing) {
+      return;
+    }
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
     const delay = Math.min(
       INITIAL_RECONNECT_DELAY_MS * 2 ** this.reconnectAttempts,
       MAX_RECONNECT_DELAY_MS,
@@ -630,11 +799,14 @@ export class AgentClient {
     console.log(`[AgentClient] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
 
     this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
       try {
         await this.connect();
       } catch (err) {
         console.error("[AgentClient] Reconnect failed:", err);
-        // Will retry on close event
+        if (!this.closing) {
+          this.scheduleReconnect();
+        }
       }
     }, delay);
   }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { compileWorkflowDefinition } from './workflow-compiler.js';
-import { executeWorkflowRun } from './workflow-engine.js';
+import { executeWorkflowRun, executeWorkflowResume } from './workflow-engine.js';
 
 describe('workflow-engine', () => {
   it('returns needs_approval with resume token for approval steps', async () => {
@@ -20,6 +20,7 @@ describe('workflow-engine', () => {
       'ex_approval',
       compiled.workflow,
       { variables: {} },
+      undefined,
       (event) => events.push(event.type),
     );
 
@@ -57,5 +58,122 @@ describe('workflow-engine', () => {
     expect(result.status).toBe('ok');
     const stepIds = result.steps.map((step) => step.stepId);
     expect(stepIds).toEqual(['gate', 'deploy-step']);
+  });
+
+  it('executes bash tool steps and captures stdout', async () => {
+    const compiled = await compileWorkflowDefinition({
+      steps: [
+        {
+          id: 'echo-step',
+          type: 'tool',
+          tool: 'bash',
+          arguments: {
+            command: 'echo workflow-ok',
+          },
+        },
+      ],
+    });
+
+    if (!compiled.ok || !compiled.workflow) {
+      throw new Error('compile failed');
+    }
+
+    const result = await executeWorkflowRun('ex_bash', compiled.workflow, { variables: {} });
+    expect(result.status).toBe('ok');
+    expect(result.steps).toHaveLength(1);
+    expect(result.steps[0]?.status).toBe('completed');
+    const output = result.steps[0]?.output as { stdout?: string } | undefined;
+    expect(output?.stdout).toContain('workflow-ok');
+  });
+
+  it('resumes approved checkpoints and continues execution deterministically', async () => {
+    const compiled = await compileWorkflowDefinition({
+      steps: [
+        { id: 'lint', type: 'tool', tool: 'npm_lint' },
+        { id: 'approve', type: 'approval', prompt: 'Ship?' },
+        { id: 'deploy', type: 'tool', tool: 'deploy' },
+      ],
+    });
+
+    if (!compiled.ok || !compiled.workflow) {
+      throw new Error('compile failed');
+    }
+
+    const firstRun = await executeWorkflowRun('ex_resume_ok', compiled.workflow, { variables: {} });
+    expect(firstRun.status).toBe('needs_approval');
+    const resumeToken = firstRun.requiresApproval?.resumeToken;
+    if (!resumeToken) {
+      throw new Error('missing resume token');
+    }
+
+    const events: string[] = [];
+    const resumed = await executeWorkflowResume(
+      'ex_resume_ok',
+      compiled.workflow,
+      { variables: {} },
+      resumeToken,
+      'approve',
+      undefined,
+      (event) => events.push(event.type),
+    );
+
+    expect(resumed.status).toBe('ok');
+    expect(resumed.steps.map((step) => step.stepId)).toEqual(['lint', 'approve', 'deploy']);
+    expect(resumed.steps.find((step) => step.stepId === 'approve')?.status).toBe('completed');
+    expect(events).toContain('approval.approved');
+  });
+
+  it('returns cancelled when an approval checkpoint is denied on resume', async () => {
+    const compiled = await compileWorkflowDefinition({
+      steps: [
+        { id: 'approve', type: 'approval', prompt: 'Ship?' },
+        { id: 'deploy', type: 'tool', tool: 'deploy' },
+      ],
+    });
+
+    if (!compiled.ok || !compiled.workflow) {
+      throw new Error('compile failed');
+    }
+
+    const firstRun = await executeWorkflowRun('ex_resume_deny', compiled.workflow, { variables: {} });
+    const resumeToken = firstRun.requiresApproval?.resumeToken;
+    if (!resumeToken) {
+      throw new Error('missing resume token');
+    }
+
+    const resumed = await executeWorkflowResume(
+      'ex_resume_deny',
+      compiled.workflow,
+      { variables: {} },
+      resumeToken,
+      'deny',
+    );
+
+    expect(resumed.status).toBe('cancelled');
+    expect(resumed.steps.map((step) => step.stepId)).toEqual(['approve']);
+    expect(resumed.steps[0]?.status).toBe('cancelled');
+  });
+
+  it('fails resume when token does not match the paused checkpoint', async () => {
+    const compiled = await compileWorkflowDefinition({
+      steps: [
+        { id: 'approve', type: 'approval', prompt: 'Ship?' },
+      ],
+    });
+
+    if (!compiled.ok || !compiled.workflow) {
+      throw new Error('compile failed');
+    }
+
+    const resumed = await executeWorkflowResume(
+      'ex_resume_bad_token',
+      compiled.workflow,
+      { variables: {} },
+      'wrf_rt_invalid',
+      'approve',
+    );
+
+    expect(resumed.status).toBe('failed');
+    expect(resumed.error).toStartWith('resume_token_mismatch:');
   });
 });

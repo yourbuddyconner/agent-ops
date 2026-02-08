@@ -516,6 +516,9 @@ export function useChat(sessionId: string) {
           createdAt: new Date(d.createdAt * 1000),
         };
         setState((prev) => {
+          if (prev.messages.some((existing) => existing.id === msg.id)) {
+            return prev;
+          }
           const newMessages = [...prev.messages];
           newMessages.push(msg);
 

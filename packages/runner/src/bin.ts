@@ -131,6 +131,18 @@ async function main() {
     onReadRepoFile: async (params) => {
       return await agentClient.requestReadRepoFile(params);
     },
+    onListWorkflows: async () => {
+      return await agentClient.requestListWorkflows();
+    },
+    onSyncWorkflow: async (params) => {
+      return await agentClient.requestSyncWorkflow(params);
+    },
+    onRunWorkflow: async (params) => {
+      return await agentClient.requestRunWorkflow(params.workflowId, params.variables);
+    },
+    onListWorkflowExecutions: async (workflowId, limit) => {
+      return await agentClient.requestListWorkflowExecutions(workflowId, limit);
+    },
     onTunnelsUpdated: (tunnels) => {
       agentClient.sendTunnels(tunnels);
     },

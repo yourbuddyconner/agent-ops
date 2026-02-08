@@ -61,7 +61,7 @@ bucket_name = "${R2_BUCKET_NAME}"
 
 # Cron Triggers for scheduled syncs
 [triggers]
-crons = ["0 * * * *"] # Hourly sync check
+crons = ["* * * * *"] # Minutely reconcile + schedule dispatch
 
 # Observability (enables Worker and Container logs)
 [observability]

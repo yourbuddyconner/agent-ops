@@ -1,8 +1,16 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import React from 'react';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
-import { useWorkflow, useRunWorkflow, useWorkflowProposals, useApplyWorkflowProposal } from '@/api/workflows';
-import { useWorkflowExecutions, useExecutionSteps, type Execution } from '@/api/executions';
+import {
+  useWorkflow,
+  useRunWorkflow,
+  useWorkflowProposals,
+  useApplyWorkflowProposal,
+  useReviewWorkflowProposal,
+  useWorkflowHistory,
+  useRollbackWorkflowVersion,
+} from '@/api/workflows';
+import { useWorkflowExecutions, useExecutionSteps, useApproveExecution, type Execution } from '@/api/executions';
 import { useTriggers, useCreateTrigger } from '@/api/triggers';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -21,14 +29,18 @@ function WorkflowDetailPage() {
   const { data, isLoading, error } = useWorkflow(workflowId);
   const { data: executionsData, isLoading: executionsLoading } = useWorkflowExecutions(workflowId);
   const { data: proposalsData, isLoading: proposalsLoading } = useWorkflowProposals(workflowId);
+  const { data: historyData, isLoading: historyLoading } = useWorkflowHistory(workflowId);
   const { data: triggersData } = useTriggers();
   const runWorkflow = useRunWorkflow();
   const createTrigger = useCreateTrigger();
   const applyProposal = useApplyWorkflowProposal();
+  const reviewProposal = useReviewWorkflowProposal();
+  const rollbackWorkflow = useRollbackWorkflowVersion();
 
   const workflow = data?.workflow;
   const executions = executionsData?.executions ?? [];
   const proposals = proposalsData?.proposals ?? [];
+  const history = historyData?.history ?? [];
   const triggers = (triggersData?.triggers ?? []).filter(t => t.workflowId === workflowId);
 
   const handleRun = async () => {
@@ -304,6 +316,26 @@ function WorkflowDetailPage() {
                         </Badge>
                       </div>
                       <div className="mt-2 flex items-center justify-end gap-2">
+                        {proposal.status === 'pending' && (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              disabled={reviewProposal.isPending}
+                              onClick={() => reviewProposal.mutate({ workflowId, proposalId: proposal.id, data: { approve: false } })}
+                            >
+                              Reject
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              disabled={reviewProposal.isPending}
+                              onClick={() => reviewProposal.mutate({ workflowId, proposalId: proposal.id, data: { approve: true } })}
+                            >
+                              Approve
+                            </Button>
+                          </>
+                        )}
                         <Button
                           size="sm"
                           variant="secondary"
@@ -323,6 +355,59 @@ function WorkflowDetailPage() {
               )}
             </CardContent>
           </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Version History</CardTitle>
+              <CardDescription>
+                Immutable workflow snapshots for one-click rollback.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {historyLoading ? (
+                <div className="space-y-2">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <Skeleton key={i} className="h-14 w-full" />
+                  ))}
+                </div>
+              ) : history.length > 0 ? (
+                <div className="space-y-2">
+                  {history.slice(0, 8).map((entry) => {
+                    const isCurrent = historyData?.currentWorkflowHash === entry.workflowHash;
+                    return (
+                      <div
+                        key={entry.id}
+                        className="rounded-lg border border-neutral-200 p-2 dark:border-neutral-700"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-medium text-neutral-900 dark:text-neutral-100">
+                              {entry.workflowHash}
+                            </p>
+                            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                              {entry.source} {formatRelativeTime(entry.createdAt)}
+                            </p>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={isCurrent || rollbackWorkflow.isPending}
+                            onClick={() => rollbackWorkflow.mutate({ workflowId, data: { targetWorkflowHash: entry.workflowHash } })}
+                          >
+                            Rollback
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-sm text-pretty text-neutral-500 dark:text-neutral-400">
+                  No version snapshots yet.
+                </p>
+              )}
+            </CardContent>
+          </Card>
         </div>
       </div>
     </PageContainer>
@@ -332,6 +417,7 @@ function WorkflowDetailPage() {
 function ExecutionRow({ execution }: { execution: Execution }) {
   const [expanded, setExpanded] = React.useState(false);
   const { data: stepData, isLoading } = useExecutionSteps(expanded ? execution.id : '');
+  const approveExecution = useApproveExecution();
   const steps = stepData?.steps ?? [];
 
   return (
@@ -346,12 +432,50 @@ function ExecutionRow({ execution }: { execution: Execution }) {
             <p className="text-xs text-neutral-500 dark:text-neutral-400">
               {execution.id.slice(0, 8)}...
             </p>
+            {execution.error && (
+              <p className="mt-1 text-xs text-pretty text-red-600 dark:text-red-400">
+                {execution.error}
+              </p>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-sm text-neutral-500 tabular-nums dark:text-neutral-400">
             {formatRelativeTime(execution.startedAt)}
           </span>
+          {execution.status === 'waiting_approval' && execution.resumeToken && (
+            <>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={approveExecution.isPending}
+                onClick={() => approveExecution.mutate({
+                  executionId: execution.id,
+                  data: {
+                    approve: false,
+                    resumeToken: execution.resumeToken!,
+                    reason: 'approval_denied',
+                  },
+                })}
+              >
+                Deny
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={approveExecution.isPending}
+                onClick={() => approveExecution.mutate({
+                  executionId: execution.id,
+                  data: {
+                    approve: true,
+                    resumeToken: execution.resumeToken!,
+                  },
+                })}
+              >
+                Approve
+              </Button>
+            </>
+          )}
           <Button size="sm" variant="secondary" onClick={() => setExpanded(!expanded)}>
             {expanded ? 'Hide Steps' : 'View Steps'}
           </Button>
@@ -360,17 +484,52 @@ function ExecutionRow({ execution }: { execution: Execution }) {
 
       {expanded && (
         <div className="mt-3 space-y-1 border-t border-neutral-200 pt-3 dark:border-neutral-700">
+          {execution.outputs && (
+            <details className="mb-2 rounded border border-neutral-200 px-2 py-1 dark:border-neutral-700">
+              <summary className="cursor-pointer text-xs font-medium text-neutral-700 dark:text-neutral-300">
+                Execution Output
+              </summary>
+              <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap rounded bg-neutral-100 p-2 text-[11px] leading-5 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+                {formatExecutionValue(execution.outputs)}
+              </pre>
+            </details>
+          )}
+
           {isLoading ? (
             <Skeleton className="h-16 w-full" />
           ) : steps.length > 0 ? (
             steps.slice(0, 12).map((step) => (
-              <div key={step.id} className="flex items-center justify-between rounded border border-neutral-200 px-2 py-1 dark:border-neutral-700">
-                <span className="text-xs font-medium text-neutral-900 dark:text-neutral-100">
-                  {step.stepId}
-                </span>
-                <Badge variant={step.status === 'completed' ? 'success' : step.status === 'failed' ? 'error' : 'secondary'}>
-                  {step.status}
-                </Badge>
+              <div key={step.id} className="rounded border border-neutral-200 px-2 py-2 dark:border-neutral-700">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <span className="text-xs font-medium text-neutral-900 dark:text-neutral-100">
+                      {step.stepId}
+                    </span>
+                    <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                      attempt {step.attempt}
+                    </p>
+                  </div>
+                  <Badge variant={step.status === 'completed' ? 'success' : step.status === 'failed' ? 'error' : 'secondary'}>
+                    {step.status}
+                  </Badge>
+                </div>
+
+                {step.error && (
+                  <p className="mt-2 text-xs text-pretty text-red-600 dark:text-red-400">
+                    {step.error}
+                  </p>
+                )}
+
+                {step.output !== null && step.output !== undefined && (
+                  <details className="mt-2 rounded border border-neutral-200 px-2 py-1 dark:border-neutral-700">
+                    <summary className="cursor-pointer text-xs font-medium text-neutral-700 dark:text-neutral-300">
+                      Step Output
+                    </summary>
+                    <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-neutral-100 p-2 text-[11px] leading-5 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+                      {formatExecutionValue(step.output)}
+                    </pre>
+                  </details>
+                )}
               </div>
             ))
           ) : (
@@ -395,6 +554,16 @@ function ExecutionStatusBadge({ status }: { status: string }) {
   };
 
   return <Badge variant={variants[status] ?? 'secondary'}>{status}</Badge>;
+}
+
+function formatExecutionValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function TriggerTypeIcon({ type }: { type: string }) {

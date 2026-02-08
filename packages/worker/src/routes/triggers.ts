@@ -130,8 +130,8 @@ triggersRouter.post('/manual/run', zValidator('json', manualRunSchema), async (c
   await c.env.DB.prepare(`
     INSERT INTO workflow_executions
       (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
-       workflow_version, workflow_hash, idempotency_key, session_id, initiator_type, initiator_user_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       workflow_version, workflow_hash, workflow_snapshot, idempotency_key, session_id, initiator_type, initiator_user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     executionId,
     workflow.id,
@@ -144,6 +144,7 @@ triggersRouter.post('/manual/run', zValidator('json', manualRunSchema), async (c
     now,
     workflow.version || null,
     workflowHash,
+    workflow.data,
     idempotencyKey,
     sessionId,
     'manual',
@@ -551,8 +552,8 @@ triggersRouter.post('/:id/run', zValidator('json', triggerRunSchema), async (c) 
   await c.env.DB.prepare(`
     INSERT INTO workflow_executions
       (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
-       workflow_version, workflow_hash, idempotency_key, session_id, initiator_type, initiator_user_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       workflow_version, workflow_hash, workflow_snapshot, idempotency_key, session_id, initiator_type, initiator_user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     executionId,
     row.wf_id,
@@ -565,6 +566,7 @@ triggersRouter.post('/:id/run', zValidator('json', triggerRunSchema), async (c) 
     now,
     row.workflow_version || null,
     workflowHash,
+    row.workflow_data,
     idempotencyKey,
     sessionId,
     'manual',

@@ -1,6 +1,8 @@
 import type { Env } from '../env.js';
 import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById } from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
+import { checkWorkflowConcurrency, createWorkflowSession, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
+import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
 
@@ -151,7 +153,7 @@ function deriveRuntimeStates(args: {
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'model-switched' | 'tunnels';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-execution-result' | 'model-switched' | 'tunnels';
   prNumber?: number;
   targetSessionId?: string;
   interrupt?: boolean;
@@ -175,11 +177,13 @@ interface RunnerMessage {
   status?: AgentStatus | ToolCallStatus;
   detail?: string;
   branch?: string;
+  name?: string;
   title?: string;
   body?: string;
   base?: string;
   models?: { provider: string; models: { id: string; name: string }[] }[];
   requestId?: string;
+  id?: string;
   messageIds?: string[];
   files?: { path: string; status: string; diff?: string }[];
   number?: number;
@@ -209,11 +213,37 @@ interface RunnerMessage {
   toModel?: string;
   reason?: string;
   model?: string;
-  owner?: string;
-  repo?: string;
-  repoUrl?: string;
   path?: string;
   ref?: string;
+  executionId?: string;
+  workflowId?: string;
+  slug?: string;
+  version?: string;
+  dataJson?: Record<string, unknown>;
+  variables?: Record<string, unknown>;
+  envelope?: {
+    ok?: boolean;
+    status?: 'ok' | 'needs_approval' | 'cancelled' | 'failed';
+    executionId?: string;
+    output?: Record<string, unknown>;
+    steps?: Array<{
+      stepId: string;
+      status: string;
+      attempt?: number;
+      input?: unknown;
+      output?: unknown;
+      error?: string;
+      startedAt?: string;
+      completedAt?: string;
+    }>;
+    requiresApproval?: {
+      stepId: string;
+      prompt: string;
+      items: unknown[];
+      resumeToken: string;
+    } | null;
+    error?: string | null;
+  };
   tunnels?: Array<{ name: string; port: number; protocol?: string; path: string }>;
 }
 
@@ -225,7 +255,7 @@ interface ClientOutbound {
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'tunnel-delete';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'tunnel-delete';
   messageId?: string;
   content?: string;
   model?: string;
@@ -258,9 +288,12 @@ interface RunnerOutbound {
   // Forward messages result
   count?: number;
   sourceSessionId?: string;
+  workflows?: unknown[];
+  workflow?: unknown;
+  execution?: unknown;
+  executions?: unknown[];
   // Model failover
   modelPreferences?: string[];
-  content?: string;
   encoding?: string;
   truncated?: boolean;
   path?: string;
@@ -1732,6 +1765,35 @@ export class SessionAgentDO {
         await this.handleForwardMessages(msg.requestId!, msg.targetSessionId!, msg.limit, msg.after);
         break;
 
+      case 'workflow-list':
+        await this.handleWorkflowList(msg.requestId!);
+        break;
+
+      case 'workflow-sync':
+        await this.handleWorkflowSync(msg.requestId!, {
+          id: msg.id || msg.workflowId,
+          slug: msg.slug,
+          name: msg.name || msg.title,
+          description: msg.description,
+          version: msg.version,
+          data: (typeof msg.data === 'object' && msg.data !== null && !Array.isArray(msg.data))
+            ? (msg.data as Record<string, unknown>)
+            : msg.dataJson,
+        });
+        break;
+
+      case 'workflow-run':
+        await this.handleWorkflowRun(msg.requestId!, msg.workflowId!, msg.variables);
+        break;
+
+      case 'workflow-executions':
+        await this.handleWorkflowExecutions(msg.requestId!, msg.workflowId, msg.limit);
+        break;
+
+      case 'workflow-execution-result':
+        await this.handleWorkflowExecutionResult(msg);
+        break;
+
       case 'ping':
         // Keepalive from runner — respond with pong
         this.sendToRunner({ type: 'pong' });
@@ -2215,6 +2277,427 @@ export class SessionAgentDO {
     } catch (err) {
       console.error('[SessionAgentDO] Failed to list repos:', err);
       this.sendToRunner({ type: 'list-repos-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleWorkflowList(requestId: string) {
+    try {
+      const userId = this.getStateValue('userId')!;
+      const result = await this.env.DB.prepare(`
+        SELECT id, slug, name, description, version, data, enabled, tags, created_at, updated_at
+        FROM workflows
+        WHERE user_id = ?
+        ORDER BY updated_at DESC
+      `).bind(userId).all();
+
+      const workflows = (result.results || []).map((row) => {
+        let data: Record<string, unknown> = {};
+        let tags: string[] = [];
+        try { data = JSON.parse(String(row.data || '{}')); } catch {}
+        try { tags = row.tags ? JSON.parse(String(row.tags)) : []; } catch {}
+        return {
+          id: row.id,
+          slug: row.slug,
+          name: row.name,
+          description: row.description,
+          version: row.version,
+          data,
+          enabled: Boolean(row.enabled),
+          tags,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        };
+      });
+
+      this.sendToRunner({ type: 'workflow-list-result', requestId, workflows } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to list workflows:', err);
+      this.sendToRunner({ type: 'workflow-list-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleWorkflowSync(
+    requestId: string,
+    params: {
+      id?: string;
+      slug?: string;
+      name?: string;
+      description?: string;
+      version?: string;
+      data?: Record<string, unknown>;
+    },
+  ) {
+    try {
+      const userId = this.getStateValue('userId')!;
+      const name = (params.name || '').trim();
+      if (!name) {
+        this.sendToRunner({ type: 'workflow-sync-result', requestId, error: 'Workflow name is required' } as any);
+        return;
+      }
+      const validation = validateWorkflowDefinition(params.data);
+      if (!validation.valid) {
+        this.sendToRunner({ type: 'workflow-sync-result', requestId, error: `Invalid workflow definition: ${validation.errors[0]}` } as any);
+        return;
+      }
+
+      const workflowId = (params.id || '').trim() || `wf_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+      const slug = (params.slug || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 80) || null;
+      const version = (params.version || '1.0.0').trim() || '1.0.0';
+      const now = new Date().toISOString();
+
+      await this.env.DB.prepare(`
+        INSERT INTO workflows (id, user_id, slug, name, description, version, data, enabled, updated_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          slug = excluded.slug,
+          name = excluded.name,
+          description = excluded.description,
+          version = excluded.version,
+          data = excluded.data,
+          updated_at = excluded.updated_at
+      `).bind(
+        workflowId,
+        userId,
+        slug,
+        name,
+        params.description || null,
+        version,
+        JSON.stringify(params.data),
+        now,
+        now,
+      ).run();
+
+      const workflow = {
+        id: workflowId,
+        slug,
+        name,
+        description: params.description || null,
+        version,
+        data: params.data,
+        enabled: true,
+        tags: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      this.sendToRunner({ type: 'workflow-sync-result', requestId, success: true, workflow } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to sync workflow:', err);
+      this.sendToRunner({ type: 'workflow-sync-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleWorkflowRun(requestId: string, workflowId: string, variables?: Record<string, unknown>) {
+    try {
+      const userId = this.getStateValue('userId')!;
+      const workflowLookupId = (workflowId || '').trim();
+      if (!workflowLookupId) {
+        this.sendToRunner({ type: 'workflow-run-result', requestId, error: 'workflowId is required' } as any);
+        return;
+      }
+
+      const workflow = await this.env.DB.prepare(`
+        SELECT id, name, version, data
+        FROM workflows
+        WHERE (id = ? OR slug = ?) AND user_id = ?
+        LIMIT 1
+      `).bind(workflowLookupId, workflowLookupId, userId).first<{
+        id: string;
+        name: string;
+        version: string | null;
+        data: string;
+      }>();
+
+      if (!workflow) {
+        this.sendToRunner({ type: 'workflow-run-result', requestId, error: `Workflow not found: ${workflowLookupId}` } as any);
+        return;
+      }
+
+      const concurrency = await checkWorkflowConcurrency(this.env.DB, userId);
+      if (!concurrency.allowed) {
+        this.sendToRunner({
+          type: 'workflow-run-result',
+          requestId,
+          error: `Too many concurrent executions (${concurrency.reason})`,
+        } as any);
+        return;
+      }
+
+      const idempotencyKey = `agent:${workflow.id}:${userId}:${requestId}`;
+      const existing = await this.env.DB.prepare(`
+        SELECT id, status, session_id
+        FROM workflow_executions
+        WHERE workflow_id = ? AND idempotency_key = ?
+        LIMIT 1
+      `).bind(workflow.id, idempotencyKey).first<{
+        id: string;
+        status: string;
+        session_id: string | null;
+      }>();
+
+      if (existing) {
+        this.sendToRunner({
+          type: 'workflow-run-result',
+          requestId,
+          execution: {
+            executionId: existing.id,
+            workflowId: workflow.id,
+            workflowName: workflow.name,
+            status: existing.status,
+            sessionId: existing.session_id,
+            deduplicated: true,
+          },
+        } as any);
+        return;
+      }
+
+      const executionId = crypto.randomUUID();
+      const now = new Date().toISOString();
+      const workflowHash = await sha256Hex(String(workflow.data || '{}'));
+      const sessionId = await createWorkflowSession(this.env.DB, {
+        userId,
+        workflowId: workflow.id,
+        executionId,
+      });
+
+      await this.env.DB.prepare(`
+        INSERT INTO workflow_executions
+          (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
+           workflow_version, workflow_hash, workflow_snapshot, idempotency_key, session_id, initiator_type, initiator_user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        executionId,
+        workflow.id,
+        userId,
+        null,
+        'pending',
+        'manual',
+        JSON.stringify({ triggeredBy: 'agent_tool', direct: true }),
+        JSON.stringify(variables || {}),
+        now,
+        workflow.version || null,
+        workflowHash,
+        workflow.data,
+        idempotencyKey,
+        sessionId,
+        'manual',
+        userId,
+      ).run();
+
+      const dispatched = await enqueueWorkflowExecution(this.env, {
+        executionId,
+        workflowId: workflow.id,
+        userId,
+        sessionId,
+        triggerType: 'manual',
+      });
+
+      this.sendToRunner({
+        type: 'workflow-run-result',
+        requestId,
+        execution: {
+          executionId,
+          workflowId: workflow.id,
+          workflowName: workflow.name,
+          status: 'pending',
+          sessionId,
+          dispatched,
+        },
+      } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to run workflow:', err);
+      this.sendToRunner({ type: 'workflow-run-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleWorkflowExecutions(requestId: string, workflowId?: string, limit?: number) {
+    try {
+      const userId = this.getStateValue('userId')!;
+      const max = Math.min(Math.max(limit || 20, 1), 200);
+      const parseMaybeJson = (raw: unknown) => {
+        if (raw === null || raw === undefined) return null;
+        try {
+          return JSON.parse(String(raw));
+        } catch {
+          return null;
+        }
+      };
+
+      let workflowFilterId: string | null = null;
+      if (workflowId) {
+        const workflow = await this.env.DB.prepare(`
+          SELECT id
+          FROM workflows
+          WHERE (id = ? OR slug = ?) AND user_id = ?
+          LIMIT 1
+        `).bind(workflowId, workflowId, userId).first<{ id: string }>();
+        if (!workflow) {
+          this.sendToRunner({ type: 'workflow-executions-result', requestId, executions: [] } as any);
+          return;
+        }
+        workflowFilterId = workflow.id;
+      }
+
+      const result = workflowFilterId
+        ? await this.env.DB.prepare(`
+            SELECT id, workflow_id, trigger_id, status, trigger_type, trigger_metadata, variables, outputs, steps, error, started_at, completed_at, session_id
+            FROM workflow_executions
+            WHERE user_id = ? AND workflow_id = ?
+            ORDER BY started_at DESC
+            LIMIT ?
+          `).bind(userId, workflowFilterId, max).all()
+        : await this.env.DB.prepare(`
+            SELECT id, workflow_id, trigger_id, status, trigger_type, trigger_metadata, variables, outputs, steps, error, started_at, completed_at, session_id
+            FROM workflow_executions
+            WHERE user_id = ?
+            ORDER BY started_at DESC
+            LIMIT ?
+          `).bind(userId, max).all();
+
+      const executions = (result.results || []).map((row) => ({
+        id: row.id,
+        workflowId: row.workflow_id,
+        triggerId: row.trigger_id,
+        status: row.status,
+        triggerType: row.trigger_type,
+        triggerMetadata: parseMaybeJson(row.trigger_metadata),
+        variables: parseMaybeJson(row.variables),
+        outputs: parseMaybeJson(row.outputs),
+        steps: parseMaybeJson(row.steps),
+        error: row.error,
+        startedAt: row.started_at,
+        completedAt: row.completed_at,
+        sessionId: row.session_id,
+      }));
+
+      this.sendToRunner({ type: 'workflow-executions-result', requestId, executions } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to list workflow executions:', err);
+      this.sendToRunner({ type: 'workflow-executions-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleWorkflowExecutionResult(msg: RunnerMessage) {
+    const executionId = msg.executionId || msg.envelope?.executionId;
+    const envelope = msg.envelope;
+    if (!executionId || !envelope) {
+      console.error('[SessionAgentDO] Invalid workflow execution result payload');
+      return;
+    }
+
+    const execution = await this.env.DB.prepare(`
+      SELECT id, user_id, workflow_id, session_id
+      FROM workflow_executions
+      WHERE id = ?
+      LIMIT 1
+    `).bind(executionId).first<{ id: string; user_id: string; workflow_id: string; session_id: string | null }>();
+
+    if (!execution) {
+      console.warn(`[SessionAgentDO] Received workflow result for unknown execution ${executionId}`);
+      return;
+    }
+
+    const currentSessionId = this.getStateValue('sessionId');
+    if (execution.session_id && currentSessionId && execution.session_id !== currentSessionId) {
+      console.warn(
+        `[SessionAgentDO] Ignoring workflow result for ${executionId}: execution bound to ${execution.session_id}, this DO is ${currentSessionId}`,
+      );
+      return;
+    }
+
+    const outputsJson = envelope.output ? JSON.stringify(envelope.output) : null;
+    const stepsJson = envelope.steps ? JSON.stringify(envelope.steps) : null;
+
+    let nextStatus: 'completed' | 'failed' | 'cancelled' | 'waiting_approval' = 'failed';
+    let error: string | null = envelope.error || null;
+    let resumeToken: string | null = null;
+    let completedAt: string | null = new Date().toISOString();
+
+    if (envelope.status === 'ok') {
+      nextStatus = 'completed';
+      error = null;
+    } else if (envelope.status === 'failed') {
+      nextStatus = 'failed';
+      error = envelope.error || 'workflow_failed';
+    } else if (envelope.status === 'cancelled') {
+      nextStatus = 'cancelled';
+      error = envelope.error || 'workflow_cancelled';
+    } else if (envelope.status === 'needs_approval') {
+      resumeToken = envelope.requiresApproval?.resumeToken || null;
+      if (!resumeToken) {
+        nextStatus = 'failed';
+        error = 'approval_resume_token_missing';
+      } else {
+        nextStatus = 'waiting_approval';
+        error = null;
+        completedAt = null;
+      }
+    }
+
+    await this.env.DB.prepare(`
+      UPDATE workflow_executions
+      SET status = ?,
+          outputs = ?,
+          steps = ?,
+          error = ?,
+          resume_token = ?,
+          completed_at = ?
+      WHERE id = ?
+    `).bind(
+      nextStatus,
+      outputsJson,
+      stepsJson,
+      error,
+      resumeToken,
+      completedAt,
+      executionId,
+    ).run();
+
+    if (Array.isArray(envelope.steps) && envelope.steps.length > 0) {
+      for (const step of envelope.steps) {
+        const attempt = step.attempt && step.attempt > 0 ? step.attempt : 1;
+        await this.env.DB.prepare(`
+          INSERT INTO workflow_execution_steps
+            (id, execution_id, step_id, attempt, status, input_json, output_json, error, started_at, completed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(execution_id, step_id, attempt) DO UPDATE SET
+            status = excluded.status,
+            input_json = COALESCE(excluded.input_json, workflow_execution_steps.input_json),
+            output_json = COALESCE(excluded.output_json, workflow_execution_steps.output_json),
+            error = excluded.error,
+            started_at = COALESCE(excluded.started_at, workflow_execution_steps.started_at),
+            completed_at = COALESCE(excluded.completed_at, workflow_execution_steps.completed_at)
+        `).bind(
+          crypto.randomUUID(),
+          executionId,
+          step.stepId,
+          attempt,
+          step.status,
+          step.input !== undefined ? JSON.stringify(step.input) : null,
+          step.output !== undefined ? JSON.stringify(step.output) : null,
+          step.error || null,
+          step.startedAt || null,
+          step.completedAt || null,
+        ).run();
+      }
+    }
+
+    if (nextStatus !== 'waiting_approval' && currentSessionId) {
+      const sessionRow = await this.env.DB.prepare(`
+        SELECT purpose
+        FROM sessions
+        WHERE id = ?
+        LIMIT 1
+      `).bind(currentSessionId).first<{ purpose: string | null }>();
+
+      if (sessionRow?.purpose === 'workflow') {
+        this.ctx.waitUntil(this.handleStop(`workflow_execution_${nextStatus}`));
+      }
     }
   }
 

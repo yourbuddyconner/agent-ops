@@ -8,6 +8,31 @@ export interface PromptAttachment {
   filename?: string;
 }
 
+export interface WorkflowRunResultStep {
+  stepId: string;
+  status: string;
+  attempt?: number;
+  startedAt?: string;
+  completedAt?: string;
+  output?: unknown;
+  error?: string;
+}
+
+export interface WorkflowRunResultEnvelope {
+  ok: boolean;
+  status: "ok" | "needs_approval" | "cancelled" | "failed";
+  executionId: string;
+  output?: Record<string, unknown>;
+  steps?: WorkflowRunResultStep[];
+  requiresApproval?: null | {
+    stepId: string;
+    prompt: string;
+    items: unknown[];
+    resumeToken: string;
+  };
+  error?: string | null;
+}
+
 export type DOToRunnerMessage =
   | { type: "prompt"; messageId: string; content: string; model?: string;
       attachments?: PromptAttachment[];
@@ -38,6 +63,22 @@ export type DOToRunnerMessage =
   | { type: "list-child-sessions-result"; requestId: string; children?: unknown[]; error?: string }
   | { type: "forward-messages-result"; requestId: string; count?: number; sourceSessionId?: string; error?: string }
   | { type: "read-repo-file-result"; requestId: string; content?: string; encoding?: string; truncated?: boolean; path?: string; repo?: string; ref?: string; error?: string }
+  | { type: "workflow-list-result"; requestId: string; workflows?: unknown[]; error?: string }
+  | { type: "workflow-sync-result"; requestId: string; success?: boolean; workflow?: unknown; error?: string }
+  | { type: "workflow-run-result"; requestId: string; execution?: unknown; error?: string }
+  | { type: "workflow-executions-result"; requestId: string; executions?: unknown[]; error?: string }
+  | {
+      type: "workflow-execute";
+      executionId: string;
+      payload: {
+        kind: "run" | "resume";
+        executionId: string;
+        workflowHash?: string;
+        resumeToken?: string;
+        decision?: "approve" | "deny";
+        payload: Record<string, unknown>;
+      };
+    }
   | { type: "tunnel-delete"; name: string; actorId?: string; actorName?: string; actorEmail?: string };
 
 /** Tool call status values */
@@ -82,6 +123,11 @@ export type RunnerToDOMessage =
   | { type: "list-child-sessions"; requestId: string }
   | { type: "forward-messages"; requestId: string; targetSessionId: string; limit?: number; after?: string }
   | { type: "read-repo-file"; requestId: string; owner?: string; repo?: string; repoUrl?: string; path: string; ref?: string }
+  | { type: "workflow-list"; requestId: string }
+  | { type: "workflow-sync"; requestId: string; id?: string; slug?: string; name: string; description?: string; version?: string; data: Record<string, unknown> }
+  | { type: "workflow-run"; requestId: string; workflowId: string; variables?: Record<string, unknown> }
+  | { type: "workflow-executions"; requestId: string; workflowId?: string; limit?: number }
+  | { type: "workflow-execution-result"; executionId: string; envelope: WorkflowRunResultEnvelope }
   | { type: "model-switched"; messageId: string; fromModel: string; toModel: string; reason: string }
   | { type: "tunnels"; tunnels: Array<{ name: string; port: number; protocol?: string; path: string }> };
 

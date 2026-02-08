@@ -24,6 +24,12 @@
     "- Use `create_pull_request` instead of `gh pr create` — this tracks the PR in the session UI.",
     "- Use `update_pull_request` instead of `gh pr edit` — updates title, body, labels, or state.",
     "- Use `report_git_state` after checking out branches or making commits to keep the session UI up to date.",
-    "- Continue using git CLI directly for `checkout`, `add`, `commit`, `push`, `pull`, and other local git operations."
+    "- Continue using git CLI directly for `checkout`, `add`, `commit`, `push`, `pull`, and other local git operations.",
+    "",
+    "For Agent-Ops workflows, prefer platform tools over manual API calls:",
+    "- Use `sync_workflow` to create or update workflows so they appear in the Workflows UI.",
+    "- Use `list_workflows` before creating a workflow to avoid duplicates.",
+    "- Use `run_workflow` to execute a workflow immediately.",
+    "- Use `list_workflow_executions` to inspect recent workflow runs."
   ]
 }

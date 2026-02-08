@@ -87,6 +87,7 @@ executionsRouter.get('/', async (c) => {
     triggerType: row.trigger_type,
     triggerMetadata: row.trigger_metadata ? JSON.parse(row.trigger_metadata as string) : null,
     variables: row.variables ? JSON.parse(row.variables as string) : null,
+    resumeToken: row.resume_token || null,
     outputs: row.outputs ? JSON.parse(row.outputs as string) : null,
     steps: row.steps ? JSON.parse(row.steps as string) : null,
     error: row.error,
@@ -129,6 +130,7 @@ executionsRouter.get('/:id', async (c) => {
       triggerType: row.trigger_type,
       triggerMetadata: row.trigger_metadata ? JSON.parse(row.trigger_metadata as string) : null,
       variables: row.variables ? JSON.parse(row.variables as string) : null,
+      resumeToken: row.resume_token || null,
       outputs: row.outputs ? JSON.parse(row.outputs as string) : null,
       steps: row.steps ? JSON.parse(row.steps as string) : null,
       error: row.error,
@@ -211,7 +213,7 @@ executionsRouter.post('/:id/complete', zValidator('json', completionSchema), asy
   }
 
   // Prevent updating already-completed executions
-  if (execution.status === 'completed' || execution.status === 'failed') {
+  if (execution.status === 'completed' || execution.status === 'failed' || execution.status === 'cancelled') {
     throw new ValidationError('Execution already finalized');
   }
 
@@ -296,7 +298,7 @@ executionsRouter.post('/:id/status', async (c) => {
   }
 
   // Prevent updating already-completed executions
-  if (execution.status === 'completed' || execution.status === 'failed') {
+  if (execution.status === 'completed' || execution.status === 'failed' || execution.status === 'cancelled') {
     throw new ValidationError('Execution already finalized');
   }
 

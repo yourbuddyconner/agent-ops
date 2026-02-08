@@ -31,6 +31,43 @@ interface EditWorkflowStepDialogProps {
   trigger?: React.ReactNode;
 }
 
+interface StepFormData {
+  id: string;
+  name: string;
+  type: WorkflowStep['type'];
+  tool: string;
+  goal: string;
+  context: string;
+  outputVariable: string;
+  argumentsJson: string;
+  conditionJson: string;
+  thenJson: string;
+  elseJson: string;
+  stepsJson: string;
+}
+
+function stringifyJson(value: unknown): string {
+  if (value === undefined) return '';
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return '';
+  }
+}
+
+function parseJson(raw: string): { ok: true; value: unknown } | { ok: false; error: string } {
+  try {
+    return { ok: true, value: JSON.parse(raw) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: `Invalid JSON: ${message}` };
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
 export function EditWorkflowStepDialog({
   workflow,
   step,
@@ -38,13 +75,19 @@ export function EditWorkflowStepDialog({
   trigger,
 }: EditWorkflowStepDialogProps) {
   const [open, setOpen] = React.useState(false);
-  const [formData, setFormData] = React.useState({
+  const [formData, setFormData] = React.useState<StepFormData>({
+    id: step.id,
     name: step.name,
     type: step.type,
     tool: step.tool || '',
     goal: step.goal || '',
     context: step.context || '',
     outputVariable: step.outputVariable || '',
+    argumentsJson: stringifyJson(step.arguments),
+    conditionJson: stringifyJson(step.condition),
+    thenJson: stringifyJson(step.then),
+    elseJson: stringifyJson(step.else),
+    stepsJson: stringifyJson(step.steps),
   });
   const [errors, setErrors] = React.useState<Record<string, string>>({});
   const updateWorkflow = useUpdateWorkflow();
@@ -53,18 +96,24 @@ export function EditWorkflowStepDialog({
   React.useEffect(() => {
     if (open) {
       setFormData({
+        id: step.id,
         name: step.name,
         type: step.type,
         tool: step.tool || '',
         goal: step.goal || '',
         context: step.context || '',
         outputVariable: step.outputVariable || '',
+        argumentsJson: stringifyJson(step.arguments),
+        conditionJson: stringifyJson(step.condition),
+        thenJson: stringifyJson(step.then),
+        elseJson: stringifyJson(step.else),
+        stepsJson: stringifyJson(step.steps),
       });
       setErrors({});
     }
   }, [open, step]);
 
-  const handleChange = (field: string, value: string) => {
+  const handleChange = <K extends keyof StepFormData>(field: K, value: StepFormData[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
     setErrors((prev) => ({ ...prev, [field]: '' }));
   };
@@ -74,12 +123,60 @@ export function EditWorkflowStepDialog({
 
     // Validate
     const newErrors: Record<string, string> = {};
+    if (!formData.id.trim()) {
+      newErrors.id = 'Step ID is required';
+    }
     if (!formData.name.trim()) {
       newErrors.name = 'Name is required';
     }
     if (formData.type === 'tool' && !formData.tool.trim()) {
       newErrors.tool = 'Tool name is required for tool steps';
     }
+
+    let parsedArguments: Record<string, unknown> | undefined;
+    if (formData.argumentsJson.trim()) {
+      const parsed = parseJson(formData.argumentsJson);
+      if (!parsed.ok) {
+        newErrors.argumentsJson = parsed.error;
+      } else if (!isRecord(parsed.value)) {
+        newErrors.argumentsJson = 'Arguments must be a JSON object';
+      } else {
+        parsedArguments = parsed.value;
+      }
+    }
+
+    let parsedCondition: unknown = undefined;
+    if (formData.conditionJson.trim()) {
+      const parsed = parseJson(formData.conditionJson);
+      if (!parsed.ok) {
+        newErrors.conditionJson = parsed.error;
+      } else {
+        parsedCondition = parsed.value;
+      }
+    }
+
+    const parseStepArray = (
+      raw: string,
+      field: 'thenJson' | 'elseJson' | 'stepsJson',
+      label: string,
+    ): WorkflowStep[] | undefined => {
+      if (!raw.trim()) return undefined;
+      const parsed = parseJson(raw);
+      if (!parsed.ok) {
+        newErrors[field] = parsed.error;
+        return undefined;
+      }
+      if (!Array.isArray(parsed.value)) {
+        newErrors[field] = `${label} must be a JSON array`;
+        return undefined;
+      }
+      return parsed.value as WorkflowStep[];
+    };
+
+    const parsedThen = parseStepArray(formData.thenJson, 'thenJson', 'Then branch');
+    const parsedElse = parseStepArray(formData.elseJson, 'elseJson', 'Else branch');
+    const parsedSteps = parseStepArray(formData.stepsJson, 'stepsJson', 'Nested steps');
+
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
@@ -88,12 +185,18 @@ export function EditWorkflowStepDialog({
     // Build updated step
     const updatedStep: WorkflowStep = {
       ...step,
+      id: formData.id.trim(),
       name: formData.name,
       type: formData.type as WorkflowStep['type'],
       tool: formData.tool || undefined,
       goal: formData.goal || undefined,
       context: formData.context || undefined,
       outputVariable: formData.outputVariable || undefined,
+      arguments: parsedArguments,
+      condition: parsedCondition,
+      then: parsedThen,
+      else: parsedElse,
+      steps: parsedSteps,
     };
 
     // Build updated data with the modified step
@@ -129,7 +232,7 @@ export function EditWorkflowStepDialog({
           </button>
         )}
       </DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Edit Step</DialogTitle>
@@ -140,6 +243,25 @@ export function EditWorkflowStepDialog({
 
           <div className="space-y-4 py-4">
             <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label
+                  htmlFor="step-id"
+                  className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
+                >
+                  Step ID
+                </label>
+                <Input
+                  id="step-id"
+                  value={formData.id}
+                  onChange={(e) => handleChange('id', e.target.value)}
+                  placeholder="check_environment"
+                  className={cn(errors.id && 'border-red-500')}
+                />
+                {errors.id && (
+                  <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.id}</p>
+                )}
+              </div>
+
               <div>
                 <label
                   htmlFor="step-name"
@@ -158,27 +280,27 @@ export function EditWorkflowStepDialog({
                   <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.name}</p>
                 )}
               </div>
+            </div>
 
-              <div>
-                <label
-                  htmlFor="step-type"
-                  className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-                >
-                  Type
-                </label>
-                <select
-                  id="step-type"
-                  value={formData.type}
-                  onChange={(e) => handleChange('type', e.target.value)}
-                  className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:focus:ring-neutral-100"
-                >
-                  {STEP_TYPES.map((type) => (
-                    <option key={type.value} value={type.value}>
-                      {type.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <div>
+              <label
+                htmlFor="step-type"
+                className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
+              >
+                Type
+              </label>
+              <select
+                id="step-type"
+                value={formData.type}
+                onChange={(e) => handleChange('type', e.target.value as WorkflowStep['type'])}
+                className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:focus:ring-neutral-100"
+              >
+                {STEP_TYPES.map((type) => (
+                  <option key={type.value} value={type.value}>
+                    {type.label}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {(formData.type === 'tool') && (
@@ -202,6 +324,31 @@ export function EditWorkflowStepDialog({
               </div>
             )}
 
+            {formData.type === 'tool' && (
+              <div>
+                <label
+                  htmlFor="step-arguments"
+                  className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
+                >
+                  Arguments (JSON)
+                </label>
+                <textarea
+                  id="step-arguments"
+                  value={formData.argumentsJson}
+                  onChange={(e) => handleChange('argumentsJson', e.target.value)}
+                  placeholder='{"command":"echo hello"}'
+                  rows={4}
+                  className={cn(
+                    'w-full rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:placeholder:text-neutral-500 dark:focus:ring-neutral-100',
+                    errors.argumentsJson && 'border-red-500',
+                  )}
+                />
+                {errors.argumentsJson && (
+                  <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.argumentsJson}</p>
+                )}
+              </div>
+            )}
+
             {(formData.type === 'agent' || formData.type === 'tool') && (
               <div>
                 <label
@@ -218,6 +365,104 @@ export function EditWorkflowStepDialog({
                   rows={2}
                   className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:placeholder:text-neutral-500 dark:focus:ring-neutral-100"
                 />
+              </div>
+            )}
+
+            {formData.type === 'conditional' && (
+              <>
+                <div>
+                  <label
+                    htmlFor="step-condition"
+                    className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
+                  >
+                    Condition (JSON)
+                  </label>
+                  <textarea
+                    id="step-condition"
+                    value={formData.conditionJson}
+                    onChange={(e) => handleChange('conditionJson', e.target.value)}
+                    placeholder='{"variable":"deploy","equals":true}'
+                    rows={3}
+                    className={cn(
+                      'w-full rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:placeholder:text-neutral-500 dark:focus:ring-neutral-100',
+                      errors.conditionJson && 'border-red-500',
+                    )}
+                  />
+                  {errors.conditionJson && (
+                    <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.conditionJson}</p>
+                  )}
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="step-then"
+                    className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
+                  >
+                    Then Branch Steps (JSON array)
+                  </label>
+                  <textarea
+                    id="step-then"
+                    value={formData.thenJson}
+                    onChange={(e) => handleChange('thenJson', e.target.value)}
+                    placeholder='[{"id":"step_a","name":"A","type":"tool","tool":"bash","arguments":{"command":"echo then"}}]'
+                    rows={4}
+                    className={cn(
+                      'w-full rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:placeholder:text-neutral-500 dark:focus:ring-neutral-100',
+                      errors.thenJson && 'border-red-500',
+                    )}
+                  />
+                  {errors.thenJson && (
+                    <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.thenJson}</p>
+                  )}
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="step-else"
+                    className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
+                  >
+                    Else Branch Steps (JSON array)
+                  </label>
+                  <textarea
+                    id="step-else"
+                    value={formData.elseJson}
+                    onChange={(e) => handleChange('elseJson', e.target.value)}
+                    placeholder='[{"id":"step_b","name":"B","type":"tool","tool":"bash","arguments":{"command":"echo else"}}]'
+                    rows={4}
+                    className={cn(
+                      'w-full rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:placeholder:text-neutral-500 dark:focus:ring-neutral-100',
+                      errors.elseJson && 'border-red-500',
+                    )}
+                  />
+                  {errors.elseJson && (
+                    <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.elseJson}</p>
+                  )}
+                </div>
+              </>
+            )}
+
+            {(formData.type === 'parallel' || formData.type === 'loop' || formData.type === 'subworkflow') && (
+              <div>
+                <label
+                  htmlFor="step-steps"
+                  className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
+                >
+                  Nested Steps (JSON array)
+                </label>
+                <textarea
+                  id="step-steps"
+                  value={formData.stepsJson}
+                  onChange={(e) => handleChange('stepsJson', e.target.value)}
+                  placeholder='[{"id":"nested_1","name":"Nested Step","type":"tool","tool":"bash","arguments":{"command":"echo nested"}}]'
+                  rows={5}
+                  className={cn(
+                    'w-full rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:placeholder:text-neutral-500 dark:focus:ring-neutral-100',
+                    errors.stepsJson && 'border-red-500',
+                  )}
+                />
+                {errors.stepsJson && (
+                  <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.stepsJson}</p>
+                )}
               </div>
             )}
 

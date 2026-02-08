@@ -13,6 +13,8 @@ import modal
 
 from config import NODE_VERSION
 
+OPENCODE_VERSION = "1.1.52"
+
 
 def get_base_image() -> modal.Image:
     """Build the full sandbox image with all dev environment services."""
@@ -45,7 +47,7 @@ def get_base_image() -> modal.Image:
         )
         # Install OpenCode CLI + agent-browser
         .run_commands(
-            "npm install -g opencode-ai agent-browser",
+            f"npm install -g opencode-ai@{OPENCODE_VERSION} agent-browser",
         )
         # code-server (VS Code in browser)
         .run_commands(
@@ -77,6 +79,11 @@ def get_base_image() -> modal.Image:
             ignore=["node_modules", "*.log"],
         )
         .run_commands("cd /runner && /root/.bun/bin/bun install")
+        # Expose workflow CLI as a first-class sandbox command
+        .run_commands(
+            "printf '#!/bin/bash\\nexec /root/.bun/bin/bun run /runner/src/workflow-cli.ts \"$@\"\\n' > /usr/local/bin/workflow",
+            "chmod +x /usr/local/bin/workflow",
+        )
         # Copy start.sh
         .add_local_file("/root/docker/start.sh", "/start.sh", copy=True)
         .run_commands("chmod +x /start.sh")
@@ -106,7 +113,7 @@ def get_base_image() -> modal.Image:
                 "DISPLAY": ":99",
                 "HOME": "/root",
                 # Force image rebuild on deploy (change this value to trigger rebuild)
-                "IMAGE_BUILD_VERSION": "2026-02-07-v90-write-tunnel-token",
+                "IMAGE_BUILD_VERSION": "2026-02-08-v96-pin-opencode-1.1.52",
                 "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
             }
         )

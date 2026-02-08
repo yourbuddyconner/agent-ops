@@ -177,8 +177,8 @@ webhooksRouter.all('/*', async (c, next) => {
   await c.env.DB.prepare(`
     INSERT INTO workflow_executions
       (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
-       workflow_version, workflow_hash, idempotency_key, session_id, initiator_type, initiator_user_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       workflow_version, workflow_hash, workflow_snapshot, idempotency_key, session_id, initiator_type, initiator_user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     executionId,
     trigger.workflow_id,
@@ -191,6 +191,7 @@ webhooksRouter.all('/*', async (c, next) => {
     now,
     trigger.version || null,
     workflowHash,
+    trigger.data,
     idempotencyKey,
     sessionId,
     'webhook',
