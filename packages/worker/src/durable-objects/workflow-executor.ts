@@ -156,7 +156,7 @@ export class WorkflowExecutorDO implements DurableObject {
           sessionStartedAt = ensured.startedAt;
         }
 
-        const prompt = this.buildWorkflowRunPrompt(row);
+        const prompt = await this.buildWorkflowRunPrompt(row);
         const dispatched = await this.dispatchWorkflowPrompt(row.session_id, prompt);
         if (dispatched.ok) {
           promptDispatchedAt = now;
@@ -408,24 +408,28 @@ export class WorkflowExecutorDO implements DurableObject {
     return envVars;
   }
 
-  private buildWorkflowRunPrompt(row: ExecutionRow): string {
+  private async buildWorkflowRunPrompt(row: ExecutionRow): Promise<string> {
     const payload = this.buildWorkflowRunPayload(row);
-    const workflowHash = this.normalizeWorkflowHash(row.workflow_hash);
+    const workflowHash = await this.computeCanonicalWorkflowHash(row.workflow_data);
     return [
       WORKFLOW_EXECUTE_PROMPT_PREFIX,
       JSON.stringify({
         kind: 'run',
         executionId: row.id,
-        workflowHash,
+        ...(workflowHash ? { workflowHash } : {}),
         payload,
       }),
     ].join('\n');
   }
 
-  private buildWorkflowResumePrompt(row: ExecutionRow, resumeToken: string, approve: boolean): string {
+  private async buildWorkflowResumePrompt(
+    row: ExecutionRow,
+    resumeToken: string,
+    approve: boolean,
+  ): Promise<string> {
     const decision = approve ? 'approve' : 'deny';
     const payload = this.buildWorkflowRunPayload(row);
-    const workflowHash = this.normalizeWorkflowHash(row.workflow_hash);
+    const workflowHash = await this.computeCanonicalWorkflowHash(row.workflow_data);
     return [
       WORKFLOW_EXECUTE_PROMPT_PREFIX,
       JSON.stringify({
@@ -433,7 +437,7 @@ export class WorkflowExecutorDO implements DurableObject {
         executionId: row.id,
         resumeToken,
         decision,
-        workflowHash,
+        ...(workflowHash ? { workflowHash } : {}),
         payload,
       }),
     ].join('\n');
@@ -525,11 +529,108 @@ export class WorkflowExecutorDO implements DurableObject {
     }
   }
 
-  private normalizeWorkflowHash(hash: string | null): string {
-    const cleaned = (hash || '').trim();
-    if (!cleaned) return 'sha256:unknown';
-    if (cleaned.startsWith('sha256:')) return cleaned;
-    return `sha256:${cleaned}`;
+  private async computeCanonicalWorkflowHash(rawWorkflowData: string | null): Promise<string | undefined> {
+    if (!rawWorkflowData) return undefined;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawWorkflowData);
+    } catch {
+      return undefined;
+    }
+
+    const workflow = this.normalizeWorkflowForHash(parsed);
+    if (!workflow) return undefined;
+
+    const serialized = JSON.stringify(workflow);
+    const data = new TextEncoder().encode(serialized);
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    const hex = Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    return `sha256:${hex}`;
+  }
+
+  private normalizeWorkflowForHash(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const workflow = value as Record<string, unknown>;
+    if (!Array.isArray(workflow.steps)) {
+      return null;
+    }
+
+    const normalizedSteps = workflow.steps
+      .map((step, index) => this.normalizeStepForHash(step, `step[${index}]`))
+      .filter((step): step is Record<string, unknown> => step !== null);
+
+    if (normalizedSteps.length !== workflow.steps.length) {
+      return null;
+    }
+
+    return this.deepSortForHash({
+      ...workflow,
+      steps: normalizedSteps,
+    }) as Record<string, unknown>;
+  }
+
+  private normalizeStepForHash(stepValue: unknown, path: string): Record<string, unknown> | null {
+    if (!stepValue || typeof stepValue !== 'object' || Array.isArray(stepValue)) {
+      return null;
+    }
+
+    const source = stepValue as Record<string, unknown>;
+    const typeValue = source.type;
+    if (typeof typeValue !== 'string' || !typeValue.trim()) {
+      return null;
+    }
+
+    const providedId = source.id;
+    const id = typeof providedId === 'string' && providedId.trim()
+      ? providedId.trim()
+      : path.replace(/\./g, '_');
+
+    const normalized: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(source)) {
+      if (key === 'then' || key === 'else' || key === 'steps') {
+        if (Array.isArray(value)) {
+          const nested = value
+            .map((entry, index) => this.normalizeStepForHash(entry, `${path}.${key}[${index}]`))
+            .filter((entry): entry is Record<string, unknown> => entry !== null);
+
+          if (nested.length !== value.length) {
+            return null;
+          }
+          normalized[key] = nested;
+        } else if (value !== undefined && value !== null) {
+          return null;
+        }
+        continue;
+      }
+
+      normalized[key] = this.deepSortForHash(value);
+    }
+
+    normalized.id = id;
+    normalized.type = typeValue.trim();
+
+    return this.deepSortForHash(normalized) as Record<string, unknown>;
+  }
+
+  private deepSortForHash(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.deepSortForHash(item));
+    }
+    if (!value || typeof value !== 'object') {
+      return value;
+    }
+
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      out[key] = this.deepSortForHash((value as Record<string, unknown>)[key]);
+    }
+    return out;
   }
 
   private async handleResume(request: Request): Promise<Response> {
@@ -615,7 +716,7 @@ export class WorkflowExecutorDO implements DurableObject {
           return Response.json({ error: ensured.error || 'Failed to prepare workflow session for resume' }, { status: 502 });
         }
 
-        const prompt = this.buildWorkflowResumePrompt(row, body.resumeToken, true);
+        const prompt = await this.buildWorkflowResumePrompt(row, body.resumeToken, true);
         const dispatched = await this.dispatchWorkflowPrompt(row.session_id, prompt);
         if (!dispatched.ok) {
           return Response.json({ error: dispatched.error || 'Failed to dispatch workflow resume prompt' }, { status: 502 });

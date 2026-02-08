@@ -1,6 +1,7 @@
 import * as React from 'react';
 import type { WorkflowStep, Workflow, WorkflowData } from '@/api/workflows';
 import { useUpdateWorkflow } from '@/api/workflows';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -12,16 +13,17 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { StepBehaviorEditors, type StepFormData } from '@/components/workflows/step-behavior-editors';
 import { cn } from '@/lib/cn';
 
 const STEP_TYPES = [
-  { value: 'agent', label: 'Agent' },
-  { value: 'tool', label: 'Tool' },
-  { value: 'conditional', label: 'Conditional' },
-  { value: 'loop', label: 'Loop' },
-  { value: 'parallel', label: 'Parallel' },
-  { value: 'subworkflow', label: 'Subworkflow' },
-  { value: 'approval', label: 'Approval' },
+  { value: 'agent', label: 'Agent', description: 'Delegates reasoning and decision-making to the orchestrator persona.' },
+  { value: 'tool', label: 'Tool', description: 'Executes deterministic tool calls such as bash, API, or repository actions.' },
+  { value: 'conditional', label: 'Conditional', description: 'Branches execution path based on runtime state.' },
+  { value: 'loop', label: 'Loop', description: 'Repeats a nested sequence until the loop condition is satisfied.' },
+  { value: 'parallel', label: 'Parallel', description: 'Runs child steps concurrently for faster throughput.' },
+  { value: 'subworkflow', label: 'Subworkflow', description: 'Calls into a reusable nested workflow module.' },
+  { value: 'approval', label: 'Approval', description: 'Creates a checkpoint requiring human or policy approval.' },
 ] as const;
 
 interface EditWorkflowStepDialogProps {
@@ -31,20 +33,9 @@ interface EditWorkflowStepDialogProps {
   trigger?: React.ReactNode;
 }
 
-interface StepFormData {
-  id: string;
-  name: string;
-  type: WorkflowStep['type'];
-  tool: string;
-  goal: string;
-  context: string;
-  outputVariable: string;
-  argumentsJson: string;
-  conditionJson: string;
-  thenJson: string;
-  elseJson: string;
-  stepsJson: string;
-}
+const inputLabelClassName = 'mb-1.5 block text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-300';
+const selectClassName =
+  'w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-accent/30 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100';
 
 function stringifyJson(value: unknown): string {
   if (value === undefined) return '';
@@ -66,6 +57,10 @@ function parseJson(raw: string): { ok: true; value: unknown } | { ok: false; err
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function getStepTypeDefinition(type: WorkflowStep['type']) {
+  return STEP_TYPES.find((item) => item.value === type) ?? STEP_TYPES[0];
 }
 
 export function EditWorkflowStepDialog({
@@ -92,7 +87,6 @@ export function EditWorkflowStepDialog({
   const [errors, setErrors] = React.useState<Record<string, string>>({});
   const updateWorkflow = useUpdateWorkflow();
 
-  // Reset form when dialog opens
   React.useEffect(() => {
     if (open) {
       setFormData({
@@ -121,7 +115,6 @@ export function EditWorkflowStepDialog({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Validate
     const newErrors: Record<string, string> = {};
     if (!formData.id.trim()) {
       newErrors.id = 'Step ID is required';
@@ -182,7 +175,6 @@ export function EditWorkflowStepDialog({
       return;
     }
 
-    // Build updated step
     const updatedStep: WorkflowStep = {
       ...step,
       id: formData.id.trim(),
@@ -199,7 +191,6 @@ export function EditWorkflowStepDialog({
       steps: parsedSteps,
     };
 
-    // Build updated data with the modified step
     const updatedSteps = [...(workflow.data.steps || [])];
     updatedSteps[stepIndex] = updatedStep;
 
@@ -219,292 +210,122 @@ export function EditWorkflowStepDialog({
     }
   };
 
+  const stepType = getStepTypeDefinition(formData.type);
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         {trigger ?? (
           <button
             type="button"
-            className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-700 dark:hover:text-neutral-300"
+            className="rounded-md p-1.5 text-neutral-400 transition hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-700 dark:hover:text-neutral-300"
             aria-label="Edit step"
           >
             <EditIcon className="size-4" />
           </button>
         )}
       </DialogTrigger>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-        <form onSubmit={handleSubmit}>
-          <DialogHeader>
-            <DialogTitle>Edit Step</DialogTitle>
-            <DialogDescription>
-              Modify the step configuration.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label
-                  htmlFor="step-id"
-                  className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-                >
-                  Step ID
-                </label>
-                <Input
-                  id="step-id"
-                  value={formData.id}
-                  onChange={(e) => handleChange('id', e.target.value)}
-                  placeholder="check_environment"
-                  className={cn(errors.id && 'border-red-500')}
-                />
-                {errors.id && (
-                  <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.id}</p>
-                )}
+      <DialogContent className="max-h-[92vh] overflow-hidden p-0 sm:max-w-3xl">
+        <form onSubmit={handleSubmit} className="flex max-h-[92vh] flex-col">
+          <div className="border-b border-neutral-200 bg-gradient-to-r from-neutral-50 to-cyan-50/70 px-5 py-4 dark:border-neutral-700 dark:from-neutral-900 dark:to-neutral-900 sm:px-6">
+            <DialogHeader className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <DialogTitle>Edit Step</DialogTitle>
+                <Badge variant="secondary">#{stepIndex + 1}</Badge>
+                <Badge variant="default">{stepType.label}</Badge>
               </div>
-
-              <div>
-                <label
-                  htmlFor="step-name"
-                  className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-                >
-                  Name
-                </label>
-                <Input
-                  id="step-name"
-                  value={formData.name}
-                  onChange={(e) => handleChange('name', e.target.value)}
-                  placeholder="Step name"
-                  className={cn(errors.name && 'border-red-500')}
-                />
-                {errors.name && (
-                  <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.name}</p>
-                )}
-              </div>
-            </div>
-
-            <div>
-              <label
-                htmlFor="step-type"
-                className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-              >
-                Type
-              </label>
-              <select
-                id="step-type"
-                value={formData.type}
-                onChange={(e) => handleChange('type', e.target.value as WorkflowStep['type'])}
-                className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:focus:ring-neutral-100"
-              >
-                {STEP_TYPES.map((type) => (
-                  <option key={type.value} value={type.value}>
-                    {type.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {(formData.type === 'tool') && (
-              <div>
-                <label
-                  htmlFor="step-tool"
-                  className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-                >
-                  Tool
-                </label>
-                <Input
-                  id="step-tool"
-                  value={formData.tool}
-                  onChange={(e) => handleChange('tool', e.target.value)}
-                  placeholder="github.getPullRequest"
-                  className={cn(errors.tool && 'border-red-500')}
-                />
-                {errors.tool && (
-                  <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.tool}</p>
-                )}
-              </div>
-            )}
-
-            {formData.type === 'tool' && (
-              <div>
-                <label
-                  htmlFor="step-arguments"
-                  className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-                >
-                  Arguments (JSON)
-                </label>
-                <textarea
-                  id="step-arguments"
-                  value={formData.argumentsJson}
-                  onChange={(e) => handleChange('argumentsJson', e.target.value)}
-                  placeholder='{"command":"echo hello"}'
-                  rows={4}
-                  className={cn(
-                    'w-full rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:placeholder:text-neutral-500 dark:focus:ring-neutral-100',
-                    errors.argumentsJson && 'border-red-500',
-                  )}
-                />
-                {errors.argumentsJson && (
-                  <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.argumentsJson}</p>
-                )}
-              </div>
-            )}
-
-            {(formData.type === 'agent' || formData.type === 'tool') && (
-              <div>
-                <label
-                  htmlFor="step-goal"
-                  className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-                >
-                  Goal
-                </label>
-                <textarea
-                  id="step-goal"
-                  value={formData.goal}
-                  onChange={(e) => handleChange('goal', e.target.value)}
-                  placeholder="What should this step accomplish?"
-                  rows={2}
-                  className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:placeholder:text-neutral-500 dark:focus:ring-neutral-100"
-                />
-              </div>
-            )}
-
-            {formData.type === 'conditional' && (
-              <>
-                <div>
-                  <label
-                    htmlFor="step-condition"
-                    className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-                  >
-                    Condition (JSON)
-                  </label>
-                  <textarea
-                    id="step-condition"
-                    value={formData.conditionJson}
-                    onChange={(e) => handleChange('conditionJson', e.target.value)}
-                    placeholder='{"variable":"deploy","equals":true}'
-                    rows={3}
-                    className={cn(
-                      'w-full rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:placeholder:text-neutral-500 dark:focus:ring-neutral-100',
-                      errors.conditionJson && 'border-red-500',
-                    )}
-                  />
-                  {errors.conditionJson && (
-                    <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.conditionJson}</p>
-                  )}
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="step-then"
-                    className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-                  >
-                    Then Branch Steps (JSON array)
-                  </label>
-                  <textarea
-                    id="step-then"
-                    value={formData.thenJson}
-                    onChange={(e) => handleChange('thenJson', e.target.value)}
-                    placeholder='[{"id":"step_a","name":"A","type":"tool","tool":"bash","arguments":{"command":"echo then"}}]'
-                    rows={4}
-                    className={cn(
-                      'w-full rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:placeholder:text-neutral-500 dark:focus:ring-neutral-100',
-                      errors.thenJson && 'border-red-500',
-                    )}
-                  />
-                  {errors.thenJson && (
-                    <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.thenJson}</p>
-                  )}
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="step-else"
-                    className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-                  >
-                    Else Branch Steps (JSON array)
-                  </label>
-                  <textarea
-                    id="step-else"
-                    value={formData.elseJson}
-                    onChange={(e) => handleChange('elseJson', e.target.value)}
-                    placeholder='[{"id":"step_b","name":"B","type":"tool","tool":"bash","arguments":{"command":"echo else"}}]'
-                    rows={4}
-                    className={cn(
-                      'w-full rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:placeholder:text-neutral-500 dark:focus:ring-neutral-100',
-                      errors.elseJson && 'border-red-500',
-                    )}
-                  />
-                  {errors.elseJson && (
-                    <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.elseJson}</p>
-                  )}
-                </div>
-              </>
-            )}
-
-            {(formData.type === 'parallel' || formData.type === 'loop' || formData.type === 'subworkflow') && (
-              <div>
-                <label
-                  htmlFor="step-steps"
-                  className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-                >
-                  Nested Steps (JSON array)
-                </label>
-                <textarea
-                  id="step-steps"
-                  value={formData.stepsJson}
-                  onChange={(e) => handleChange('stepsJson', e.target.value)}
-                  placeholder='[{"id":"nested_1","name":"Nested Step","type":"tool","tool":"bash","arguments":{"command":"echo nested"}}]'
-                  rows={5}
-                  className={cn(
-                    'w-full rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:placeholder:text-neutral-500 dark:focus:ring-neutral-100',
-                    errors.stepsJson && 'border-red-500',
-                  )}
-                />
-                {errors.stepsJson && (
-                  <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.stepsJson}</p>
-                )}
-              </div>
-            )}
-
-            {formData.type === 'agent' && (
-              <div>
-                <label
-                  htmlFor="step-context"
-                  className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-                >
-                  Context
-                </label>
-                <textarea
-                  id="step-context"
-                  value={formData.context}
-                  onChange={(e) => handleChange('context', e.target.value)}
-                  placeholder="Additional context for the agent"
-                  rows={2}
-                  className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:placeholder:text-neutral-500 dark:focus:ring-neutral-100"
-                />
-              </div>
-            )}
-
-            <div>
-              <label
-                htmlFor="step-output"
-                className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300"
-              >
-                Output Variable
-              </label>
-              <Input
-                id="step-output"
-                value={formData.outputVariable}
-                onChange={(e) => handleChange('outputVariable', e.target.value)}
-                placeholder="result"
-              />
-              <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-                Store the step output in this variable for use in later steps.
-              </p>
-            </div>
+              <DialogDescription>
+                Tune this step’s behavior, branching, and outputs without changing workflow wiring.
+              </DialogDescription>
+            </DialogHeader>
           </div>
 
-          <DialogFooter>
+          <div className="space-y-5 overflow-y-auto p-5 sm:p-6">
+            <SectionCard title="Identity" description="Define this step’s handle and orchestration role.">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label htmlFor="step-id" className={inputLabelClassName}>
+                    Step ID
+                  </label>
+                  <Input
+                    id="step-id"
+                    value={formData.id}
+                    onChange={(e) => handleChange('id', e.target.value)}
+                    placeholder="check_environment"
+                    className={cn(errors.id && 'border-red-500')}
+                  />
+                  <FieldError message={errors.id} />
+                </div>
+
+                <div>
+                  <label htmlFor="step-name" className={inputLabelClassName}>
+                    Name
+                  </label>
+                  <Input
+                    id="step-name"
+                    value={formData.name}
+                    onChange={(e) => handleChange('name', e.target.value)}
+                    placeholder="Step name"
+                    className={cn(errors.name && 'border-red-500')}
+                  />
+                  <FieldError message={errors.name} />
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <label htmlFor="step-type" className={inputLabelClassName}>
+                  Type
+                </label>
+                <select
+                  id="step-type"
+                  value={formData.type}
+                  onChange={(e) => handleChange('type', e.target.value as WorkflowStep['type'])}
+                  className={selectClassName}
+                >
+                  {STEP_TYPES.map((type) => (
+                    <option key={type.value} value={type.value}>
+                      {type.label}
+                    </option>
+                  ))}
+                </select>
+                <div className="mt-2 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-900">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                    Type Behavior
+                  </p>
+                  <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-300">
+                    {stepType.description}
+                  </p>
+                </div>
+              </div>
+            </SectionCard>
+
+            <SectionCard title="Step Behavior" description="Configure runtime inputs, goals, and branch logic.">
+              <StepBehaviorEditors
+                formData={formData}
+                errors={errors}
+                onChange={handleChange}
+              />
+            </SectionCard>
+
+            <SectionCard title="Output" description="Expose this step result for downstream references.">
+              <div>
+                <label htmlFor="step-output" className={inputLabelClassName}>
+                  Output Variable
+                </label>
+                <Input
+                  id="step-output"
+                  value={formData.outputVariable}
+                  onChange={(e) => handleChange('outputVariable', e.target.value)}
+                  placeholder="result"
+                />
+                <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                  Store the step output in this variable for use in later steps.
+                </p>
+              </div>
+            </SectionCard>
+          </div>
+
+          <DialogFooter className="border-t border-neutral-200 bg-neutral-50 px-5 py-4 dark:border-neutral-700 dark:bg-neutral-900 sm:px-6">
             <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
               Cancel
             </Button>
@@ -516,6 +337,31 @@ export function EditWorkflowStepDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function SectionCard({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-xl border border-neutral-200 bg-white/90 p-4 dark:border-neutral-700 dark:bg-neutral-900/70">
+      <div className="mb-3">
+        <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">{title}</h3>
+        <p className="text-xs text-neutral-500 dark:text-neutral-400">{description}</p>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function FieldError({ message }: { message?: string }) {
+  if (!message) return null;
+  return <p className="mt-1 text-sm text-red-600 dark:text-red-400">{message}</p>;
 }
 
 function EditIcon({ className }: { className?: string }) {
