@@ -52,6 +52,8 @@ export interface ExecutionStepTrace {
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
+  workflowStepIndex: number | null;
+  sequence: number;
 }
 
 export interface GetExecutionStepsResponse {

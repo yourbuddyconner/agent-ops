@@ -75,6 +75,7 @@ type ResumeContext = {
   resumeToken: string;
   decision: ResumeDecision;
   matched: boolean;
+  mismatchStepId?: string;
 };
 
 type ExecutionContext = {
@@ -314,21 +315,14 @@ async function executeSteps(
 
       if (ctx.resume && !ctx.resume.matched) {
         if (ctx.resume.resumeToken !== resumeToken) {
-          const mismatch = `resume_token_mismatch:${step.id}`;
-          result.status = 'failed';
+          // Resume replays from the beginning. Non-matching approvals before the target
+          // checkpoint are treated as already-approved and execution continues.
+          ctx.resume.mismatchStepId ||= step.id;
+          result.status = 'completed';
           result.completedAt = stepTs;
-          result.error = mismatch;
-
-          emit(sink, {
-            type: 'step.failed',
-            executionId: ctx.executionId,
-            stepId: step.id,
-            attempt: ctx.attempt,
-            error: mismatch,
-            ts: stepTs,
-          });
-
-          return { failed: mismatch };
+          result.output = { prompt, decision: 'approve', replayed: true };
+          emit(sink, { type: 'step.completed', executionId: ctx.executionId, stepId: step.id, attempt: ctx.attempt, ts: stepTs });
+          continue;
         }
 
         ctx.resume.matched = true;
@@ -622,7 +616,9 @@ export async function executeWorkflowResume(
 
   if (!context.resume?.matched) {
     const finishedAt = nowIso();
-    const mismatch = 'resume_token_not_found';
+    const mismatch = context.resume?.mismatchStepId
+      ? `resume_token_mismatch:${context.resume.mismatchStepId}`
+      : 'resume_token_not_found';
     emit(sink, { type: 'execution.finished', executionId, status: 'failed', ts: finishedAt, error: mismatch });
     return {
       ok: false,

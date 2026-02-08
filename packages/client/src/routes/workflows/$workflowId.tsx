@@ -505,7 +505,10 @@ function ExecutionRow({ execution }: { execution: Execution }) {
   const [expanded, setExpanded] = React.useState(false);
   const { data: stepData, isLoading } = useExecutionSteps(expanded ? execution.id : '');
   const approveExecution = useApproveExecution();
-  const steps = stepData?.steps ?? [];
+  const steps = React.useMemo(
+    () => [...(stepData?.steps ?? [])].sort(compareStepTraceOrder),
+    [stepData?.steps],
+  );
 
   return (
     <div className="rounded-xl border border-neutral-200 bg-gradient-to-br from-white to-neutral-50 p-3.5 dark:border-neutral-700 dark:from-neutral-900 dark:to-neutral-900/80">
@@ -624,9 +627,7 @@ function ExecutionRow({ execution }: { execution: Execution }) {
                     <summary className="cursor-pointer text-xs font-medium text-neutral-700 dark:text-neutral-300">
                       Step Output
                     </summary>
-                    <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-neutral-100 p-2 text-[11px] leading-5 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
-                      {formatExecutionValue(step.output)}
-                    </pre>
+                    <StepOutputContent output={step.output} />
                   </details>
                 )}
               </div>
@@ -640,6 +641,63 @@ function ExecutionRow({ execution }: { execution: Execution }) {
       )}
     </div>
   );
+}
+
+function stepTimeValue(value?: string | null): number {
+  if (!value) return Number.MAX_SAFE_INTEGER;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? Number.MAX_SAFE_INTEGER : parsed;
+}
+
+function compareStepTraceOrder(
+  left: {
+    attempt: number;
+    stepId: string;
+    sequence?: number | null;
+    workflowStepIndex?: number | null;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    createdAt?: string | null;
+  },
+  right: {
+    attempt: number;
+    stepId: string;
+    sequence?: number | null;
+    workflowStepIndex?: number | null;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    createdAt?: string | null;
+  },
+): number {
+  const leftSequence = typeof left.sequence === 'number' ? left.sequence : Number.MAX_SAFE_INTEGER;
+  const rightSequence = typeof right.sequence === 'number' ? right.sequence : Number.MAX_SAFE_INTEGER;
+  if (leftSequence !== rightSequence) {
+    return leftSequence - rightSequence;
+  }
+
+  if (left.attempt !== right.attempt) {
+    return left.attempt - right.attempt;
+  }
+
+  const leftWorkflowIndex = typeof left.workflowStepIndex === 'number' ? left.workflowStepIndex : Number.MAX_SAFE_INTEGER;
+  const rightWorkflowIndex = typeof right.workflowStepIndex === 'number' ? right.workflowStepIndex : Number.MAX_SAFE_INTEGER;
+  if (leftWorkflowIndex !== rightWorkflowIndex) {
+    return leftWorkflowIndex - rightWorkflowIndex;
+  }
+
+  const leftStart = stepTimeValue(left.startedAt || left.createdAt || null);
+  const rightStart = stepTimeValue(right.startedAt || right.createdAt || null);
+  if (leftStart !== rightStart) {
+    return leftStart - rightStart;
+  }
+
+  const leftEnd = stepTimeValue(left.completedAt || left.createdAt || null);
+  const rightEnd = stepTimeValue(right.completedAt || right.createdAt || null);
+  if (leftEnd !== rightEnd) {
+    return leftEnd - rightEnd;
+  }
+
+  return left.stepId.localeCompare(right.stepId);
 }
 
 function HeroStat({
@@ -690,6 +748,152 @@ function formatExecutionValue(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isPrimitive(value: unknown): value is string | number | boolean | null {
+  return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+}
+
+function formatInlineValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (value === undefined) return '—';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return formatExecutionValue(value);
+}
+
+const COMMAND_OUTPUT_KEYS = new Set([
+  'cwd',
+  'command',
+  'exitCode',
+  'durationMs',
+  'timeoutMs',
+  'stdout',
+  'stderr',
+]);
+
+function getCommandOutputCandidate(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+
+  const hasKnownKeys = Object.keys(value).some((key) => COMMAND_OUTPUT_KEYS.has(key));
+  if (hasKnownKeys) return value;
+
+  const nestedCandidates = [value.output, value.result];
+  for (const nested of nestedCandidates) {
+    if (!isRecord(nested)) continue;
+    const nestedHasKnownKeys = Object.keys(nested).some((key) => COMMAND_OUTPUT_KEYS.has(key));
+    if (nestedHasKnownKeys) return nested;
+  }
+
+  return null;
+}
+
+function OutputMetaRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-neutral-100 px-2 py-1 dark:bg-neutral-800/80">
+      <p className="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-neutral-400">{label}</p>
+      <p className="mt-0.5 truncate text-[11px] text-neutral-800 dark:text-neutral-200">{value || '—'}</p>
+    </div>
+  );
+}
+
+function StreamBlock({
+  label,
+  value,
+  tone = 'neutral',
+}: {
+  label: string;
+  value: string;
+  tone?: 'neutral' | 'error';
+}) {
+  const containerClass = tone === 'error'
+    ? 'border-red-200 bg-red-50/60 dark:border-red-900/50 dark:bg-red-950/20'
+    : 'border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900/40';
+  const textClass = tone === 'error'
+    ? 'text-red-700 dark:text-red-300'
+    : 'text-neutral-700 dark:text-neutral-200';
+
+  return (
+    <div className={cn('rounded-md border p-2', containerClass)}>
+      <p className="text-[10px] font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-400">{label}</p>
+      <pre className={cn('mt-1 max-h-36 overflow-auto whitespace-pre-wrap text-[11px] leading-5', textClass)}>
+        {value}
+      </pre>
+    </div>
+  );
+}
+
+function StepOutputContent({ output }: { output: unknown }) {
+  const commandOutput = getCommandOutputCandidate(output);
+
+  if (commandOutput) {
+    const stdout = typeof commandOutput.stdout === 'string' ? commandOutput.stdout : '';
+    const stderr = typeof commandOutput.stderr === 'string' ? commandOutput.stderr : '';
+
+    return (
+      <div className="mt-2 space-y-2">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <OutputMetaRow label="Exit Code" value={formatInlineValue(commandOutput.exitCode)} />
+          <OutputMetaRow label="Duration" value={formatInlineValue(commandOutput.durationMs)} />
+          <OutputMetaRow label="Timeout" value={formatInlineValue(commandOutput.timeoutMs)} />
+          <OutputMetaRow label="Working Dir" value={formatInlineValue(commandOutput.cwd)} />
+        </div>
+
+        {stdout ? <StreamBlock label="stdout" value={stdout} /> : null}
+        {stderr ? <StreamBlock label="stderr" value={stderr} tone="error" /> : null}
+
+        {!stdout && !stderr ? (
+          <p className="rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 text-[11px] text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900/40 dark:text-neutral-400">
+            No stream output captured for this step.
+          </p>
+        ) : null}
+
+        <details className="rounded border border-neutral-200 px-2 py-1 dark:border-neutral-700">
+          <summary className="cursor-pointer text-[11px] text-neutral-600 dark:text-neutral-300">
+            Raw Payload
+          </summary>
+          <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-neutral-100 p-2 text-[11px] leading-5 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+            {formatExecutionValue(output)}
+          </pre>
+        </details>
+      </div>
+    );
+  }
+
+  if (isRecord(output)) {
+    const entries = Object.entries(output);
+    const primitiveEntries = entries.filter(([, value]) => isPrimitive(value));
+
+    if (primitiveEntries.length > 0) {
+      return (
+        <div className="mt-2 space-y-2">
+          <div className="grid gap-2 sm:grid-cols-2">
+            {primitiveEntries.slice(0, 8).map(([key, value]) => (
+              <OutputMetaRow key={key} label={key} value={formatInlineValue(value)} />
+            ))}
+          </div>
+          <details className="rounded border border-neutral-200 px-2 py-1 dark:border-neutral-700">
+            <summary className="cursor-pointer text-[11px] text-neutral-600 dark:text-neutral-300">
+              Full JSON
+            </summary>
+            <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-neutral-100 p-2 text-[11px] leading-5 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+              {formatExecutionValue(output)}
+            </pre>
+          </details>
+        </div>
+      );
+    }
+  }
+
+  return (
+    <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-neutral-100 p-2 text-[11px] leading-5 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+      {formatExecutionValue(output)}
+    </pre>
+  );
 }
 
 function countNestedSteps(step: WorkflowStep): number {

@@ -154,6 +154,59 @@ describe('workflow-engine', () => {
     expect(resumed.steps[0]?.status).toBe('cancelled');
   });
 
+  it('supports resuming workflows with multiple approval checkpoints', async () => {
+    const compiled = await compileWorkflowDefinition({
+      steps: [
+        { id: 'initial_checks', type: 'tool', tool: 'bash', arguments: { command: 'echo checks' } },
+        { id: 'first_approval', type: 'approval', prompt: 'Proceed to build?' },
+        { id: 'build', type: 'tool', tool: 'bash', arguments: { command: 'echo build' } },
+        { id: 'second_approval', type: 'approval', prompt: 'Proceed to deploy?' },
+        { id: 'deploy', type: 'tool', tool: 'bash', arguments: { command: 'echo deploy' } },
+      ],
+    });
+
+    if (!compiled.ok || !compiled.workflow) {
+      throw new Error('compile failed');
+    }
+
+    const firstRun = await executeWorkflowRun('ex_multi_approval', compiled.workflow, { variables: {} });
+    expect(firstRun.status).toBe('needs_approval');
+    expect(firstRun.requiresApproval?.stepId).toBe('first_approval');
+
+    const firstToken = firstRun.requiresApproval?.resumeToken;
+    if (!firstToken) {
+      throw new Error('missing first resume token');
+    }
+
+    const secondRun = await executeWorkflowResume(
+      'ex_multi_approval',
+      compiled.workflow,
+      { variables: {} },
+      firstToken,
+      'approve',
+    );
+
+    expect(secondRun.status).toBe('needs_approval');
+    expect(secondRun.requiresApproval?.stepId).toBe('second_approval');
+
+    const secondToken = secondRun.requiresApproval?.resumeToken;
+    if (!secondToken) {
+      throw new Error('missing second resume token');
+    }
+
+    const thirdRun = await executeWorkflowResume(
+      'ex_multi_approval',
+      compiled.workflow,
+      { variables: {} },
+      secondToken,
+      'approve',
+    );
+
+    expect(thirdRun.status).toBe('ok');
+    expect(thirdRun.steps.find((step) => step.stepId === 'first_approval')?.status).toBe('completed');
+    expect(thirdRun.steps.find((step) => step.stepId === 'second_approval')?.status).toBe('completed');
+  });
+
   it('fails resume when token does not match the paused checkpoint', async () => {
     const compiled = await compileWorkflowDefinition({
       steps: [

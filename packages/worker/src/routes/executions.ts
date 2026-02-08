@@ -45,6 +45,54 @@ function parseNullableJson(raw: string | null): unknown | null {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function buildWorkflowStepOrderMap(workflowSnapshotRaw: string | null): Map<string, number> {
+  if (!workflowSnapshotRaw) return new Map();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(workflowSnapshotRaw);
+  } catch {
+    return new Map();
+  }
+
+  const order = new Map<string, number>();
+  let index = 0;
+
+  const visitStepList = (rawSteps: unknown): void => {
+    if (!Array.isArray(rawSteps)) return;
+
+    for (const entry of rawSteps) {
+      if (!isRecord(entry)) continue;
+
+      const stepId = typeof entry.id === 'string' ? entry.id : '';
+      if (stepId && !order.has(stepId)) {
+        order.set(stepId, index);
+        index += 1;
+      }
+
+      visitStepList(entry.then);
+      visitStepList(entry.else);
+      visitStepList(entry.steps);
+    }
+  };
+
+  if (isRecord(parsed)) {
+    visitStepList(parsed.steps);
+  } else if (Array.isArray(parsed)) {
+    visitStepList(parsed);
+  }
+
+  return order;
+}
+
+function rankStepOrderIndex(value: number | null): number {
+  return value ?? Number.MAX_SAFE_INTEGER;
+}
+
 /**
  * GET /api/executions
  * List recent workflow executions for the user
@@ -149,10 +197,10 @@ executionsRouter.get('/:id/steps', async (c) => {
   const user = c.get('user');
 
   const execution = await c.env.DB.prepare(`
-    SELECT id, user_id
+    SELECT id, user_id, workflow_snapshot
     FROM workflow_executions
     WHERE id = ?
-  `).bind(id).first<{ id: string; user_id: string }>();
+  `).bind(id).first<{ id: string; user_id: string; workflow_snapshot: string | null }>();
 
   if (!execution) {
     throw new NotFoundError('Execution', id);
@@ -161,26 +209,66 @@ executionsRouter.get('/:id/steps', async (c) => {
     throw new UnauthorizedError('Unauthorized to access this execution');
   }
 
+  const workflowStepOrder = buildWorkflowStepOrderMap(execution.workflow_snapshot);
+
   const result = await c.env.DB.prepare(`
-    SELECT id, execution_id, step_id, attempt, status, input_json, output_json, error, started_at, completed_at, created_at
+    SELECT rowid AS insertion_order,
+           id, execution_id, step_id, attempt, status, input_json, output_json, error, started_at, completed_at, created_at
     FROM workflow_execution_steps
     WHERE execution_id = ?
-    ORDER BY attempt ASC, created_at ASC, step_id ASC
+    ORDER BY
+      attempt ASC,
+      insertion_order ASC
   `).bind(id).all();
 
-  const steps = result.results.map((row) => ({
-    id: row.id,
-    executionId: row.execution_id,
-    stepId: row.step_id,
-    attempt: row.attempt,
-    status: row.status,
-    input: parseNullableJson((row.input_json as string | null) || null),
-    output: parseNullableJson((row.output_json as string | null) || null),
-    error: row.error,
-    startedAt: row.started_at,
-    completedAt: row.completed_at,
-    createdAt: row.created_at,
-  }));
+  const steps = result.results
+    .map((row) => ({
+      id: row.id,
+      executionId: row.execution_id,
+      stepId: String(row.step_id),
+      attempt: Number(row.attempt || 1),
+      status: String(row.status),
+      input: parseNullableJson((row.input_json as string | null) || null),
+      output: parseNullableJson((row.output_json as string | null) || null),
+      error: (row.error as string | null) || null,
+      startedAt: (row.started_at as string | null) || null,
+      completedAt: (row.completed_at as string | null) || null,
+      createdAt: String(row.created_at),
+      workflowStepIndex: workflowStepOrder.get(String(row.step_id)) ?? null,
+      insertionOrder: Number(row.insertion_order || 0),
+    }))
+    .sort((left, right) => {
+      if (left.attempt !== right.attempt) {
+        return left.attempt - right.attempt;
+      }
+
+      const leftIndex = rankStepOrderIndex(left.workflowStepIndex);
+      const rightIndex = rankStepOrderIndex(right.workflowStepIndex);
+      if (leftIndex !== rightIndex) {
+        return leftIndex - rightIndex;
+      }
+
+      if (left.insertionOrder !== right.insertionOrder) {
+        return left.insertionOrder - right.insertionOrder;
+      }
+
+      return left.stepId.localeCompare(right.stepId);
+    })
+    .map((step, sequence) => ({
+      id: step.id,
+      executionId: step.executionId,
+      stepId: step.stepId,
+      attempt: step.attempt,
+      status: step.status,
+      input: step.input,
+      output: step.output,
+      error: step.error,
+      startedAt: step.startedAt,
+      completedAt: step.completedAt,
+      createdAt: step.createdAt,
+      workflowStepIndex: step.workflowStepIndex,
+      sequence,
+    }));
 
   return c.json({ steps });
 });
