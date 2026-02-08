@@ -30,6 +30,10 @@
     "- Use `sync_workflow` to create or update workflows so they appear in the Workflows UI.",
     "- Use `list_workflows` before creating a workflow to avoid duplicates.",
     "- Use `run_workflow` to execute a workflow immediately.",
-    "- Use `list_workflow_executions` to inspect recent workflow runs."
+    "- Use `list_workflow_executions` to inspect recent workflow runs.",
+    "- Use `list_triggers` to inspect existing trigger configuration before changing it.",
+    "- Use `sync_trigger` to create/update manual, webhook, and schedule triggers.",
+    "- Use `run_trigger` to test trigger behavior immediately.",
+    "- Use `delete_trigger` to remove stale triggers."
   ]
 }

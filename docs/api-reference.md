@@ -49,3 +49,7 @@
 | `/api/triggers` | GET/POST | List/create triggers |
 | `/api/executions` | GET | Execution history |
 | `/webhooks/:path` | POST | Webhook trigger endpoint |
+
+Schedule trigger notes:
+- `config.target = "workflow"` (default) enqueues a workflow execution on cron tick.
+- `config.target = "orchestrator"` requires `config.prompt` and delivers that prompt to the user's orchestrator session.

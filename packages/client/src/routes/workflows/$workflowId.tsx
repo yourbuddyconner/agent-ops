@@ -12,13 +12,14 @@ import {
   type WorkflowStep,
 } from '@/api/workflows';
 import { useWorkflowExecutions, useExecutionSteps, useApproveExecution, type Execution } from '@/api/executions';
-import { useTriggers, useCreateTrigger } from '@/api/triggers';
+import { useTriggers } from '@/api/triggers';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EditWorkflowDialog } from '@/components/workflows/edit-workflow-dialog';
 import { EditWorkflowStepDialog } from '@/components/workflows/edit-workflow-step-dialog';
+import { WorkflowTriggerManager } from '@/components/workflows/workflow-trigger-manager';
 import { formatRelativeTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
@@ -34,7 +35,6 @@ function WorkflowDetailPage() {
   const { data: historyData, isLoading: historyLoading } = useWorkflowHistory(workflowId);
   const { data: triggersData } = useTriggers();
   const runWorkflow = useRunWorkflow();
-  const createTrigger = useCreateTrigger();
   const applyProposal = useApplyWorkflowProposal();
   const reviewProposal = useReviewWorkflowProposal();
   const rollbackWorkflow = useRollbackWorkflowVersion();
@@ -50,19 +50,6 @@ function WorkflowDetailPage() {
       await runWorkflow.mutateAsync({ workflowId });
     } catch (err) {
       console.error('Failed to run workflow:', err);
-    }
-  };
-
-  const handleCreateManualTrigger = async () => {
-    try {
-      await createTrigger.mutateAsync({
-        workflowId,
-        name: 'Manual Trigger',
-        enabled: true,
-        config: { type: 'manual' },
-      });
-    } catch (err) {
-      console.error('Failed to create trigger:', err);
     }
   };
 
@@ -287,57 +274,7 @@ function WorkflowDetailPage() {
             </CardContent>
           </Card>
 
-          <Card className="overflow-hidden border-neutral-200/80 dark:border-neutral-700/80">
-            <CardHeader className="border-b border-neutral-100 bg-gradient-to-r from-neutral-50 to-cyan-50/60 dark:border-neutral-800 dark:from-neutral-900 dark:to-neutral-900">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <CardTitle className="text-lg">Triggers</CardTitle>
-                  <CardDescription>Launch points into this workflow runtime.</CardDescription>
-                </div>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={handleCreateManualTrigger}
-                  disabled={createTrigger.isPending}
-                >
-                  Add
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="p-4 sm:p-5">
-              {triggers.length > 0 ? (
-                <div className="space-y-2.5">
-                  {triggers.map((trigger) => (
-                    <div
-                      key={trigger.id}
-                      className="flex items-center justify-between gap-3 rounded-xl border border-neutral-200 bg-white/70 p-3 dark:border-neutral-700 dark:bg-neutral-900/70"
-                    >
-                      <div className="flex min-w-0 items-center gap-2.5">
-                        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800">
-                          <TriggerTypeIcon type={trigger.type} />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                            {trigger.name}
-                          </p>
-                          <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                            {trigger.type}
-                          </p>
-                        </div>
-                      </div>
-                      <Badge variant={trigger.enabled ? 'success' : 'secondary'} className="text-xs">
-                        {trigger.enabled ? 'On' : 'Off'}
-                      </Badge>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-pretty text-neutral-500 dark:text-neutral-400">
-                  No triggers configured. Add a trigger to automate this workflow.
-                </p>
-              )}
-            </CardContent>
-          </Card>
+          <WorkflowTriggerManager workflowId={workflowId} triggers={triggers} />
 
           <Card className="overflow-hidden border-neutral-200/80 dark:border-neutral-700/80">
             <CardHeader className="border-b border-neutral-100 bg-gradient-to-r from-neutral-50 to-emerald-50/60 dark:border-neutral-800 dark:from-neutral-900 dark:to-neutral-900">

@@ -217,3 +217,65 @@ export async function checkWorkflowConcurrency(
 
   return { allowed: true, activeUser, activeGlobal };
 }
+
+type OrchestratorPromptDispatchResult = {
+  dispatched: boolean;
+  sessionId: string;
+  reason?: string;
+};
+
+const ORCHESTRATOR_UNAVAILABLE_STATUSES = new Set(['terminated', 'error']);
+
+export async function dispatchOrchestratorPrompt(
+  env: Env,
+  params: {
+    userId: string;
+    content: string;
+    authorName?: string;
+    authorEmail?: string;
+  }
+): Promise<OrchestratorPromptDispatchResult> {
+  const sessionId = `orchestrator:${params.userId}`;
+  const content = params.content.trim();
+  if (!content) {
+    return { dispatched: false, sessionId, reason: 'empty_prompt' };
+  }
+
+  const session = await db.getSession(env.DB, sessionId);
+  if (!session || session.purpose !== 'orchestrator') {
+    return { dispatched: false, sessionId, reason: 'orchestrator_not_configured' };
+  }
+  if (ORCHESTRATOR_UNAVAILABLE_STATUSES.has(session.status)) {
+    return { dispatched: false, sessionId, reason: `orchestrator_unavailable:${session.status}` };
+  }
+
+  const messageId = crypto.randomUUID();
+  await db.saveMessage(env.DB, {
+    id: messageId,
+    sessionId,
+    role: 'user',
+    content,
+    authorId: params.userId,
+    authorName: params.authorName,
+    authorEmail: params.authorEmail,
+  });
+
+  const doId = env.SESSIONS.idFromName(sessionId);
+  const sessionDO = env.SESSIONS.get(doId);
+  const doRes = await sessionDO.fetch(new Request('http://do/prompt', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  }));
+
+  if (!doRes.ok) {
+    const errText = (await doRes.text().catch(() => '')).slice(0, 200);
+    return {
+      dispatched: false,
+      sessionId,
+      reason: `orchestrator_dispatch_failed:${doRes.status}${errText ? `:${errText}` : ''}`,
+    };
+  }
+
+  return { dispatched: true, sessionId };
+}

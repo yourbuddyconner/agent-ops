@@ -13,7 +13,7 @@ function createClientRequestId(): string {
 // Types
 export interface Trigger {
   id: string;
-  workflowId: string;
+  workflowId: string | null;
   workflowName: string | null;
   name: string;
   enabled: boolean;
@@ -38,6 +38,8 @@ export interface ScheduleConfig {
   type: 'schedule';
   cron: string;
   timezone?: string;
+  target?: 'workflow' | 'orchestrator';
+  prompt?: string;
 }
 
 export interface ManualConfig {
@@ -47,7 +49,7 @@ export interface ManualConfig {
 export type TriggerConfig = WebhookConfig | ScheduleConfig | ManualConfig;
 
 export interface CreateTriggerRequest {
-  workflowId: string;
+  workflowId?: string;
   name: string;
   enabled?: boolean;
   config: TriggerConfig;
@@ -55,6 +57,7 @@ export interface CreateTriggerRequest {
 }
 
 export interface UpdateTriggerRequest {
+  workflowId?: string | null;
   name?: string;
   enabled?: boolean;
   config?: TriggerConfig;
@@ -103,7 +106,9 @@ export function useCreateTrigger() {
       api.post<Trigger>('/triggers', data),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: triggerKeys.lists() });
-      queryClient.invalidateQueries({ queryKey: triggerKeys.byWorkflow(variables.workflowId) });
+      if (variables.workflowId) {
+        queryClient.invalidateQueries({ queryKey: triggerKeys.byWorkflow(variables.workflowId) });
+      }
     },
   });
 }
@@ -165,19 +170,22 @@ export function useRunTrigger() {
   return useMutation({
     mutationFn: ({ triggerId, variables }: { triggerId: string; variables?: Record<string, unknown> }) =>
       api.post<{
-        executionId: string;
-        workflowId: string;
-        workflowName: string;
+        executionId?: string;
+        workflowId?: string | null;
+        workflowName?: string | null;
         status: string;
-        variables: Record<string, unknown>;
+        variables?: Record<string, unknown>;
         sessionId?: string;
         message: string;
+        dispatched?: boolean;
       }>(`/triggers/${triggerId}/run`, {
         variables,
         clientRequestId: createClientRequestId(),
       }),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: workflowKeys.executions(data.workflowId) });
+      if (data.workflowId) {
+        queryClient.invalidateQueries({ queryKey: workflowKeys.executions(data.workflowId) });
+      }
     },
   });
 }

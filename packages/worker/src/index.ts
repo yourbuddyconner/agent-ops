@@ -28,7 +28,13 @@ import { invitesRouter, invitesApiRouter } from './routes/invites.js';
 import { orgReposAdminRouter, orgReposReadRouter } from './routes/org-repos.js';
 import { personasRouter } from './routes/personas.js';
 import { orchestratorRouter } from './routes/orchestrator.js';
-import { checkWorkflowConcurrency, createWorkflowSession, enqueueWorkflowExecution, sha256Hex } from './lib/workflow-runtime.js';
+import {
+  checkWorkflowConcurrency,
+  createWorkflowSession,
+  dispatchOrchestratorPrompt,
+  enqueueWorkflowExecution,
+  sha256Hex,
+} from './lib/workflow-runtime.js';
 
 // Durable Object exports
 export { APIKeysDurableObject } from './durable-objects/api-keys.js';
@@ -613,28 +619,34 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
       t.user_id,
       t.workflow_id,
       t.config,
+      w.enabled as workflow_enabled,
       w.name as workflow_name,
       w.version as workflow_version,
       w.data as workflow_data
     FROM triggers t
-    JOIN workflows w ON t.workflow_id = w.id
+    LEFT JOIN workflows w ON t.workflow_id = w.id
     WHERE t.type = 'schedule'
       AND t.enabled = 1
-      AND w.enabled = 1
   `).all<{
     trigger_id: string;
     user_id: string;
-    workflow_id: string;
+    workflow_id: string | null;
     config: string;
-    workflow_name: string;
+    workflow_enabled: number | null;
+    workflow_name: string | null;
     workflow_version: string | null;
-    workflow_data: string;
+    workflow_data: string | null;
   }>();
 
   let dispatched = 0;
 
   for (const row of result.results || []) {
-    let config: { cron?: string; timezone?: string };
+    let config: {
+      cron?: string;
+      timezone?: string;
+      target?: 'workflow' | 'orchestrator';
+      prompt?: string;
+    };
     try {
       config = JSON.parse(row.config);
     } catch {
@@ -646,11 +658,94 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
       continue;
     }
 
-    const concurrency = await checkWorkflowConcurrency(env.DB, row.user_id);
-    if (!concurrency.allowed) {
-      console.warn(
-        `Skipping scheduled workflow dispatch for trigger ${row.trigger_id}: ${concurrency.reason} (activeUser=${concurrency.activeUser}, activeGlobal=${concurrency.activeGlobal})`,
-      );
+    const target = config.target === 'orchestrator' ? 'orchestrator' : 'workflow';
+
+    if (target === 'workflow') {
+      if (!row.workflow_id || !row.workflow_data || !row.workflow_enabled) {
+        continue;
+      }
+
+      const concurrency = await checkWorkflowConcurrency(env.DB, row.user_id);
+      if (!concurrency.allowed) {
+        console.warn(
+          `Skipping scheduled workflow dispatch for trigger ${row.trigger_id}: ${concurrency.reason} (activeUser=${concurrency.activeUser}, activeGlobal=${concurrency.activeGlobal})`,
+        );
+        continue;
+      }
+
+      const tickInsert = await env.DB.prepare(`
+        INSERT INTO workflow_schedule_ticks (id, trigger_id, tick_bucket)
+        VALUES (?, ?, ?)
+        ON CONFLICT(trigger_id, tick_bucket) DO NOTHING
+      `).bind(crypto.randomUUID(), row.trigger_id, tickBucket).run();
+
+      if ((tickInsert.meta.changes ?? 0) === 0) {
+        continue;
+      }
+
+      const executionId = crypto.randomUUID();
+      const workflowHash = await sha256Hex(String(row.workflow_data ?? '{}'));
+      const sessionId = await createWorkflowSession(env.DB, {
+        userId: row.user_id,
+        workflowId: row.workflow_id,
+        executionId,
+      });
+
+      const variables = {
+        _trigger: {
+          type: 'schedule',
+          triggerId: row.trigger_id,
+          cron: config.cron,
+          timezone,
+          eventCron: event.cron,
+          tickBucket,
+          timestamp: now.toISOString(),
+        },
+      };
+
+      const idempotencyKey = `schedule:${row.trigger_id}:${tickBucket}`;
+      await env.DB.prepare(`
+        INSERT INTO workflow_executions
+          (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
+           workflow_version, workflow_hash, workflow_snapshot, idempotency_key, session_id, initiator_type, initiator_user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        executionId,
+        row.workflow_id,
+        row.user_id,
+        row.trigger_id,
+        'pending',
+        'schedule',
+        JSON.stringify({ cron: config.cron, timezone, tickBucket }),
+        JSON.stringify(variables),
+        now.toISOString(),
+        row.workflow_version || null,
+        workflowHash,
+        row.workflow_data,
+        idempotencyKey,
+        sessionId,
+        'schedule',
+        row.user_id
+      ).run();
+
+      await env.DB.prepare(`
+        UPDATE triggers SET last_run_at = ? WHERE id = ?
+      `).bind(now.toISOString(), row.trigger_id).run();
+
+      await enqueueWorkflowExecution(env, {
+        executionId,
+        workflowId: row.workflow_id,
+        userId: row.user_id,
+        sessionId,
+        triggerType: 'schedule',
+      });
+
+      dispatched++;
+      continue;
+    }
+
+    const prompt = config.prompt?.trim();
+    if (!prompt) {
       continue;
     }
 
@@ -664,67 +759,27 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
       continue;
     }
 
-    const executionId = crypto.randomUUID();
-    const workflowHash = await sha256Hex(String(row.workflow_data ?? '{}'));
-    const sessionId = await createWorkflowSession(env.DB, {
+    const dispatch = await dispatchOrchestratorPrompt(env, {
       userId: row.user_id,
-      workflowId: row.workflow_id,
-      executionId,
+      content: prompt,
+      authorName: 'Scheduled Task',
+      authorEmail: 'scheduled-task@agent-ops.local',
     });
 
-    const variables = {
-      _trigger: {
-        type: 'schedule',
-        triggerId: row.trigger_id,
-        cron: config.cron,
-        timezone,
-        eventCron: event.cron,
-        tickBucket,
-        timestamp: now.toISOString(),
-      },
-    };
-
-    const idempotencyKey = `schedule:${row.trigger_id}:${tickBucket}`;
-    await env.DB.prepare(`
-      INSERT INTO workflow_executions
-        (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
-         workflow_version, workflow_hash, workflow_snapshot, idempotency_key, session_id, initiator_type, initiator_user_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      executionId,
-      row.workflow_id,
-      row.user_id,
-      row.trigger_id,
-      'pending',
-      'schedule',
-      JSON.stringify({ cron: config.cron, timezone, tickBucket }),
-      JSON.stringify(variables),
-      now.toISOString(),
-      row.workflow_version || null,
-      workflowHash,
-      row.workflow_data,
-      idempotencyKey,
-      sessionId,
-      'schedule',
-      row.user_id
-    ).run();
+    if (!dispatch.dispatched) {
+      console.warn(
+        `Skipping scheduled orchestrator prompt for trigger ${row.trigger_id}: ${dispatch.reason || 'unknown_reason'}`,
+      );
+      continue;
+    }
 
     await env.DB.prepare(`
       UPDATE triggers SET last_run_at = ? WHERE id = ?
     `).bind(now.toISOString(), row.trigger_id).run();
-
-    await enqueueWorkflowExecution(env, {
-      executionId,
-      workflowId: row.workflow_id,
-      userId: row.user_id,
-      sessionId,
-      triggerType: 'schedule',
-    });
-
     dispatched++;
   }
 
-  console.log(`Scheduled workflow dispatch complete: ${dispatched} execution(s) enqueued`);
+  console.log(`Scheduled dispatch complete: ${dispatched} trigger(s) processed`);
 }
 
 export default {

@@ -3,7 +3,13 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { NotFoundError, ValidationError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
-import { checkWorkflowConcurrency, createWorkflowSession, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
+import {
+  checkWorkflowConcurrency,
+  createWorkflowSession,
+  dispatchOrchestratorPrompt,
+  enqueueWorkflowExecution,
+  sha256Hex,
+} from '../lib/workflow-runtime.js';
 
 export const triggersRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -20,6 +26,8 @@ const scheduleConfigSchema = z.object({
   type: z.literal('schedule'),
   cron: z.string().min(1),
   timezone: z.string().optional(),
+  target: z.enum(['workflow', 'orchestrator']).optional().default('workflow'),
+  prompt: z.string().min(1).max(100000).optional(),
 });
 
 const manualConfigSchema = z.object({
@@ -32,15 +40,40 @@ const triggerConfigSchema = z.discriminatedUnion('type', [
   manualConfigSchema,
 ]);
 
+function scheduleTarget(config: z.infer<typeof triggerConfigSchema>): 'workflow' | 'orchestrator' {
+  if (config.type !== 'schedule') return 'workflow';
+  return config.target === 'orchestrator' ? 'orchestrator' : 'workflow';
+}
+
+function requiresWorkflow(config: z.infer<typeof triggerConfigSchema>): boolean {
+  return config.type !== 'schedule' || scheduleTarget(config) === 'workflow';
+}
+
 const createTriggerSchema = z.object({
-  workflowId: z.string().min(1),
+  workflowId: z.string().min(1).optional(),
   name: z.string().min(1),
   enabled: z.boolean().optional().default(true),
   config: triggerConfigSchema,
   variableMapping: z.record(z.string()).optional(),
+}).superRefine((value, ctx) => {
+  if (value.config.type === 'schedule' && scheduleTarget(value.config) === 'orchestrator' && !value.config.prompt?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Schedule triggers targeting orchestrator require a prompt',
+      path: ['config', 'prompt'],
+    });
+  }
+  if (requiresWorkflow(value.config) && !value.workflowId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'workflowId is required for this trigger type',
+      path: ['workflowId'],
+    });
+  }
 });
 
 const updateTriggerSchema = z.object({
+  workflowId: z.string().min(1).nullable().optional(),
   name: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
   config: triggerConfigSchema.optional(),
@@ -262,13 +295,20 @@ triggersRouter.post('/', zValidator('json', createTriggerSchema), async (c) => {
   const user = c.get('user');
   const body = c.req.valid('json');
 
-  // Verify user owns the workflow
-  const workflow = await c.env.DB.prepare(`
-    SELECT id FROM workflows WHERE (id = ? OR slug = ?) AND user_id = ?
-  `).bind(body.workflowId, body.workflowId, user.id).first();
+  const requiresLinkedWorkflow = requiresWorkflow(body.config);
+  let workflowId: string | null = null;
+  if (requiresLinkedWorkflow || body.workflowId) {
+    const workflow = await c.env.DB.prepare(`
+      SELECT id FROM workflows WHERE (id = ? OR slug = ?) AND user_id = ?
+    `).bind(body.workflowId, body.workflowId, user.id).first<{ id: string }>();
 
-  if (!workflow) {
-    throw new NotFoundError('Workflow', body.workflowId);
+    if (!workflow) {
+      if (requiresLinkedWorkflow) {
+        throw new NotFoundError('Workflow', body.workflowId || '<missing>');
+      }
+      throw new NotFoundError('Workflow', body.workflowId || '<invalid>');
+    }
+    workflowId = workflow.id;
   }
 
   // For webhook triggers, verify path uniqueness
@@ -294,7 +334,7 @@ triggersRouter.post('/', zValidator('json', createTriggerSchema), async (c) => {
   `).bind(
     id,
     user.id,
-    workflow.id as string,
+    workflowId,
     body.name,
     body.enabled ? 1 : 0,
     body.config.type,
@@ -315,7 +355,7 @@ triggersRouter.post('/', zValidator('json', createTriggerSchema), async (c) => {
   return c.json(
     {
       id,
-      workflowId: workflow.id,
+      workflowId,
       name: body.name,
       enabled: body.enabled,
       type: body.config.type,
@@ -341,21 +381,45 @@ triggersRouter.patch('/:id', zValidator('json', updateTriggerSchema), async (c) 
   // Verify trigger exists and user owns it
   const existing = await c.env.DB.prepare(`
     SELECT * FROM triggers WHERE id = ? AND user_id = ?
-  `).bind(id, user.id).first();
+  `).bind(id, user.id).first<{ config: string; workflow_id: string | null }>();
 
   if (!existing) {
     throw new NotFoundError('Trigger', id);
   }
 
+  const currentConfig = JSON.parse(existing.config) as z.infer<typeof triggerConfigSchema>;
+  const nextConfig = body.config ?? currentConfig;
+  let nextWorkflowId = body.workflowId !== undefined ? body.workflowId : existing.workflow_id;
+
+  if (nextConfig.type === 'schedule' && scheduleTarget(nextConfig) === 'orchestrator' && !nextConfig.prompt?.trim()) {
+    throw new ValidationError('Schedule triggers targeting orchestrator require a prompt');
+  }
+
+  if (requiresWorkflow(nextConfig) && !nextWorkflowId) {
+    throw new ValidationError('workflowId is required for this trigger type');
+  }
+
+  if (nextWorkflowId) {
+    const workflow = await c.env.DB.prepare(`
+      SELECT id FROM workflows WHERE (id = ? OR slug = ?) AND user_id = ?
+    `).bind(nextWorkflowId, nextWorkflowId, user.id).first<{ id: string }>();
+
+    if (!workflow) {
+      throw new NotFoundError('Workflow', nextWorkflowId);
+    }
+
+    nextWorkflowId = workflow.id;
+  }
+
   // For webhook path changes, verify uniqueness
-  if (body.config?.type === 'webhook') {
+  if (nextConfig.type === 'webhook') {
     const conflict = await c.env.DB.prepare(`
       SELECT id FROM triggers
       WHERE user_id = ?
       AND type = 'webhook'
       AND json_extract(config, '$.path') = ?
       AND id != ?
-    `).bind(user.id, body.config.path, id).first();
+    `).bind(user.id, nextConfig.path, id).first();
 
     if (conflict) {
       throw new ValidationError('Webhook path already in use');
@@ -373,6 +437,10 @@ triggersRouter.patch('/:id', zValidator('json', updateTriggerSchema), async (c) 
   if (body.enabled !== undefined) {
     updates.push('enabled = ?');
     values.push(body.enabled ? 1 : 0);
+  }
+  if (body.workflowId !== undefined || (body.config && !requiresWorkflow(body.config))) {
+    updates.push('workflow_id = ?');
+    values.push(nextWorkflowId);
   }
   if (body.config !== undefined) {
     updates.push('type = ?');
@@ -466,19 +534,71 @@ triggersRouter.post('/:id/run', zValidator('json', triggerRunSchema), async (c) 
   const row = await c.env.DB.prepare(`
     SELECT t.*, w.id as wf_id, w.name as workflow_name, w.version as workflow_version, w.data as workflow_data
     FROM triggers t
-    JOIN workflows w ON t.workflow_id = w.id
+    LEFT JOIN workflows w ON t.workflow_id = w.id
     WHERE t.id = ? AND t.user_id = ?
   `).bind(id, user.id).first<{
     id: string;
-    wf_id: string;
-    workflow_name: string;
+    type: 'webhook' | 'schedule' | 'manual';
+    config: string;
+    wf_id: string | null;
+    workflow_name: string | null;
     workflow_version: string | null;
-    workflow_data: string;
+    workflow_data: string | null;
     variable_mapping: string | null;
   }>();
 
   if (!row) {
     throw new NotFoundError('Trigger', id);
+  }
+
+  const config = JSON.parse(row.config) as z.infer<typeof triggerConfigSchema>;
+  const isOrchestratorSchedule = config.type === 'schedule' && scheduleTarget(config) === 'orchestrator';
+  if (isOrchestratorSchedule) {
+    const prompt = config.prompt?.trim();
+    if (!prompt) {
+      throw new ValidationError('Schedule triggers targeting orchestrator require a prompt');
+    }
+
+    const dispatch = await dispatchOrchestratorPrompt(c.env, {
+      userId: user.id,
+      content: prompt,
+    });
+
+    const now = new Date().toISOString();
+    if (dispatch.dispatched) {
+      await c.env.DB.prepare(`
+        UPDATE triggers SET last_run_at = ? WHERE id = ?
+      `).bind(now, id).run();
+    }
+
+    if (!dispatch.dispatched) {
+      return c.json(
+        {
+          error: `Failed to dispatch orchestrator prompt: ${dispatch.reason || 'unknown_error'}`,
+          status: 'failed',
+          workflowId: row.wf_id,
+          workflowName: row.workflow_name,
+          sessionId: dispatch.sessionId,
+          reason: dispatch.reason || 'unknown_error',
+        },
+        409,
+      );
+    }
+
+    return c.json(
+      {
+        status: 'queued',
+        workflowId: row.wf_id,
+        workflowName: row.workflow_name,
+        sessionId: dispatch.sessionId,
+        message: 'Orchestrator prompt dispatched.',
+      },
+      202,
+    );
+  }
+
+  if (!row.wf_id || !row.workflow_data) {
+    throw new ValidationError('Trigger is not linked to a workflow');
   }
 
   const concurrency = await checkWorkflowConcurrency(c.env.DB, user.id);
