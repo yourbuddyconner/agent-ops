@@ -129,6 +129,14 @@ function GeneralTab() {
           </div>
         </div>
       </SettingsSection>
+    </div>
+  );
+}
+
+function AgentTab() {
+  return (
+    <div className="space-y-6">
+      <OrchestratorIdentitySection />
 
       <div className="rounded-lg border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-neutral-800">
         <div className="flex items-center justify-between">
@@ -146,14 +154,7 @@ function GeneralTab() {
           </Link>
         </div>
       </div>
-    </div>
-  );
-}
 
-function AgentTab() {
-  return (
-    <div className="space-y-6">
-      <OrchestratorIdentitySection />
       <ModelPreferencesSection />
       <IdleTimeoutSection />
     </div>
