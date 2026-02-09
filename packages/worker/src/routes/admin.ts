@@ -36,7 +36,21 @@ adminRouter.put('/', async (c) => {
     allowedEmails?: string;
     domainGatingEnabled?: boolean;
     emailAllowlistEnabled?: boolean;
+    modelPreferences?: string[];
   }>();
+
+  if (body.modelPreferences !== undefined) {
+    if (!Array.isArray(body.modelPreferences)) {
+      throw new ValidationError('modelPreferences must be an array of strings');
+    }
+    if (body.modelPreferences.length > 20) {
+      throw new ValidationError('modelPreferences cannot exceed 20 items');
+    }
+    if (!body.modelPreferences.every((m) => typeof m === 'string' && m.length <= 255)) {
+      throw new ValidationError('Each model preference must be a string (max 255 chars)');
+    }
+  }
+
   const settings = await updateOrgSettings(c.env.DB, body);
   return c.json(settings);
 });

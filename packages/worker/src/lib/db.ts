@@ -628,7 +628,7 @@ export async function getOrgSettings(db: D1Database): Promise<OrgSettings> {
 
 export async function updateOrgSettings(
   db: D1Database,
-  updates: Partial<Pick<OrgSettings, 'name' | 'allowedEmailDomain' | 'allowedEmails' | 'domainGatingEnabled' | 'emailAllowlistEnabled'>>
+  updates: Partial<Pick<OrgSettings, 'name' | 'allowedEmailDomain' | 'allowedEmails' | 'domainGatingEnabled' | 'emailAllowlistEnabled' | 'modelPreferences'>>
 ): Promise<OrgSettings> {
   const sets: string[] = [];
   const params: (string | number | null)[] = [];
@@ -638,6 +638,7 @@ export async function updateOrgSettings(
   if (updates.allowedEmails !== undefined) { sets.push('allowed_emails = ?'); params.push(updates.allowedEmails || null); }
   if (updates.domainGatingEnabled !== undefined) { sets.push('domain_gating_enabled = ?'); params.push(updates.domainGatingEnabled ? 1 : 0); }
   if (updates.emailAllowlistEnabled !== undefined) { sets.push('email_allowlist_enabled = ?'); params.push(updates.emailAllowlistEnabled ? 1 : 0); }
+  if (updates.modelPreferences !== undefined) { sets.push('model_preferences = ?'); params.push(updates.modelPreferences ? JSON.stringify(updates.modelPreferences) : null); }
 
   if (sets.length > 0) {
     sets.push("updated_at = datetime('now')");
@@ -1983,6 +1984,7 @@ function mapOrgSettings(row: any): OrgSettings {
     domainGatingEnabled: !!row.domain_gating_enabled,
     emailAllowlistEnabled: !!row.email_allowlist_enabled,
     defaultSessionVisibility: row.default_session_visibility || 'private',
+    modelPreferences: row.model_preferences ? JSON.parse(row.model_preferences) : undefined,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
   };

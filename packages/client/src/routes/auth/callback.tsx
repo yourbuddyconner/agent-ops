@@ -25,7 +25,7 @@ function AuthCallbackPage() {
     useAuthStore.setState({ token });
 
     api
-      .get<{ user: { id: string; email: string; name?: string; avatarUrl?: string; githubUsername?: string; gitName?: string; gitEmail?: string; onboardingCompleted?: boolean; role?: string } }>('/auth/me')
+      .get<{ user: { id: string; email: string; name?: string; avatarUrl?: string; githubUsername?: string; gitName?: string; gitEmail?: string; onboardingCompleted?: boolean; role?: string }; orgModelPreferences?: string[] }>('/auth/me')
       .then((res) => {
         setAuth(token, {
           id: res.user.id,
@@ -39,7 +39,7 @@ function AuthCallbackPage() {
           role: (res.user.role as 'admin' | 'member') || 'member',
           createdAt: new Date(),
           updatedAt: new Date(),
-        });
+        }, res.orgModelPreferences);
         if (!res.user.onboardingCompleted) {
           navigate({ to: '/onboarding' });
         } else {

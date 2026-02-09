@@ -281,6 +281,7 @@ export interface OrgSettings {
   domainGatingEnabled: boolean;
   emailAllowlistEnabled: boolean;
   defaultSessionVisibility: SessionVisibility;
+  modelPreferences?: string[];
   createdAt: Date;
   updatedAt: Date;
 }

@@ -331,7 +331,10 @@ function createInitialState(): ChatState {
 export function useChat(sessionId: string) {
   const queryClient = useQueryClient();
   const userModelPreferences = useAuthStore((s) => s.user?.modelPreferences);
-  const modelPreferences = userModelPreferences ?? EMPTY_MODEL_PREFERENCES;
+  const orgModelPreferences = useAuthStore((s) => s.orgModelPreferences);
+  const modelPreferences = (userModelPreferences && userModelPreferences.length > 0)
+    ? userModelPreferences
+    : orgModelPreferences ?? EMPTY_MODEL_PREFERENCES;
 
   // Keep a ref to sessionId so WebSocket message handlers always read the current value
   // without needing sessionId in their dependency arrays (which would cause reconnects).

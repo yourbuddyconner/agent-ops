@@ -24,7 +24,7 @@ export function useUpdateOrgSettings() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (data: Partial<Pick<OrgSettings, 'name' | 'allowedEmailDomain' | 'allowedEmails' | 'domainGatingEnabled' | 'emailAllowlistEnabled'>>) =>
+    mutationFn: (data: Partial<Pick<OrgSettings, 'name' | 'allowedEmailDomain' | 'allowedEmails' | 'domainGatingEnabled' | 'emailAllowlistEnabled' | 'modelPreferences'>>) =>
       api.put<OrgSettings>('/admin', data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: adminKeys.settings() });

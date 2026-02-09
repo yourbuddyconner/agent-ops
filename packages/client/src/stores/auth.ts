@@ -5,10 +5,11 @@ import type { User } from '@agent-ops/shared';
 interface AuthState {
   token: string | null;
   user: User | null;
+  orgModelPreferences?: string[];
   isAuthenticated: boolean;
   isValidating: boolean;
   isHydrated: boolean;
-  setAuth: (token: string, user: User) => void;
+  setAuth: (token: string, user: User, orgModelPreferences?: string[]) => void;
   clearAuth: () => void;
   setValidating: (validating: boolean) => void;
   setHydrated: (hydrated: boolean) => void;
@@ -19,13 +20,15 @@ export const useAuthStore = create<AuthState>()(
     (set) => ({
       token: null,
       user: null,
+      orgModelPreferences: undefined,
       isAuthenticated: false,
       isValidating: false,
       isHydrated: false,
-      setAuth: (token, user) =>
+      setAuth: (token, user, orgModelPreferences) =>
         set({
           token,
           user,
+          orgModelPreferences,
           isAuthenticated: true,
           isValidating: false,
         }),
@@ -33,6 +36,7 @@ export const useAuthStore = create<AuthState>()(
         set({
           token: null,
           user: null,
+          orgModelPreferences: undefined,
           isAuthenticated: false,
           isValidating: false,
         }),
@@ -46,6 +50,7 @@ export const useAuthStore = create<AuthState>()(
       partialize: (state) => ({
         token: state.token,
         user: state.user,
+        orgModelPreferences: state.orgModelPreferences,
         isAuthenticated: state.isAuthenticated,
       }),
       onRehydrateStorage: () => (state) => {

@@ -13,10 +13,11 @@ export const authRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 authRouter.get('/me', async (c) => {
   const authUser = c.get('user');
 
-  const [fullUser, hasGitHub, hasGoogle] = await Promise.all([
+  const [fullUser, hasGitHub, hasGoogle, orgSettings] = await Promise.all([
     db.getUserById(c.env.DB, authUser.id),
     db.hasOAuthProvider(c.env.DB, authUser.id, 'github'),
     db.hasOAuthProvider(c.env.DB, authUser.id, 'google'),
+    db.getOrgSettings(c.env.DB),
   ]);
 
   return c.json({
@@ -25,6 +26,7 @@ authRouter.get('/me', async (c) => {
       github: hasGitHub,
       google: hasGoogle,
     },
+    orgModelPreferences: orgSettings.modelPreferences,
   });
 });
 

@@ -1,5 +1,5 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramToken } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramToken, getOrgSettings } from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 import { sendTelegramMessage, sendTelegramPhoto } from '../routes/telegram.js';
@@ -510,6 +510,22 @@ export class SessionAgentDO {
     }
   }
 
+  /**
+   * Resolve model preferences: user prefs if set, otherwise org prefs as fallback.
+   */
+  private async resolveModelPreferences(ownerDetails?: CachedUserDetails): Promise<string[] | undefined> {
+    if (ownerDetails?.modelPreferences && ownerDetails.modelPreferences.length > 0) {
+      return ownerDetails.modelPreferences;
+    }
+    try {
+      const orgSettings = await getOrgSettings(this.env.DB);
+      return orgSettings.modelPreferences;
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to fetch org settings for model preferences:', err);
+      return undefined;
+    }
+  }
+
   // ─── Entry Point ───────────────────────────────────────────────────────
 
   async fetch(request: Request): Promise<Response> {
@@ -841,9 +857,10 @@ export class SessionAgentDO {
       if (authorId) {
         this.setStateValue('currentPromptAuthorId', authorId);
       }
-      // Resolve model preferences from session owner
+      // Resolve model preferences from session owner (with org fallback)
       const initOwnerId = this.getStateValue('userId');
       const initOwnerDetails = initOwnerId ? await this.getUserDetails(initOwnerId) : undefined;
+      const initModelPrefs = await this.resolveModelPreferences(initOwnerDetails);
       server.send(JSON.stringify({
         type: 'prompt',
         messageId: prompt.id,
@@ -856,7 +873,7 @@ export class SessionAgentDO {
         authorName: prompt.author_name || undefined,
         gitName: authorDetails?.gitName,
         gitEmail: authorDetails?.gitEmail,
-        modelPreferences: initOwnerDetails?.modelPreferences,
+        modelPreferences: initModelPrefs,
       }));
       this.setStateValue('runnerBusy', 'true');
       console.log('[SessionAgentDO] Runner connected: dispatched queued prompt', prompt.id);
@@ -883,6 +900,7 @@ export class SessionAgentDO {
         });
         const ipOwnerId = this.getStateValue('userId');
         const ipOwnerDetails = ipOwnerId ? await this.getUserDetails(ipOwnerId) : undefined;
+        const ipModelPrefs = await this.resolveModelPreferences(ipOwnerDetails);
         const initialModel = this.getStateValue('initialModel');
         if (initialModel) {
           this.setStateValue('initialModel', ''); // Clear so it only applies once
@@ -892,7 +910,7 @@ export class SessionAgentDO {
           messageId,
           content: initialPrompt,
           model: initialModel || undefined,
-          modelPreferences: ipOwnerDetails?.modelPreferences,
+          modelPreferences: ipModelPrefs,
         }));
         this.setStateValue('runnerBusy', 'true');
         console.log('[SessionAgentDO] Runner connected: dispatched initial prompt', messageId);
@@ -1384,9 +1402,10 @@ export class SessionAgentDO {
       this.pendingChannelReply = null;
     }
 
-    // Resolve model preferences: use the session owner's preferences
+    // Resolve model preferences: user prefs > org prefs fallback
     const ownerId = this.getStateValue('userId');
     const ownerDetails = ownerId ? await this.getUserDetails(ownerId) : undefined;
+    const resolvedModelPrefs = await this.resolveModelPreferences(ownerDetails);
     this.sendToRunner({
       type: 'prompt',
       messageId,
@@ -1400,7 +1419,7 @@ export class SessionAgentDO {
       authorName: author?.name,
       gitName: author?.gitName,
       gitEmail: author?.gitEmail,
-      modelPreferences: ownerDetails?.modelPreferences,
+      modelPreferences: resolvedModelPrefs,
     });
   }
 
@@ -5135,11 +5154,12 @@ export class SessionAgentDO {
           this.setStateValue('runnerBusy', 'true');
           const ownerId = this.getStateValue('userId');
           const ownerDetails = ownerId ? await this.getUserDetails(ownerId) : undefined;
+          const sysModelPrefs = await this.resolveModelPreferences(ownerDetails);
           this.sendToRunner({
             type: 'prompt',
             messageId,
             content,
-            modelPreferences: ownerDetails?.modelPreferences,
+            modelPreferences: sysModelPrefs,
           });
         } else {
           // Runner busy or not connected — queue the prompt
@@ -5190,9 +5210,10 @@ export class SessionAgentDO {
       this.pendingChannelReply = null;
     }
 
-    // Resolve model preferences from session owner
+    // Resolve model preferences from session owner (with org fallback)
     const queueOwnerId = this.getStateValue('userId');
     const queueOwnerDetails = queueOwnerId ? await this.getUserDetails(queueOwnerId) : undefined;
+    const queueModelPrefs = await this.resolveModelPreferences(queueOwnerDetails);
     this.sendToRunner({
       type: 'prompt',
       messageId: prompt.id as string,
@@ -5205,7 +5226,7 @@ export class SessionAgentDO {
       authorName: (prompt.author_name as string) || undefined,
       gitName: authorDetails?.gitName,
       gitEmail: authorDetails?.gitEmail,
-      modelPreferences: queueOwnerDetails?.modelPreferences,
+      modelPreferences: queueModelPrefs,
     });
     this.setStateValue('runnerBusy', 'true');
     this.broadcastToClients({

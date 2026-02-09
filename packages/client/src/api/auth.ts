@@ -24,10 +24,10 @@ export function useUpdateProfile() {
       return api.patch<{ user: User }>('/auth/me', data);
     },
     onSuccess: (res) => {
-      // Update the auth store with the new user data
+      // Update the auth store with the new user data (preserve orgModelPreferences)
       const state = useAuthStore.getState();
       if (state.token && res.user) {
-        state.setAuth(state.token, res.user);
+        state.setAuth(state.token, res.user, state.orgModelPreferences);
       }
       queryClient.invalidateQueries({ queryKey: ['auth', 'me'] });
     },
