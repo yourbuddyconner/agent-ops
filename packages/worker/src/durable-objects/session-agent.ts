@@ -1,7 +1,7 @@
 import type { Env } from '../env.js';
 import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById } from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
-import { checkWorkflowConcurrency, createWorkflowSession, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
+import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
@@ -153,7 +153,7 @@ function deriveRuntimeStates(args: {
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-execution-result' | 'model-switched' | 'tunnels';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'model-switched' | 'tunnels';
   prNumber?: number;
   targetSessionId?: string;
   interrupt?: boolean;
@@ -221,6 +221,8 @@ interface RunnerMessage {
   version?: string;
   dataJson?: Record<string, unknown>;
   variables?: Record<string, unknown>;
+  action?: string;
+  payload?: Record<string, unknown>;
   envelope?: {
     ok?: boolean;
     status?: 'ok' | 'needs_approval' | 'cancelled' | 'failed';
@@ -255,7 +257,7 @@ interface ClientOutbound {
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'tunnel-delete';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'workflow-api-result' | 'trigger-api-result' | 'execution-api-result' | 'tunnel-delete';
   messageId?: string;
   content?: string;
   model?: string;
@@ -292,6 +294,7 @@ interface RunnerOutbound {
   workflow?: unknown;
   execution?: unknown;
   executions?: unknown[];
+  steps?: unknown[];
   // Model failover
   modelPreferences?: string[];
   encoding?: string;
@@ -1783,11 +1786,28 @@ export class SessionAgentDO {
         break;
 
       case 'workflow-run':
-        await this.handleWorkflowRun(msg.requestId!, msg.workflowId!, msg.variables);
+        await this.handleWorkflowRun(msg.requestId!, msg.workflowId!, msg.variables, {
+          repoUrl: msg.repoUrl,
+          branch: msg.branch,
+          ref: msg.ref,
+          sourceRepoFullName: msg.sourceRepoFullName,
+        });
         break;
 
       case 'workflow-executions':
         await this.handleWorkflowExecutions(msg.requestId!, msg.workflowId, msg.limit);
+        break;
+
+      case 'workflow-api':
+        await this.handleWorkflowApi(msg.requestId!, msg.action || '', msg.payload);
+        break;
+
+      case 'trigger-api':
+        await this.handleTriggerApi(msg.requestId!, msg.action || '', msg.payload);
+        break;
+
+      case 'execution-api':
+        await this.handleExecutionApi(msg.requestId!, msg.action || '', msg.payload);
         break;
 
       case 'workflow-execution-result':
@@ -2392,7 +2412,23 @@ export class SessionAgentDO {
     }
   }
 
-  private async handleWorkflowRun(requestId: string, workflowId: string, variables?: Record<string, unknown>) {
+  private deriveRepoFullName(repoUrl?: string, sourceRepoFullName?: string): string | undefined {
+    const explicit = sourceRepoFullName?.trim();
+    if (explicit) return explicit;
+
+    const rawUrl = repoUrl?.trim();
+    if (!rawUrl) return undefined;
+
+    const match = rawUrl.match(/github\.com[/:]([^/]+\/[^/.]+)/i);
+    return match?.[1] || undefined;
+  }
+
+  private async handleWorkflowRun(
+    requestId: string,
+    workflowId: string,
+    variables?: Record<string, unknown>,
+    repoContext?: { repoUrl?: string; branch?: string; ref?: string; sourceRepoFullName?: string },
+  ) {
     try {
       const userId = this.getStateValue('userId')!;
       const workflowLookupId = (workflowId || '').trim();
@@ -2459,10 +2495,18 @@ export class SessionAgentDO {
       const executionId = crypto.randomUUID();
       const now = new Date().toISOString();
       const workflowHash = await sha256Hex(String(workflow.data || '{}'));
+      const repoUrl = repoContext?.repoUrl?.trim() || undefined;
+      const branch = repoContext?.branch?.trim() || undefined;
+      const ref = repoContext?.ref?.trim() || undefined;
+      const sourceRepoFullName = this.deriveRepoFullName(repoUrl, repoContext?.sourceRepoFullName);
       const sessionId = await createWorkflowSession(this.env.DB, {
         userId,
         workflowId: workflow.id,
         executionId,
+        sourceRepoUrl: repoUrl,
+        sourceRepoFullName,
+        branch,
+        ref,
       });
 
       await this.env.DB.prepare(`
@@ -2579,6 +2623,861 @@ export class SessionAgentDO {
     } catch (err) {
       console.error('[SessionAgentDO] Failed to list workflow executions:', err);
       this.sendToRunner({ type: 'workflow-executions-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private parseJsonOrNull(raw: unknown): unknown | null {
+    if (raw === null || raw === undefined) return null;
+    try {
+      return JSON.parse(String(raw));
+    } catch {
+      return null;
+    }
+  }
+
+  private normalizeWorkflowRow(row: Record<string, unknown>) {
+    let data: Record<string, unknown> = {};
+    let tags: string[] = [];
+    try { data = JSON.parse(String(row.data || '{}')); } catch {}
+    try { tags = row.tags ? JSON.parse(String(row.tags)) : []; } catch {}
+    return {
+      id: row.id,
+      slug: row.slug,
+      name: row.name,
+      description: row.description,
+      version: row.version,
+      data,
+      enabled: Boolean(row.enabled),
+      tags,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private async resolveWorkflowIdForUser(userId: string, workflowIdOrSlug?: string | null): Promise<string | null> {
+    const lookup = (workflowIdOrSlug || '').trim();
+    if (!lookup) return null;
+    const row = await this.env.DB.prepare(`
+      SELECT id FROM workflows WHERE (id = ? OR slug = ?) AND user_id = ? LIMIT 1
+    `).bind(lookup, lookup, userId).first<{ id: string }>();
+    return row?.id || null;
+  }
+
+  private async handleWorkflowApi(requestId: string, action: string, payload?: Record<string, unknown>) {
+    try {
+      const userId = this.getStateValue('userId')!;
+      const workflowIdOrSlug = typeof payload?.workflowId === 'string' ? payload.workflowId.trim() : '';
+      if (!workflowIdOrSlug) {
+        this.sendToRunner({ type: 'workflow-api-result', requestId, error: 'workflowId is required' } as any);
+        return;
+      }
+
+      const existing = await this.env.DB.prepare(`
+        SELECT id, slug, name, description, version, data, enabled, tags, created_at, updated_at
+        FROM workflows
+        WHERE (id = ? OR slug = ?) AND user_id = ?
+        LIMIT 1
+      `).bind(workflowIdOrSlug, workflowIdOrSlug, userId).first<Record<string, unknown>>();
+
+      if (!existing) {
+        this.sendToRunner({ type: 'workflow-api-result', requestId, error: `Workflow not found: ${workflowIdOrSlug}` } as any);
+        return;
+      }
+
+      if (action === 'get') {
+        this.sendToRunner({ type: 'workflow-api-result', requestId, data: { workflow: this.normalizeWorkflowRow(existing) } } as any);
+        return;
+      }
+
+      if (action === 'delete') {
+        await this.env.DB.prepare(`DELETE FROM triggers WHERE workflow_id = ? AND user_id = ?`).bind(existing.id, userId).run();
+        await this.env.DB.prepare(`DELETE FROM workflows WHERE id = ? AND user_id = ?`).bind(existing.id, userId).run();
+        this.sendToRunner({ type: 'workflow-api-result', requestId, data: { success: true } } as any);
+        return;
+      }
+
+      if (action !== 'update') {
+        this.sendToRunner({ type: 'workflow-api-result', requestId, error: `Unsupported workflow action: ${action}` } as any);
+        return;
+      }
+
+      const updates: string[] = [];
+      const values: unknown[] = [];
+
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'name')) {
+        const nextName = typeof payload.name === 'string' ? payload.name : '';
+        if (!nextName.trim()) {
+          this.sendToRunner({ type: 'workflow-api-result', requestId, error: 'name must be a non-empty string' } as any);
+          return;
+        }
+        updates.push('name = ?');
+        values.push(nextName.trim());
+      }
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'description')) {
+        const nextDescription = payload.description;
+        if (nextDescription !== null && typeof nextDescription !== 'string') {
+          this.sendToRunner({ type: 'workflow-api-result', requestId, error: 'description must be a string or null' } as any);
+          return;
+        }
+        updates.push('description = ?');
+        values.push(nextDescription === null ? null : nextDescription);
+      }
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'slug')) {
+        const nextSlug = payload.slug;
+        if (nextSlug !== null && typeof nextSlug !== 'string') {
+          this.sendToRunner({ type: 'workflow-api-result', requestId, error: 'slug must be a string or null' } as any);
+          return;
+        }
+        updates.push('slug = ?');
+        values.push(nextSlug === null ? null : nextSlug);
+      }
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'version')) {
+        const nextVersion = payload.version;
+        if (typeof nextVersion !== 'string' || !nextVersion.trim()) {
+          this.sendToRunner({ type: 'workflow-api-result', requestId, error: 'version must be a non-empty string' } as any);
+          return;
+        }
+        updates.push('version = ?');
+        values.push(nextVersion.trim());
+      }
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'enabled')) {
+        const nextEnabled = payload.enabled;
+        if (typeof nextEnabled !== 'boolean') {
+          this.sendToRunner({ type: 'workflow-api-result', requestId, error: 'enabled must be a boolean' } as any);
+          return;
+        }
+        updates.push('enabled = ?');
+        values.push(nextEnabled ? 1 : 0);
+      }
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'tags')) {
+        const nextTags = payload.tags;
+        if (!Array.isArray(nextTags) || nextTags.some((tag) => typeof tag !== 'string')) {
+          this.sendToRunner({ type: 'workflow-api-result', requestId, error: 'tags must be an array of strings' } as any);
+          return;
+        }
+        updates.push('tags = ?');
+        values.push(JSON.stringify(nextTags));
+      }
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'data')) {
+        const nextData = payload.data;
+        if (!nextData || typeof nextData !== 'object' || Array.isArray(nextData)) {
+          this.sendToRunner({ type: 'workflow-api-result', requestId, error: 'data must be an object' } as any);
+          return;
+        }
+        const validation = validateWorkflowDefinition(nextData);
+        if (!validation.valid) {
+          this.sendToRunner({ type: 'workflow-api-result', requestId, error: `Invalid workflow definition: ${validation.errors[0]}` } as any);
+          return;
+        }
+        updates.push('data = ?');
+        values.push(JSON.stringify(nextData));
+      }
+
+      if (updates.length === 0) {
+        this.sendToRunner({ type: 'workflow-api-result', requestId, data: { workflow: this.normalizeWorkflowRow(existing) } } as any);
+        return;
+      }
+
+      const updatedAt = new Date().toISOString();
+      updates.push('updated_at = ?');
+      values.push(updatedAt);
+      values.push(existing.id);
+
+      await this.env.DB.prepare(`UPDATE workflows SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
+      const updated = await this.env.DB.prepare(`
+        SELECT id, slug, name, description, version, data, enabled, tags, created_at, updated_at
+        FROM workflows WHERE id = ? LIMIT 1
+      `).bind(existing.id).first<Record<string, unknown>>();
+
+      this.sendToRunner({
+        type: 'workflow-api-result',
+        requestId,
+        data: { workflow: this.normalizeWorkflowRow(updated || existing) },
+      } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Workflow API error:', err);
+      this.sendToRunner({ type: 'workflow-api-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private scheduleTargetFromConfig(config: Record<string, unknown>): 'workflow' | 'orchestrator' {
+    if (config.type !== 'schedule') return 'workflow';
+    return config.target === 'orchestrator' ? 'orchestrator' : 'workflow';
+  }
+
+  private requiresWorkflowForTriggerConfig(config: Record<string, unknown>): boolean {
+    return config.type !== 'schedule' || this.scheduleTargetFromConfig(config) === 'workflow';
+  }
+
+  private async handleTriggerApi(requestId: string, action: string, payload?: Record<string, unknown>) {
+    try {
+      const userId = this.getStateValue('userId')!;
+
+      if (action === 'list') {
+        const result = await this.env.DB.prepare(`
+          SELECT t.*, w.name as workflow_name
+          FROM triggers t
+          LEFT JOIN workflows w ON t.workflow_id = w.id
+          WHERE t.user_id = ?
+          ORDER BY t.created_at DESC
+        `).bind(userId).all();
+
+        const workflowFilter = typeof payload?.workflowId === 'string' ? payload.workflowId : undefined;
+        const typeFilter = typeof payload?.type === 'string' ? payload.type : undefined;
+        const enabledFilter = typeof payload?.enabled === 'boolean' ? payload.enabled : undefined;
+
+        let triggers = (result.results || []).map((row) => ({
+          id: row.id,
+          workflowId: row.workflow_id,
+          workflowName: row.workflow_name,
+          name: row.name,
+          enabled: Boolean(row.enabled),
+          type: row.type,
+          config: this.parseJsonOrNull(row.config) || {},
+          variableMapping: this.parseJsonOrNull(row.variable_mapping) || null,
+          lastRunAt: row.last_run_at,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        }));
+
+        if (workflowFilter) {
+          triggers = triggers.filter((trigger) => trigger.workflowId === workflowFilter || trigger.workflowName === workflowFilter);
+        }
+        if (typeFilter) {
+          triggers = triggers.filter((trigger) => trigger.type === typeFilter);
+        }
+        if (enabledFilter !== undefined) {
+          triggers = triggers.filter((trigger) => trigger.enabled === enabledFilter);
+        }
+
+        this.sendToRunner({ type: 'trigger-api-result', requestId, data: { triggers } } as any);
+        return;
+      }
+
+      if (action === 'delete') {
+        const triggerId = typeof payload?.triggerId === 'string' ? payload.triggerId.trim() : '';
+        if (!triggerId) {
+          this.sendToRunner({ type: 'trigger-api-result', requestId, error: 'triggerId is required' } as any);
+          return;
+        }
+        const result = await this.env.DB.prepare(`
+          DELETE FROM triggers WHERE id = ? AND user_id = ?
+        `).bind(triggerId, userId).run();
+        if ((result.meta?.changes || 0) === 0) {
+          this.sendToRunner({ type: 'trigger-api-result', requestId, error: `Trigger not found: ${triggerId}` } as any);
+          return;
+        }
+        this.sendToRunner({ type: 'trigger-api-result', requestId, data: { success: true } } as any);
+        return;
+      }
+
+      if (action === 'create' || action === 'update') {
+        const triggerId = typeof payload?.triggerId === 'string' ? payload.triggerId.trim() : '';
+        const isUpdate = action === 'update';
+
+        const existing = isUpdate
+          ? await this.env.DB.prepare(`
+              SELECT *
+              FROM triggers
+              WHERE id = ? AND user_id = ?
+              LIMIT 1
+            `).bind(triggerId, userId).first<Record<string, unknown>>()
+          : null;
+
+        if (isUpdate && !existing) {
+          this.sendToRunner({ type: 'trigger-api-result', requestId, error: `Trigger not found: ${triggerId}` } as any);
+          return;
+        }
+
+        const rawConfig = payload?.config && typeof payload.config === 'object' && !Array.isArray(payload.config)
+          ? payload.config as Record<string, unknown>
+          : existing?.config
+            ? (this.parseJsonOrNull(existing.config) as Record<string, unknown> | null)
+            : null;
+        if (!rawConfig || typeof rawConfig.type !== 'string') {
+          this.sendToRunner({ type: 'trigger-api-result', requestId, error: 'config with type is required' } as any);
+          return;
+        }
+
+        const nextNameRaw = typeof payload?.name === 'string' ? payload.name : (typeof existing?.name === 'string' ? existing.name : '');
+        const nextName = (nextNameRaw || '').trim();
+        if (!nextName) {
+          this.sendToRunner({ type: 'trigger-api-result', requestId, error: 'name is required' } as any);
+          return;
+        }
+
+        const nextEnabled = typeof payload?.enabled === 'boolean'
+          ? payload.enabled
+          : existing
+            ? Boolean(existing.enabled)
+            : true;
+
+        const workflowIdPayload = Object.prototype.hasOwnProperty.call(payload || {}, 'workflowId')
+          ? payload?.workflowId
+          : existing?.workflow_id;
+        let workflowId: string | null = null;
+        if (typeof workflowIdPayload === 'string' && workflowIdPayload.trim()) {
+          workflowId = await this.resolveWorkflowIdForUser(userId, workflowIdPayload);
+          if (!workflowId) {
+            this.sendToRunner({ type: 'trigger-api-result', requestId, error: `Workflow not found: ${workflowIdPayload}` } as any);
+            return;
+          }
+        } else if (workflowIdPayload === null) {
+          workflowId = null;
+        }
+
+        const target = this.scheduleTargetFromConfig(rawConfig);
+        if (rawConfig.type === 'schedule' && target === 'orchestrator') {
+          const prompt = typeof rawConfig.prompt === 'string' ? rawConfig.prompt.trim() : '';
+          if (!prompt) {
+            this.sendToRunner({ type: 'trigger-api-result', requestId, error: 'schedule prompt is required when target=orchestrator' } as any);
+            return;
+          }
+        }
+        if (this.requiresWorkflowForTriggerConfig(rawConfig) && !workflowId) {
+          this.sendToRunner({ type: 'trigger-api-result', requestId, error: 'workflowId is required for this trigger type' } as any);
+          return;
+        }
+
+        const variableMapping = payload?.variableMapping && typeof payload.variableMapping === 'object' && !Array.isArray(payload.variableMapping)
+          ? payload.variableMapping as Record<string, unknown>
+          : existing?.variable_mapping
+            ? (this.parseJsonOrNull(existing.variable_mapping) as Record<string, unknown> | null)
+            : undefined;
+
+        if (variableMapping) {
+          for (const [key, value] of Object.entries(variableMapping)) {
+            if (typeof value !== 'string') {
+              this.sendToRunner({ type: 'trigger-api-result', requestId, error: `variableMapping.${key} must be a string` } as any);
+              return;
+            }
+          }
+        }
+
+        const now = new Date().toISOString();
+        const targetTriggerId = isUpdate ? triggerId : crypto.randomUUID();
+        if (isUpdate) {
+          await this.env.DB.prepare(`
+            UPDATE triggers
+            SET workflow_id = ?,
+                name = ?,
+                enabled = ?,
+                type = ?,
+                config = ?,
+                variable_mapping = ?,
+                updated_at = ?
+            WHERE id = ? AND user_id = ?
+          `).bind(
+            workflowId,
+            nextName,
+            nextEnabled ? 1 : 0,
+            String(rawConfig.type),
+            JSON.stringify(rawConfig),
+            variableMapping ? JSON.stringify(variableMapping) : null,
+            now,
+            targetTriggerId,
+            userId,
+          ).run();
+        } else {
+          await this.env.DB.prepare(`
+            INSERT INTO triggers (id, workflow_id, user_id, name, enabled, type, config, variable_mapping, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            targetTriggerId,
+            workflowId,
+            userId,
+            nextName,
+            nextEnabled ? 1 : 0,
+            String(rawConfig.type),
+            JSON.stringify(rawConfig),
+            variableMapping ? JSON.stringify(variableMapping) : null,
+            now,
+            now,
+          ).run();
+        }
+
+        const row = await this.env.DB.prepare(`
+          SELECT t.*, w.name AS workflow_name
+          FROM triggers t
+          LEFT JOIN workflows w ON t.workflow_id = w.id
+          WHERE t.id = ? AND t.user_id = ?
+          LIMIT 1
+        `).bind(targetTriggerId, userId).first<Record<string, unknown>>();
+
+        this.sendToRunner({
+          type: 'trigger-api-result',
+          requestId,
+          data: {
+            trigger: row
+              ? {
+                  id: row.id,
+                  workflowId: row.workflow_id,
+                  workflowName: row.workflow_name,
+                  name: row.name,
+                  enabled: Boolean(row.enabled),
+                  type: row.type,
+                  config: this.parseJsonOrNull(row.config) || {},
+                  variableMapping: this.parseJsonOrNull(row.variable_mapping) || null,
+                  lastRunAt: row.last_run_at,
+                  createdAt: row.created_at,
+                  updatedAt: row.updated_at,
+                }
+              : null,
+            success: true,
+          },
+        } as any);
+        return;
+      }
+
+      if (action === 'run') {
+        const triggerId = typeof payload?.triggerId === 'string' ? payload.triggerId.trim() : '';
+        if (!triggerId) {
+          this.sendToRunner({ type: 'trigger-api-result', requestId, error: 'triggerId is required' } as any);
+          return;
+        }
+
+        const row = await this.env.DB.prepare(`
+          SELECT t.*, w.id as wf_id, w.name as workflow_name, w.version as workflow_version, w.data as workflow_data
+          FROM triggers t
+          LEFT JOIN workflows w ON t.workflow_id = w.id
+          WHERE t.id = ? AND t.user_id = ?
+          LIMIT 1
+        `).bind(triggerId, userId).first<{
+          id: string;
+          type: string;
+          config: string;
+          wf_id: string | null;
+          workflow_name: string | null;
+          workflow_version: string | null;
+          workflow_data: string | null;
+          variable_mapping: string | null;
+        }>();
+
+        if (!row) {
+          this.sendToRunner({ type: 'trigger-api-result', requestId, error: `Trigger not found: ${triggerId}` } as any);
+          return;
+        }
+
+        const config = this.parseJsonOrNull(row.config) as Record<string, unknown> | null;
+        if (!config) {
+          this.sendToRunner({ type: 'trigger-api-result', requestId, error: 'Invalid trigger config' } as any);
+          return;
+        }
+        const target = this.scheduleTargetFromConfig(config);
+
+        if (config.type === 'schedule' && target === 'orchestrator') {
+          const prompt = typeof config.prompt === 'string' ? config.prompt.trim() : '';
+          if (!prompt) {
+            this.sendToRunner({ type: 'trigger-api-result', requestId, error: 'Schedule orchestrator trigger requires prompt' } as any);
+            return;
+          }
+
+          const dispatch = await dispatchOrchestratorPrompt(this.env, {
+            userId,
+            content: prompt,
+          });
+          const now = new Date().toISOString();
+          if (dispatch.dispatched) {
+            await this.env.DB.prepare(`UPDATE triggers SET last_run_at = ? WHERE id = ?`).bind(now, triggerId).run();
+          }
+          this.sendToRunner({
+            type: 'trigger-api-result',
+            requestId,
+            data: dispatch.dispatched
+              ? {
+                  status: 'queued',
+                  workflowId: row.wf_id,
+                  workflowName: row.workflow_name,
+                  sessionId: dispatch.sessionId,
+                  message: 'Orchestrator prompt dispatched.',
+                }
+              : {
+                  status: 'failed',
+                  workflowId: row.wf_id,
+                  workflowName: row.workflow_name,
+                  sessionId: dispatch.sessionId,
+                  reason: dispatch.reason || 'unknown_error',
+                },
+          } as any);
+          return;
+        }
+
+        if (!row.wf_id || !row.workflow_data) {
+          this.sendToRunner({ type: 'trigger-api-result', requestId, error: 'Trigger is not linked to a workflow' } as any);
+          return;
+        }
+
+        const concurrency = await checkWorkflowConcurrency(this.env.DB, userId);
+        if (!concurrency.allowed) {
+          this.sendToRunner({
+            type: 'trigger-api-result',
+            requestId,
+            error: `Too many concurrent workflow executions (${concurrency.reason})`,
+          } as any);
+          return;
+        }
+
+        const variableMapping = row.variable_mapping ? (this.parseJsonOrNull(row.variable_mapping) as Record<string, string> | null) : null;
+        const extractedVariables: Record<string, unknown> = {};
+        for (const [varName, path] of Object.entries(variableMapping || {})) {
+          if (!path.startsWith('$.')) continue;
+          const key = path.slice(2).split('.')[0];
+          if (payload && Object.prototype.hasOwnProperty.call(payload, key)) {
+            extractedVariables[varName] = payload[key];
+          }
+        }
+
+        const runtimeVariables = (payload?.variables && typeof payload.variables === 'object' && !Array.isArray(payload.variables))
+          ? payload.variables as Record<string, unknown>
+          : {};
+        const variables = {
+          ...extractedVariables,
+          ...runtimeVariables,
+          _trigger: { type: 'manual', triggerId },
+        };
+
+        const idempotencyKey = `manual-trigger:${triggerId}:${userId}:${requestId}`;
+        const existingExecution = await this.env.DB.prepare(`
+          SELECT id, status, session_id
+          FROM workflow_executions
+          WHERE workflow_id = ? AND idempotency_key = ?
+          LIMIT 1
+        `).bind(row.wf_id, idempotencyKey).first<{ id: string; status: string; session_id: string | null }>();
+
+        if (existingExecution) {
+          this.sendToRunner({
+            type: 'trigger-api-result',
+            requestId,
+            data: {
+              executionId: existingExecution.id,
+              workflowId: row.wf_id,
+              workflowName: row.workflow_name,
+              status: existingExecution.status,
+              variables,
+              sessionId: existingExecution.session_id,
+              message: 'Workflow execution already exists for this request.',
+            },
+          } as any);
+          return;
+        }
+
+        const executionId = crypto.randomUUID();
+        const now = new Date().toISOString();
+        const workflowHash = await sha256Hex(String(row.workflow_data ?? '{}'));
+        const repoUrl = typeof payload?.repoUrl === 'string' ? payload.repoUrl.trim() || undefined : undefined;
+        const branch = typeof payload?.branch === 'string' ? payload.branch.trim() || undefined : undefined;
+        const ref = typeof payload?.ref === 'string' ? payload.ref.trim() || undefined : undefined;
+        const sourceRepoFullName = this.deriveRepoFullName(
+          repoUrl,
+          typeof payload?.sourceRepoFullName === 'string' ? payload.sourceRepoFullName : undefined,
+        );
+        const sessionId = await createWorkflowSession(this.env.DB, {
+          userId,
+          workflowId: row.wf_id,
+          executionId,
+          sourceRepoUrl: repoUrl,
+          sourceRepoFullName,
+          branch,
+          ref,
+        });
+
+        await this.env.DB.prepare(`
+          INSERT INTO workflow_executions
+            (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
+             workflow_version, workflow_hash, workflow_snapshot, idempotency_key, session_id, initiator_type, initiator_user_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          executionId,
+          row.wf_id,
+          userId,
+          triggerId,
+          'pending',
+          'manual',
+          JSON.stringify({ triggeredBy: 'api' }),
+          JSON.stringify(variables),
+          now,
+          row.workflow_version || null,
+          workflowHash,
+          row.workflow_data,
+          idempotencyKey,
+          sessionId,
+          'manual',
+          userId,
+        ).run();
+
+        await this.env.DB.prepare(`UPDATE triggers SET last_run_at = ? WHERE id = ?`).bind(now, triggerId).run();
+
+        const dispatched = await enqueueWorkflowExecution(this.env, {
+          executionId,
+          workflowId: row.wf_id,
+          userId,
+          sessionId,
+          triggerType: 'manual',
+        });
+
+        this.sendToRunner({
+          type: 'trigger-api-result',
+          requestId,
+          data: {
+            executionId,
+            workflowId: row.wf_id,
+            workflowName: row.workflow_name,
+            status: 'pending',
+            variables,
+            sessionId,
+            dispatched,
+            message: dispatched
+              ? 'Trigger run accepted and dispatched.'
+              : 'Trigger run accepted but dispatch failed.',
+          },
+        } as any);
+        return;
+      }
+
+      this.sendToRunner({ type: 'trigger-api-result', requestId, error: `Unsupported trigger action: ${action}` } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Trigger API error:', err);
+      this.sendToRunner({ type: 'trigger-api-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleExecutionApi(requestId: string, action: string, payload?: Record<string, unknown>) {
+    try {
+      const userId = this.getStateValue('userId')!;
+      const executionId = typeof payload?.executionId === 'string' ? payload.executionId.trim() : '';
+      if (!executionId) {
+        this.sendToRunner({ type: 'execution-api-result', requestId, error: 'executionId is required' } as any);
+        return;
+      }
+
+      if (action === 'get') {
+        const row = await this.env.DB.prepare(`
+          SELECT e.*, w.name as workflow_name, t.name as trigger_name
+          FROM workflow_executions e
+          LEFT JOIN workflows w ON e.workflow_id = w.id
+          LEFT JOIN triggers t ON e.trigger_id = t.id
+          WHERE e.id = ? AND e.user_id = ?
+          LIMIT 1
+        `).bind(executionId, userId).first<Record<string, unknown>>();
+
+        if (!row) {
+          this.sendToRunner({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
+          return;
+        }
+
+        this.sendToRunner({
+          type: 'execution-api-result',
+          requestId,
+          data: {
+            execution: {
+              id: row.id,
+              workflowId: row.workflow_id,
+              workflowName: row.workflow_name,
+              sessionId: row.session_id,
+              triggerId: row.trigger_id,
+              triggerName: row.trigger_name,
+              status: row.status,
+              triggerType: row.trigger_type,
+              triggerMetadata: this.parseJsonOrNull(row.trigger_metadata),
+              variables: this.parseJsonOrNull(row.variables),
+              resumeToken: row.resume_token || null,
+              outputs: this.parseJsonOrNull(row.outputs),
+              steps: this.parseJsonOrNull(row.steps),
+              error: row.error,
+              startedAt: row.started_at,
+              completedAt: row.completed_at,
+            },
+          },
+        } as any);
+        return;
+      }
+
+      if (action === 'steps') {
+        const execution = await this.env.DB.prepare(`
+          SELECT id, user_id, workflow_snapshot
+          FROM workflow_executions
+          WHERE id = ?
+          LIMIT 1
+        `).bind(executionId).first<{ id: string; user_id: string; workflow_snapshot: string | null }>();
+
+        if (!execution || execution.user_id !== userId) {
+          this.sendToRunner({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
+          return;
+        }
+
+        const buildWorkflowStepOrderMap = (workflowSnapshotRaw: string | null): Map<string, number> => {
+          if (!workflowSnapshotRaw) return new Map();
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(workflowSnapshotRaw);
+          } catch {
+            return new Map();
+          }
+          const order = new Map<string, number>();
+          let index = 0;
+          const visitStepList = (rawSteps: unknown): void => {
+            if (!Array.isArray(rawSteps)) return;
+            for (const entry of rawSteps) {
+              if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+              const stepRecord = entry as Record<string, unknown>;
+              const stepId = typeof stepRecord.id === 'string' ? stepRecord.id : '';
+              if (stepId && !order.has(stepId)) {
+                order.set(stepId, index);
+                index += 1;
+              }
+              visitStepList(stepRecord.then);
+              visitStepList(stepRecord.else);
+              visitStepList(stepRecord.steps);
+            }
+          };
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            visitStepList((parsed as Record<string, unknown>).steps);
+          } else if (Array.isArray(parsed)) {
+            visitStepList(parsed);
+          }
+          return order;
+        };
+
+        const workflowStepOrder = buildWorkflowStepOrderMap(execution.workflow_snapshot);
+        const rankStepOrderIndex = (value: number | null): number => value ?? Number.MAX_SAFE_INTEGER;
+
+        const result = await this.env.DB.prepare(`
+          SELECT rowid AS insertion_order,
+                 id, execution_id, step_id, attempt, status, input_json, output_json, error, started_at, completed_at, created_at
+          FROM workflow_execution_steps
+          WHERE execution_id = ?
+          ORDER BY attempt ASC, insertion_order ASC
+        `).bind(executionId).all();
+
+        const steps = (result.results || [])
+          .map((row) => ({
+            id: row.id,
+            executionId: row.execution_id,
+            stepId: String(row.step_id),
+            attempt: Number(row.attempt || 1),
+            status: String(row.status),
+            input: this.parseJsonOrNull((row.input_json as string | null) || null),
+            output: this.parseJsonOrNull((row.output_json as string | null) || null),
+            error: (row.error as string | null) || null,
+            startedAt: (row.started_at as string | null) || null,
+            completedAt: (row.completed_at as string | null) || null,
+            createdAt: String(row.created_at),
+            workflowStepIndex: workflowStepOrder.get(String(row.step_id)) ?? null,
+            insertionOrder: Number(row.insertion_order || 0),
+          }))
+          .sort((left, right) => {
+            if (left.attempt !== right.attempt) return left.attempt - right.attempt;
+            const leftIndex = rankStepOrderIndex(left.workflowStepIndex);
+            const rightIndex = rankStepOrderIndex(right.workflowStepIndex);
+            if (leftIndex !== rightIndex) return leftIndex - rightIndex;
+            if (left.insertionOrder !== right.insertionOrder) return left.insertionOrder - right.insertionOrder;
+            return left.stepId.localeCompare(right.stepId);
+          })
+          .map((step, sequence) => ({
+            id: step.id,
+            executionId: step.executionId,
+            stepId: step.stepId,
+            attempt: step.attempt,
+            status: step.status,
+            input: step.input,
+            output: step.output,
+            error: step.error,
+            startedAt: step.startedAt,
+            completedAt: step.completedAt,
+            createdAt: step.createdAt,
+            workflowStepIndex: step.workflowStepIndex,
+            sequence,
+          }));
+
+        this.sendToRunner({ type: 'execution-api-result', requestId, data: { steps } } as any);
+        return;
+      }
+
+      if (action === 'approve') {
+        const approve = payload?.approve === true;
+        const resumeToken = typeof payload?.resumeToken === 'string' ? payload.resumeToken : '';
+        const reason = typeof payload?.reason === 'string' ? payload.reason : undefined;
+        if (!resumeToken) {
+          this.sendToRunner({ type: 'execution-api-result', requestId, error: 'resumeToken is required' } as any);
+          return;
+        }
+
+        const execution = await this.env.DB.prepare(`
+          SELECT user_id FROM workflow_executions WHERE id = ? LIMIT 1
+        `).bind(executionId).first<{ user_id: string }>();
+        if (!execution || execution.user_id !== userId) {
+          this.sendToRunner({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
+          return;
+        }
+
+        const doId = this.env.WORKFLOW_EXECUTOR.idFromName(executionId);
+        const stub = this.env.WORKFLOW_EXECUTOR.get(doId);
+        const response = await stub.fetch(new Request('https://workflow-executor/resume', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            executionId,
+            resumeToken,
+            approve,
+            reason,
+          }),
+        }));
+
+        if (!response.ok) {
+          const errorBody = await response.json<{ error?: string }>().catch((): { error?: string } => ({ error: undefined }));
+          this.sendToRunner({
+            type: 'execution-api-result',
+            requestId,
+            error: errorBody.error || `Failed to apply approval decision (${response.status})`,
+          } as any);
+          return;
+        }
+
+        const result = await response.json<{ ok: boolean; status: string }>();
+        this.sendToRunner({ type: 'execution-api-result', requestId, data: { success: true, status: result.status } } as any);
+        return;
+      }
+
+      if (action === 'cancel') {
+        const reason = typeof payload?.reason === 'string' ? payload.reason : undefined;
+        const execution = await this.env.DB.prepare(`
+          SELECT user_id FROM workflow_executions WHERE id = ? LIMIT 1
+        `).bind(executionId).first<{ user_id: string }>();
+        if (!execution || execution.user_id !== userId) {
+          this.sendToRunner({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
+          return;
+        }
+
+        const doId = this.env.WORKFLOW_EXECUTOR.idFromName(executionId);
+        const stub = this.env.WORKFLOW_EXECUTOR.get(doId);
+        const response = await stub.fetch(new Request('https://workflow-executor/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            executionId,
+            reason,
+          }),
+        }));
+
+        if (!response.ok) {
+          const errorBody = await response.json<{ error?: string }>().catch((): { error?: string } => ({ error: undefined }));
+          this.sendToRunner({
+            type: 'execution-api-result',
+            requestId,
+            error: errorBody.error || `Failed to cancel execution (${response.status})`,
+          } as any);
+          return;
+        }
+
+        const result = await response.json<{ ok: boolean; status: string }>();
+        this.sendToRunner({ type: 'execution-api-result', requestId, data: { success: true, status: result.status } } as any);
+        return;
+      }
+
+      this.sendToRunner({ type: 'execution-api-result', requestId, error: `Unsupported execution action: ${action}` } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Execution API error:', err);
+      this.sendToRunner({ type: 'execution-api-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
     }
   }
 

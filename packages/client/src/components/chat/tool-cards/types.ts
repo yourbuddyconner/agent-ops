@@ -67,11 +67,22 @@ export interface ListArgs {
 export interface QuestionArgs {
   question?: string;
   header?: string;
-  options?: Array<{
-    label?: string;
-    value?: string;
-    description?: string;
-  }>;
+  options?: Array<QuestionOption | string>;
+  questions?: QuestionInput[];
+}
+
+export interface QuestionOption {
+  label?: string;
+  value?: string;
+  description?: string;
+}
+
+export interface QuestionInput {
+  question?: string;
+  header?: string;
+  options?: Array<QuestionOption | string>;
+  multiple?: boolean;
+  custom?: boolean;
 }
 
 export interface WebFetchArgs {

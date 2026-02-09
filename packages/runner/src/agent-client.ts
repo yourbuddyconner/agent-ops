@@ -421,10 +421,23 @@ export class AgentClient {
     });
   }
 
-  requestRunWorkflow(workflowId: string, variables?: Record<string, unknown>): Promise<{ execution: unknown }> {
+  requestRunWorkflow(
+    workflowId: string,
+    variables?: Record<string, unknown>,
+    options?: { repoUrl?: string; branch?: string; ref?: string; sourceRepoFullName?: string },
+  ): Promise<{ execution: unknown }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
-      this.send({ type: "workflow-run", requestId, workflowId, variables });
+      this.send({
+        type: "workflow-run",
+        requestId,
+        workflowId,
+        variables,
+        repoUrl: options?.repoUrl,
+        branch: options?.branch,
+        ref: options?.ref,
+        sourceRepoFullName: options?.sourceRepoFullName,
+      });
     });
   }
 
@@ -432,6 +445,126 @@ export class AgentClient {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
       this.send({ type: "workflow-executions", requestId, workflowId, limit });
+    });
+  }
+
+  requestGetWorkflow(workflowId: string): Promise<{ workflow: unknown }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "workflow-api", requestId, action: "get", payload: { workflowId } });
+    });
+  }
+
+  requestUpdateWorkflow(workflowId: string, payload: Record<string, unknown>): Promise<{ workflow: unknown }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "workflow-api", requestId, action: "update", payload: { workflowId, ...payload } });
+    });
+  }
+
+  requestDeleteWorkflow(workflowId: string): Promise<{ success: boolean }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "workflow-api", requestId, action: "delete", payload: { workflowId } });
+    });
+  }
+
+  requestListTriggers(filters?: { workflowId?: string; type?: string; enabled?: boolean }): Promise<{ triggers: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "trigger-api", requestId, action: "list", payload: filters || {} });
+    });
+  }
+
+  requestSyncTrigger(params: {
+    triggerId?: string;
+    workflowId?: string | null;
+    name?: string;
+    enabled?: boolean;
+    config?: Record<string, unknown>;
+    variableMapping?: Record<string, string>;
+  }): Promise<{ trigger?: unknown; success?: boolean }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({
+        type: "trigger-api",
+        requestId,
+        action: params.triggerId ? "update" : "create",
+        payload: params as Record<string, unknown>,
+      });
+    });
+  }
+
+  requestRunTrigger(
+    triggerId: string,
+    params?: { variables?: Record<string, unknown>; repoUrl?: string; branch?: string; ref?: string; sourceRepoFullName?: string },
+  ): Promise<Record<string, unknown>> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({
+        type: "trigger-api",
+        requestId,
+        action: "run",
+        payload: {
+          triggerId,
+          variables: params?.variables,
+          repoUrl: params?.repoUrl,
+          branch: params?.branch,
+          ref: params?.ref,
+          sourceRepoFullName: params?.sourceRepoFullName,
+        },
+      });
+    });
+  }
+
+  requestDeleteTrigger(triggerId: string): Promise<{ success: boolean }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "trigger-api", requestId, action: "delete", payload: { triggerId } });
+    });
+  }
+
+  requestGetExecution(executionId: string): Promise<{ execution: unknown }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "execution-api", requestId, action: "get", payload: { executionId } });
+    });
+  }
+
+  requestGetExecutionSteps(executionId: string): Promise<{ steps: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "execution-api", requestId, action: "steps", payload: { executionId } });
+    });
+  }
+
+  requestApproveExecution(
+    executionId: string,
+    params: { approve: boolean; resumeToken: string; reason?: string },
+  ): Promise<{ success: boolean; status?: string }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({
+        type: "execution-api",
+        requestId,
+        action: "approve",
+        payload: { executionId, approve: params.approve, resumeToken: params.resumeToken, reason: params.reason },
+      });
+    });
+  }
+
+  requestCancelExecution(
+    executionId: string,
+    params?: { reason?: string },
+  ): Promise<{ success: boolean; status?: string }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({
+        type: "execution-api",
+        requestId,
+        action: "cancel",
+        payload: { executionId, reason: params?.reason },
+      });
     });
   }
 
@@ -765,6 +898,15 @@ export class AgentClient {
             this.rejectPendingRequest(msg.requestId, msg.error);
           } else {
             this.resolvePendingRequest(msg.requestId, { executions: msg.executions ?? [] });
+          }
+          break;
+        case "workflow-api-result":
+        case "trigger-api-result":
+        case "execution-api-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, msg.data ?? {});
           }
           break;
         case "tunnel-delete":

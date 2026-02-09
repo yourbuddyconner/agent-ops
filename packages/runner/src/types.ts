@@ -67,6 +67,9 @@ export type DOToRunnerMessage =
   | { type: "workflow-sync-result"; requestId: string; success?: boolean; workflow?: unknown; error?: string }
   | { type: "workflow-run-result"; requestId: string; execution?: unknown; error?: string }
   | { type: "workflow-executions-result"; requestId: string; executions?: unknown[]; error?: string }
+  | { type: "workflow-api-result"; requestId: string; data?: unknown; error?: string }
+  | { type: "trigger-api-result"; requestId: string; data?: unknown; error?: string }
+  | { type: "execution-api-result"; requestId: string; data?: unknown; error?: string }
   | {
       type: "workflow-execute";
       executionId: string;
@@ -125,8 +128,20 @@ export type RunnerToDOMessage =
   | { type: "read-repo-file"; requestId: string; owner?: string; repo?: string; repoUrl?: string; path: string; ref?: string }
   | { type: "workflow-list"; requestId: string }
   | { type: "workflow-sync"; requestId: string; id?: string; slug?: string; name: string; description?: string; version?: string; data: Record<string, unknown> }
-  | { type: "workflow-run"; requestId: string; workflowId: string; variables?: Record<string, unknown> }
+  | {
+      type: "workflow-run";
+      requestId: string;
+      workflowId: string;
+      variables?: Record<string, unknown>;
+      repoUrl?: string;
+      branch?: string;
+      ref?: string;
+      sourceRepoFullName?: string;
+    }
   | { type: "workflow-executions"; requestId: string; workflowId?: string; limit?: number }
+  | { type: "workflow-api"; requestId: string; action: string; payload?: Record<string, unknown> }
+  | { type: "trigger-api"; requestId: string; action: string; payload?: Record<string, unknown> }
+  | { type: "execution-api"; requestId: string; action: string; payload?: Record<string, unknown> }
   | { type: "workflow-execution-result"; executionId: string; envelope: WorkflowRunResultEnvelope }
   | { type: "model-switched"; messageId: string; fromModel: string; toModel: string; reason: string }
   | { type: "tunnels"; tunnels: Array<{ name: string; port: number; protocol?: string; path: string }> };

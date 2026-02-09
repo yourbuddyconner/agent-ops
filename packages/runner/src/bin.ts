@@ -137,17 +137,59 @@ async function main() {
     onSyncWorkflow: async (params) => {
       return await agentClient.requestSyncWorkflow(params);
     },
+    onGetWorkflow: async (workflowId) => {
+      return await agentClient.requestGetWorkflow(workflowId);
+    },
+    onUpdateWorkflow: async (workflowId, payload) => {
+      return await agentClient.requestUpdateWorkflow(workflowId, payload);
+    },
+    onDeleteWorkflow: async (workflowId) => {
+      return await agentClient.requestDeleteWorkflow(workflowId);
+    },
     onRunWorkflow: async (params) => {
-      return await agentClient.requestRunWorkflow(params.workflowId, params.variables);
+      return await agentClient.requestRunWorkflow(
+        params.workflowId,
+        params.variables,
+        {
+          repoUrl: params.repoUrl,
+          branch: params.branch,
+          ref: params.ref,
+          sourceRepoFullName: params.sourceRepoFullName,
+        },
+      );
     },
     onListWorkflowExecutions: async (workflowId, limit) => {
       return await agentClient.requestListWorkflowExecutions(workflowId, limit);
+    },
+    onListTriggers: async (filters) => {
+      return await agentClient.requestListTriggers(filters);
+    },
+    onSyncTrigger: async (params) => {
+      return await agentClient.requestSyncTrigger(params);
+    },
+    onRunTrigger: async (triggerId, params) => {
+      return await agentClient.requestRunTrigger(triggerId, params);
+    },
+    onDeleteTrigger: async (triggerId) => {
+      return await agentClient.requestDeleteTrigger(triggerId);
+    },
+    onGetExecution: async (executionId) => {
+      return await agentClient.requestGetExecution(executionId);
+    },
+    onGetExecutionSteps: async (executionId) => {
+      return await agentClient.requestGetExecutionSteps(executionId);
+    },
+    onApproveExecution: async (executionId, params) => {
+      return await agentClient.requestApproveExecution(executionId, params);
+    },
+    onCancelExecution: async (executionId, params) => {
+      return await agentClient.requestCancelExecution(executionId, params);
     },
     onTunnelsUpdated: (tunnels) => {
       agentClient.sendTunnels(tunnels);
     },
   });
-  const promptHandler = new PromptHandler(opencodeUrl!, agentClient);
+  const promptHandler = new PromptHandler(opencodeUrl!, agentClient, sessionId!);
 
   // Register handlers
   agentClient.onPrompt(async (messageId, content, model, author, modelPreferences, attachments) => {

@@ -229,7 +229,7 @@ async function executeStepAction(step: NormalizedWorkflowStep, ctx: ExecutionCon
     };
   }
 
-  if (step.type === 'agent') {
+  if (step.type === 'agent' || step.type === 'agent_message') {
     if (ctx.hooks?.onAgentStep) {
       const hooked = await ctx.hooks.onAgentStep(step, context);
       if (hooked) return hooked;

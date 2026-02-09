@@ -9,6 +9,8 @@ export interface StepFormData {
   tool: string;
   goal: string;
   context: string;
+  awaitResponse: boolean;
+  awaitTimeoutMs: string;
   outputVariable: string;
   argumentsJson: string;
   conditionJson: string;
@@ -36,6 +38,10 @@ export function StepBehaviorEditors({ formData, errors, onChange }: StepBehavior
 
   if (formData.type === 'agent') {
     return <AgentStepEditor formData={formData} onChange={onChange} />;
+  }
+
+  if (formData.type === 'agent_message') {
+    return <AgentMessageStepEditor formData={formData} errors={errors} onChange={onChange} />;
   }
 
   if (formData.type === 'conditional') {
@@ -134,6 +140,62 @@ function AgentStepEditor({
         rows={4}
         onChange={(value) => onChange('context', value)}
       />
+    </BehaviorShell>
+  );
+}
+
+function AgentMessageStepEditor({
+  formData,
+  errors,
+  onChange,
+}: {
+  formData: StepFormData;
+  errors: Record<string, string>;
+  onChange: StepBehaviorEditorsProps['onChange'];
+}) {
+  return (
+    <BehaviorShell
+      title="Agent Message Step"
+      description="Send a message to the current workflow session agent without manually specifying a target session."
+      tone="amber"
+    >
+      <TextField
+        id="step-agent-message"
+        label="Message"
+        value={formData.goal}
+        placeholder="Summarize current execution status and propose next actions."
+        rows={4}
+        error={errors.goal}
+        onChange={(value) => onChange('goal', value)}
+      />
+
+      <div className="rounded-lg border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-800">
+        <label className="flex items-center gap-2 text-sm text-neutral-800 dark:text-neutral-100">
+          <input
+            type="checkbox"
+            checked={formData.awaitResponse}
+            onChange={(e) => onChange('awaitResponse', e.target.checked)}
+            className="size-4 rounded border-neutral-300 text-accent focus:ring-accent/30"
+          />
+          Wait for agent response before continuing
+        </label>
+      </div>
+
+      {formData.awaitResponse && (
+        <div>
+          <label htmlFor="step-agent-await-timeout" className={labelClassName}>
+            Await Timeout (ms)
+          </label>
+          <Input
+            id="step-agent-await-timeout"
+            value={formData.awaitTimeoutMs}
+            onChange={(e) => onChange('awaitTimeoutMs', e.target.value)}
+            placeholder="120000"
+            className={cn(errors.awaitTimeoutMs && 'border-red-500')}
+          />
+          <FieldError message={errors.awaitTimeoutMs} />
+        </div>
+      )}
     </BehaviorShell>
   );
 }
@@ -321,6 +383,7 @@ function TextField({
   value,
   placeholder,
   rows,
+  error,
   onChange,
 }: {
   id: string;
@@ -328,6 +391,7 @@ function TextField({
   value: string;
   placeholder: string;
   rows: number;
+  error?: string;
   onChange: (value: string) => void;
 }) {
   return (
@@ -341,8 +405,9 @@ function TextField({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         rows={rows}
-        className={textAreaClassName}
+        className={cn(textAreaClassName, error && 'border-red-500')}
       />
+      <FieldError message={error} />
     </div>
   );
 }

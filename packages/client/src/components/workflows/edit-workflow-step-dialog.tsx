@@ -18,6 +18,7 @@ import { cn } from '@/lib/cn';
 
 const STEP_TYPES = [
   { value: 'agent', label: 'Agent', description: 'Delegates reasoning and decision-making to the orchestrator persona.' },
+  { value: 'agent_message', label: 'Agent Message', description: 'Sends a message to the current workflow session agent.' },
   { value: 'tool', label: 'Tool', description: 'Executes deterministic tool calls such as bash, API, or repository actions.' },
   { value: 'conditional', label: 'Conditional', description: 'Branches execution path based on runtime state.' },
   { value: 'loop', label: 'Loop', description: 'Repeats a nested sequence until the loop condition is satisfied.' },
@@ -75,8 +76,10 @@ export function EditWorkflowStepDialog({
     name: step.name,
     type: step.type,
     tool: step.tool || '',
-    goal: step.goal || '',
+    goal: step.type === 'agent_message' ? (step.content || step.goal || '') : (step.goal || ''),
     context: step.context || '',
+    awaitResponse: step.await_response === true || step.awaitResponse === true,
+    awaitTimeoutMs: String(step.await_timeout_ms ?? step.awaitTimeoutMs ?? ''),
     outputVariable: step.outputVariable || '',
     argumentsJson: stringifyJson(step.arguments),
     conditionJson: stringifyJson(step.condition),
@@ -94,8 +97,10 @@ export function EditWorkflowStepDialog({
         name: step.name,
         type: step.type,
         tool: step.tool || '',
-        goal: step.goal || '',
+        goal: step.type === 'agent_message' ? (step.content || step.goal || '') : (step.goal || ''),
         context: step.context || '',
+        awaitResponse: step.await_response === true || step.awaitResponse === true,
+        awaitTimeoutMs: String(step.await_timeout_ms ?? step.awaitTimeoutMs ?? ''),
         outputVariable: step.outputVariable || '',
         argumentsJson: stringifyJson(step.arguments),
         conditionJson: stringifyJson(step.condition),
@@ -124,6 +129,18 @@ export function EditWorkflowStepDialog({
     }
     if (formData.type === 'tool' && !formData.tool.trim()) {
       newErrors.tool = 'Tool name is required for tool steps';
+    }
+    if (formData.type === 'agent_message' && !formData.goal.trim()) {
+      newErrors.goal = 'Message content is required for agent message steps';
+    }
+    let parsedAwaitTimeoutMs: number | undefined;
+    if (formData.type === 'agent_message' && formData.awaitResponse && formData.awaitTimeoutMs.trim()) {
+      const parsed = Number.parseInt(formData.awaitTimeoutMs, 10);
+      if (!Number.isFinite(parsed) || parsed < 1000) {
+        newErrors.awaitTimeoutMs = 'Await timeout must be an integer >= 1000 ms';
+      } else {
+        parsedAwaitTimeoutMs = parsed;
+      }
     }
 
     let parsedArguments: Record<string, unknown> | undefined;
@@ -183,6 +200,9 @@ export function EditWorkflowStepDialog({
       tool: formData.tool || undefined,
       goal: formData.goal || undefined,
       context: formData.context || undefined,
+      content: formData.type === 'agent_message' ? (formData.goal || undefined) : undefined,
+      await_response: formData.type === 'agent_message' ? (formData.awaitResponse || undefined) : undefined,
+      await_timeout_ms: formData.type === 'agent_message' ? parsedAwaitTimeoutMs : undefined,
       outputVariable: formData.outputVariable || undefined,
       arguments: parsedArguments,
       condition: parsedCondition,

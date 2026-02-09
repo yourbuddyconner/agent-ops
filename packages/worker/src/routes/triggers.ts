@@ -49,6 +49,17 @@ function requiresWorkflow(config: z.infer<typeof triggerConfigSchema>): boolean 
   return config.type !== 'schedule' || scheduleTarget(config) === 'workflow';
 }
 
+function deriveRepoFullName(repoUrl?: string, sourceRepoFullName?: string): string | undefined {
+  const explicit = sourceRepoFullName?.trim();
+  if (explicit) return explicit;
+
+  const rawUrl = repoUrl?.trim();
+  if (!rawUrl) return undefined;
+
+  const match = rawUrl.match(/github\.com[/:]([^/]+\/[^/.]+)/i);
+  return match?.[1] || undefined;
+}
+
 const createTriggerSchema = z.object({
   workflowId: z.string().min(1).optional(),
   name: z.string().min(1),
@@ -84,11 +95,19 @@ const manualRunSchema = z.object({
   workflowId: z.string().min(1),
   clientRequestId: z.string().min(8).optional(),
   variables: z.record(z.unknown()).optional(),
+  repoUrl: z.string().min(1).optional(),
+  branch: z.string().optional(),
+  ref: z.string().optional(),
+  sourceRepoFullName: z.string().optional(),
 });
 
 const triggerRunSchema = z.object({
   clientRequestId: z.string().min(8).optional(),
   variables: z.record(z.unknown()).optional(),
+  repoUrl: z.string().min(1).optional(),
+  branch: z.string().optional(),
+  ref: z.string().optional(),
+  sourceRepoFullName: z.string().optional(),
 }).passthrough();
 
 /**
@@ -100,6 +119,10 @@ triggersRouter.post('/manual/run', zValidator('json', manualRunSchema), async (c
   const user = c.get('user');
   const body = c.req.valid('json');
   const { workflowId, variables = {} } = body;
+  const repoUrl = body.repoUrl?.trim() || undefined;
+  const branch = body.branch?.trim() || undefined;
+  const ref = body.ref?.trim() || undefined;
+  const sourceRepoFullName = deriveRepoFullName(repoUrl, body.sourceRepoFullName);
   const workerOrigin = new URL(c.req.url).origin;
 
   // Verify user owns the workflow
@@ -157,6 +180,10 @@ triggersRouter.post('/manual/run', zValidator('json', manualRunSchema), async (c
     userId: user.id,
     workflowId: workflow.id,
     executionId,
+    sourceRepoUrl: repoUrl,
+    sourceRepoFullName,
+    branch,
+    ref,
   });
 
   // Log execution
@@ -662,10 +689,18 @@ triggersRouter.post('/:id/run', zValidator('json', triggerRunSchema), async (c) 
   const executionId = crypto.randomUUID();
   const now = new Date().toISOString();
   const workflowHash = await sha256Hex(String(row.workflow_data ?? '{}'));
+  const repoUrl = body.repoUrl?.trim() || undefined;
+  const branch = body.branch?.trim() || undefined;
+  const ref = body.ref?.trim() || undefined;
+  const sourceRepoFullName = deriveRepoFullName(repoUrl, body.sourceRepoFullName);
   const sessionId = await createWorkflowSession(c.env.DB, {
     userId: user.id,
     workflowId: row.wf_id,
     executionId,
+    sourceRepoUrl: repoUrl,
+    sourceRepoFullName,
+    branch,
+    ref,
   });
 
   // Log execution as pending first

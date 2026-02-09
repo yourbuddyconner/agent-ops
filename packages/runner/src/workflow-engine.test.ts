@@ -86,6 +86,39 @@ describe('workflow-engine', () => {
     expect(output?.stdout).toContain('workflow-ok');
   });
 
+  it('supports agent_message step hooks', async () => {
+    const compiled = await compileWorkflowDefinition({
+      steps: [
+        { id: 'notify', type: 'agent_message', content: 'status update' },
+      ],
+    });
+
+    if (!compiled.ok || !compiled.workflow) {
+      throw new Error('compile failed');
+    }
+
+    const result = await executeWorkflowRun(
+      'ex_agent_message',
+      compiled.workflow,
+      { variables: {} },
+      {
+        onAgentStep: async (step) => {
+          if (step.type !== 'agent_message') return;
+          return {
+            status: 'completed',
+            output: { delivered: true, content: step.content },
+          };
+        },
+      },
+    );
+
+    expect(result.status).toBe('ok');
+    expect(result.steps).toHaveLength(1);
+    expect(result.steps[0]?.stepId).toBe('notify');
+    expect(result.steps[0]?.status).toBe('completed');
+    expect(result.steps[0]?.output).toEqual({ delivered: true, content: 'status update' });
+  });
+
   it('resumes approved checkpoints and continues execution deterministically', async () => {
     const compiled = await compileWorkflowDefinition({
       steps: [

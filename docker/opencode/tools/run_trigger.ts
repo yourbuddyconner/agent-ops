@@ -21,6 +21,10 @@ export default tool({
   args: {
     trigger_id: z.string().min(1).describe("Trigger ID"),
     variables_json: z.string().optional().describe("Optional JSON object for manual runtime variables"),
+    repo_url: z.string().optional().describe("Optional git repository URL for the workflow session"),
+    repo_branch: z.string().optional().describe("Optional branch to checkout"),
+    repo_ref: z.string().optional().describe("Optional git ref to checkout"),
+    source_repo_full_name: z.string().optional().describe("Optional owner/repo hint"),
   },
   async execute(args) {
     try {
@@ -38,6 +42,10 @@ export default tool({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           variables,
+          repoUrl: args.repo_url,
+          branch: args.repo_branch,
+          ref: args.repo_ref,
+          sourceRepoFullName: args.source_repo_full_name,
         }),
       })
 

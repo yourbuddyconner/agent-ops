@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { useInterval } from '@/hooks/use-interval';
 
 interface QuestionPromptProps {
   questionId: string;
@@ -9,12 +10,27 @@ interface QuestionPromptProps {
   onAnswer: (questionId: string, answer: string | boolean) => void;
 }
 
-export function QuestionPrompt({ questionId, text, options, onAnswer }: QuestionPromptProps) {
+export function QuestionPrompt({ questionId, text, options, expiresAt, onAnswer }: QuestionPromptProps) {
   const [freeformValue, setFreeformValue] = useState('');
   const [answered, setAnswered] = useState(false);
+  const [nowSecs, setNowSecs] = useState(() => Math.floor(Date.now() / 1000));
+
+  useInterval(
+    () => setNowSecs(Math.floor(Date.now() / 1000)),
+    expiresAt ? 1000 : null
+  );
+
+  const isExpired = expiresAt !== undefined && nowSecs >= expiresAt;
+  const expiresInText = useMemo(() => {
+    if (expiresAt === undefined) return null;
+    const remaining = Math.max(0, expiresAt - nowSecs);
+    const minutes = Math.floor(remaining / 60);
+    const seconds = remaining % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
+  }, [expiresAt, nowSecs]);
 
   const handleAnswer = (answer: string | boolean) => {
-    if (answered) return;
+    if (answered || isExpired) return;
     setAnswered(true);
     onAnswer(questionId, answer);
   };
@@ -33,6 +49,11 @@ export function QuestionPrompt({ questionId, text, options, onAnswer }: Question
       </div>
 
       <p className="mb-3 text-[13px] text-neutral-900 dark:text-neutral-100">{text}</p>
+      {expiresInText && (
+        <p className="mb-3 font-mono text-[10px] uppercase tracking-wide text-amber-700/80 dark:text-amber-300/80">
+          {isExpired ? 'Expired' : `Expires in ${expiresInText}`}
+        </p>
+      )}
 
       {options && options.length > 0 ? (
         <div className="flex flex-wrap gap-1.5">
@@ -42,6 +63,7 @@ export function QuestionPrompt({ questionId, text, options, onAnswer }: Question
               variant="outline"
               size="sm"
               onClick={() => handleAnswer(option)}
+              disabled={isExpired}
               className="text-[11px]"
             >
               {option}
@@ -63,10 +85,11 @@ export function QuestionPrompt({ questionId, text, options, onAnswer }: Question
             value={freeformValue}
             onChange={(e) => setFreeformValue(e.target.value)}
             placeholder="Type your answer..."
+            disabled={isExpired}
             className="flex-1 rounded-md border border-neutral-300 bg-surface-0 px-2.5 py-1.5 text-[13px] text-neutral-900 focus:outline-none focus:ring-2 focus:ring-amber-400/40 dark:border-neutral-600 dark:bg-surface-1 dark:text-neutral-100"
             autoFocus
           />
-          <Button type="submit" size="sm" disabled={!freeformValue.trim()}>
+          <Button type="submit" size="sm" disabled={!freeformValue.trim() || isExpired}>
             Answer
           </Button>
         </form>

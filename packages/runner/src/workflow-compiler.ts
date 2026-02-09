@@ -35,6 +35,40 @@ function normalizeStep(stepValue: unknown, path: string, errors: WorkflowCompile
     errors.push({ message: 'Step type is required', path: `${path}.type` });
     return null;
   }
+  const normalizedType = type.trim();
+
+  if (normalizedType === 'agent_message') {
+    const content =
+      (typeof stepValue.content === 'string' ? stepValue.content : '') ||
+      (typeof stepValue.message === 'string' ? stepValue.message : '') ||
+      (typeof stepValue.goal === 'string' ? stepValue.goal : '');
+    if (!content.trim()) {
+      errors.push({ message: 'agent_message step requires content (content, message, or goal)', path });
+    }
+
+    if (stepValue.interrupt !== undefined && typeof stepValue.interrupt !== 'boolean') {
+      errors.push({ message: 'agent_message.interrupt must be a boolean', path: `${path}.interrupt` });
+    }
+
+    const awaitResponseValue =
+      stepValue.await_response !== undefined
+        ? stepValue.await_response
+        : stepValue.awaitResponse;
+    if (awaitResponseValue !== undefined && typeof awaitResponseValue !== 'boolean') {
+      errors.push({ message: 'agent_message.await_response must be a boolean', path: `${path}.await_response` });
+    }
+
+    const awaitTimeoutValue =
+      stepValue.await_timeout_ms !== undefined
+        ? stepValue.await_timeout_ms
+        : stepValue.awaitTimeoutMs;
+    if (
+      awaitTimeoutValue !== undefined &&
+      (typeof awaitTimeoutValue !== 'number' || !Number.isFinite(awaitTimeoutValue) || awaitTimeoutValue < 1_000)
+    ) {
+      errors.push({ message: 'agent_message.await_timeout_ms must be a number >= 1000', path: `${path}.await_timeout_ms` });
+    }
+  }
 
   const providedId = stepValue.id;
   const id = typeof providedId === 'string' && providedId.trim() ? providedId.trim() : path.replace(/\./g, '_');
@@ -56,7 +90,7 @@ function normalizeStep(stepValue: unknown, path: string, errors: WorkflowCompile
   }
 
   normalized.id = id;
-  normalized.type = type.trim();
+  normalized.type = normalizedType;
 
   return deepSort(normalized) as NormalizedWorkflowStep;
 }

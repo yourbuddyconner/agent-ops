@@ -24,6 +24,22 @@ export default tool({
       .string()
       .optional()
       .describe("Optional JSON object string for runtime variables, e.g. {\"env\":\"prod\",\"dryRun\":true}"),
+    repo_url: z
+      .string()
+      .optional()
+      .describe("Optional git repository URL to clone into the workflow session"),
+    repo_branch: z
+      .string()
+      .optional()
+      .describe("Optional branch to checkout when repo_url is provided"),
+    repo_ref: z
+      .string()
+      .optional()
+      .describe("Optional git ref to checkout when repo_url is provided"),
+    source_repo_full_name: z
+      .string()
+      .optional()
+      .describe("Optional owner/repo hint (derived from repo_url when omitted)"),
   },
   async execute(args) {
     try {
@@ -42,6 +58,10 @@ export default tool({
         body: JSON.stringify({
           workflowId: args.workflow_id,
           variables,
+          repoUrl: args.repo_url,
+          branch: args.repo_branch,
+          ref: args.repo_ref,
+          sourceRepoFullName: args.source_repo_full_name,
         }),
       })
 

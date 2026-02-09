@@ -82,6 +82,19 @@ interface OpenCodeMessageInfo {
   [key: string]: unknown;
 }
 
+interface OpenCodeQuestionOption {
+  label?: string;
+  description?: string;
+}
+
+interface OpenCodeQuestionInfo {
+  question?: string;
+  header?: string;
+  options?: OpenCodeQuestionOption[];
+  multiple?: boolean;
+  custom?: boolean;
+}
+
 type OpenCodeEvent =
   | {
       type: "message.part.updated";
@@ -329,6 +342,7 @@ function isRetriableProviderError(errorMsg: string): boolean {
 export class PromptHandler {
   private opencodeUrl: string;
   private agentClient: AgentClient;
+  private runnerSessionId: string | null;
   private sessionId: string | null = null;
   private eventStreamActive = false;
 
@@ -367,6 +381,10 @@ export class PromptHandler {
   private idleWaiters = new Map<string, () => void>();
   private ephemeralContent = new Map<string, string>(); // accumulated text from SSE
 
+  // OpenCode question requests (question tool)
+  private pendingQuestionRequests = new Map<string, { answers: (string[] | null)[] }>();
+  private promptToQuestion = new Map<string, { requestID: string; index: number }>();
+
   // Model failover state for current prompt
   private currentModelPreferences: string[] | undefined;
   private currentModelIndex = 0;
@@ -379,9 +397,10 @@ export class PromptHandler {
   private finalizeInFlight = false;
   private awaitingAssistantForAttempt = false;
 
-  constructor(opencodeUrl: string, agentClient: AgentClient) {
+  constructor(opencodeUrl: string, agentClient: AgentClient, runnerSessionId?: string) {
     this.opencodeUrl = opencodeUrl;
     this.agentClient = agentClient;
+    this.runnerSessionId = runnerSessionId?.trim() || null;
   }
 
   private normalizeWorkflowHash(hash: string | undefined): string {
@@ -461,6 +480,8 @@ export class PromptHandler {
       const hooks = {
         onToolStep: (step: NormalizedWorkflowStep, context: WorkflowStepExecutionContext) =>
           this.executeWorkflowToolStep(step, context),
+        onAgentStep: (step: NormalizedWorkflowStep, context: WorkflowStepExecutionContext) =>
+          this.executeWorkflowAgentStep(step, context),
       };
 
       const envelope = request.kind === "run"
@@ -549,7 +570,20 @@ export class PromptHandler {
           return { status: "failed", error: "run_workflow requires workflowId" };
         }
         const variables = isRecord(args.variables) ? args.variables : undefined;
-        const result = await this.agentClient.requestRunWorkflow(workflowId, variables);
+        const repoUrl = typeof args.repoUrl === "string" ? args.repoUrl.trim() : "";
+        const branch = typeof args.branch === "string" ? args.branch.trim() : "";
+        const ref = typeof args.ref === "string" ? args.ref.trim() : "";
+        const sourceRepoFullName = typeof args.sourceRepoFullName === "string" ? args.sourceRepoFullName.trim() : "";
+        const result = await this.agentClient.requestRunWorkflow(
+          workflowId,
+          variables,
+          {
+            repoUrl: repoUrl || undefined,
+            branch: branch || undefined,
+            ref: ref || undefined,
+            sourceRepoFullName: sourceRepoFullName || undefined,
+          },
+        );
         return { status: "completed", output: { tool, execution: result.execution } };
       }
 
@@ -562,6 +596,125 @@ export class PromptHandler {
     }
 
     return;
+  }
+
+  private async executeWorkflowAgentStep(
+    step: NormalizedWorkflowStep,
+    _context: WorkflowStepExecutionContext,
+  ): Promise<WorkflowStepExecutionResult | void> {
+    if (step.type !== "agent_message") {
+      return;
+    }
+
+    const content = (
+      typeof step.content === "string"
+        ? step.content
+        : typeof step.message === "string"
+          ? step.message
+          : typeof step.goal === "string"
+            ? step.goal
+            : ""
+    ).trim();
+
+    if (!content) {
+      return { status: "failed", error: "agent_message requires content/message/goal" };
+    }
+
+    if (!this.runnerSessionId) {
+      return { status: "failed", error: "agent_message unavailable: runner session id is missing" };
+    }
+
+    const interrupt = step.interrupt === true;
+    const awaitResponse = step.await_response === true || step.awaitResponse === true;
+    const awaitTimeoutRaw =
+      typeof step.await_timeout_ms === "number"
+        ? step.await_timeout_ms
+        : typeof step.awaitTimeoutMs === "number"
+          ? step.awaitTimeoutMs
+          : 120_000;
+    const awaitTimeoutMs = Math.max(1_000, Math.min(awaitTimeoutRaw, 900_000));
+
+    if (awaitResponse) {
+      const ephemeralId = await this.createEphemeralSession();
+      this.ephemeralContent.set(ephemeralId, "");
+      try {
+        const idlePromise = this.pollUntilIdle(ephemeralId, awaitTimeoutMs);
+        await this.sendPromptAsync(ephemeralId, content);
+        await idlePromise;
+
+        const responseText = (this.ephemeralContent.get(ephemeralId) || "").trim();
+        if (!responseText) {
+          return {
+            status: "failed",
+            error: "agent_message_empty_response",
+            output: {
+              type: "agent_message",
+              targetSessionId: this.runnerSessionId,
+              content,
+              interrupt,
+              awaitResponse: true,
+              awaitTimeoutMs,
+            },
+          };
+        }
+
+        return {
+          status: "completed",
+          output: {
+            type: "agent_message",
+            targetSessionId: this.runnerSessionId,
+            content,
+            interrupt,
+            awaitResponse: true,
+            awaitTimeoutMs,
+            response: responseText,
+          },
+        };
+      } catch (error) {
+        return {
+          status: "failed",
+          error: error instanceof Error ? error.message : String(error),
+          output: {
+            type: "agent_message",
+            targetSessionId: this.runnerSessionId,
+            content,
+            interrupt,
+            awaitResponse: true,
+            awaitTimeoutMs,
+          },
+        };
+      } finally {
+        this.ephemeralContent.delete(ephemeralId);
+        this.idleWaiters.delete(ephemeralId);
+        await this.deleteSession(ephemeralId).catch(() => undefined);
+      }
+    }
+
+    try {
+      const result = await this.agentClient.requestSendMessage(this.runnerSessionId, content, interrupt);
+      return {
+        status: result.success ? "completed" : "failed",
+        ...(result.success ? {} : { error: "agent_message_send_failed" }),
+        output: {
+          type: "agent_message",
+          targetSessionId: this.runnerSessionId,
+          content,
+          interrupt,
+          success: result.success,
+        },
+      };
+    } catch (error) {
+      return {
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+        output: {
+          type: "agent_message",
+          targetSessionId: this.runnerSessionId,
+          content,
+          interrupt,
+        },
+      };
+    }
   }
 
   /**
@@ -746,7 +899,12 @@ export class PromptHandler {
 
   async handleAnswer(questionId: string, answer: string | boolean): Promise<void> {
     if (!this.sessionId) return;
-    const response = answer === false ? "reject" : "always";
+    if (await this.handleQuestionReply(questionId, answer)) return;
+
+    const response =
+      answer === false || answer === "__expired__"
+        ? "reject"
+        : "always";
     await this.respondToPermission(questionId, response);
   }
 
@@ -771,6 +929,129 @@ export class PromptHandler {
     } catch (err) {
       console.error("[PromptHandler] Error responding to permission:", err);
     }
+  }
+
+  private async handleQuestionReply(promptId: string, answer: string | boolean): Promise<boolean> {
+    const mapping = this.promptToQuestion.get(promptId);
+    if (!mapping) return false;
+
+    this.promptToQuestion.delete(promptId);
+    const request = this.pendingQuestionRequests.get(mapping.requestID);
+    if (!request) return true;
+
+    if (answer === "__expired__") {
+      await this.rejectQuestionRequest(mapping.requestID, "expired");
+      return true;
+    }
+
+    const normalized = this.normalizeQuestionAnswer(answer);
+    request.answers[mapping.index] = normalized;
+
+    const complete = request.answers.every((item) => item !== null);
+    if (!complete) return true;
+
+    const answers = request.answers.map((item) => item ?? []);
+    await this.replyQuestionRequest(mapping.requestID, answers);
+    return true;
+  }
+
+  private normalizeQuestionAnswer(answer: string | boolean): string[] {
+    if (answer === true) return ["true"];
+    if (answer === false) return ["false"];
+    const trimmed = String(answer).trim();
+    if (!trimmed || trimmed === "__expired__") return [];
+    return [trimmed];
+  }
+
+  private async replyQuestionRequest(requestID: string, answers: string[][]): Promise<void> {
+    try {
+      const url = `${this.opencodeUrl}/question/${requestID}/reply`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answers }),
+      });
+      console.log(`[PromptHandler] Question ${requestID} replied: ${res.status}`);
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        console.warn(`[PromptHandler] Question reply failed: ${res.status} ${body}`);
+      }
+    } catch (err) {
+      console.error("[PromptHandler] Error replying to question:", err);
+    } finally {
+      this.clearQuestionRequest(requestID);
+    }
+  }
+
+  private async rejectQuestionRequest(requestID: string, reason: "expired" | "rejected"): Promise<void> {
+    try {
+      const url = `${this.opencodeUrl}/question/${requestID}/reject`;
+      const res = await fetch(url, { method: "POST" });
+      console.log(`[PromptHandler] Question ${requestID} rejected (${reason}): ${res.status}`);
+    } catch (err) {
+      console.error("[PromptHandler] Error rejecting question:", err);
+    } finally {
+      this.clearQuestionRequest(requestID);
+    }
+  }
+
+  private clearQuestionRequest(requestID: string): void {
+    this.pendingQuestionRequests.delete(requestID);
+    for (const [promptID, mapping] of this.promptToQuestion.entries()) {
+      if (mapping.requestID === requestID) {
+        this.promptToQuestion.delete(promptID);
+      }
+    }
+  }
+
+  private handleQuestionAsked(properties: Record<string, unknown>): void {
+    const requestID = typeof properties.id === "string" ? properties.id : "";
+    const questionsRaw = Array.isArray(properties.questions) ? properties.questions : [];
+    const parsedQuestions = questionsRaw
+      .map((entry) => this.parseQuestionInfo(entry))
+      .filter((entry): entry is { text: string; options?: string[] } => !!entry);
+
+    if (!requestID || parsedQuestions.length === 0) {
+      console.warn("[PromptHandler] question.asked missing request id or questions");
+      return;
+    }
+
+    this.clearQuestionRequest(requestID);
+    this.pendingQuestionRequests.set(requestID, {
+      answers: Array.from({ length: parsedQuestions.length }, () => null),
+    });
+
+    parsedQuestions.forEach((question, index) => {
+      const promptID = parsedQuestions.length === 1 ? requestID : `${requestID}:${index}`;
+      this.promptToQuestion.set(promptID, { requestID, index });
+      this.agentClient.sendQuestion(promptID, question.text, question.options);
+    });
+  }
+
+  private parseQuestionInfo(input: unknown): { text: string; options?: string[] } | null {
+    if (!isRecord(input)) return null;
+    const question = input as OpenCodeQuestionInfo;
+
+    const questionText = typeof question.question === "string" ? question.question.trim() : "";
+    const header = typeof question.header === "string" ? question.header.trim() : "";
+    if (!questionText && !header) return null;
+
+    const text = header && questionText ? `${header}: ${questionText}` : (questionText || header);
+
+    const optionLabels = Array.isArray(question.options)
+      ? question.options
+          .map((opt) => (isRecord(opt) && typeof opt.label === "string" ? opt.label.trim() : ""))
+          .filter(Boolean)
+      : [];
+
+    if (question.multiple) {
+      const hint = optionLabels.length
+        ? `\nOptions: ${optionLabels.join(", ")}\nSelect one or more values (comma-separated if needed).`
+        : "\nSelect one or more values (comma-separated if needed).";
+      return { text: `${text}${hint}` };
+    }
+
+    return { text, options: optionLabels.length > 0 ? optionLabels : undefined };
   }
 
   async handleAbort(): Promise<void> {
@@ -1484,6 +1765,20 @@ export class PromptHandler {
         break;
       }
 
+      case "question.asked": {
+        this.handleQuestionAsked(props);
+        break;
+      }
+
+      case "question.replied":
+      case "question.rejected": {
+        const requestID = typeof props.requestID === "string" ? props.requestID : "";
+        if (requestID) {
+          this.clearQuestionRequest(requestID);
+        }
+        break;
+      }
+
       case "session.error": {
         // OpenCode session error — extract error message
         const rawError = props.error ?? props.message ?? props.description;
@@ -1715,7 +2010,13 @@ export class PromptHandler {
 
     // Send tool call on every state transition with callID + status
     if (currentStatus === "pending" || currentStatus === "running") {
-      this.agentClient.sendAgentStatus("tool_calling", toolName);
+      if (toolName === "question") {
+        // Question tools wait on user input; keep UI interactive instead of "thinking".
+        this.agentClient.sendAgentStatus("idle");
+        this.idleNotified = true;
+      } else {
+        this.agentClient.sendAgentStatus("tool_calling", toolName);
+      }
       this.agentClient.sendToolCall(
         callID,
         toolName,

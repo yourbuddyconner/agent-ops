@@ -17,6 +17,39 @@ function validateStep(step: unknown, path: string, errors: string[]): void {
   if (typeof type !== 'string' || !type.trim()) {
     errors.push(`${path}.type is required`);
   }
+  const normalizedType = typeof type === 'string' ? type.trim() : '';
+
+  if (normalizedType === 'agent_message') {
+    const content =
+      (typeof step.content === 'string' ? step.content : '') ||
+      (typeof step.message === 'string' ? step.message : '') ||
+      (typeof step.goal === 'string' ? step.goal : '');
+    if (!content.trim()) {
+      errors.push(`${path} requires content (content, message, or goal) for agent_message steps`);
+    }
+    if (step.interrupt !== undefined && typeof step.interrupt !== 'boolean') {
+      errors.push(`${path}.interrupt must be a boolean`);
+    }
+
+    const awaitResponseValue =
+      step.await_response !== undefined
+        ? step.await_response
+        : step.awaitResponse;
+    if (awaitResponseValue !== undefined && typeof awaitResponseValue !== 'boolean') {
+      errors.push(`${path}.await_response must be a boolean`);
+    }
+
+    const awaitTimeoutValue =
+      step.await_timeout_ms !== undefined
+        ? step.await_timeout_ms
+        : step.awaitTimeoutMs;
+    if (
+      awaitTimeoutValue !== undefined &&
+      (typeof awaitTimeoutValue !== 'number' || !Number.isFinite(awaitTimeoutValue) || awaitTimeoutValue < 1000)
+    ) {
+      errors.push(`${path}.await_timeout_ms must be a number >= 1000`);
+    }
+  }
 
   const nestedKeys = ['then', 'else', 'steps'] as const;
   for (const key of nestedKeys) {

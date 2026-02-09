@@ -44,11 +44,17 @@ export interface VariableDefinition {
 export interface WorkflowStep {
   id: string;
   name: string;
-  type: 'agent' | 'tool' | 'conditional' | 'loop' | 'parallel' | 'subworkflow' | 'approval';
+  type: 'agent' | 'agent_message' | 'tool' | 'conditional' | 'loop' | 'parallel' | 'subworkflow' | 'approval';
   tool?: string;
   arguments?: Record<string, unknown>;
   goal?: string;
   context?: string;
+  content?: string;
+  interrupt?: boolean;
+  await_response?: boolean;
+  await_timeout_ms?: number;
+  awaitResponse?: boolean;
+  awaitTimeoutMs?: number;
   outputVariable?: string;
   condition?: unknown;
   then?: WorkflowStep[];
