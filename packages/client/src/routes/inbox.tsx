@@ -7,9 +7,10 @@ import { Button } from '@/components/ui/button';
 import {
   useInbox,
   useInboxCount,
-  useMarkInboxRead,
+  useInboxThread,
   useReplyToInbox,
 } from '@/api/orchestrator';
+import { useAuthStore } from '@/stores/auth';
 import { formatRelativeTime } from '@/lib/format';
 import type { MailboxMessage, MailboxMessageType } from '@/api/types';
 
@@ -34,7 +35,7 @@ const MESSAGE_TYPE_STYLES: Record<string, string> = {
 
 function InboxPage() {
   const [typeFilter, setTypeFilter] = React.useState<MailboxMessageType | 'all'>('all');
-  const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [selectedThreadId, setSelectedThreadId] = React.useState<string | null>(null);
 
   const { data: inboxData, isLoading } = useInbox({
     messageType: typeFilter === 'all' ? undefined : typeFilter,
@@ -44,7 +45,6 @@ function InboxPage() {
   const { data: unreadCount } = useInboxCount();
 
   const messages = inboxData?.messages ?? [];
-  const selectedMessage = messages.find((m) => m.id === selectedId);
 
   return (
     <PageContainer>
@@ -64,7 +64,7 @@ function InboxPage() {
             key={filter.value}
             onClick={() => {
               setTypeFilter(filter.value);
-              setSelectedId(null);
+              setSelectedThreadId(null);
             }}
             className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
               typeFilter === filter.value
@@ -88,22 +88,22 @@ function InboxPage() {
         </div>
       ) : (
         <div className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
-          {/* Message list */}
+          {/* Thread list */}
           <div className="space-y-1">
             {messages.map((msg) => (
               <InboxMessageItem
                 key={msg.id}
                 message={msg}
-                selected={selectedId === msg.id}
-                onSelect={() => setSelectedId(msg.id)}
+                selected={selectedThreadId === msg.id}
+                onSelect={() => setSelectedThreadId(msg.id)}
               />
             ))}
           </div>
 
           {/* Detail panel */}
           <div className="hidden lg:block">
-            {selectedMessage ? (
-              <InboxMessageDetail message={selectedMessage} />
+            {selectedThreadId ? (
+              <InboxThreadDetail threadId={selectedThreadId} />
             ) : (
               <div className="rounded-lg border border-neutral-200 bg-white p-8 text-center dark:border-neutral-700 dark:bg-neutral-800">
                 <p className="text-sm text-neutral-500 dark:text-neutral-400">
@@ -119,7 +119,7 @@ function InboxPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Message Item
+// Thread List Item (renders thread root summary)
 // ---------------------------------------------------------------------------
 
 function InboxMessageItem({
@@ -131,21 +131,14 @@ function InboxMessageItem({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const markRead = useMarkInboxRead();
-
-  function handleClick() {
-    onSelect();
-    if (!message.read) {
-      markRead.mutate(message.id);
-    }
-  }
-
   const senderName =
     message.fromSessionTitle || message.fromUserName || message.fromUserEmail || 'Unknown';
+  const displayTime = message.lastActivityAt || message.createdAt;
+  const replyCount = message.replyCount ?? 0;
 
   return (
     <button
-      onClick={handleClick}
+      onClick={onSelect}
       className={`group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
         selected
           ? 'border-accent/30 bg-accent/5 dark:border-accent/20 dark:bg-accent/5'
@@ -173,6 +166,11 @@ function InboxMessageItem({
           >
             {message.messageType}
           </span>
+          {replyCount > 0 && (
+            <span className="shrink-0 rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-700 dark:text-neutral-400">
+              {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
+            </span>
+          )}
         </div>
         <p className="truncate text-xs text-neutral-600 dark:text-neutral-400">
           {message.content}
@@ -180,42 +178,64 @@ function InboxMessageItem({
       </div>
 
       <span className="shrink-0 text-[11px] text-neutral-400 tabular-nums dark:text-neutral-500">
-        {formatRelativeTime(message.createdAt)}
+        {formatRelativeTime(displayTime)}
       </span>
     </button>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Message Detail
+// Thread Detail (conversation view)
 // ---------------------------------------------------------------------------
 
-function InboxMessageDetail({ message }: { message: MailboxMessage }) {
-  const markRead = useMarkInboxRead();
+function InboxThreadDetail({ threadId }: { threadId: string }) {
+  const { data: threadData, isLoading } = useInboxThread(threadId);
   const replyMutation = useReplyToInbox();
   const [replyText, setReplyText] = React.useState('');
+  const currentUserId = useAuthStore((s) => s.user?.id);
 
+  // Reset reply text when switching threads
   React.useEffect(() => {
-    if (!message.read) {
-      markRead.mutate(message.id);
-    }
-    // Only on message change
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [message.id]);
+    setReplyText('');
+  }, [threadId]);
+
+  if (isLoading) {
+    return (
+      <div className="rounded-lg border border-neutral-200 bg-white dark:border-neutral-700 dark:bg-neutral-800">
+        <div className="p-4 space-y-3">
+          <Skeleton className="h-5 w-48" />
+          <Skeleton className="h-20 w-full" />
+          <Skeleton className="h-20 w-full" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!threadData?.rootMessage) {
+    return (
+      <div className="rounded-lg border border-neutral-200 bg-white p-8 text-center dark:border-neutral-700 dark:bg-neutral-800">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">Thread not found</p>
+      </div>
+    );
+  }
+
+  const { rootMessage, replies, totalCount } = threadData;
+  const allMessages = [rootMessage, ...replies];
 
   function handleReply(e: React.FormEvent) {
     e.preventDefault();
     if (!replyText.trim()) return;
     replyMutation.mutate(
-      { messageId: message.id, content: replyText.trim() },
-      {
-        onSuccess: () => setReplyText(''),
-      }
+      { messageId: threadId, content: replyText.trim() },
+      { onSuccess: () => setReplyText('') },
     );
   }
 
   const senderName =
-    message.fromSessionTitle || message.fromUserName || message.fromUserEmail || 'Unknown';
+    rootMessage.fromSessionTitle ||
+    rootMessage.fromUserName ||
+    rootMessage.fromUserEmail ||
+    'Unknown';
 
   return (
     <div className="rounded-lg border border-neutral-200 bg-white dark:border-neutral-700 dark:bg-neutral-800">
@@ -228,42 +248,44 @@ function InboxMessageDetail({ message }: { message: MailboxMessage }) {
             </span>
             <Badge
               variant={
-                message.messageType === 'escalation'
+                rootMessage.messageType === 'escalation'
                   ? 'error'
-                  : message.messageType === 'question'
+                  : rootMessage.messageType === 'question'
                     ? 'warning'
                     : 'default'
               }
             >
-              {message.messageType}
+              {rootMessage.messageType}
             </Badge>
+            {totalCount > 1 && (
+              <span className="text-xs text-neutral-400 dark:text-neutral-500">
+                {totalCount} messages
+              </span>
+            )}
           </div>
-          <span className="text-xs text-neutral-400 tabular-nums dark:text-neutral-500">
-            {formatRelativeTime(message.createdAt)}
-          </span>
         </div>
-        {message.contextSessionId && (
+        {rootMessage.contextSessionId && (
           <div className="mt-1.5 flex items-center gap-1.5 text-xs text-neutral-400 dark:text-neutral-500">
             <span>Session:</span>
             <Link
               to="/sessions/$sessionId"
-              params={{ sessionId: message.contextSessionId }}
+              params={{ sessionId: rootMessage.contextSessionId }}
               className="font-medium text-accent hover:underline"
             >
-              {message.contextSessionId.slice(0, 8)}...
+              {rootMessage.contextSessionId.slice(0, 8)}...
             </Link>
           </div>
         )}
       </div>
 
-      {/* Body */}
-      <div className="p-4">
-        <p className="whitespace-pre-wrap text-sm text-neutral-700 dark:text-neutral-300">
-          {message.content}
-        </p>
+      {/* Conversation area */}
+      <div className="max-h-[60vh] overflow-y-auto p-4 space-y-3">
+        {allMessages.map((msg) => (
+          <ThreadMessage key={msg.id} message={msg} isCurrentUser={msg.fromUserId === currentUserId} />
+        ))}
       </div>
 
-      {/* Reply */}
+      {/* Reply form */}
       <div className="border-t border-neutral-200 p-4 dark:border-neutral-700">
         <form onSubmit={handleReply} className="flex gap-2">
           <input
@@ -282,6 +304,50 @@ function InboxMessageDetail({ message }: { message: MailboxMessage }) {
           </Button>
         </form>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Individual thread message bubble
+// ---------------------------------------------------------------------------
+
+function ThreadMessage({
+  message,
+  isCurrentUser,
+}: {
+  message: MailboxMessage;
+  isCurrentUser: boolean;
+}) {
+  const senderName = isCurrentUser
+    ? 'You'
+    : message.fromSessionTitle || message.fromUserName || message.fromUserEmail || 'Unknown';
+
+  return (
+    <div
+      className={`rounded-lg px-3 py-2.5 ${
+        isCurrentUser
+          ? 'bg-neutral-50 dark:bg-neutral-800/50'
+          : 'bg-white dark:bg-neutral-900'
+      }`}
+    >
+      <div className="mb-1 flex items-center justify-between">
+        <span
+          className={`text-xs font-medium ${
+            isCurrentUser
+              ? 'text-neutral-500 dark:text-neutral-400'
+              : 'text-neutral-900 dark:text-neutral-100'
+          }`}
+        >
+          {senderName}
+        </span>
+        <span className="text-[11px] text-neutral-400 tabular-nums dark:text-neutral-500">
+          {formatRelativeTime(message.createdAt)}
+        </span>
+      </div>
+      <p className="whitespace-pre-wrap text-sm text-neutral-700 dark:text-neutral-300">
+        {message.content}
+      </p>
     </div>
   );
 }

@@ -7,6 +7,13 @@ import * as db from '../lib/db.js';
 import { buildOrchestratorPersonaFiles } from '../lib/orchestrator-persona.js';
 import { decryptApiKey } from './admin.js';
 
+const createIdentityLinkSchema = z.object({
+  provider: z.string().min(1).max(50),
+  externalId: z.string().min(1).max(255),
+  externalName: z.string().max(255).optional(),
+  teamId: z.string().max(255).optional(),
+});
+
 export const orchestratorRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // ─── Validation Schemas ──────────────────────────────────────────────────
@@ -349,6 +356,29 @@ orchestratorRouter.get('/inbox/count', async (c) => {
 });
 
 /**
+ * GET /api/me/inbox/threads/:threadId
+ * Fetch full thread (root + replies) and auto-mark read.
+ */
+orchestratorRouter.get('/inbox/threads/:threadId', async (c) => {
+  const user = c.get('user');
+  const { threadId } = c.req.param();
+
+  const thread = await db.getInboxThread(c.env.DB, threadId, user.id);
+  if (!thread.rootMessage) {
+    return c.json({ error: 'Thread not found' }, 404);
+  }
+
+  // Auto-mark all thread messages as read
+  await db.markInboxThreadRead(c.env.DB, threadId, user.id);
+
+  return c.json({
+    rootMessage: thread.rootMessage,
+    replies: thread.replies,
+    totalCount: 1 + thread.replies.length,
+  });
+});
+
+/**
  * PUT /api/me/inbox/:messageId/read
  * Mark single message read.
  */
@@ -378,19 +408,35 @@ orchestratorRouter.post('/inbox/:messageId/reply', async (c) => {
 
   // Fetch the original message to determine reply routing
   const original = await db.getMailboxMessage(c.env.DB, messageId);
-  if (!original || original.toUserId !== user.id) {
+  if (!original) {
     return c.json({ error: 'Message not found' }, 404);
   }
 
+  // Resolve thread root — always point reply_to_id at the root message
+  const threadRootId = original.replyToId || original.id;
+  const rootMessage = original.replyToId
+    ? await db.getMailboxMessage(c.env.DB, threadRootId)
+    : original;
+  if (!rootMessage) {
+    return c.json({ error: 'Thread not found' }, 404);
+  }
+
+  // Security: user must be participant in the thread
+  if (rootMessage.toUserId !== user.id && rootMessage.fromUserId !== user.id) {
+    return c.json({ error: 'Message not found' }, 404);
+  }
+
+  // Route reply to the other party based on user's role
+  const isRecipient = rootMessage.toUserId === user.id;
   const reply = await db.createMailboxMessage(c.env.DB, {
     fromUserId: user.id,
-    toSessionId: original.fromSessionId,
-    toUserId: original.fromUserId,
-    messageType: original.messageType,
+    toSessionId: isRecipient ? rootMessage.fromSessionId : rootMessage.toSessionId,
+    toUserId: isRecipient ? rootMessage.fromUserId : rootMessage.toUserId,
+    messageType: rootMessage.messageType,
     content: body.content,
-    contextSessionId: original.contextSessionId,
-    contextTaskId: original.contextTaskId,
-    replyToId: messageId,
+    contextSessionId: rootMessage.contextSessionId,
+    contextTaskId: rootMessage.contextTaskId,
+    replyToId: threadRootId,
   });
 
   return c.json({ message: reply }, 201);
@@ -451,4 +497,59 @@ orchestratorRouter.get('/org-agents', async (c) => {
 
   const agents = await db.getOrgAgents(c.env.DB, orgSettings.id);
   return c.json({ agents });
+});
+
+// ─── Identity Link Routes (Phase D) ──────────────────────────────────────
+
+/**
+ * GET /api/me/identity-links
+ * List user's linked external identities.
+ */
+orchestratorRouter.get('/identity-links', async (c) => {
+  const user = c.get('user');
+  const links = await db.getUserIdentityLinks(c.env.DB, user.id);
+  return c.json({ links });
+});
+
+/**
+ * POST /api/me/identity-links
+ * Link an external identity (e.g. Slack user, GitHub user).
+ */
+orchestratorRouter.post('/identity-links', zValidator('json', createIdentityLinkSchema), async (c) => {
+  const user = c.get('user');
+  const body = c.req.valid('json');
+
+  const id = crypto.randomUUID();
+  try {
+    const link = await db.createIdentityLink(c.env.DB, {
+      id,
+      userId: user.id,
+      provider: body.provider,
+      externalId: body.externalId,
+      externalName: body.externalName,
+      teamId: body.teamId,
+    });
+    return c.json({ link }, 201);
+  } catch (err: any) {
+    if (err?.message?.includes('UNIQUE constraint failed')) {
+      return c.json({ error: 'This external identity is already linked' }, 409);
+    }
+    throw err;
+  }
+});
+
+/**
+ * DELETE /api/me/identity-links/:id
+ * Unlink an external identity.
+ */
+orchestratorRouter.delete('/identity-links/:id', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  const deleted = await db.deleteIdentityLink(c.env.DB, id, user.id);
+  if (!deleted) {
+    return c.json({ error: 'Identity link not found' }, 404);
+  }
+
+  return c.json({ success: true });
 });

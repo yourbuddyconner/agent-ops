@@ -1,5 +1,6 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionParticipantSummary, SessionShareLink, AuditLogEntry, OrgRepository, AgentPersona, AgentPersonaFile, PersonaVisibility, OrchestratorIdentity, OrchestratorMemory, OrchestratorMemoryCategory, SessionPurpose, MailboxMessage, SessionTask, UserNotificationPreference } from '@agent-ops/shared';
+import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionParticipantSummary, SessionShareLink, AuditLogEntry, OrgRepository, AgentPersona, AgentPersonaFile, PersonaVisibility, OrchestratorIdentity, OrchestratorMemory, OrchestratorMemoryCategory, SessionPurpose, MailboxMessage, SessionTask, UserNotificationPreference, UserIdentityLink, ChannelBinding, ChannelType, QueueMode, UserTelegramConfig } from '@agent-ops/shared';
+import { encryptString, decryptString } from './crypto.js';
 
 /**
  * Database helper functions for D1
@@ -346,11 +347,11 @@ export async function getSyncLog(db: D1Database, id: string): Promise<SyncStatus
 // Message operations
 export async function saveMessage(
   db: D1Database,
-  data: { id: string; sessionId: string; role: string; content: string; toolCalls?: unknown[]; authorId?: string; authorEmail?: string; authorName?: string }
+  data: { id: string; sessionId: string; role: string; content: string; toolCalls?: unknown[]; authorId?: string; authorEmail?: string; authorName?: string; channelType?: string; channelId?: string }
 ): Promise<void> {
   await db
-    .prepare('INSERT INTO messages (id, session_id, role, content, tool_calls, author_id, author_email, author_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(data.id, data.sessionId, data.role, data.content, data.toolCalls ? JSON.stringify(data.toolCalls) : null, data.authorId || null, data.authorEmail || null, data.authorName || null)
+    .prepare('INSERT INTO messages (id, session_id, role, content, tool_calls, author_id, author_email, author_name, channel_type, channel_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(data.id, data.sessionId, data.role, data.content, data.toolCalls ? JSON.stringify(data.toolCalls) : null, data.authorId || null, data.authorEmail || null, data.authorName || null, data.channelType || null, data.channelId || null)
     .run();
 }
 
@@ -1930,6 +1931,8 @@ function mapMessage(row: any): Message {
     authorId: row.author_id || undefined,
     authorEmail: row.author_email || undefined,
     authorName: row.author_name || undefined,
+    channelType: row.channel_type || undefined,
+    channelId: row.channel_id || undefined,
     createdAt: new Date(row.created_at),
   };
 }
@@ -1993,6 +1996,8 @@ function mapMailboxMessage(row: any): MailboxMessage {
     fromUserEmail: row.from_user_email || undefined,
     toSessionTitle: row.to_session_title || undefined,
     toUserName: row.to_user_name || undefined,
+    replyCount: row.reply_count !== undefined ? Number(row.reply_count) : undefined,
+    lastActivityAt: row.last_activity_at || undefined,
   };
 }
 
@@ -2092,45 +2097,62 @@ export async function getUserInbox(
   userId: string,
   opts?: { unreadOnly?: boolean; messageType?: string; limit?: number; cursor?: string },
 ): Promise<{ messages: MailboxMessage[]; cursor?: string; hasMore: boolean }> {
-  const conditions = ['m.to_user_id = ?'];
-  const params: (string | number)[] = [userId];
+  // Subquery param comes first in bind order (it's in the FROM clause)
+  const subqueryParams: (string | number)[] = [userId];
+  const conditions = ['m.to_user_id = ?', 'm.reply_to_id IS NULL'];
+  const whereParams: (string | number)[] = [userId];
 
   if (opts?.unreadOnly) {
-    conditions.push('m.read = 0');
+    // Thread has any unread message to user (root or replies)
+    conditions.push(
+      `(m.read = 0 OR EXISTS (SELECT 1 FROM mailbox_messages r WHERE r.reply_to_id = m.id AND r.to_user_id = ? AND r.read = 0))`,
+    );
+    whereParams.push(userId);
   }
   if (opts?.messageType) {
     conditions.push('m.message_type = ?');
-    params.push(opts.messageType);
+    whereParams.push(opts.messageType);
   }
   if (opts?.cursor) {
-    conditions.push('m.created_at < ?');
-    params.push(opts.cursor);
+    conditions.push('COALESCE(ts.last_activity_at, m.created_at) < ?');
+    whereParams.push(opts.cursor);
   }
 
   const limit = (opts?.limit ?? 50) + 1;
-  params.push(limit);
+  whereParams.push(limit);
 
   const result = await db
     .prepare(
       `SELECT m.*,
               fs.title AS from_session_title,
               fu.name AS from_user_name,
-              fu.email AS from_user_email
+              fu.email AS from_user_email,
+              COALESCE(ts.reply_count, 0) AS reply_count,
+              COALESCE(ts.last_activity_at, m.created_at) AS last_activity_at
        FROM mailbox_messages m
        LEFT JOIN sessions fs ON m.from_session_id = fs.id
        LEFT JOIN users fu ON m.from_user_id = fu.id
+       LEFT JOIN (
+         SELECT reply_to_id,
+                COUNT(*) AS reply_count,
+                MAX(created_at) AS last_activity_at
+         FROM mailbox_messages
+         WHERE reply_to_id IS NOT NULL AND to_user_id = ?
+         GROUP BY reply_to_id
+       ) ts ON ts.reply_to_id = m.id
        WHERE ${conditions.join(' AND ')}
-       ORDER BY m.created_at DESC
+       ORDER BY COALESCE(ts.last_activity_at, m.created_at) DESC
        LIMIT ?`,
     )
-    .bind(...params)
+    .bind(...subqueryParams, ...whereParams)
     .all();
 
   const rows = result.results || [];
   const hasMore = rows.length === limit;
   const items = hasMore ? rows.slice(0, -1) : rows;
   const messages = items.map(mapMailboxMessage);
-  const cursor = hasMore && messages.length > 0 ? messages[messages.length - 1].createdAt : undefined;
+  const cursor =
+    hasMore && messages.length > 0 ? messages[messages.length - 1].lastActivityAt || messages[messages.length - 1].createdAt : undefined;
 
   return { messages, cursor, hasMore };
 }
@@ -2178,6 +2200,57 @@ export async function getMailboxMessage(db: D1Database, messageId: string): Prom
     .bind(messageId)
     .first();
   return row ? mapMailboxMessage(row) : null;
+}
+
+export async function getInboxThread(
+  db: D1Database,
+  threadId: string,
+  userId: string,
+): Promise<{ rootMessage: MailboxMessage | null; replies: MailboxMessage[] }> {
+  const result = await db
+    .prepare(
+      `SELECT m.*,
+              fs.title AS from_session_title,
+              fu.name AS from_user_name,
+              fu.email AS from_user_email,
+              ts.title AS to_session_title,
+              tu.name AS to_user_name
+       FROM mailbox_messages m
+       LEFT JOIN sessions fs ON m.from_session_id = fs.id
+       LEFT JOIN users fu ON m.from_user_id = fu.id
+       LEFT JOIN sessions ts ON m.to_session_id = ts.id
+       LEFT JOIN users tu ON m.to_user_id = tu.id
+       WHERE m.id = ? OR m.reply_to_id = ?
+       ORDER BY m.created_at ASC`,
+    )
+    .bind(threadId, threadId)
+    .all();
+
+  const messages = (result.results || []).map(mapMailboxMessage);
+  const rootMessage = messages.find((m) => m.id === threadId && !m.replyToId) || null;
+
+  // Security: user must be participant
+  if (rootMessage && rootMessage.toUserId !== userId && rootMessage.fromUserId !== userId) {
+    return { rootMessage: null, replies: [] };
+  }
+
+  const replies = messages.filter((m) => m.id !== threadId);
+  return { rootMessage, replies };
+}
+
+export async function markInboxThreadRead(
+  db: D1Database,
+  threadId: string,
+  userId: string,
+): Promise<number> {
+  const result = await db
+    .prepare(
+      `UPDATE mailbox_messages SET read = 1, updated_at = datetime('now')
+       WHERE to_user_id = ? AND read = 0 AND (id = ? OR reply_to_id = ?)`,
+    )
+    .bind(userId, threadId, threadId)
+    .run();
+  return result.meta.changes ?? 0;
 }
 
 // ─── Phase C: Session Task Helpers ───────────────────────────────────────────
@@ -2468,4 +2541,293 @@ export async function getOrgAgents(db: D1Database, orgId: string): Promise<Orche
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }));
+}
+
+// ─── Phase D: Channel System Helpers ─────────────────────────────────────────
+
+// Identity Links
+
+function mapIdentityLink(row: any): UserIdentityLink {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    provider: row.provider,
+    externalId: row.external_id,
+    externalName: row.external_name || undefined,
+    teamId: row.team_id || undefined,
+    createdAt: row.created_at,
+  };
+}
+
+export async function createIdentityLink(
+  db: D1Database,
+  data: { id: string; userId: string; provider: string; externalId: string; externalName?: string; teamId?: string },
+): Promise<UserIdentityLink> {
+  await db
+    .prepare(
+      'INSERT INTO user_identity_links (id, user_id, provider, external_id, external_name, team_id) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+    .bind(data.id, data.userId, data.provider, data.externalId, data.externalName || null, data.teamId || null)
+    .run();
+
+  return {
+    id: data.id,
+    userId: data.userId,
+    provider: data.provider,
+    externalId: data.externalId,
+    externalName: data.externalName,
+    teamId: data.teamId,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export async function getUserIdentityLinks(db: D1Database, userId: string): Promise<UserIdentityLink[]> {
+  const result = await db
+    .prepare('SELECT * FROM user_identity_links WHERE user_id = ? ORDER BY created_at DESC')
+    .bind(userId)
+    .all();
+  return (result.results || []).map(mapIdentityLink);
+}
+
+export async function deleteIdentityLink(db: D1Database, id: string, userId: string): Promise<boolean> {
+  const result = await db
+    .prepare('DELETE FROM user_identity_links WHERE id = ? AND user_id = ?')
+    .bind(id, userId)
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
+}
+
+export async function resolveUserByExternalId(
+  db: D1Database,
+  provider: string,
+  externalId: string,
+): Promise<string | null> {
+  const row = await db
+    .prepare('SELECT user_id FROM user_identity_links WHERE provider = ? AND external_id = ?')
+    .bind(provider, externalId)
+    .first<{ user_id: string }>();
+  return row?.user_id || null;
+}
+
+// Channel Bindings
+
+function mapChannelBinding(row: any): ChannelBinding {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    channelType: row.channel_type as ChannelType,
+    channelId: row.channel_id,
+    scopeKey: row.scope_key,
+    userId: row.user_id || undefined,
+    orgId: row.org_id,
+    queueMode: row.queue_mode as QueueMode,
+    collectDebounceMs: row.collect_debounce_ms ?? 3000,
+    slackChannelId: row.slack_channel_id || undefined,
+    slackThreadTs: row.slack_thread_ts || undefined,
+    githubRepoFullName: row.github_repo_full_name || undefined,
+    githubPrNumber: row.github_pr_number ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
+export async function createChannelBinding(
+  db: D1Database,
+  data: {
+    id: string;
+    sessionId: string;
+    channelType: ChannelType;
+    channelId: string;
+    scopeKey: string;
+    userId?: string;
+    orgId: string;
+    queueMode?: QueueMode;
+    collectDebounceMs?: number;
+    slackChannelId?: string;
+    slackThreadTs?: string;
+    githubRepoFullName?: string;
+    githubPrNumber?: number;
+  },
+): Promise<ChannelBinding> {
+  const queueMode = data.queueMode || 'followup';
+  const collectDebounceMs = data.collectDebounceMs ?? 3000;
+
+  await db
+    .prepare(
+      `INSERT INTO channel_bindings (id, session_id, channel_type, channel_id, scope_key, user_id, org_id, queue_mode, collect_debounce_ms, slack_channel_id, slack_thread_ts, github_repo_full_name, github_pr_number)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      data.id,
+      data.sessionId,
+      data.channelType,
+      data.channelId,
+      data.scopeKey,
+      data.userId || null,
+      data.orgId,
+      queueMode,
+      collectDebounceMs,
+      data.slackChannelId || null,
+      data.slackThreadTs || null,
+      data.githubRepoFullName || null,
+      data.githubPrNumber ?? null,
+    )
+    .run();
+
+  return {
+    id: data.id,
+    sessionId: data.sessionId,
+    channelType: data.channelType,
+    channelId: data.channelId,
+    scopeKey: data.scopeKey,
+    userId: data.userId,
+    orgId: data.orgId,
+    queueMode,
+    collectDebounceMs,
+    slackChannelId: data.slackChannelId,
+    slackThreadTs: data.slackThreadTs,
+    githubRepoFullName: data.githubRepoFullName,
+    githubPrNumber: data.githubPrNumber,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export async function getChannelBindingByScopeKey(db: D1Database, scopeKey: string): Promise<ChannelBinding | null> {
+  const row = await db
+    .prepare('SELECT * FROM channel_bindings WHERE scope_key = ?')
+    .bind(scopeKey)
+    .first();
+  return row ? mapChannelBinding(row) : null;
+}
+
+export async function getSessionChannelBindings(db: D1Database, sessionId: string): Promise<ChannelBinding[]> {
+  const result = await db
+    .prepare('SELECT * FROM channel_bindings WHERE session_id = ? ORDER BY created_at DESC')
+    .bind(sessionId)
+    .all();
+  return (result.results || []).map(mapChannelBinding);
+}
+
+export async function deleteChannelBinding(db: D1Database, id: string): Promise<void> {
+  await db.prepare('DELETE FROM channel_bindings WHERE id = ?').bind(id).run();
+}
+
+export async function updateChannelBindingQueueMode(
+  db: D1Database,
+  id: string,
+  queueMode: QueueMode,
+  collectDebounceMs?: number,
+): Promise<void> {
+  if (collectDebounceMs !== undefined) {
+    await db
+      .prepare('UPDATE channel_bindings SET queue_mode = ?, collect_debounce_ms = ? WHERE id = ?')
+      .bind(queueMode, collectDebounceMs, id)
+      .run();
+  } else {
+    await db
+      .prepare('UPDATE channel_bindings SET queue_mode = ? WHERE id = ?')
+      .bind(queueMode, id)
+      .run();
+  }
+}
+
+// ─── Telegram Config Helpers ─────────────────────────────────────────────────
+
+function mapTelegramConfig(row: any): UserTelegramConfig {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    botUsername: row.bot_username,
+    botInfo: row.bot_info,
+    webhookActive: !!row.webhook_active,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function getUserTelegramConfig(
+  db: D1Database,
+  userId: string,
+): Promise<UserTelegramConfig | null> {
+  const row = await db
+    .prepare('SELECT * FROM user_telegram_config WHERE user_id = ?')
+    .bind(userId)
+    .first();
+  return row ? mapTelegramConfig(row) : null;
+}
+
+export async function getUserTelegramToken(
+  db: D1Database,
+  userId: string,
+  encryptionKey: string,
+): Promise<{ config: UserTelegramConfig; botToken: string } | null> {
+  const row = await db
+    .prepare('SELECT * FROM user_telegram_config WHERE user_id = ?')
+    .bind(userId)
+    .first<any>();
+  if (!row) return null;
+  const botToken = await decryptString(row.bot_token_encrypted, encryptionKey);
+  return { config: mapTelegramConfig(row), botToken };
+}
+
+export async function saveUserTelegramConfig(
+  db: D1Database,
+  data: {
+    id: string;
+    userId: string;
+    botToken: string;
+    botUsername: string;
+    botInfo: string;
+    encryptionKey: string;
+  },
+): Promise<UserTelegramConfig> {
+  const encrypted = await encryptString(data.botToken, data.encryptionKey);
+  const now = new Date().toISOString();
+
+  await db
+    .prepare(
+      `INSERT INTO user_telegram_config (id, user_id, bot_token_encrypted, bot_username, bot_info, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id) DO UPDATE SET
+         bot_token_encrypted = excluded.bot_token_encrypted,
+         bot_username = excluded.bot_username,
+         bot_info = excluded.bot_info,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(data.id, data.userId, encrypted, data.botUsername, data.botInfo, now, now)
+    .run();
+
+  return {
+    id: data.id,
+    userId: data.userId,
+    botUsername: data.botUsername,
+    botInfo: data.botInfo,
+    webhookActive: false,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export async function updateTelegramWebhookStatus(
+  db: D1Database,
+  userId: string,
+  webhookUrl: string,
+  active: boolean,
+): Promise<void> {
+  await db
+    .prepare(
+      'UPDATE user_telegram_config SET webhook_url = ?, webhook_active = ?, updated_at = datetime(\'now\') WHERE user_id = ?',
+    )
+    .bind(webhookUrl, active ? 1 : 0, userId)
+    .run();
+}
+
+export async function deleteUserTelegramConfig(
+  db: D1Database,
+  userId: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare('DELETE FROM user_telegram_config WHERE user_id = ?')
+    .bind(userId)
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
 }

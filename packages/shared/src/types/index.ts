@@ -194,6 +194,8 @@ export interface Message {
   authorEmail?: string;
   authorName?: string;
   authorAvatarUrl?: string;
+  channelType?: string;
+  channelId?: string;
   createdAt: Date;
 }
 
@@ -724,6 +726,9 @@ export interface MailboxMessage {
   fromUserEmail?: string;
   toSessionTitle?: string;
   toUserName?: string;
+  // Thread summary fields (populated in inbox list query only)
+  replyCount?: number;
+  lastActivityAt?: string;
 }
 
 // Session task types (orchestrator-scoped task board)
@@ -753,6 +758,61 @@ export interface UserNotificationPreference {
   webEnabled: boolean;
   slackEnabled: boolean;
   emailEnabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ─── Phase D: Channel System Types ──────────────────────────────────────
+
+export type ChannelType = 'web' | 'slack' | 'github' | 'api' | 'telegram';
+export type QueueMode = 'followup' | 'collect' | 'steer';
+
+export interface ChannelMessage {
+  channelType: ChannelType;
+  channelId: string;
+  scopeKey: string;
+  userId?: string;
+  externalUserId?: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+  timestamp: string;
+}
+
+export interface UserIdentityLink {
+  id: string;
+  userId: string;
+  provider: string;
+  externalId: string;
+  externalName?: string;
+  teamId?: string;
+  createdAt: string;
+}
+
+export interface ChannelBinding {
+  id: string;
+  sessionId: string;
+  channelType: ChannelType;
+  channelId: string;
+  scopeKey: string;
+  userId?: string;
+  orgId: string;
+  queueMode: QueueMode;
+  collectDebounceMs: number;
+  slackChannelId?: string;
+  slackThreadTs?: string;
+  githubRepoFullName?: string;
+  githubPrNumber?: number;
+  createdAt: string;
+}
+
+// ─── Telegram Config Types ───────────────────────────────────────────────────
+
+export interface UserTelegramConfig {
+  id: string;
+  userId: string;
+  botUsername: string;
+  botInfo: string;
+  webhookActive: boolean;
   createdAt: string;
   updatedAt: string;
 }

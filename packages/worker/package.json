@@ -17,6 +17,7 @@
     "@cf-wasm/resvg": "^0.3.3",
     "@cf-wasm/satori": "^0.3.3",
     "@hono/zod-validator": "^0.2.1",
+    "grammy": "^1.39.3",
     "hono": "^4.3.0",
     "zod": "^3.22.4"
   },

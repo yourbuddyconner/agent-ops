@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { ForbiddenError, NotFoundError, ValidationError } from '@agent-ops/shared';
+import { ForbiddenError, NotFoundError, ValidationError, webManualScopeKey } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
 import { signJWT } from '../lib/jwt.js';
@@ -413,6 +413,26 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
       error: 'Failed to initialize session',
       details: err instanceof Error ? err.message : String(err),
     }, 500);
+  }
+
+  // Auto-create web channel binding for routing consistency (Phase D)
+  try {
+    const orgSettings = await c.env.DB.prepare('SELECT id FROM org_settings LIMIT 1').first<{ id: string }>();
+    if (orgSettings) {
+      await db.createChannelBinding(c.env.DB, {
+        id: crypto.randomUUID(),
+        sessionId,
+        channelType: 'web',
+        channelId: sessionId,
+        scopeKey: webManualScopeKey(user.id, sessionId),
+        userId: user.id,
+        orgId: orgSettings.id,
+        queueMode: 'followup',
+      });
+    }
+  } catch (err) {
+    // Non-fatal — don't block session creation if binding fails
+    console.warn('[sessions] Failed to create channel binding:', err);
   }
 
   // Build client WebSocket URL

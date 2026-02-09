@@ -34,6 +34,10 @@ export interface Env {
   // Frontend URL (for OAuth redirects)
   FRONTEND_URL: string;
 
+  // Slack integration (Phase D prep)
+  SLACK_SIGNING_SECRET?: string;
+  SLACK_BOT_TOKEN?: string;
+
   // Email allowlist (comma-separated). If unset, all emails are allowed.
   ALLOWED_EMAILS?: string;
 }

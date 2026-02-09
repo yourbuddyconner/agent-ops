@@ -579,6 +579,8 @@ export interface GatewayCallbacks {
     title?: string;
   }) => Promise<{ task: unknown }>;
   onMyTasks?: (status?: string) => Promise<{ tasks: unknown[] }>;
+  // Phase D: Channel Reply
+  onChannelReply?: (channelType: string, channelId: string, message: string) => Promise<{ success: boolean }>;
 }
 
 export function startGateway(port: number, callbacks: GatewayCallbacks): void {
@@ -1440,6 +1442,25 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] My tasks error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // ─── Phase D: Channel Reply API ────────────────────────────────────
+
+  app.post("/api/channel-reply", async (c) => {
+    if (!callbacks.onChannelReply) {
+      return c.json({ error: "Channel reply handler not configured" }, 501);
+    }
+    try {
+      const body = await c.req.json() as { channelType?: string; channelId?: string; message?: string };
+      if (!body.channelType || !body.channelId || !body.message) {
+        return c.json({ error: "channelType, channelId, and message are required" }, 400);
+      }
+      const result = await callbacks.onChannelReply(body.channelType, body.channelId, body.message);
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Channel reply error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });

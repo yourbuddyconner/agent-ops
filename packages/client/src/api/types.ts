@@ -53,6 +53,12 @@ export type {
   SessionTask,
   SessionTaskStatus,
   UserNotificationPreference,
+  ChannelType,
+  QueueMode,
+  ChannelMessage,
+  UserIdentityLink,
+  ChannelBinding,
+  UserTelegramConfig,
 } from '@agent-ops/shared';
 
 export type { GitHub, Gmail, GoogleCalendar } from '@agent-ops/shared';

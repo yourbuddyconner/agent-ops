@@ -30,6 +30,8 @@ import { personasRouter } from './routes/personas.js';
 import { orchestratorRouter } from './routes/orchestrator.js';
 import { tasksRouter } from './routes/tasks.js';
 import { mailboxRouter } from './routes/mailbox.js';
+import { channelsRouter } from './routes/channels.js';
+import { telegramRouter, telegramApiRouter } from './routes/telegram.js';
 import {
   checkWorkflowConcurrency,
   createWorkflowSession,
@@ -91,6 +93,9 @@ app.route('/og', ogRouter);
 // Public invite validation (no auth required)
 app.route('/invites', invitesRouter);
 
+// Telegram webhook (unauthenticated — Telegram sends updates here)
+app.route('/telegram', telegramRouter);
+
 // Protected API routes
 app.use('/api/*', authMiddleware);
 app.route('/api/auth', authRouter);
@@ -111,6 +116,8 @@ app.route('/api/personas', personasRouter);
 app.route('/api/me', orchestratorRouter);
 app.route('/api/sessions', tasksRouter);
 app.route('/api', mailboxRouter);
+app.route('/api', channelsRouter);
+app.route('/api/me/telegram', telegramApiRouter);
 app.route('/api/invites', invitesApiRouter);
 
 // Agent container proxy (protected)

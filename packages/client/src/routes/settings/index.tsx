@@ -3,7 +3,7 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
 import { useAuthStore } from '@/stores/auth';
 import { useLogout, useUpdateProfile } from '@/api/auth';
-import { useOrchestratorInfo, useUpdateOrchestratorIdentity, useCheckHandle, useNotificationPreferences, useUpdateNotificationPreferences } from '@/api/orchestrator';
+import { useOrchestratorInfo, useUpdateOrchestratorIdentity, useCheckHandle, useNotificationPreferences, useUpdateNotificationPreferences, useIdentityLinks, useCreateIdentityLink, useDeleteIdentityLink, useTelegramConfig, useSetupTelegram, useDisconnectTelegram } from '@/api/orchestrator';
 import { useAvailableModels } from '@/api/sessions';
 import type { ProviderModels } from '@/api/sessions';
 import { Button } from '@/components/ui/button';
@@ -86,6 +86,10 @@ function SettingsPage() {
         </SettingsSection>
 
         <GitConfigSection />
+
+        <IdentityLinksSection />
+
+        <TelegramSection />
 
         <SettingsSection title="Appearance">
           <div className="space-y-4">
@@ -216,6 +220,289 @@ function GitConfigSection() {
             </span>
           )}
         </div>
+      </div>
+    </SettingsSection>
+  );
+}
+
+const IDENTITY_PROVIDERS = [
+  { value: 'slack', label: 'Slack' },
+  { value: 'github', label: 'GitHub' },
+  { value: 'linear', label: 'Linear' },
+] as const;
+
+function IdentityLinksSection() {
+  const { data: links, isLoading } = useIdentityLinks();
+  const createLink = useCreateIdentityLink();
+  const deleteLink = useDeleteIdentityLink();
+  const [provider, setProvider] = React.useState('slack');
+  const [externalId, setExternalId] = React.useState('');
+  const [externalName, setExternalName] = React.useState('');
+  const [teamId, setTeamId] = React.useState('');
+
+  function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!externalId.trim()) return;
+    createLink.mutate(
+      {
+        provider,
+        externalId: externalId.trim(),
+        externalName: externalName.trim() || undefined,
+        teamId: teamId.trim() || undefined,
+      },
+      {
+        onSuccess: () => {
+          setExternalId('');
+          setExternalName('');
+          setTeamId('');
+        },
+      },
+    );
+  }
+
+  return (
+    <SettingsSection title="Linked Identities">
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Link your external identities (Slack, GitHub, etc.) so prompts from those platforms can be routed to your orchestrator.
+        </p>
+
+        {/* Existing links */}
+        {isLoading ? (
+          <div className="text-sm text-neutral-400 dark:text-neutral-500">Loading...</div>
+        ) : links && links.length > 0 ? (
+          <div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800/50">
+                  <th className="px-4 py-2.5 text-left font-medium text-neutral-500 dark:text-neutral-400">Provider</th>
+                  <th className="px-4 py-2.5 text-left font-medium text-neutral-500 dark:text-neutral-400">External ID</th>
+                  <th className="px-4 py-2.5 text-left font-medium text-neutral-500 dark:text-neutral-400">Name</th>
+                  <th className="px-4 py-2.5 text-left font-medium text-neutral-500 dark:text-neutral-400">Team</th>
+                  <th className="px-4 py-2.5 text-right font-medium text-neutral-500 dark:text-neutral-400" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-200 dark:divide-neutral-700">
+                {links.map((link) => (
+                  <tr key={link.id} className="bg-white dark:bg-neutral-900">
+                    <td className="px-4 py-3 font-medium text-neutral-900 dark:text-neutral-100 capitalize">
+                      {link.provider}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-neutral-600 dark:text-neutral-300">
+                      {link.externalId}
+                    </td>
+                    <td className="px-4 py-3 text-neutral-600 dark:text-neutral-300">
+                      {link.externalName || '—'}
+                    </td>
+                    <td className="px-4 py-3 text-neutral-600 dark:text-neutral-300">
+                      {link.teamId || '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => deleteLink.mutate(link.id)}
+                        className="text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-neutral-400 dark:text-neutral-500">No linked identities yet.</p>
+        )}
+
+        {/* Add form */}
+        <form onSubmit={handleCreate} className="space-y-3">
+          <div className="grid grid-cols-2 gap-3 max-w-lg">
+            <div>
+              <label htmlFor="identity-provider" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                Provider
+              </label>
+              <select
+                id="identity-provider"
+                value={provider}
+                onChange={(e) => setProvider(e.target.value)}
+                className="mt-1 block w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
+              >
+                {IDENTITY_PROVIDERS.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="identity-external-id" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                External ID
+              </label>
+              <input
+                id="identity-external-id"
+                type="text"
+                value={externalId}
+                onChange={(e) => setExternalId(e.target.value)}
+                placeholder="U0123456789"
+                className="mt-1 block w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 max-w-lg">
+            <div>
+              <label htmlFor="identity-name" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                Display Name
+                <span className="ml-1 text-xs text-neutral-400">(optional)</span>
+              </label>
+              <input
+                id="identity-name"
+                type="text"
+                value={externalName}
+                onChange={(e) => setExternalName(e.target.value)}
+                placeholder="@johndoe"
+                className="mt-1 block w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
+              />
+            </div>
+            {provider === 'slack' && (
+              <div>
+                <label htmlFor="identity-team" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                  Team/Workspace ID
+                  <span className="ml-1 text-xs text-neutral-400">(optional)</span>
+                </label>
+                <input
+                  id="identity-team"
+                  type="text"
+                  value={teamId}
+                  onChange={(e) => setTeamId(e.target.value)}
+                  placeholder="T0123456789"
+                  className="mt-1 block w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
+                />
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <Button
+              type="submit"
+              disabled={!externalId.trim() || createLink.isPending}
+            >
+              {createLink.isPending ? 'Linking...' : 'Link Identity'}
+            </Button>
+            {createLink.isError && (
+              <span className="text-sm text-red-600 dark:text-red-400">
+                {(createLink.error as any)?.message?.includes('409')
+                  ? 'This identity is already linked'
+                  : 'Failed to link identity'}
+              </span>
+            )}
+          </div>
+        </form>
+      </div>
+    </SettingsSection>
+  );
+}
+
+function TelegramSection() {
+  const { data: config, isLoading } = useTelegramConfig();
+  const setupTelegram = useSetupTelegram();
+  const disconnectTelegram = useDisconnectTelegram();
+  const [botToken, setBotToken] = React.useState('');
+
+  function handleSetup(e: React.FormEvent) {
+    e.preventDefault();
+    if (!botToken.trim()) return;
+    setupTelegram.mutate(
+      { botToken: botToken.trim() },
+      { onSuccess: () => setBotToken('') },
+    );
+  }
+
+  return (
+    <SettingsSection title="Telegram Bot">
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Connect your own Telegram bot to receive messages and route them to your orchestrator.
+          Create a bot via{' '}
+          <a
+            href="https://t.me/BotFather"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium text-neutral-700 underline hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-neutral-100"
+          >
+            @BotFather
+          </a>{' '}
+          on Telegram, then paste the token here.
+        </p>
+
+        {isLoading ? (
+          <div className="text-sm text-neutral-400 dark:text-neutral-500">Loading...</div>
+        ) : config ? (
+          <div className="space-y-3">
+            <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-700 dark:bg-neutral-900">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                    @{config.botUsername}
+                  </div>
+                  <div className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
+                    Webhook {config.webhookActive ? (
+                      <span className="text-green-600 dark:text-green-400">active</span>
+                    ) : (
+                      <span className="text-neutral-400 dark:text-neutral-500">inactive</span>
+                    )}
+                  </div>
+                </div>
+                <Button
+                  variant="secondary"
+                  onClick={() => disconnectTelegram.mutate()}
+                  disabled={disconnectTelegram.isPending}
+                >
+                  {disconnectTelegram.isPending ? 'Disconnecting...' : 'Disconnect'}
+                </Button>
+              </div>
+            </div>
+            {disconnectTelegram.isError && (
+              <span className="text-sm text-red-600 dark:text-red-400">
+                Failed to disconnect
+              </span>
+            )}
+          </div>
+        ) : (
+          <form onSubmit={handleSetup} className="space-y-3">
+            <div>
+              <label
+                htmlFor="telegram-token"
+                className="text-sm font-medium text-neutral-700 dark:text-neutral-300"
+              >
+                Bot Token
+              </label>
+              <input
+                id="telegram-token"
+                type="password"
+                value={botToken}
+                onChange={(e) => setBotToken(e.target.value)}
+                placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+                autoComplete="off"
+                className="mt-1 block w-full max-w-md rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <Button
+                type="submit"
+                disabled={!botToken.trim() || setupTelegram.isPending}
+              >
+                {setupTelegram.isPending ? 'Connecting...' : 'Connect Bot'}
+              </Button>
+              {setupTelegram.isError && (
+                <span className="text-sm text-red-600 dark:text-red-400">
+                  {(setupTelegram.error as any)?.message?.includes('400')
+                    ? 'Invalid bot token'
+                    : 'Failed to connect'}
+                </span>
+              )}
+            </div>
+          </form>
+        )}
       </div>
     </SettingsSection>
   );

@@ -233,11 +233,14 @@ export async function dispatchOrchestratorPrompt(
     content: string;
     authorName?: string;
     authorEmail?: string;
+    channelType?: string;
+    channelId?: string;
+    attachments?: Array<{ type: string; mime: string; url: string; filename?: string }>;
   }
 ): Promise<OrchestratorPromptDispatchResult> {
   const sessionId = `orchestrator:${params.userId}`;
   const content = params.content.trim();
-  if (!content) {
+  if (!content && (!params.attachments || params.attachments.length === 0)) {
     return { dispatched: false, sessionId, reason: 'empty_prompt' };
   }
 
@@ -258,6 +261,8 @@ export async function dispatchOrchestratorPrompt(
     authorId: params.userId,
     authorName: params.authorName,
     authorEmail: params.authorEmail,
+    channelType: params.channelType,
+    channelId: params.channelId,
   });
 
   const doId = env.SESSIONS.idFromName(sessionId);
@@ -265,7 +270,12 @@ export async function dispatchOrchestratorPrompt(
   const doRes = await sessionDO.fetch(new Request('http://do/prompt', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({
+      content,
+      channelType: params.channelType,
+      channelId: params.channelId,
+      attachments: params.attachments,
+    }),
   }));
 
   if (!doRes.ok) {

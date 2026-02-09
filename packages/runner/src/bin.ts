@@ -207,13 +207,17 @@ async function main() {
     onMyTasks: async (status) => {
       return await agentClient.requestMyTasks(status);
     },
+    // Phase D: Channel Reply
+    onChannelReply: async (channelType, channelId, message) => {
+      return await agentClient.requestChannelReply(channelType, channelId, message);
+    },
   });
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient, sessionId!);
 
   // Register handlers
-  agentClient.onPrompt(async (messageId, content, model, author, modelPreferences, attachments) => {
-    console.log(`[Runner] Received prompt: ${messageId}${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length} models)` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}`);
-    await promptHandler.handlePrompt(messageId, content, model, author, modelPreferences, attachments);
+  agentClient.onPrompt(async (messageId, content, model, author, modelPreferences, attachments, channelType, channelId) => {
+    console.log(`[Runner] Received prompt: ${messageId}${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length} models)` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}${channelType ? ` (channel: ${channelType})` : ''}`);
+    await promptHandler.handlePrompt(messageId, content, model, author, modelPreferences, attachments, channelType, channelId);
   });
 
   agentClient.onAnswer(async (questionId, answer) => {

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
-import type { OrchestratorIdentity, OrchestratorMemory, AgentSession, MailboxMessage, UserNotificationPreference } from './types';
+import type { OrchestratorIdentity, OrchestratorMemory, AgentSession, MailboxMessage, UserNotificationPreference, UserIdentityLink, UserTelegramConfig } from './types';
 
 export const orchestratorKeys = {
   all: ['orchestrator'] as const,
@@ -10,8 +10,11 @@ export const orchestratorKeys = {
   memories: (filters?: { category?: string }) => [...orchestratorKeys.all, 'memories', filters] as const,
   inbox: (filters?: { messageType?: string; unreadOnly?: boolean }) => [...orchestratorKeys.all, 'inbox', filters] as const,
   inboxCount: () => [...orchestratorKeys.all, 'inbox-count'] as const,
+  inboxThread: (threadId: string) => [...orchestratorKeys.all, 'inbox-thread', threadId] as const,
   notificationPreferences: () => [...orchestratorKeys.all, 'notification-prefs'] as const,
   orgAgents: () => [...orchestratorKeys.all, 'org-agents'] as const,
+  identityLinks: () => [...orchestratorKeys.all, 'identity-links'] as const,
+  telegram: () => [...orchestratorKeys.all, 'telegram'] as const,
 };
 
 export function useOrchestratorInfo() {
@@ -165,6 +168,18 @@ export function useInboxCount() {
   });
 }
 
+export function useInboxThread(threadId: string | null) {
+  return useQuery({
+    queryKey: orchestratorKeys.inboxThread(threadId!),
+    queryFn: () =>
+      api.get<{ rootMessage: MailboxMessage; replies: MailboxMessage[]; totalCount: number }>(
+        `/me/inbox/threads/${threadId}`
+      ),
+    enabled: !!threadId,
+    staleTime: 10_000,
+  });
+}
+
 export function useMarkInboxRead() {
   const queryClient = useQueryClient();
 
@@ -188,6 +203,8 @@ export function useReplyToInbox() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [...orchestratorKeys.all, 'inbox'] });
+      queryClient.invalidateQueries({ queryKey: [...orchestratorKeys.all, 'inbox-thread'] });
+      queryClient.invalidateQueries({ queryKey: orchestratorKeys.inboxCount() });
     },
   });
 }
@@ -233,5 +250,82 @@ export function useOrgAgents() {
       api.get<{ agents: OrchestratorIdentity[] }>('/me/org-agents'),
     select: (data) => data.agents,
     staleTime: 60_000,
+  });
+}
+
+// ─── Identity Link Hooks (Phase D) ──────────────────────────────────────
+
+export function useIdentityLinks() {
+  return useQuery({
+    queryKey: orchestratorKeys.identityLinks(),
+    queryFn: () =>
+      api.get<{ links: UserIdentityLink[] }>('/me/identity-links'),
+    select: (data) => data.links,
+    staleTime: 60_000,
+  });
+}
+
+export function useCreateIdentityLink() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: {
+      provider: string;
+      externalId: string;
+      externalName?: string;
+      teamId?: string;
+    }) =>
+      api.post<{ link: UserIdentityLink }>('/me/identity-links', data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: orchestratorKeys.identityLinks() });
+    },
+  });
+}
+
+export function useDeleteIdentityLink() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.delete<{ success: boolean }>(`/me/identity-links/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: orchestratorKeys.identityLinks() });
+    },
+  });
+}
+
+// ─── Telegram Config Hooks (Phase D) ────────────────────────────────────
+
+export function useTelegramConfig() {
+  return useQuery({
+    queryKey: orchestratorKeys.telegram(),
+    queryFn: () =>
+      api.get<{ config: UserTelegramConfig | null }>('/me/telegram'),
+    select: (data) => data.config,
+    staleTime: 60_000,
+  });
+}
+
+export function useSetupTelegram() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: { botToken: string }) =>
+      api.post<{ config: UserTelegramConfig; webhookUrl: string }>('/me/telegram', data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: orchestratorKeys.telegram() });
+    },
+  });
+}
+
+export function useDisconnectTelegram() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () =>
+      api.delete<{ success: boolean }>('/me/telegram'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: orchestratorKeys.telegram() });
+    },
   });
 }

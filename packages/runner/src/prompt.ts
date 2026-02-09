@@ -17,7 +17,7 @@
  */
 
 import { createTwoFilesPatch } from "diff";
-import { AgentClient } from "./agent-client.js";
+import { AgentClient, type PromptAuthor } from "./agent-client.js";
 import type { AvailableModels, DiffFile, PromptAttachment, ReviewFileSummary, ReviewResultData } from "./types.js";
 import { compileWorkflowDefinition, type NormalizedWorkflowStep } from "./workflow-compiler.js";
 import {
@@ -390,7 +390,7 @@ export class PromptHandler {
   private currentModelIndex = 0;
   private pendingRetryContent: string | null = null;
   private pendingRetryAttachments: PromptAttachment[] = [];
-  private pendingRetryAuthor: { gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string } | undefined;
+  private pendingRetryAuthor: { authorId?: string; gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string } | undefined;
   private waitForEventForced = false;
   private failoverInProgress = false;
   private retryPending = false;
@@ -733,8 +733,8 @@ export class PromptHandler {
     });
   }
 
-  async handlePrompt(messageId: string, content: string, model?: string, author?: { gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }, modelPreferences?: string[], attachments?: PromptAttachment[]): Promise<void> {
-    console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length})` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}`);
+  async handlePrompt(messageId: string, content: string, model?: string, author?: { authorId?: string; gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string): Promise<void> {
+    console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length})` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}${channelType ? ` (channel: ${channelType})` : ''}`);
     const workflowExecutionRequest = this.parseWorkflowExecutionPrompt(content);
     if (workflowExecutionRequest) {
       await this.handleWorkflowExecutionPrompt(messageId, workflowExecutionRequest);
@@ -820,13 +820,13 @@ export class PromptHandler {
 
       // Send message async (fire-and-forget)
       try {
-        await this.sendPromptAsync(this.sessionId, content, effectiveModel, attachments);
+        await this.sendPromptAsync(this.sessionId, content, effectiveModel, attachments, author, channelType, channelId);
       } catch (err) {
         if (this.isSessionGone(err)) {
           console.warn("[PromptHandler] OpenCode session missing; recreating session and retrying prompt");
           this.sessionId = await this.createSession();
           await this.startEventStream();
-          await this.sendPromptAsync(this.sessionId, content, effectiveModel, attachments);
+          await this.sendPromptAsync(this.sessionId, content, effectiveModel, attachments, author, channelType, channelId);
         } else {
           throw err;
         }
@@ -888,7 +888,7 @@ export class PromptHandler {
     try {
       this.agentClient.sendAgentStatus("thinking");
       this.awaitingAssistantForAttempt = true;
-      await this.sendPromptAsync(this.sessionId!, this.pendingRetryContent!, toModel, this.pendingRetryAttachments);
+      await this.sendPromptAsync(this.sessionId!, this.pendingRetryContent!, toModel, this.pendingRetryAttachments, this.pendingRetryAuthor);
       console.log(`[PromptHandler] Retry sent with model ${toModel}`);
       return true;
     } catch (err) {
@@ -1511,7 +1511,7 @@ export class PromptHandler {
     }
   }
 
-  private async sendPromptAsync(sessionId: string, content: string, model?: string, attachments?: PromptAttachment[]): Promise<void> {
+  private async sendPromptAsync(sessionId: string, content: string, model?: string, attachments?: PromptAttachment[], author?: PromptAuthor, channelType?: string, channelId?: string): Promise<void> {
     const url = `${this.opencodeUrl}/session/${sessionId}/prompt_async`;
     console.log(`[PromptHandler] POST ${url}${model ? ` (model: ${model})` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}`);
 
@@ -1524,8 +1524,19 @@ export class PromptHandler {
         ...(attachment.filename ? { filename: attachment.filename } : {}),
       });
     }
-    if (content) {
-      promptParts.push({ type: "text", text: content });
+    // Prefix content with channel context and user identity (agent sees this, users don't)
+    let attributedContent = content;
+    if (channelType && channelId) {
+      attributedContent = `[via ${channelType} | chatId: ${channelId}] ${attributedContent}`;
+    }
+    if (author?.authorName || author?.authorEmail) {
+      const name = author.authorName || 'Unknown';
+      const email = author.authorEmail ? ` <${author.authorEmail}>` : '';
+      const userId = author.authorId ? ` (userId: ${author.authorId})` : '';
+      attributedContent = `[User: ${name}${email}${userId}] ${attributedContent}`;
+    }
+    if (attributedContent) {
+      promptParts.push({ type: "text", text: attributedContent });
     }
     if (promptParts.length === 0) {
       throw new Error("Cannot send empty prompt: no text or attachments");

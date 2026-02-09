@@ -20,6 +20,7 @@ import type {
 } from "./types.js";
 
 export interface PromptAuthor {
+  authorId?: string;
   gitName?: string;
   gitEmail?: string;
   authorName?: string;
@@ -47,7 +48,7 @@ export class AgentClient {
   private consecutiveUpgradeFailures = 0;
   private hasEverConnected = false;
 
-  private promptHandler: ((messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[]) => void | Promise<void>) | null = null;
+  private promptHandler: ((messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string) => void | Promise<void>) | null = null;
   private answerHandler: ((questionId: string, answer: string | boolean) => void | Promise<void>) | null = null;
   private stopHandler: (() => void) | null = null;
   private abortHandler: (() => void | Promise<void>) | null = null;
@@ -633,6 +634,15 @@ export class AgentClient {
     });
   }
 
+  // ─── Phase D: Channel Reply ──────────────────────────────────────
+
+  requestChannelReply(channelType: string, channelId: string, message: string): Promise<{ success: boolean }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "channel-reply", requestId, channelType, channelId, message });
+    });
+  }
+
   requestSelfTerminate(): void {
     this.send({ type: "self-terminate" });
     // Disconnect and exit — the DO will handle sandbox termination
@@ -674,7 +684,7 @@ export class AgentClient {
 
   // ─── Inbound Handlers (DO → Runner) ─────────────────────────────────
 
-  onPrompt(handler: (messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[]) => void | Promise<void>): void {
+  onPrompt(handler: (messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string) => void | Promise<void>): void {
     this.promptHandler = handler;
   }
 
@@ -765,10 +775,10 @@ export class AgentClient {
     try {
       switch (msg.type) {
         case "prompt": {
-          const author: PromptAuthor | undefined = (msg.gitName || msg.gitEmail || msg.authorName || msg.authorEmail)
-            ? { gitName: msg.gitName, gitEmail: msg.gitEmail, authorName: msg.authorName, authorEmail: msg.authorEmail }
+          const author: PromptAuthor | undefined = (msg.authorId || msg.gitName || msg.gitEmail || msg.authorName || msg.authorEmail)
+            ? { authorId: msg.authorId, gitName: msg.gitName, gitEmail: msg.gitEmail, authorName: msg.authorName, authorEmail: msg.authorEmail }
             : undefined;
-          await this.promptHandler?.(msg.messageId, msg.content, msg.model, author, msg.modelPreferences, msg.attachments);
+          await this.promptHandler?.(msg.messageId, msg.content, msg.model, author, msg.modelPreferences, msg.attachments, msg.channelType, msg.channelId);
           break;
         }
         case "answer":
@@ -1020,6 +1030,14 @@ export class AgentClient {
             this.rejectPendingRequest(msg.requestId, msg.error);
           } else {
             this.resolvePendingRequest(msg.requestId, { tasks: msg.tasks ?? [] });
+          }
+          break;
+
+        case "channel-reply-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { success: msg.success ?? true });
           }
           break;
 

@@ -37,6 +37,7 @@ export type DOToRunnerMessage =
   | { type: "prompt"; messageId: string; content: string; model?: string;
       attachments?: PromptAttachment[];
       modelPreferences?: string[];
+      channelType?: string; channelId?: string;
       authorId?: string; authorEmail?: string; authorName?: string;
       gitName?: string; gitEmail?: string }
   | { type: "answer"; questionId: string; answer: string | boolean }
@@ -76,6 +77,7 @@ export type DOToRunnerMessage =
   | { type: "task-list-result"; requestId: string; tasks?: unknown[]; error?: string }
   | { type: "task-update-result"; requestId: string; task?: unknown; error?: string }
   | { type: "task-my-result"; requestId: string; tasks?: unknown[]; error?: string }
+  | { type: "channel-reply-result"; requestId: string; success?: boolean; error?: string }
   | {
       type: "workflow-execute";
       executionId: string;
@@ -156,7 +158,8 @@ export type RunnerToDOMessage =
   | { type: "task-create"; requestId: string; title: string; description?: string; sessionId?: string; parentTaskId?: string; blockedBy?: string[] }
   | { type: "task-list"; requestId: string; status?: string; limit?: number }
   | { type: "task-update"; requestId: string; taskId: string; status?: string; result?: string; description?: string; sessionId?: string; title?: string }
-  | { type: "task-my"; requestId: string; status?: string };
+  | { type: "task-my"; requestId: string; status?: string }
+  | { type: "channel-reply"; requestId: string; channelType: string; channelId: string; message: string };
 
 /** Structured review result data */
 export interface ReviewFinding {

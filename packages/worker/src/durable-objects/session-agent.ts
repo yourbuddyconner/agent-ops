@@ -1,7 +1,8 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramToken } from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
+import { sendTelegramMessage } from '../routes/telegram.js';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
@@ -153,7 +154,7 @@ function deriveRuntimeStates(args: {
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply';
   prNumber?: number;
   targetSessionId?: string;
   interrupt?: boolean;
@@ -259,6 +260,10 @@ interface RunnerMessage {
   sessionId?: string;
   parentTaskId?: string;
   blockedBy?: string[];
+  // Phase D: Channel Reply fields
+  channelType?: string;
+  channelId?: string;
+  message?: string;
 }
 
 /** Messages sent from DO to clients */
@@ -269,7 +274,7 @@ interface ClientOutbound {
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'workflow-api-result' | 'trigger-api-result' | 'execution-api-result' | 'tunnel-delete';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'workflow-api-result' | 'trigger-api-result' | 'execution-api-result' | 'tunnel-delete' | 'channel-reply-result';
   messageId?: string;
   content?: string;
   model?: string;
@@ -291,6 +296,9 @@ interface RunnerOutbound {
   authorName?: string;
   gitName?: string;
   gitEmail?: string;
+  // Channel metadata
+  channelType?: string;
+  channelId?: string;
   // Orchestrator result fields
   memories?: unknown[];
   memory?: unknown;
@@ -332,6 +340,8 @@ const SCHEMA_SQL = `
     author_email TEXT,
     author_name TEXT,
     author_avatar_url TEXT,
+    channel_type TEXT,
+    channel_id TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
 
@@ -354,6 +364,8 @@ const SCHEMA_SQL = `
     author_email TEXT,
     author_name TEXT,
     author_avatar_url TEXT,
+    channel_type TEXT,
+    channel_id TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
 
@@ -408,6 +420,12 @@ export class SessionAgentDO {
       try { this.ctx.storage.sql.exec('ALTER TABLE messages ADD COLUMN author_avatar_url TEXT'); } catch { /* already exists */ }
       try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN author_avatar_url TEXT'); } catch { /* already exists */ }
       try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN attachments TEXT'); } catch { /* already exists */ }
+
+      // Migrate existing DOs: add channel metadata columns
+      try { this.ctx.storage.sql.exec('ALTER TABLE messages ADD COLUMN channel_type TEXT'); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec('ALTER TABLE messages ADD COLUMN channel_id TEXT'); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN channel_type TEXT'); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN channel_id TEXT'); } catch { /* already exists */ }
 
       this.initialized = true;
     });
@@ -484,18 +502,33 @@ export class SessionAgentDO {
         const models = raw ? JSON.parse(raw) : [];
         return Response.json({ models });
       }
+      case '/queue-mode': {
+        const body = await request.json() as { queueMode: string; collectDebounceMs?: number };
+        this.setStateValue('queueMode', body.queueMode);
+        if (body.collectDebounceMs !== undefined) {
+          this.setStateValue('collectDebounceMs', String(body.collectDebounceMs));
+        }
+        return Response.json({ success: true });
+      }
       case '/prompt': {
         // HTTP-based prompt submission (alternative to WebSocket)
-        const body = await request.json() as { content?: string; model?: string; attachments?: PromptAttachment[]; interrupt?: boolean };
+        const body = await request.json() as { content?: string; model?: string; attachments?: PromptAttachment[]; interrupt?: boolean; queueMode?: string; channelType?: string; channelId?: string };
         const content = body.content ?? '';
         const attachments = sanitizePromptAttachments(body.attachments);
         if (!content && attachments.length === 0) {
           return new Response(JSON.stringify({ error: 'Missing content or attachments' }), { status: 400 });
         }
-        if (body.interrupt) {
-          await this.handleInterruptPrompt(content, body.model);
-        } else {
-          await this.handlePrompt(content, body.model, undefined, attachments);
+        const effectiveMode = body.interrupt ? 'steer' : (body.queueMode || this.getStateValue('queueMode') || 'followup');
+        switch (effectiveMode) {
+          case 'steer':
+            await this.handleInterruptPrompt(content, body.model);
+            break;
+          case 'collect':
+            await this.handleCollectPrompt(content, body.model, undefined, attachments);
+            break;
+          default:
+            await this.handlePrompt(content, body.model, undefined, attachments, body.channelType, body.channelId);
+            break;
         }
         return Response.json({ success: true });
       }
@@ -589,7 +622,7 @@ export class SessionAgentDO {
 
     // Send full session state as a single init message (prevents duplicates on reconnect)
     const messages = this.ctx.storage.sql
-      .exec('SELECT id, role, content, parts, author_id, author_email, author_name, author_avatar_url, created_at FROM messages ORDER BY created_at ASC')
+      .exec('SELECT id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, created_at FROM messages ORDER BY created_at ASC')
       .toArray();
 
     const status = this.getStateValue('status') || 'idle';
@@ -623,6 +656,8 @@ export class SessionAgentDO {
           authorEmail: msg.author_email || undefined,
           authorName: msg.author_name || undefined,
           authorAvatarUrl: msg.author_avatar_url || undefined,
+          channelType: msg.channel_type || undefined,
+          channelId: msg.channel_id || undefined,
           createdAt: msg.created_at,
         })),
       },
@@ -712,7 +747,7 @@ export class SessionAgentDO {
 
     // Check if there's a queued prompt to send immediately
     const queued = this.ctx.storage.sql
-      .exec("SELECT id, content, attachments, author_id, author_email, author_name FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
+      .exec("SELECT id, content, attachments, author_id, author_email, author_name, channel_type, channel_id FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
       .toArray();
 
     if (queued.length > 0) {
@@ -735,6 +770,8 @@ export class SessionAgentDO {
         messageId: prompt.id,
         content: prompt.content,
         attachments: attachments.length > 0 ? attachments : undefined,
+        channelType: (prompt.channel_type as string) || undefined,
+        channelId: (prompt.channel_id as string) || undefined,
         authorId: authorId || undefined,
         authorEmail: prompt.author_email || undefined,
         authorName: prompt.author_name || undefined,
@@ -898,6 +935,12 @@ export class SessionAgentDO {
     const now = Date.now();
     const nowSecs = Math.floor(now / 1000);
 
+    // ─── Collect Mode Flush Check (Phase D) ──────────────────────────
+    const collectFlushAt = this.getStateValue('collectFlushAt');
+    if (collectFlushAt && now >= parseInt(collectFlushAt)) {
+      await this.flushCollectBuffer();
+    }
+
     // ─── Idle Hibernate Check ─────────────────────────────────────────
     const status = this.getStateValue('status');
     const idleTimeoutMsStr = this.getStateValue('idleTimeoutMs');
@@ -981,7 +1024,19 @@ export class SessionAgentDO {
           gitName: userDetails.gitName,
           gitEmail: userDetails.gitEmail,
         } : userId ? { id: userId, email: '', name: undefined, avatarUrl: undefined, gitName: undefined, gitEmail: undefined } : undefined;
-        await this.handlePrompt(msg.content || '', msg.model, author, attachments);
+        // Route through queue mode (Phase D)
+        const wsQueueMode = (msg as any).queueMode || this.getStateValue('queueMode') || 'followup';
+        switch (wsQueueMode) {
+          case 'steer':
+            await this.handleInterruptPrompt(msg.content || '', msg.model);
+            break;
+          case 'collect':
+            await this.handleCollectPrompt(msg.content || '', msg.model, author, attachments);
+            break;
+          default:
+            await this.handlePrompt(msg.content || '', msg.model, author, attachments);
+            break;
+        }
         break;
       }
 
@@ -1025,7 +1080,9 @@ export class SessionAgentDO {
     content: string,
     model?: string,
     author?: { id: string; email: string; name?: string; avatarUrl?: string; gitName?: string; gitEmail?: string },
-    attachments?: PromptAttachment[]
+    attachments?: PromptAttachment[],
+    channelType?: string,
+    channelId?: string
   ) {
     // Update idle tracking
     this.setStateValue('lastUserActivityAt', String(Date.now()));
@@ -1048,15 +1105,16 @@ export class SessionAgentDO {
     const serializedAttachmentParts = attachmentParts.length > 0 ? JSON.stringify(attachmentParts) : null;
     const serializedQueuedAttachments = normalizedAttachments.length > 0 ? JSON.stringify(normalizedAttachments) : null;
 
-    // Store user message with author info
+    // Store user message with author info and channel metadata
     const messageId = crypto.randomUUID();
     this.ctx.storage.sql.exec(
-      'INSERT INTO messages (id, role, content, parts, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO messages (id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       messageId, 'user', content, serializedAttachmentParts,
-      author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null
+      author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null,
+      channelType || null, channelId || null
     );
 
-    // Broadcast user message to all clients (includes author info)
+    // Broadcast user message to all clients (includes author info + channel metadata)
     this.broadcastToClients({
       type: 'message',
       data: {
@@ -1068,6 +1126,8 @@ export class SessionAgentDO {
         authorEmail: author?.email,
         authorName: author?.name,
         authorAvatarUrl: author?.avatarUrl,
+        channelType,
+        channelId,
         createdAt: Math.floor(Date.now() / 1000),
       },
     });
@@ -1093,11 +1153,12 @@ export class SessionAgentDO {
     );
 
     if (!runnerConnected) {
-      // No runner connected — queue the prompt with author info
+      // No runner connected — queue the prompt with author info + channel metadata
       this.ctx.storage.sql.exec(
-        "INSERT INTO prompt_queue (id, content, attachments, status, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
+        "INSERT INTO prompt_queue (id, content, attachments, status, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
         messageId, content, serializedQueuedAttachments,
-        author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null
+        author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null,
+        channelType || null, channelId || null
       );
       this.appendAuditLog(
         'prompt.queued',
@@ -1112,11 +1173,12 @@ export class SessionAgentDO {
     }
 
     if (runnerBusy) {
-      // Runner is processing another prompt — queue with author info
+      // Runner is processing another prompt — queue with author info + channel metadata
       this.ctx.storage.sql.exec(
-        "INSERT INTO prompt_queue (id, content, attachments, status, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
+        "INSERT INTO prompt_queue (id, content, attachments, status, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
         messageId, content, serializedQueuedAttachments,
-        author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null
+        author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null,
+        channelType || null, channelId || null
       );
       this.appendAuditLog(
         'prompt.queued',
@@ -1130,7 +1192,7 @@ export class SessionAgentDO {
       return;
     }
 
-    // Forward directly to runner with author info
+    // Forward directly to runner with author info + channel metadata
     this.setStateValue('runnerBusy', 'true');
     console.log('[SessionAgentDO] handlePrompt: dispatching to runner');
     // Resolve model preferences: use the session owner's preferences
@@ -1142,6 +1204,8 @@ export class SessionAgentDO {
       content,
       model,
       attachments: normalizedAttachments.length > 0 ? normalizedAttachments : undefined,
+      channelType,
+      channelId,
       authorId: author?.id,
       authorEmail: author?.email,
       authorName: author?.name,
@@ -1215,6 +1279,119 @@ export class SessionAgentDO {
     // Queue the new prompt — when the runner confirms abort, handlePromptComplete
     // will drain the queue and send this prompt to the runner
     await this.handlePrompt(content, model);
+  }
+
+  // ─── Collect Mode (Phase D) ──────────────────────────────────────────
+
+  private async handleCollectPrompt(
+    content: string,
+    model?: string,
+    author?: { id: string; email: string; name?: string; avatarUrl?: string; gitName?: string; gitEmail?: string },
+    attachments?: PromptAttachment[],
+  ) {
+    // Update idle tracking
+    this.setStateValue('lastUserActivityAt', String(Date.now()));
+    this.rescheduleIdleAlarm();
+
+    const normalizedAttachments = sanitizePromptAttachments(attachments);
+    const attachmentParts = attachmentPartsForMessage(normalizedAttachments);
+    const serializedAttachmentParts = attachmentParts.length > 0 ? JSON.stringify(attachmentParts) : null;
+
+    // Store user message immediately for display
+    const messageId = crypto.randomUUID();
+    this.ctx.storage.sql.exec(
+      'INSERT INTO messages (id, role, content, parts, author_id, author_email, author_name, author_avatar_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      messageId, 'user', content, serializedAttachmentParts,
+      author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null,
+    );
+
+    // Broadcast user message to clients
+    this.broadcastToClients({
+      type: 'message',
+      data: {
+        id: messageId,
+        role: 'user',
+        content,
+        parts: attachmentParts.length > 0 ? attachmentParts : undefined,
+        authorId: author?.id,
+        authorEmail: author?.email,
+        authorName: author?.name,
+        authorAvatarUrl: author?.avatarUrl,
+        createdAt: Math.floor(Date.now() / 1000),
+      },
+    });
+
+    // Append to collect buffer (stored as JSON in state table)
+    const bufferRaw = this.getStateValue('collectBuffer');
+    const buffer: Array<{ content: string; model?: string; author?: typeof author; attachments?: PromptAttachment[] }> =
+      bufferRaw ? JSON.parse(bufferRaw) : [];
+    buffer.push({ content, model, author, attachments: normalizedAttachments.length > 0 ? normalizedAttachments : undefined });
+    this.setStateValue('collectBuffer', JSON.stringify(buffer));
+
+    // Set flush time
+    const debounceMs = parseInt(this.getStateValue('collectDebounceMs') || '3000');
+    const flushAt = Date.now() + debounceMs;
+    this.setStateValue('collectFlushAt', String(flushAt));
+
+    // Schedule alarm for collect flush (uses min of flush and existing idle alarm)
+    this.rescheduleCollectAlarm(flushAt);
+
+    // Broadcast collect status
+    this.broadcastToClients({
+      type: 'status',
+      data: { collectPending: true, collectCount: buffer.length },
+    });
+  }
+
+  private rescheduleCollectAlarm(flushAt: number): void {
+    // Use the earliest of: collect flush, idle timeout, question expiry
+    let earliestAlarm = flushAt;
+
+    const idleTimeoutMsStr = this.getStateValue('idleTimeoutMs');
+    const lastActivityStr = this.getStateValue('lastUserActivityAt');
+    if (idleTimeoutMsStr && lastActivityStr) {
+      const idleAlarm = parseInt(lastActivityStr) + parseInt(idleTimeoutMsStr);
+      if (idleAlarm < earliestAlarm) earliestAlarm = idleAlarm;
+    }
+
+    const nextExpiry = this.ctx.storage.sql
+      .exec("SELECT MIN(expires_at) as next FROM questions WHERE status = 'pending' AND expires_at IS NOT NULL")
+      .toArray();
+    if (nextExpiry.length > 0 && nextExpiry[0].next) {
+      const questionMs = (nextExpiry[0].next as number) * 1000;
+      if (questionMs < earliestAlarm) earliestAlarm = questionMs;
+    }
+
+    this.ctx.storage.setAlarm(earliestAlarm);
+  }
+
+  private async flushCollectBuffer(): Promise<void> {
+    const bufferRaw = this.getStateValue('collectBuffer');
+    if (!bufferRaw) return;
+
+    const buffer: Array<{ content: string; model?: string; author?: any; attachments?: PromptAttachment[] }> = JSON.parse(bufferRaw);
+    if (buffer.length === 0) return;
+
+    // Clear buffer and flush state
+    this.setStateValue('collectBuffer', '');
+    this.setStateValue('collectFlushAt', '');
+
+    // Merge messages
+    const mergedContent = buffer.map((b) => b.content).join('\n\n---\n\n');
+    const lastEntry = buffer[buffer.length - 1];
+    const allAttachments = buffer.flatMap((b) => b.attachments || []);
+
+    // Broadcast collect complete
+    this.broadcastToClients({
+      type: 'status',
+      data: { collectPending: false, collectCount: 0 },
+    });
+
+    // Send merged prompt through normal flow
+    await this.handlePrompt(mergedContent, lastEntry.model, lastEntry.author, allAttachments);
+
+    // Reschedule idle alarm (since we consumed the collect alarm slot)
+    this.rescheduleIdleAlarm();
   }
 
   private async handleRevert(messageId: string) {
@@ -1849,6 +2026,11 @@ export class SessionAgentDO {
 
       case 'task-my':
         await this.handleTaskMy(msg.requestId!, msg.status);
+        break;
+
+      // ─── Phase D: Channel Reply ──────────────────────────────────────
+      case 'channel-reply':
+        await this.handleChannelReply(msg.requestId!, msg.channelType!, msg.channelId!, msg.message!);
         break;
 
       case 'ping':
@@ -4289,6 +4471,10 @@ export class SessionAgentDO {
       this.setStateValue('initialModel', body.initialModel);
     }
 
+    // Initialize queue mode (Phase D)
+    this.setStateValue('queueMode', (body as any).queueMode || 'followup');
+    this.setStateValue('collectDebounceMs', String((body as any).collectDebounceMs || 3000));
+
     // Initialize idle tracking
     this.setStateValue('lastUserActivityAt', String(Date.now()));
 
@@ -4681,6 +4867,29 @@ export class SessionAgentDO {
       const status = this.getStateValue('status');
       if (status === 'hibernated') {
         this.ctx.waitUntil(this.performWake());
+      } else if (status === 'running') {
+        // Dispatch the system event as a prompt so the runner wakes up and can
+        // decide whether to act on it (e.g. child session idle/completed events).
+        const runnerBusy = this.getStateValue('runnerBusy') === 'true';
+        const runnerSockets = this.ctx.getWebSockets('runner');
+        if (runnerSockets.length > 0 && !runnerBusy) {
+          // Runner is connected and idle — dispatch directly
+          this.setStateValue('runnerBusy', 'true');
+          const ownerId = this.getStateValue('userId');
+          const ownerDetails = ownerId ? await this.getUserDetails(ownerId) : undefined;
+          this.sendToRunner({
+            type: 'prompt',
+            messageId,
+            content,
+            modelPreferences: ownerDetails?.modelPreferences,
+          });
+        } else {
+          // Runner busy or not connected — queue the prompt
+          this.ctx.storage.sql.exec(
+            "INSERT INTO prompt_queue (id, content, status) VALUES (?, ?, 'queued')",
+            messageId, content
+          );
+        }
       }
     }
   }
@@ -4690,7 +4899,7 @@ export class SessionAgentDO {
     if (runnerSockets.length === 0) return false;
 
     const next = this.ctx.storage.sql
-      .exec("SELECT id, content, attachments, author_id, author_email, author_name FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
+      .exec("SELECT id, content, attachments, author_id, author_email, author_name, channel_type, channel_id FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
       .toArray();
 
     if (next.length === 0) return false;
@@ -4719,6 +4928,8 @@ export class SessionAgentDO {
       messageId: prompt.id as string,
       content: prompt.content as string,
       attachments: attachments.length > 0 ? attachments : undefined,
+      channelType: (prompt.channel_type as string) || undefined,
+      channelId: (prompt.channel_id as string) || undefined,
       authorId: authorId || undefined,
       authorEmail: (prompt.author_email as string) || undefined,
       authorName: (prompt.author_name as string) || undefined,
@@ -5863,6 +6074,43 @@ export class SessionAgentDO {
       this.sendToRunner({ type: 'task-my-result', requestId, tasks } as any);
     } catch (err) {
       this.sendToRunner({ type: 'task-my-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  // ─── Phase D: Channel Reply Handler ──────────────────────────────────
+
+  private async handleChannelReply(requestId: string, channelType: string, channelId: string, message: string) {
+    try {
+      const userId = this.getStateValue('userId');
+      if (!userId) {
+        this.sendToRunner({ type: 'channel-reply-result', requestId, error: 'No userId on session' } as any);
+        return;
+      }
+
+      switch (channelType) {
+        case 'telegram': {
+          const telegramData = await getUserTelegramToken(this.env.DB, userId, this.env.ENCRYPTION_KEY);
+          if (!telegramData) {
+            this.sendToRunner({ type: 'channel-reply-result', requestId, error: 'No Telegram config for user' } as any);
+            return;
+          }
+          const ok = await sendTelegramMessage(telegramData.botToken, channelId, message);
+          if (!ok) {
+            this.sendToRunner({ type: 'channel-reply-result', requestId, error: 'Telegram API error' } as any);
+            return;
+          }
+          this.sendToRunner({ type: 'channel-reply-result', requestId, success: true } as any);
+          break;
+        }
+        default:
+          this.sendToRunner({ type: 'channel-reply-result', requestId, error: `Unsupported channel type: ${channelType}` } as any);
+      }
+    } catch (err) {
+      this.sendToRunner({
+        type: 'channel-reply-result',
+        requestId,
+        error: err instanceof Error ? err.message : String(err),
+      } as any);
     }
   }
 
