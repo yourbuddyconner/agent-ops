@@ -302,3 +302,36 @@ export async function sendTelegramMessage(
   );
   return resp.ok;
 }
+
+/**
+ * Send a photo to a Telegram chat via the Bot API using multipart upload.
+ * Accepts base64-encoded image data. Optional caption is converted from Markdown to HTML.
+ */
+export async function sendTelegramPhoto(
+  botToken: string,
+  chatId: string,
+  photoBase64: string,
+  mimeType: string,
+  caption?: string,
+): Promise<boolean> {
+  const binaryString = atob(photoBase64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+
+  const ext = mimeType === 'image/png' ? 'png' : 'jpg';
+  const formData = new FormData();
+  formData.append('chat_id', chatId);
+  formData.append('photo', new Blob([bytes], { type: mimeType }), `image.${ext}`);
+  if (caption) {
+    formData.append('caption', markdownToTelegramHtml(caption));
+    formData.append('parse_mode', 'HTML');
+  }
+
+  const resp = await fetch(
+    `https://api.telegram.org/bot${botToken}/sendPhoto`,
+    { method: 'POST', body: formData },
+  );
+  return resp.ok;
+}

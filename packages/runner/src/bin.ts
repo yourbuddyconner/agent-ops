@@ -208,8 +208,8 @@ async function main() {
       return await agentClient.requestMyTasks(status);
     },
     // Phase D: Channel Reply
-    onChannelReply: async (channelType, channelId, message) => {
-      return await agentClient.requestChannelReply(channelType, channelId, message);
+    onChannelReply: async (channelType, channelId, message, imageBase64, imageMimeType) => {
+      return await agentClient.requestChannelReply(channelType, channelId, message, imageBase64, imageMimeType);
     },
   });
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient, sessionId!);

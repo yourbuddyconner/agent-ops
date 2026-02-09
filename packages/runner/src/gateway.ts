@@ -580,7 +580,7 @@ export interface GatewayCallbacks {
   }) => Promise<{ task: unknown }>;
   onMyTasks?: (status?: string) => Promise<{ tasks: unknown[] }>;
   // Phase D: Channel Reply
-  onChannelReply?: (channelType: string, channelId: string, message: string) => Promise<{ success: boolean }>;
+  onChannelReply?: (channelType: string, channelId: string, message: string, imageBase64?: string, imageMimeType?: string) => Promise<{ success: boolean }>;
 }
 
 export function startGateway(port: number, callbacks: GatewayCallbacks): void {
@@ -1453,11 +1453,11 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json({ error: "Channel reply handler not configured" }, 501);
     }
     try {
-      const body = await c.req.json() as { channelType?: string; channelId?: string; message?: string };
-      if (!body.channelType || !body.channelId || !body.message) {
-        return c.json({ error: "channelType, channelId, and message are required" }, 400);
+      const body = await c.req.json() as { channelType?: string; channelId?: string; message?: string; imageBase64?: string; imageMimeType?: string };
+      if (!body.channelType || !body.channelId || (!body.message && !body.imageBase64)) {
+        return c.json({ error: "channelType, channelId, and message or image are required" }, 400);
       }
-      const result = await callbacks.onChannelReply(body.channelType, body.channelId, body.message);
+      const result = await callbacks.onChannelReply(body.channelType, body.channelId, body.message || '', body.imageBase64, body.imageMimeType);
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] Channel reply error:", err);

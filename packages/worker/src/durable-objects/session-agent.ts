@@ -2,7 +2,7 @@ import type { Env } from '../env.js';
 import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramToken } from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
-import { sendTelegramMessage } from '../routes/telegram.js';
+import { sendTelegramMessage, sendTelegramPhoto } from '../routes/telegram.js';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
@@ -264,6 +264,8 @@ interface RunnerMessage {
   channelType?: string;
   channelId?: string;
   message?: string;
+  imageBase64?: string;
+  imageMimeType?: string;
 }
 
 /** Messages sent from DO to clients */
@@ -407,6 +409,19 @@ export class SessionAgentDO {
   private env: Env;
   private initialized = false;
   private userDetailsCache = new Map<string, CachedUserDetails>();
+
+  // ─── Auto Channel Reply Tracking ─────────────────────────────────────
+  // When a prompt arrives from an external channel (e.g. Telegram), we track
+  // the channel context so we can auto-send the agent's response back to it.
+  // If the agent explicitly calls channel_reply for that channel, we mark it
+  // handled so we don't double-send.
+  private pendingChannelReply: {
+    channelType: string;
+    channelId: string;
+    resultContent: string | null;
+    resultMessageId: string | null;
+    handled: boolean;
+  } | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -1195,6 +1210,14 @@ export class SessionAgentDO {
     // Forward directly to runner with author info + channel metadata
     this.setStateValue('runnerBusy', 'true');
     console.log('[SessionAgentDO] handlePrompt: dispatching to runner');
+
+    // Track channel context for auto-reply on completion
+    if (channelType && channelId) {
+      this.pendingChannelReply = { channelType, channelId, resultContent: null, resultMessageId: null, handled: false };
+    } else {
+      this.pendingChannelReply = null;
+    }
+
     // Resolve model preferences: use the session owner's preferences
     const ownerId = this.getStateValue('userId');
     const ownerDetails = ownerId ? await this.getUserDetails(ownerId) : undefined;
@@ -1484,6 +1507,12 @@ export class SessionAgentDO {
           },
         });
         console.log(`[SessionAgentDO] Assistant result stored and broadcast`);
+
+        // Track result content for auto channel reply
+        if (this.pendingChannelReply && !this.pendingChannelReply.handled && msg.content) {
+          this.pendingChannelReply.resultContent = msg.content;
+          this.pendingChannelReply.resultMessageId = resultId;
+        }
         break;
       }
 
@@ -1629,7 +1658,9 @@ export class SessionAgentDO {
       }
 
       case 'complete':
-        // Prompt finished — check queue for next
+        // Prompt finished — auto-reply to originating channel if needed
+        await this.flushPendingChannelReply();
+        // Check queue for next
         console.log(`[SessionAgentDO] Complete received, processing queue`);
         await this.handlePromptComplete();
         // Flush metrics after each agent turn
@@ -2030,7 +2061,7 @@ export class SessionAgentDO {
 
       // ─── Phase D: Channel Reply ──────────────────────────────────────
       case 'channel-reply':
-        await this.handleChannelReply(msg.requestId!, msg.channelType!, msg.channelId!, msg.message!);
+        await this.handleChannelReply(msg.requestId!, msg.channelType!, msg.channelId!, msg.message || '', msg.imageBase64, msg.imageMimeType);
         break;
 
       case 'ping':
@@ -4920,6 +4951,15 @@ export class SessionAgentDO {
       this.setStateValue('currentPromptAuthorId', authorId);
     }
 
+    // Track channel context for auto-reply on completion
+    const queueChannelType = (prompt.channel_type as string) || undefined;
+    const queueChannelId = (prompt.channel_id as string) || undefined;
+    if (queueChannelType && queueChannelId) {
+      this.pendingChannelReply = { channelType: queueChannelType, channelId: queueChannelId, resultContent: null, resultMessageId: null, handled: false };
+    } else {
+      this.pendingChannelReply = null;
+    }
+
     // Resolve model preferences from session owner
     const queueOwnerId = this.getStateValue('userId');
     const queueOwnerDetails = queueOwnerId ? await this.getUserDetails(queueOwnerId) : undefined;
@@ -4928,8 +4968,8 @@ export class SessionAgentDO {
       messageId: prompt.id as string,
       content: prompt.content as string,
       attachments: attachments.length > 0 ? attachments : undefined,
-      channelType: (prompt.channel_type as string) || undefined,
-      channelId: (prompt.channel_id as string) || undefined,
+      channelType: queueChannelType,
+      channelId: queueChannelId,
       authorId: authorId || undefined,
       authorEmail: (prompt.author_email as string) || undefined,
       authorName: (prompt.author_name as string) || undefined,
@@ -6079,7 +6119,7 @@ export class SessionAgentDO {
 
   // ─── Phase D: Channel Reply Handler ──────────────────────────────────
 
-  private async handleChannelReply(requestId: string, channelType: string, channelId: string, message: string) {
+  private async handleChannelReply(requestId: string, channelType: string, channelId: string, message: string, imageBase64?: string, imageMimeType?: string) {
     try {
       const userId = this.getStateValue('userId');
       if (!userId) {
@@ -6094,16 +6134,53 @@ export class SessionAgentDO {
             this.sendToRunner({ type: 'channel-reply-result', requestId, error: 'No Telegram config for user' } as any);
             return;
           }
-          const ok = await sendTelegramMessage(telegramData.botToken, channelId, message);
+          let ok: boolean;
+          if (imageBase64) {
+            ok = await sendTelegramPhoto(
+              telegramData.botToken, channelId, imageBase64,
+              imageMimeType || 'image/jpeg', message || undefined,
+            );
+          } else {
+            ok = await sendTelegramMessage(telegramData.botToken, channelId, message);
+          }
           if (!ok) {
             this.sendToRunner({ type: 'channel-reply-result', requestId, error: 'Telegram API error' } as any);
             return;
           }
+
+          // Mark auto-reply as handled so we don't double-send on complete
+          if (this.pendingChannelReply
+            && this.pendingChannelReply.channelType === channelType
+            && this.pendingChannelReply.channelId === channelId) {
+            this.pendingChannelReply.handled = true;
+          }
+
           this.sendToRunner({ type: 'channel-reply-result', requestId, success: true } as any);
           break;
         }
         default:
           this.sendToRunner({ type: 'channel-reply-result', requestId, error: `Unsupported channel type: ${channelType}` } as any);
+      }
+
+      // Store image as a system message for web UI visibility
+      if (imageBase64) {
+        const msgId = crypto.randomUUID();
+        const channelLabel = `Sent image to ${channelType}`;
+        this.ctx.storage.sql.exec(
+          'INSERT INTO messages (id, role, content, parts) VALUES (?, ?, ?, ?)',
+          msgId, 'system', message || channelLabel,
+          JSON.stringify({ type: 'image', data: imageBase64, mimeType: imageMimeType || 'image/jpeg' }),
+        );
+        this.broadcastToClients({
+          type: 'message',
+          data: {
+            id: msgId,
+            role: 'system',
+            content: message || channelLabel,
+            parts: { type: 'image', data: imageBase64, mimeType: imageMimeType || 'image/jpeg' },
+            createdAt: Math.floor(Date.now() / 1000),
+          },
+        });
       }
     } catch (err) {
       this.sendToRunner({
@@ -6111,6 +6188,68 @@ export class SessionAgentDO {
         requestId,
         error: err instanceof Error ? err.message : String(err),
       } as any);
+    }
+  }
+
+  /**
+   * Auto-send the agent's result text to the originating channel if the agent
+   * didn't explicitly call channel_reply during this prompt cycle.
+   * On success, stamps the assistant message with channel metadata so the
+   * web UI can show a "sent to <channel>" badge.
+   */
+  private async flushPendingChannelReply() {
+    const pending = this.pendingChannelReply;
+    if (!pending || pending.handled || !pending.resultContent) {
+      this.pendingChannelReply = null;
+      return;
+    }
+    this.pendingChannelReply = null;
+
+    const userId = this.getStateValue('userId');
+    if (!userId) return;
+
+    let sent = false;
+    try {
+      switch (pending.channelType) {
+        case 'telegram': {
+          const telegramData = await getUserTelegramToken(this.env.DB, userId, this.env.ENCRYPTION_KEY);
+          if (!telegramData) {
+            console.log('[SessionAgentDO] Auto channel reply: no Telegram config, skipping');
+            return;
+          }
+          const ok = await sendTelegramMessage(telegramData.botToken, pending.channelId, pending.resultContent);
+          if (ok) {
+            console.log(`[SessionAgentDO] Auto channel reply sent to ${pending.channelType}:${pending.channelId}`);
+            sent = true;
+          } else {
+            console.error(`[SessionAgentDO] Auto channel reply failed for ${pending.channelType}:${pending.channelId}`);
+          }
+          break;
+        }
+        default:
+          console.log(`[SessionAgentDO] Auto channel reply: unsupported channel type ${pending.channelType}`);
+      }
+    } catch (err) {
+      console.error('[SessionAgentDO] Auto channel reply error:', err);
+    }
+
+    // Stamp the assistant message with channel metadata so the UI shows a badge
+    if (sent && pending.resultMessageId) {
+      this.ctx.storage.sql.exec(
+        'UPDATE messages SET channel_type = ?, channel_id = ? WHERE id = ?',
+        pending.channelType, pending.channelId, pending.resultMessageId,
+      );
+      this.broadcastToClients({
+        type: 'message.updated',
+        data: {
+          id: pending.resultMessageId,
+          role: 'assistant',
+          content: pending.resultContent,
+          channelType: pending.channelType,
+          channelId: pending.channelId,
+          createdAt: Math.floor(Date.now() / 1000),
+        },
+      });
     }
   }
 

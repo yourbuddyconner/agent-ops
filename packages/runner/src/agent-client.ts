@@ -636,10 +636,10 @@ export class AgentClient {
 
   // ─── Phase D: Channel Reply ──────────────────────────────────────
 
-  requestChannelReply(channelType: string, channelId: string, message: string): Promise<{ success: boolean }> {
+  requestChannelReply(channelType: string, channelId: string, message: string, imageBase64?: string, imageMimeType?: string): Promise<{ success: boolean }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
-      this.send({ type: "channel-reply", requestId, channelType, channelId, message });
+      this.send({ type: "channel-reply", requestId, channelType, channelId, message, imageBase64, imageMimeType });
     });
   }
 

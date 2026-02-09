@@ -185,6 +185,8 @@ interface WebSocketMessageUpdatedMessage {
     role: 'user' | 'assistant' | 'system' | 'tool';
     content: string;
     parts?: unknown;
+    channelType?: string;
+    channelId?: string;
     createdAt: number;
   };
 }
@@ -552,7 +554,7 @@ export function useChat(sessionId: string) {
           ...prev,
           messages: prev.messages.map((m) =>
             m.id === u.id
-              ? { ...m, content: u.content, parts: u.parts }
+              ? { ...m, content: u.content, parts: u.parts, channelType: u.channelType ?? m.channelType, channelId: u.channelId ?? m.channelId }
               : m
           ),
         }));
