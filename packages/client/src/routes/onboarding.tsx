@@ -25,7 +25,7 @@ function OnboardingPage() {
   const [displayName, setDisplayName] = React.useState(user?.name ?? '');
   const [useSameForGit, setUseSameForGit] = React.useState(true);
   const [gitName, setGitName] = React.useState(user?.gitName ?? user?.name ?? '');
-  const [gitEmail, setGitEmail] = React.useState(user?.gitEmail ?? '');
+  const [gitEmail, setGitEmail] = React.useState(user?.gitEmail ?? user?.email ?? '');
 
   const effectiveGitName = useSameForGit ? displayName : gitName;
 

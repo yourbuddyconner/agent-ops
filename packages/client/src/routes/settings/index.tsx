@@ -164,6 +164,7 @@ function AgentTab() {
 function IntegrationsTab() {
   return (
     <div className="space-y-6">
+      <GitConfigSection />
       <CredentialsSection />
       <IdentityLinksSection />
       <TelegramSection />
@@ -175,7 +176,6 @@ function IntegrationsTab() {
 function DeveloperTab() {
   return (
     <div className="space-y-6">
-      <GitConfigSection />
       <SettingsSection title="API Keys">
         <APIKeyList />
       </SettingsSection>
@@ -233,7 +233,7 @@ function GitConfigSection() {
             type="text"
             value={gitName}
             onChange={(e) => setGitName(e.target.value)}
-            placeholder="Your Name"
+            placeholder={user?.name || 'Your Name'}
             className="mt-1 block w-full max-w-md rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
           />
         </div>
@@ -249,7 +249,7 @@ function GitConfigSection() {
             type="email"
             value={gitEmail}
             onChange={(e) => setGitEmail(e.target.value)}
-            placeholder="you@example.com"
+            placeholder={user?.email || 'you@example.com'}
             className="mt-1 block w-full max-w-md rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
           />
           <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">

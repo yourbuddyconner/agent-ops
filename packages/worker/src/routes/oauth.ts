@@ -459,6 +459,14 @@ oauthRouter.get('/google/callback', async (c) => {
       }
     }
 
+    // Auto-populate git config if not already set
+    if (!user.gitName || !user.gitEmail) {
+      await db.updateUserProfile(c.env.DB, user.id, {
+        gitName: user.gitName || payload.name || undefined,
+        gitEmail: user.gitEmail || payload.email || undefined,
+      });
+    }
+
     // Encrypt and store Google OAuth tokens
     if (tokenData.access_token) {
       const encryptedAccessToken = await encryptString(tokenData.access_token, c.env.ENCRYPTION_KEY);
