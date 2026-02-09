@@ -182,7 +182,7 @@ adminRouter.delete('/users/:id', async (c) => {
 
 // --- Encryption helpers ---
 
-async function encryptApiKey(key: string, secret: string): Promise<string> {
+export async function encryptApiKey(key: string, secret: string): Promise<string> {
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(secret).slice(0, 32), 'AES-GCM', false, [
     'encrypt',

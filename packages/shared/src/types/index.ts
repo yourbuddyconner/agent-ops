@@ -295,6 +295,14 @@ export interface OrgApiKey {
   updatedAt: Date;
 }
 
+export interface UserCredential {
+  id: string;
+  provider: string;
+  isSet: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface Invite {
   id: string;
   code: string;

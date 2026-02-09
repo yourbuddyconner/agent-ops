@@ -2,7 +2,7 @@ import * as React from 'react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
 import { useAuthStore } from '@/stores/auth';
-import { useLogout, useUpdateProfile } from '@/api/auth';
+import { useLogout, useUpdateProfile, useUserCredentials, useSetUserCredential, useDeleteUserCredential } from '@/api/auth';
 import { useOrchestratorInfo, useUpdateOrchestratorIdentity, useCheckHandle, useNotificationPreferences, useUpdateNotificationPreferences, useIdentityLinks, useCreateIdentityLink, useDeleteIdentityLink, useTelegramConfig, useSetupTelegram, useDisconnectTelegram } from '@/api/orchestrator';
 import { useAvailableModels } from '@/api/sessions';
 import type { ProviderModels } from '@/api/sessions';
@@ -121,6 +121,8 @@ function SettingsPage() {
         <ModelPreferencesSection />
 
         <IdleTimeoutSection />
+
+        <IntegrationsSection />
 
         <SettingsSection title="API Keys">
           <APIKeyList />
@@ -1174,6 +1176,113 @@ function ThemeButton({
     >
       {label}
     </button>
+  );
+}
+
+// --- Integrations (per-user credentials) ---
+
+const INTEGRATION_PROVIDERS = [
+  { id: '1password', label: '1Password', placeholder: 'ops_...' },
+] as const;
+
+function IntegrationsSection() {
+  const { data: credentials, isLoading } = useUserCredentials();
+
+  return (
+    <SettingsSection title="Integrations">
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Connect external services to make credentials available inside your agent sessions.
+          Values are encrypted at rest and injected as environment variables when sessions start.
+        </p>
+        {isLoading ? (
+          <div className="space-y-3">
+            {INTEGRATION_PROVIDERS.map((_, i) => (
+              <div key={i} className="h-12 animate-pulse rounded-md bg-neutral-100 dark:bg-neutral-700" />
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {INTEGRATION_PROVIDERS.map((provider) => {
+              const existing = credentials?.find((c) => c.provider === provider.id);
+              return (
+                <CredentialRow
+                  key={provider.id}
+                  provider={provider.id}
+                  label={provider.label}
+                  placeholder={provider.placeholder}
+                  isSet={!!existing}
+                />
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </SettingsSection>
+  );
+}
+
+function CredentialRow({ provider, label, placeholder, isSet }: { provider: string; label: string; placeholder: string; isSet: boolean }) {
+  const setCredential = useSetUserCredential();
+  const deleteCredential = useDeleteUserCredential();
+  const [value, setValue] = React.useState('');
+  const [editing, setEditing] = React.useState(false);
+
+  function handleSave() {
+    setCredential.mutate(
+      { provider, key: value },
+      {
+        onSuccess: () => {
+          setValue('');
+          setEditing(false);
+        },
+      }
+    );
+  }
+
+  const inputClass =
+    'block w-full max-w-md rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400';
+
+  return (
+    <div className="flex items-center gap-3">
+      <div className="w-24 text-sm font-medium text-neutral-700 dark:text-neutral-300">{label}</div>
+      {editing ? (
+        <>
+          <input
+            type="password"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={placeholder}
+            className={inputClass + ' flex-1'}
+            autoFocus
+          />
+          <Button onClick={handleSave} disabled={!value || setCredential.isPending}>
+            {setCredential.isPending ? 'Saving...' : 'Save'}
+          </Button>
+          <Button variant="secondary" onClick={() => { setEditing(false); setValue(''); }}>
+            Cancel
+          </Button>
+        </>
+      ) : (
+        <>
+          <span className="flex-1 text-sm text-neutral-500 dark:text-neutral-400">
+            {isSet ? '••••••••••••' : 'Not configured'}
+          </span>
+          <Button variant="secondary" onClick={() => setEditing(true)}>
+            {isSet ? 'Update' : 'Set'}
+          </Button>
+          {isSet && (
+            <Button
+              variant="secondary"
+              onClick={() => deleteCredential.mutate(provider)}
+              disabled={deleteCredential.isPending}
+            >
+              Remove
+            </Button>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 

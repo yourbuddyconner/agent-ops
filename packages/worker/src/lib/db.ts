@@ -687,6 +687,44 @@ export async function deleteOrgApiKey(db: D1Database, provider: string): Promise
   await db.prepare('DELETE FROM org_api_keys WHERE provider = ?').bind(provider).run();
 }
 
+// User credential operations
+export async function listUserCredentials(db: D1Database, userId: string): Promise<import('@agent-ops/shared').UserCredential[]> {
+  const result = await db.prepare(
+    'SELECT id, provider, created_at, updated_at FROM user_credentials WHERE user_id = ? ORDER BY provider'
+  ).bind(userId).all();
+  return (result.results || []).map((row: any) => ({
+    id: row.id,
+    provider: row.provider,
+    isSet: true,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  }));
+}
+
+export async function getUserCredential(db: D1Database, userId: string, provider: string): Promise<{ encryptedKey: string } | null> {
+  const row = await db.prepare(
+    'SELECT encrypted_key FROM user_credentials WHERE user_id = ? AND provider = ?'
+  ).bind(userId, provider).first<{ encrypted_key: string }>();
+  return row ? { encryptedKey: row.encrypted_key } : null;
+}
+
+export async function setUserCredential(
+  db: D1Database,
+  params: { id: string; userId: string; provider: string; encryptedKey: string }
+): Promise<void> {
+  await db.prepare(
+    `INSERT INTO user_credentials (id, user_id, provider, encrypted_key)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id, provider) DO UPDATE SET
+       encrypted_key = excluded.encrypted_key,
+       updated_at = datetime('now')`
+  ).bind(params.id, params.userId, params.provider, params.encryptedKey).run();
+}
+
+export async function deleteUserCredential(db: D1Database, userId: string, provider: string): Promise<void> {
+  await db.prepare('DELETE FROM user_credentials WHERE user_id = ? AND provider = ?').bind(userId, provider).run();
+}
+
 // Invite operations
 export async function createInvite(
   db: D1Database,

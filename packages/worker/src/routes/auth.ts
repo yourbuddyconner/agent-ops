@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
 import { ValidationError } from '@agent-ops/shared';
+import { encryptApiKey } from './admin.js';
 
 export const authRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -55,6 +56,59 @@ authRouter.patch('/me', async (c) => {
   const updated = await db.updateUserProfile(c.env.DB, authUser.id, result.data);
 
   return c.json({ user: updated });
+});
+
+// --- User Credentials (per-user integration secrets) ---
+
+const VALID_CREDENTIAL_PROVIDERS = ['1password'] as const;
+
+/**
+ * GET /api/auth/me/credentials
+ * List the authenticated user's configured credentials (no values returned)
+ */
+authRouter.get('/me/credentials', async (c) => {
+  const user = c.get('user');
+  const credentials = await db.listUserCredentials(c.env.DB, user.id);
+  return c.json(credentials);
+});
+
+/**
+ * PUT /api/auth/me/credentials/:provider
+ * Set or update a credential for the authenticated user
+ */
+authRouter.put('/me/credentials/:provider', async (c) => {
+  const provider = c.req.param('provider');
+  if (!VALID_CREDENTIAL_PROVIDERS.includes(provider as any)) {
+    throw new ValidationError(`Invalid provider: ${provider}. Must be one of: ${VALID_CREDENTIAL_PROVIDERS.join(', ')}`);
+  }
+
+  const { key } = await c.req.json<{ key: string }>();
+  if (!key || typeof key !== 'string' || key.trim().length === 0) {
+    throw new ValidationError('Credential value is required');
+  }
+
+  const user = c.get('user');
+  const encryptedKey = await encryptApiKey(key, c.env.ENCRYPTION_KEY);
+
+  await db.setUserCredential(c.env.DB, {
+    id: crypto.randomUUID(),
+    userId: user.id,
+    provider,
+    encryptedKey,
+  });
+
+  return c.json({ ok: true });
+});
+
+/**
+ * DELETE /api/auth/me/credentials/:provider
+ * Remove a credential for the authenticated user
+ */
+authRouter.delete('/me/credentials/:provider', async (c) => {
+  const provider = c.req.param('provider');
+  const user = c.get('user');
+  await db.deleteUserCredential(c.env.DB, user.id, provider);
+  return c.json({ ok: true });
 });
 
 /**

@@ -348,6 +348,22 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     if (c.env[envKey]) envVars[envKey] = c.env[envKey]!;
   }
 
+  // User-level credentials (1Password, etc.) — no env var fallback
+  const credentialEnvMap = [
+    { provider: '1password', envKey: 'OP_SERVICE_ACCOUNT_TOKEN' },
+  ] as const;
+
+  for (const { provider, envKey } of credentialEnvMap) {
+    try {
+      const cred = await db.getUserCredential(c.env.DB, user.id, provider);
+      if (cred) {
+        envVars[envKey] = await decryptApiKey(cred.encryptedKey, c.env.ENCRYPTION_KEY);
+      }
+    } catch {
+      // Table may not exist yet — skip
+    }
+  }
+
   // If repo URL provided, decrypt GitHub token and add repo/git env vars
   if (body.repoUrl) {
     const oauthToken = await db.getOAuthToken(c.env.DB, user.id, 'github');
