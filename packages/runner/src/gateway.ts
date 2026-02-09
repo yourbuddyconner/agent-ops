@@ -1465,6 +1465,67 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
     }
   });
 
+  // ─── Secrets API (provider-agnostic) ─────────────────────────────────
+
+  app.get("/api/secrets/list", async (c) => {
+    try {
+      const secrets = await import("./secrets.js");
+      if (!(await secrets.isConfigured())) {
+        return c.json({ error: "No secrets provider configured" }, 501);
+      }
+      const vaultId = c.req.query("vaultId") || undefined;
+      const entries = await secrets.listSecrets(vaultId);
+      return c.json({ secrets: entries });
+    } catch (err) {
+      console.error("[Gateway] Secrets list error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/secrets/inject", async (c) => {
+    try {
+      const secrets = await import("./secrets.js");
+      if (!(await secrets.isConfigured())) {
+        return c.json({ error: "No secrets provider configured" }, 501);
+      }
+      const body = await c.req.json() as { templatePath?: string; outputPath?: string };
+      if (!body.templatePath || !body.outputPath) {
+        return c.json({ error: "Missing required fields: templatePath, outputPath" }, 400);
+      }
+      const result = await secrets.injectSecretsIntoFile(body.templatePath, body.outputPath);
+      return c.json({ ok: true, ...result });
+    } catch (err) {
+      console.error("[Gateway] Secrets inject error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/secrets/run", async (c) => {
+    try {
+      const secrets = await import("./secrets.js");
+      if (!(await secrets.isConfigured())) {
+        return c.json({ error: "No secrets provider configured" }, 501);
+      }
+      const body = await c.req.json() as {
+        command?: string;
+        env?: Record<string, string>;
+        cwd?: string;
+        timeout?: number;
+      };
+      if (!body.command || !body.env) {
+        return c.json({ error: "Missing required fields: command, env" }, 400);
+      }
+      const result = await secrets.runWithSecrets(body.command, body.env, {
+        cwd: body.cwd,
+        timeout: body.timeout,
+      });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Secrets run error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
   // ─── Execution API ─────────────────────────────────────────────────
 
   app.get("/api/executions/:id", async (c) => {

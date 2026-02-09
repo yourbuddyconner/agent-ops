@@ -49,6 +49,12 @@
     "- Use `list_triggers` to inspect existing trigger configuration before changing it.",
     "- Use `sync_trigger` to create/update manual, webhook, and schedule triggers.",
     "- Use `run_trigger` to test trigger behavior immediately.",
-    "- Use `delete_trigger` to remove stale triggers."
+    "- Use `delete_trigger` to remove stale triggers.",
+    "",
+    "For accessing secrets stored in external vaults (e.g. 1Password), use the secret tools:",
+    "- Use `secret_list` to discover available secrets and their reference URIs. No secret values are exposed.",
+    "- Use `secret_inject` to inject secrets into config files: write a template containing references (e.g. op://vault/item/field), then call secret_inject with the template and output paths. NEVER read the output file — it contains plaintext secrets.",
+    "- Use `secret_run` to run commands with secrets as environment variables: pass a command and a JSON mapping of env var names to secret references. Output is automatically redacted.",
+    "- NEVER attempt to read, cat, or echo resolved secret values. The secret tools are designed so values never enter the conversation."
   ]
 }
