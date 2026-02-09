@@ -40,7 +40,7 @@ function AdminSettingsPage() {
   // Redirect non-admins
   React.useEffect(() => {
     if (user && user.role !== 'admin') {
-      navigate({ to: '/settings' });
+      navigate({ to: '/settings', search: { tab: 'general' } });
     }
   }, [user, navigate]);
 
