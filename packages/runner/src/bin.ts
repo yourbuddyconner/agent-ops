@@ -251,6 +251,11 @@ async function main() {
     await promptHandler.handleReview(requestId);
   });
 
+  agentClient.onOpenCodeCommand(async (command, args, requestId) => {
+    console.log(`[Runner] Received OpenCode command: /${command} (requestId=${requestId})`);
+    await promptHandler.executeOpenCodeCommand(command, args, requestId);
+  });
+
   agentClient.onTunnelDelete(async (name, actor) => {
     console.log(`[Runner] Received tunnel delete: ${name} (actor=${actor?.name || actor?.email || actor?.id || "unknown"})`);
     try {

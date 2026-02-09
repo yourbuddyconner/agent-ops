@@ -84,7 +84,7 @@ function parseQueuedPromptAttachments(raw: unknown): PromptAttachment[] {
 
 /** Messages sent by browser clients to the DO */
 interface ClientMessage {
-  type: 'prompt' | 'answer' | 'ping' | 'abort' | 'revert' | 'diff' | 'review';
+  type: 'prompt' | 'answer' | 'ping' | 'abort' | 'revert' | 'diff' | 'review' | 'command';
   content?: string;
   model?: string;
   attachments?: PromptAttachment[];
@@ -92,6 +92,8 @@ interface ClientMessage {
   answer?: string | boolean;
   messageId?: string;
   requestId?: string;
+  command?: string;
+  args?: string;
 }
 
 /** Agent status values for activity indication */
@@ -164,7 +166,7 @@ function deriveRuntimeStates(args: {
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply' | 'audio-transcript';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'command-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply' | 'audio-transcript';
   transcript?: string;
   prNumber?: number;
   targetSessionId?: string;
@@ -281,13 +283,14 @@ interface RunnerMessage {
 
 /** Messages sent from DO to clients */
 interface ClientOutbound {
-  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'review-result' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'audit_log' | 'model-switched';
+  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'review-result' | 'command-result' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'audit_log' | 'model-switched';
   [key: string]: unknown;
 }
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'workflow-api-result' | 'trigger-api-result' | 'execution-api-result' | 'tunnel-delete' | 'channel-reply-result';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'opencode-command' | 'pong' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'workflow-api-result' | 'trigger-api-result' | 'execution-api-result' | 'tunnel-delete' | 'channel-reply-result';
+  command?: string;
   messageId?: string;
   content?: string;
   model?: string;
@@ -1131,6 +1134,30 @@ export class SessionAgentDO {
         this.sendToRunner({ type: 'review', requestId: reviewRequestId });
         break;
       }
+
+      case 'command': {
+        const { command: cmd, args: cmdArgs } = msg;
+        if (!cmd) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Missing command name' }));
+          return;
+        }
+        switch (cmd) {
+          // OpenCode passthrough commands
+          case 'undo':
+          case 'redo':
+          case 'compact':
+            this.sendToRunner({
+              type: 'opencode-command',
+              command: cmd,
+              args: cmdArgs,
+              requestId: crypto.randomUUID(),
+            } as any);
+            break;
+          default:
+            ws.send(JSON.stringify({ type: 'error', message: `Unknown command: ${cmd}` }));
+        }
+        break;
+      }
     }
   }
 
@@ -1891,6 +1918,17 @@ export class SessionAgentDO {
           requestId: msg.requestId,
           data: msg.data,
           diffFiles: msg.diffFiles,
+          error: msg.error,
+        });
+        break;
+
+      case 'command-result':
+        // Runner returned OpenCode command result — broadcast to clients
+        this.broadcastToClients({
+          type: 'command-result',
+          requestId: msg.requestId,
+          command: (msg as any).command,
+          result: (msg as any).result ?? msg.data,
           error: msg.error,
         });
         break;

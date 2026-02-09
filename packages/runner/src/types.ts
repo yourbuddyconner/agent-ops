@@ -90,7 +90,8 @@ export type DOToRunnerMessage =
         payload: Record<string, unknown>;
       };
     }
-  | { type: "tunnel-delete"; name: string; actorId?: string; actorName?: string; actorEmail?: string };
+  | { type: "tunnel-delete"; name: string; actorId?: string; actorName?: string; actorEmail?: string }
+  | { type: "opencode-command"; command: string; args?: string; requestId: string };
 
 /** Tool call status values */
 export type ToolCallStatus = "pending" | "running" | "completed" | "error";
@@ -160,7 +161,8 @@ export type RunnerToDOMessage =
   | { type: "task-update"; requestId: string; taskId: string; status?: string; result?: string; description?: string; sessionId?: string; title?: string }
   | { type: "task-my"; requestId: string; status?: string }
   | { type: "channel-reply"; requestId: string; channelType: string; channelId: string; message: string; imageBase64?: string; imageMimeType?: string }
-  | { type: "audio-transcript"; messageId: string; transcript: string };
+  | { type: "audio-transcript"; messageId: string; transcript: string }
+  | { type: "command-result"; requestId: string; command: string; result?: unknown; error?: string };
 
 /** Structured review result data */
 export interface ReviewFinding {

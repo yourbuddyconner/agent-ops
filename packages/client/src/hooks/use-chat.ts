@@ -2,8 +2,10 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useWebSocket } from './use-websocket';
 import { sessionKeys } from '@/api/sessions';
+import { api } from '@/api/client';
 import type { Message, SessionStatus } from '@/api/types';
 import { useAuthStore } from '@/stores/auth';
+import { SLASH_COMMANDS } from '@agent-ops/shared';
 
 export interface PendingQuestion {
   questionId: string;
@@ -268,6 +270,14 @@ interface WebSocketAuditLogMessage {
   };
 }
 
+interface WebSocketCommandResultMessage {
+  type: 'command-result';
+  requestId?: string;
+  command?: string;
+  result?: unknown;
+  error?: string;
+}
+
 type WebSocketChatMessage =
   | WebSocketInitMessage
   | WebSocketMessageMessage
@@ -287,6 +297,7 @@ type WebSocketChatMessage =
   | WebSocketReviewResultMessage
   | WebSocketTitleMessage
   | WebSocketAuditLogMessage
+  | WebSocketCommandResultMessage
   | { type: 'pong' }
   | { type: 'user.joined'; userId: string }
   | { type: 'user.left'; userId: string };
@@ -801,6 +812,27 @@ export function useChat(sessionId: string) {
         break;
       }
 
+      case 'command-result': {
+        const cmdMsg = message as WebSocketCommandResultMessage;
+        const text = cmdMsg.error
+          ? `Command error: ${cmdMsg.error}`
+          : typeof cmdMsg.result === 'string'
+            ? cmdMsg.result
+            : JSON.stringify(cmdMsg.result, null, 2);
+        const sysMsg: Message = {
+          id: `cmd-${cmdMsg.requestId || crypto.randomUUID()}`,
+          sessionId: sessionIdRef.current,
+          role: 'system',
+          content: text,
+          createdAt: new Date(),
+        };
+        setState((prev) => ({
+          ...prev,
+          messages: [...prev.messages, sysMsg],
+        }));
+        break;
+      }
+
       case 'audit_log': {
         const auditMsg = message as WebSocketAuditLogMessage;
         const entry: LogEntry = {
@@ -931,6 +963,115 @@ export function useChat(sessionId: string) {
     }
   }, [state.status, sessionId, queryClient]);
 
+  // ─── Slash Command Execution ──────────────────────────────────────────
+
+  const addLocalSystemMessage = useCallback((content: string) => {
+    const msg: Message = {
+      id: `local-${crypto.randomUUID()}`,
+      sessionId: sessionIdRef.current,
+      role: 'system',
+      content,
+      createdAt: new Date(),
+    };
+    setState((prev) => ({
+      ...prev,
+      messages: [...prev.messages, msg],
+    }));
+  }, []);
+
+  const executeCommand = useCallback(
+    async (command: string, _args?: string) => {
+      const def = SLASH_COMMANDS.find((c) => c.name === command);
+      if (!def) return;
+
+      switch (def.handler) {
+        case 'local': {
+          if (command === 'help') {
+            const uiCommands = SLASH_COMMANDS.filter((c) => c.availableIn.includes('ui'));
+            const lines = uiCommands.map((c) =>
+              `**/${c.name}**${c.args ? ` ${c.args}` : ''} — ${c.description}`
+            );
+            addLocalSystemMessage(`Available commands:\n${lines.join('\n')}`);
+          }
+          // /model is handled by ChatInput's sub-overlay, not here
+          break;
+        }
+        case 'websocket': {
+          if (!isConnected) return;
+          switch (command) {
+            case 'diff':
+              // Use existing requestDiff which sets loading state
+              requestDiff();
+              break;
+            case 'review':
+              requestReview();
+              break;
+            case 'stop':
+              abort();
+              break;
+          }
+          break;
+        }
+        case 'api': {
+          try {
+            switch (command) {
+              case 'clear': {
+                await api.post(`/sessions/${sessionIdRef.current}/clear-queue`);
+                addLocalSystemMessage('Prompt queue cleared.');
+                break;
+              }
+              case 'status': {
+                const [detail, children] = await Promise.all([
+                  api.get<{ session: Record<string, unknown>; doStatus: Record<string, unknown> }>(`/sessions/${sessionIdRef.current}`),
+                  api.get<{ children: Array<{ id: string; title?: string; status: string; workspace: string }> }>(`/sessions/${sessionIdRef.current}/children`).catch(() => ({ children: [] })),
+                ]);
+                const s = detail.session;
+                const childList = children.children;
+                let text = `**Session Status**\nID: \`${s.id}\`\nStatus: **${s.status}**\nWorkspace: ${s.workspace || 'n/a'}`;
+                if (childList.length > 0) {
+                  text += `\n\n**Child Sessions (${childList.length}):**`;
+                  for (const child of childList) {
+                    text += `\n- ${child.title || child.workspace || child.id.slice(0, 8)} — **${child.status}**`;
+                  }
+                }
+                addLocalSystemMessage(text);
+                break;
+              }
+              case 'refresh': {
+                await api.post(`/sessions/${sessionIdRef.current}/stop`);
+                await api.post(`/sessions/${sessionIdRef.current}/start`);
+                addLocalSystemMessage('Orchestrator session refreshed.');
+                break;
+              }
+              case 'sessions': {
+                const data = await api.get<{ children: Array<{ id: string; title?: string; status: string; workspace: string }> }>(`/sessions/${sessionIdRef.current}/children`);
+                const list = data.children;
+                if (list.length === 0) {
+                  addLocalSystemMessage('No child sessions.');
+                } else {
+                  const lines = list.map((c) =>
+                    `- ${c.title || c.workspace || c.id.slice(0, 8)} — **${c.status}**`
+                  );
+                  addLocalSystemMessage(`**Child Sessions (${list.length}):**\n${lines.join('\n')}`);
+                }
+                break;
+              }
+            }
+          } catch (err) {
+            addLocalSystemMessage(`Command /${command} failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          break;
+        }
+        case 'opencode': {
+          if (!isConnected) return;
+          send({ type: 'command', command });
+          break;
+        }
+      }
+    },
+    [isConnected, send, addLocalSystemMessage, requestDiff, requestReview, abort]
+  );
+
   // Ping to keep connection alive
   useEffect(() => {
     if (!isConnected) return;
@@ -972,5 +1113,6 @@ export function useChat(sessionId: string) {
     reviewError: state.reviewError,
     reviewLoading: state.reviewLoading,
     reviewDiffFiles: state.reviewDiffFiles,
+    executeCommand,
   };
 }

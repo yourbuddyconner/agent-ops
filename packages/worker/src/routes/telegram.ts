@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { Bot, webhookCallback } from 'grammy';
 import type { Env, Variables } from '../env.js';
-import { telegramScopeKey } from '@agent-ops/shared';
+import { telegramScopeKey, SLASH_COMMANDS } from '@agent-ops/shared';
 import * as db from '../lib/db.js';
 import { dispatchOrchestratorPrompt } from '../lib/workflow-runtime.js';
 
@@ -86,12 +86,106 @@ telegramRouter.post('/webhook/:userId', async (c) => {
     );
   });
 
+  // ─── Slash Commands ─────────────────────────────────────────────────
+  bot.command('help', async (ctx) => {
+    const commands = SLASH_COMMANDS.filter((cmd) => cmd.availableIn.includes('telegram'));
+    const text = commands.map((cmd) => `/${cmd.name} — ${cmd.description}`).join('\n');
+    await ctx.reply(`Available commands:\n${text}`);
+  });
+
+  bot.command('status', async (ctx) => {
+    try {
+      const orchestratorSessionId = `orchestrator:${userId}`;
+      const doId = c.env.SESSIONS.idFromName(orchestratorSessionId);
+      const sessionDO = c.env.SESSIONS.get(doId);
+      const resp = await sessionDO.fetch(new Request('http://do/status'));
+      if (!resp.ok) {
+        await ctx.reply('Could not get orchestrator status.');
+        return;
+      }
+      const status = await resp.json() as Record<string, unknown>;
+      let text = `*Orchestrator Status*\nStatus: ${status.status || 'unknown'}`;
+      if (status.runnerConnected) text += '\nRunner: connected';
+      if (status.promptsQueued) text += `\nQueued prompts: ${status.promptsQueued}`;
+      await ctx.reply(text);
+    } catch {
+      await ctx.reply('Orchestrator is not running.');
+    }
+  });
+
+  bot.command('stop', async (ctx) => {
+    try {
+      const orchestratorSessionId = `orchestrator:${userId}`;
+      const doId = c.env.SESSIONS.idFromName(orchestratorSessionId);
+      const sessionDO = c.env.SESSIONS.get(doId);
+      await sessionDO.fetch(new Request('http://do/prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interrupt: true, content: '' }),
+      }));
+      await sessionDO.fetch(new Request('http://do/clear-queue', { method: 'POST' }));
+      await ctx.reply('Stopped current work and cleared queue.');
+    } catch {
+      await ctx.reply('Could not stop — orchestrator may not be running.');
+    }
+  });
+
+  bot.command('clear', async (ctx) => {
+    try {
+      const orchestratorSessionId = `orchestrator:${userId}`;
+      const doId = c.env.SESSIONS.idFromName(orchestratorSessionId);
+      const sessionDO = c.env.SESSIONS.get(doId);
+      await sessionDO.fetch(new Request('http://do/clear-queue', { method: 'POST' }));
+      await ctx.reply('Prompt queue cleared.');
+    } catch {
+      await ctx.reply('Could not clear queue — orchestrator may not be running.');
+    }
+  });
+
+  bot.command('refresh', async (ctx) => {
+    try {
+      const orchestratorSessionId = `orchestrator:${userId}`;
+      const doId = c.env.SESSIONS.idFromName(orchestratorSessionId);
+      const sessionDO = c.env.SESSIONS.get(doId);
+      await sessionDO.fetch(new Request('http://do/stop', { method: 'POST' }));
+      await sessionDO.fetch(new Request('http://do/start', { method: 'POST' }));
+      await ctx.reply('Orchestrator session refreshed.');
+    } catch {
+      await ctx.reply('Could not refresh — orchestrator may not be running.');
+    }
+  });
+
+  bot.command('sessions', async (ctx) => {
+    try {
+      const orchestratorSessionId = `orchestrator:${userId}`;
+      const doId = c.env.SESSIONS.idFromName(orchestratorSessionId);
+      const sessionDO = c.env.SESSIONS.get(doId);
+      const resp = await sessionDO.fetch(new Request('http://do/children'));
+      if (!resp.ok) {
+        await ctx.reply('Could not list sessions.');
+        return;
+      }
+      const data = await resp.json() as { children?: Array<{ id: string; title?: string; status: string; workspace?: string }> };
+      const list = data.children || [];
+      if (list.length === 0) {
+        await ctx.reply('No child sessions.');
+        return;
+      }
+      const lines = list.map((child) =>
+        `• ${child.title || child.workspace || child.id.slice(0, 8)} — ${child.status}`
+      );
+      await ctx.reply(`Child sessions (${list.length}):\n${lines.join('\n')}`);
+    } catch {
+      await ctx.reply('Could not list sessions — orchestrator may not be running.');
+    }
+  });
+
   bot.on('message:text', async (ctx) => {
     const chatId = String(ctx.chat.id);
     const rawText = ctx.message.text;
 
     // Format forwarded messages with attribution and quote block
-    const content = formatTelegramMessage(rawText, ctx.message);
+    const content = formatTelegramMessage(rawText, ctx.message as unknown as Record<string, unknown>);
 
     // Check for channel binding
     const scopeKey = telegramScopeKey(userId, chatId);
@@ -393,6 +487,14 @@ telegramApiRouter.post('/', async (c) => {
   const workerUrl = new URL(c.req.url).origin;
   const webhookUrl = `${workerUrl}/telegram/webhook/${user.id}`;
   await bot.api.setWebhook(webhookUrl);
+
+  // Register bot commands so Telegram shows the command menu
+  const tgCommands = SLASH_COMMANDS
+    .filter((cmd) => cmd.availableIn.includes('telegram'))
+    .map((cmd) => ({ command: cmd.name, description: cmd.description }));
+  await bot.api.setMyCommands(tgCommands).catch(() => {
+    // Best effort — non-critical if this fails
+  });
 
   // Update webhook status
   await db.updateTelegramWebhookStatus(c.env.DB, user.id, webhookUrl, true);

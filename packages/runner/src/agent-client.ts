@@ -56,6 +56,7 @@ export class AgentClient {
   private diffHandler: ((requestId: string) => void | Promise<void>) | null = null;
   private reviewHandler: ((requestId: string) => void | Promise<void>) | null = null;
   private tunnelDeleteHandler: ((name: string, actor?: { id?: string; name?: string; email?: string }) => void | Promise<void>) | null = null;
+  private openCodeCommandHandler: ((command: string, args: string | undefined, requestId: string) => void | Promise<void>) | null = null;
   private workflowExecuteHandler: ((executionId: string, payload: {
     kind: "run" | "resume";
     executionId: string;
@@ -280,6 +281,10 @@ export class AgentClient {
 
   sendAudioTranscript(messageId: string, transcript: string): void {
     this.send({ type: "audio-transcript", messageId, transcript } as any);
+  }
+
+  sendCommandResult(requestId: string, command: string, result?: unknown, error?: string): void {
+    this.send({ type: "command-result", requestId, command, result, error });
   }
 
   // ─── Request/Response (Runner → DO → Runner) ─────────────────────────
@@ -716,6 +721,10 @@ export class AgentClient {
     this.reviewHandler = handler;
   }
 
+  onOpenCodeCommand(handler: (command: string, args: string | undefined, requestId: string) => void | Promise<void>): void {
+    this.openCodeCommandHandler = handler;
+  }
+
   onTunnelDelete(handler: (name: string, actor?: { id?: string; name?: string; email?: string }) => void | Promise<void>): void {
     this.tunnelDeleteHandler = handler;
   }
@@ -803,6 +812,10 @@ export class AgentClient {
         case "review":
           await this.reviewHandler?.(msg.requestId);
           break;
+        case "opencode-command":
+          await this.openCodeCommandHandler?.(msg.command, msg.args, msg.requestId);
+          break;
+
         case "pong":
           // Keepalive response — no action needed
           break;

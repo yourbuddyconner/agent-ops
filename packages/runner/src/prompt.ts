@@ -1168,6 +1168,38 @@ export class PromptHandler {
     }
   }
 
+  async executeOpenCodeCommand(command: string, args: string | undefined, requestId: string): Promise<void> {
+    if (!this.sessionId) {
+      this.agentClient.sendCommandResult(requestId, command, undefined, 'No active session');
+      return;
+    }
+
+    console.log(`[PromptHandler] Executing OpenCode command: /${command}${args ? ' ' + args : ''}`);
+    try {
+      const body: Record<string, unknown> = { command: `/${command}` };
+      if (args) body.args = args;
+      const res = await fetch(
+        `${this.opencodeUrl}/session/${this.sessionId}/command`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+      );
+      if (!res.ok) {
+        const errText = await res.text().catch(() => res.statusText);
+        this.agentClient.sendCommandResult(requestId, command, undefined, `OpenCode returned ${res.status}: ${errText}`);
+        return;
+      }
+      const result = await res.json().catch(() => ({ ok: true }));
+      this.agentClient.sendCommandResult(requestId, command, result);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[PromptHandler] OpenCode command error:`, errMsg);
+      this.agentClient.sendCommandResult(requestId, command, undefined, errMsg);
+    }
+  }
+
   async handleReview(requestId: string): Promise<void> {
     console.log(`[PromptHandler] Starting review for request ${requestId}`);
     try {

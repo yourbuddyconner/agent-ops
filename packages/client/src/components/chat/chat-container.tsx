@@ -50,6 +50,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     sessionTitle,
     childSessionEvents,
     connectedUsers,
+    executeCommand,
   } = useChat(sessionId);
 
   // Sync log entries to the editor drawer context
@@ -289,6 +290,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             showActionsButton={isMobile}
             onOpenActions={() => setMobileActionsOpen(true)}
             onFocusChange={setComposerFocused}
+            onCommand={executeCommand}
           />
           {isMobile && (
             <MobileActionsSheet

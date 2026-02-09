@@ -4,6 +4,7 @@ import { api } from '@/api/client';
 import { useWakeSession } from '@/api/sessions';
 import type { PromptAttachment, ProviderModels } from '@/hooks/use-chat';
 import { useAudioRecorder } from '@/hooks/use-audio-recorder';
+import { SLASH_COMMANDS } from '@agent-ops/shared';
 
 interface ChatInputProps {
   onSend: (content: string, model?: string, attachments?: PromptAttachment[]) => void;
@@ -27,6 +28,8 @@ interface ChatInputProps {
   onOpenActions?: () => void;
   /** Notifies parent when textarea focus changes (useful for mobile keyboard layout) */
   onFocusChange?: (focused: boolean) => void;
+  /** Called when a slash command is executed (e.g. /diff, /stop) */
+  onCommand?: (command: string, args?: string) => void;
 }
 
 interface FlatModel {
@@ -105,6 +108,7 @@ export function ChatInput({
   showActionsButton = false,
   onOpenActions,
   onFocusChange,
+  onCommand,
 }: ChatInputProps) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<PromptAttachment[]>([]);
@@ -113,6 +117,8 @@ export function ChatInput({
   const [cursorPos, setCursorPos] = useState(0);
   const [fileHighlightIndex, setFileHighlightIndex] = useState(0);
   const [atMenuDismissed, setAtMenuDismissed] = useState(false);
+  const [commandDismissed, setCommandDismissed] = useState(false);
+  const [commandHighlightIndex, setCommandHighlightIndex] = useState(0);
   const [isSendingFiles, setIsSendingFiles] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const internalRef = useRef<HTMLTextAreaElement>(null);
@@ -121,6 +127,7 @@ export function ChatInput({
   const textareaRef = inputRef ?? internalRef;
   const overlayRef = useRef<HTMLDivElement>(null);
   const fileOverlayRef = useRef<HTMLDivElement>(null);
+  const commandOverlayRef = useRef<HTMLDivElement>(null);
 
   // Wake session on focus if hibernated
   const wakeMutation = useWakeSession();
@@ -175,9 +182,49 @@ export function ChatInput({
     );
   }, [availableModels]);
 
-  // Detect /model command
+  // ─── Slash Command Detection ──────────────────────────────────────────
+  // Detect /command pattern: input is exactly "/<partial>" with no spaces (command picker)
+  // OR "/model <filter>" (model sub-overlay)
+  const commandMatch = value.match(/^\/(\w*)$/);
   const modelCommandMatch = value.match(/^\/model(?:\s+(.*))?$/i);
-  const isModelCommand = !!modelCommandMatch && !modelCommandDismissed;
+  const isModelSubOverlay = !!modelCommandMatch && !modelCommandDismissed && value.match(/^\/model\s/i);
+  const isCommandPicker = !!commandMatch && !commandDismissed && !isModelSubOverlay;
+
+  // Filter commands by partial input
+  const commandFilterText = (commandMatch?.[1] ?? '').toLowerCase();
+  const filteredCommands = useMemo(() => {
+    if (!isCommandPicker) return [] as typeof SLASH_COMMANDS;
+    const uiCommands = SLASH_COMMANDS.filter((cmd) => cmd.availableIn.includes('ui'));
+    if (!commandFilterText) return uiCommands;
+    return uiCommands.filter((cmd) =>
+      cmd.name.toLowerCase().includes(commandFilterText) ||
+      cmd.description.toLowerCase().includes(commandFilterText)
+    );
+  }, [isCommandPicker, commandFilterText]);
+
+  // Group filtered commands by category
+  const groupedCommands = useMemo(() => {
+    const groups: Record<string, typeof filteredCommands> = {};
+    for (const cmd of filteredCommands) {
+      (groups[cmd.category] ??= []).push(cmd);
+    }
+    return Object.entries(groups);
+  }, [filteredCommands]);
+
+  // Reset command highlight when filter changes
+  useEffect(() => {
+    setCommandHighlightIndex(0);
+  }, [commandFilterText]);
+
+  // Reset command dismissed state when input no longer matches /
+  useEffect(() => {
+    if (!commandMatch) {
+      setCommandDismissed(false);
+    }
+  }, [!commandMatch]);
+
+  // Detect /model sub-overlay
+  const isModelCommand = !!modelCommandMatch && !modelCommandDismissed && !isCommandPicker;
   const filterText = (modelCommandMatch?.[1] ?? '').toLowerCase().trim();
 
   // Filter models by search text
@@ -221,6 +268,30 @@ export function ChatInput({
       textareaRef.current?.focus();
     },
     [onModelChange, textareaRef]
+  );
+
+  const selectCommand = useCallback(
+    (command: typeof SLASH_COMMANDS[number]) => {
+      if (command.name === 'model') {
+        // Transition to model sub-overlay
+        setValue('/model ');
+        setCommandDismissed(true);
+        setModelCommandDismissed(false);
+        textareaRef.current?.focus();
+      } else if (command.name === 'help') {
+        // Show help inline as a local command
+        onCommand?.('help');
+        setValue('');
+        setCommandDismissed(false);
+        textareaRef.current?.focus();
+      } else {
+        onCommand?.(command.name);
+        setValue('');
+        setCommandDismissed(false);
+        textareaRef.current?.focus();
+      }
+    },
+    [onCommand, textareaRef]
   );
 
   const selectFile = useCallback(
@@ -367,6 +438,12 @@ export function ChatInput({
     const hasText = !!value.trim();
     if ((!hasText && attachments.length === 0) || disabled || sendDisabled || isSendingFiles) return;
 
+    // If in command picker, select the highlighted command
+    if (isCommandPicker && filteredCommands.length > 0) {
+      selectCommand(filteredCommands[commandHighlightIndex]);
+      return;
+    }
+
     // If input is a /model command, treat as model selection if there's an exact or single match
     if (modelCommandMatch) {
       if (filteredModels.length === 1) {
@@ -432,6 +509,30 @@ export function ChatInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Command overlay keyboard handling
+    if (isCommandPicker && filteredCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setCommandHighlightIndex((i) => (i + 1) % filteredCommands.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setCommandHighlightIndex((i) => (i - 1 + filteredCommands.length) % filteredCommands.length);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        selectCommand(filteredCommands[commandHighlightIndex]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setCommandDismissed(true);
+        return;
+      }
+    }
+
     // File overlay keyboard handling takes priority when showing
     if (showFileOverlay && filePaths.length > 0) {
       if (e.key === 'ArrowDown') {
@@ -499,6 +600,13 @@ export function ChatInput({
     }
   };
 
+  // Scroll highlighted item into view (command overlay)
+  useEffect(() => {
+    if (!isCommandPicker || !commandOverlayRef.current) return;
+    const highlighted = commandOverlayRef.current.querySelector('[data-highlighted="true"]');
+    highlighted?.scrollIntoView({ block: 'nearest' });
+  }, [commandHighlightIndex, isCommandPicker]);
+
   // Scroll highlighted item into view (model overlay)
   useEffect(() => {
     if (!isModelCommand || !overlayRef.current) return;
@@ -524,6 +632,7 @@ export function ChatInput({
 
   const hasModels = availableModels.length > 0;
   const showModelOverlay = isModelCommand && hasModels;
+  const showCommandOverlay = isCommandPicker && filteredCommands.length > 0;
 
   return (
     <form
@@ -583,6 +692,45 @@ export function ChatInput({
         </div>
       )}
       <div className="relative flex items-end gap-2">
+        {showCommandOverlay && (
+          <div
+            ref={commandOverlayRef}
+            className="absolute bottom-full left-0 right-10 mb-1.5 max-h-60 overflow-y-auto rounded-lg border border-neutral-200 bg-surface-0 shadow-panel dark:border-neutral-700 dark:bg-surface-1"
+          >
+            {groupedCommands.map(([category, commands]) => (
+              <div key={category}>
+                <div className="sticky top-0 bg-surface-1/80 px-3 py-1 font-mono text-[9px] font-semibold uppercase tracking-[0.08em] text-neutral-400 backdrop-blur-sm dark:bg-surface-2/80 dark:text-neutral-500">
+                  {category}
+                </div>
+                {commands.map((cmd) => {
+                  const idx = filteredCommands.indexOf(cmd);
+                  const isHighlighted = idx === commandHighlightIndex;
+                  return (
+                    <button
+                      key={cmd.name}
+                      type="button"
+                      data-highlighted={isHighlighted}
+                      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[11px] transition-colors ${
+                        isHighlighted
+                          ? 'bg-accent/8 text-accent dark:bg-accent/15'
+                          : 'text-neutral-600 hover:bg-surface-1 dark:text-neutral-400 dark:hover:bg-surface-2'
+                      }`}
+                      onMouseEnter={() => setCommandHighlightIndex(idx)}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        selectCommand(cmd);
+                      }}
+                    >
+                      <span className="font-semibold">/{cmd.name}</span>
+                      {cmd.args && <span className="text-neutral-400 dark:text-neutral-500">{cmd.args}</span>}
+                      <span className="flex-1 text-neutral-400 dark:text-neutral-500">{cmd.description}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        )}
         {showModelOverlay && (
           <div
             ref={overlayRef}
@@ -801,8 +949,8 @@ export function ChatInput({
                 : sessionStatus === 'hibernating'
                   ? 'hibernating...'
                 : isAgentActive
-                  ? 'esc to stop · shift+enter for new line · @ files · /model · drag images · mic'
-                  : 'enter to send · shift+enter for new line · @ files · /model · drag images · mic'}
+                  ? 'esc to stop · shift+enter for new line · @ files · / commands · drag images · mic'
+                  : 'enter to send · shift+enter for new line · @ files · / commands · drag images · mic'}
         </p>
       )}
     </form>
