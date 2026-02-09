@@ -7,20 +7,35 @@ export default tool({
     trigger_id: z.string().min(1).describe("Trigger ID"),
   },
   async execute(args) {
-    try {
-      const res = await fetch(`http://localhost:9000/api/triggers/${args.trigger_id}`, {
-        method: "DELETE",
-      })
+    const endpoint = `http://localhost:9000/api/triggers/${encodeURIComponent(args.trigger_id)}`
 
-      if (!res.ok) {
-        const errText = await res.text()
-        return `Failed to delete trigger: ${errText}`
-      }
+    // Use curl subprocess to avoid Bun fetch() connection reuse bugs
+    // that cause "socket connection was closed unexpectedly" errors.
+    const proc = Bun.spawn(["curl", "-sf", "-X", "DELETE", "-H", "Content-Type: application/json", endpoint], {
+      stdout: "pipe",
+      stderr: "pipe",
+    })
 
-      return `Trigger deleted: ${args.trigger_id}`
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      return `Failed to delete trigger: ${msg}`
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ])
+    const exitCode = await proc.exited
+
+    if (exitCode !== 0) {
+      const detail = stderr.trim() || stdout.trim() || `curl exit code ${exitCode}`
+      return `Failed to delete trigger: ${detail}`
     }
+
+    try {
+      const data = JSON.parse(stdout)
+      if (data.error) {
+        return `Failed to delete trigger: ${data.error}`
+      }
+    } catch {
+      // Non-JSON response is fine — success with no body
+    }
+
+    return `Trigger deleted: ${args.trigger_id}`
   },
 })

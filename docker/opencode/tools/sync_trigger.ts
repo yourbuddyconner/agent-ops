@@ -155,11 +155,12 @@ export default tool({
         return `Failed to sync trigger: ${errText}`
       }
 
-      const data = (await res.json()) as TriggerResponse
+      const data = (await res.json()) as { trigger?: TriggerResponse; success?: boolean }
+      const trigger = data.trigger
       if (isUpdate) {
-        return `Trigger updated: ${args.trigger_id}`
+        return `Trigger updated: ${trigger?.id || args.trigger_id}`
       }
-      return `Trigger created: ${data.name || args.name} (${data.id || "unknown-id"})`
+      return `Trigger created: ${trigger?.name || args.name} (${trigger?.id || "unknown-id"})`
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       return `Failed to sync trigger: ${msg}`
