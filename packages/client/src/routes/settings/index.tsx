@@ -3,7 +3,7 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
 import { useAuthStore } from '@/stores/auth';
 import { useLogout, useUpdateProfile } from '@/api/auth';
-import { useOrchestratorInfo, useUpdateOrchestratorIdentity, useCheckHandle } from '@/api/orchestrator';
+import { useOrchestratorInfo, useUpdateOrchestratorIdentity, useCheckHandle, useNotificationPreferences, useUpdateNotificationPreferences } from '@/api/orchestrator';
 import { useAvailableModels } from '@/api/sessions';
 import type { ProviderModels } from '@/api/sessions';
 import { Button } from '@/components/ui/button';
@@ -64,6 +64,8 @@ function SettingsPage() {
         </div>
 
         <OrchestratorIdentitySection />
+
+        <NotificationPreferencesSection />
 
         <SettingsSection title="Account">
           <div className="space-y-4">
@@ -406,6 +408,136 @@ function OrchestratorIdentitySection() {
         </div>
       </div>
     </SettingsSection>
+  );
+}
+
+const NOTIFICATION_TYPES = [
+  { type: 'message', label: 'Messages', description: 'Direct messages from agents or other users' },
+  { type: 'notification', label: 'Notifications', description: 'Status updates and informational alerts' },
+  { type: 'question', label: 'Questions', description: 'Questions that require your response' },
+  { type: 'escalation', label: 'Escalations', description: 'Urgent items that need your attention' },
+] as const;
+
+function NotificationPreferencesSection() {
+  const { data: orchInfo, isLoading: orchLoading } = useOrchestratorInfo();
+  const { data: preferences } = useNotificationPreferences();
+  const updatePrefs = useUpdateNotificationPreferences();
+
+  if (orchLoading || !orchInfo?.exists) return null;
+
+  function getPreference(messageType: string) {
+    return preferences?.find((p) => p.messageType === messageType);
+  }
+
+  function handleToggle(messageType: string, field: 'webEnabled', value: boolean) {
+    updatePrefs.mutate({
+      messageType,
+      [field]: value,
+    });
+  }
+
+  return (
+    <SettingsSection title="Notification Preferences">
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Choose how you receive notifications for each message type.
+        </p>
+
+        <div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800/50">
+                <th className="px-4 py-2.5 text-left font-medium text-neutral-500 dark:text-neutral-400">
+                  Type
+                </th>
+                <th className="px-4 py-2.5 text-center font-medium text-neutral-500 dark:text-neutral-400">
+                  Web
+                </th>
+                <th className="px-4 py-2.5 text-center font-medium text-neutral-500 dark:text-neutral-400">
+                  <span className="text-neutral-300 dark:text-neutral-600">Slack</span>
+                </th>
+                <th className="px-4 py-2.5 text-center font-medium text-neutral-500 dark:text-neutral-400">
+                  <span className="text-neutral-300 dark:text-neutral-600">Email</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-200 dark:divide-neutral-700">
+              {NOTIFICATION_TYPES.map((nt) => {
+                const pref = getPreference(nt.type);
+                const webEnabled = pref?.webEnabled ?? true;
+
+                return (
+                  <tr
+                    key={nt.type}
+                    className="bg-white dark:bg-neutral-900"
+                  >
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-neutral-900 dark:text-neutral-100">
+                        {nt.label}
+                      </div>
+                      <div className="text-xs text-neutral-400 dark:text-neutral-500">
+                        {nt.description}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <ToggleSwitch
+                        checked={webEnabled}
+                        onChange={(v) => handleToggle(nt.type, 'webEnabled', v)}
+                      />
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <ToggleSwitch checked={false} onChange={() => {}} disabled />
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <ToggleSwitch checked={false} onChange={() => {}} disabled />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <p className="text-xs text-neutral-400 dark:text-neutral-500">
+          Slack and email notifications will be available after integration setup.
+        </p>
+      </div>
+    </SettingsSection>
+  );
+}
+
+function ToggleSwitch({
+  checked,
+  onChange,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => !disabled && onChange(!checked)}
+      disabled={disabled}
+      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-neutral-500 focus:ring-offset-2 dark:focus:ring-offset-neutral-900 ${
+        disabled
+          ? 'cursor-not-allowed opacity-40'
+          : ''
+      } ${
+        checked
+          ? 'bg-accent'
+          : 'bg-neutral-200 dark:bg-neutral-700'
+      }`}
+    >
+      <span
+        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${
+          checked ? 'translate-x-[18px]' : 'translate-x-[3px]'
+        }`}
+      />
+    </button>
   );
 }
 

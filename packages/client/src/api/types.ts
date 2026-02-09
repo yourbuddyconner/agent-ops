@@ -48,6 +48,11 @@ export type {
   OrchestratorIdentity,
   OrchestratorMemory,
   OrchestratorInfo,
+  MailboxMessage,
+  MailboxMessageType,
+  SessionTask,
+  SessionTaskStatus,
+  UserNotificationPreference,
 } from '@agent-ops/shared';
 
 export type { GitHub, Gmail, GoogleCalendar } from '@agent-ops/shared';

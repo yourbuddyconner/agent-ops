@@ -699,6 +699,64 @@ export interface OrchestratorInfo {
   exists: boolean;
 }
 
+// ─── Phase C: Messaging + Coordination Types ─────────────────────────────
+
+// Mailbox types (cross-session/cross-user persistent messaging)
+export type MailboxMessageType = 'message' | 'notification' | 'question' | 'escalation';
+
+export interface MailboxMessage {
+  id: string;
+  fromSessionId?: string;
+  fromUserId?: string;
+  toSessionId?: string;
+  toUserId?: string;
+  messageType: MailboxMessageType;
+  content: string;
+  contextSessionId?: string;
+  contextTaskId?: string;
+  replyToId?: string;
+  read: boolean;
+  createdAt: string;
+  updatedAt: string;
+  // Joined display names (populated in queries)
+  fromSessionTitle?: string;
+  fromUserName?: string;
+  fromUserEmail?: string;
+  toSessionTitle?: string;
+  toUserName?: string;
+}
+
+// Session task types (orchestrator-scoped task board)
+export type SessionTaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'blocked';
+
+export interface SessionTask {
+  id: string;
+  orchestratorSessionId: string;
+  sessionId?: string;
+  title: string;
+  description?: string;
+  status: SessionTaskStatus;
+  result?: string;
+  parentTaskId?: string;
+  blockedBy?: string[];
+  createdAt: string;
+  updatedAt: string;
+  // Joined display info
+  sessionTitle?: string;
+}
+
+// User notification preferences
+export interface UserNotificationPreference {
+  id: string;
+  userId: string;
+  messageType: MailboxMessageType;
+  webEnabled: boolean;
+  slackEnabled: boolean;
+  emailEnabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // Audit log types
 export type AuditLogEventType =
   | 'session.started'

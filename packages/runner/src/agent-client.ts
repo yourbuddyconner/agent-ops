@@ -568,6 +568,71 @@ export class AgentClient {
     });
   }
 
+  // ─── Phase C: Mailbox + Task Board ────────────────────────────────
+
+  requestMailboxSend(params: {
+    toSessionId?: string;
+    toUserId?: string;
+    toHandle?: string;
+    messageType?: string;
+    content: string;
+    contextSessionId?: string;
+    contextTaskId?: string;
+    replyToId?: string;
+  }): Promise<{ messageId: string }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "mailbox-send", requestId, ...params });
+    });
+  }
+
+  requestMailboxCheck(limit?: number, after?: string): Promise<{ messages: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "mailbox-check", requestId, limit, after });
+    });
+  }
+
+  requestTaskCreate(params: {
+    title: string;
+    description?: string;
+    sessionId?: string;
+    parentTaskId?: string;
+    blockedBy?: string[];
+  }): Promise<{ task: unknown }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "task-create", requestId, ...params });
+    });
+  }
+
+  requestTaskList(params?: { status?: string; limit?: number }): Promise<{ tasks: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "task-list", requestId, ...params });
+    });
+  }
+
+  requestTaskUpdate(taskId: string, updates: {
+    status?: string;
+    result?: string;
+    description?: string;
+    sessionId?: string;
+    title?: string;
+  }): Promise<{ task: unknown }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "task-update", requestId, taskId, ...updates });
+    });
+  }
+
+  requestMyTasks(status?: string): Promise<{ tasks: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "task-my", requestId, status });
+    });
+  }
+
   requestSelfTerminate(): void {
     this.send({ type: "self-terminate" });
     // Disconnect and exit — the DO will handle sandbox termination
@@ -909,6 +974,55 @@ export class AgentClient {
             this.resolvePendingRequest(msg.requestId, msg.data ?? {});
           }
           break;
+        // ─── Phase C: Mailbox + Task Board Results ──────────────────
+        case "mailbox-send-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { messageId: msg.messageId });
+          }
+          break;
+
+        case "mailbox-check-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { messages: msg.messages ?? [] });
+          }
+          break;
+
+        case "task-create-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { task: msg.task });
+          }
+          break;
+
+        case "task-list-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { tasks: msg.tasks ?? [] });
+          }
+          break;
+
+        case "task-update-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { task: msg.task });
+          }
+          break;
+
+        case "task-my-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { tasks: msg.tasks ?? [] });
+          }
+          break;
+
         case "tunnel-delete":
           await this.tunnelDeleteHandler?.(msg.name, {
             id: msg.actorId,

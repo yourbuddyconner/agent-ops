@@ -28,6 +28,8 @@ import { invitesRouter, invitesApiRouter } from './routes/invites.js';
 import { orgReposAdminRouter, orgReposReadRouter } from './routes/org-repos.js';
 import { personasRouter } from './routes/personas.js';
 import { orchestratorRouter } from './routes/orchestrator.js';
+import { tasksRouter } from './routes/tasks.js';
+import { mailboxRouter } from './routes/mailbox.js';
 import {
   checkWorkflowConcurrency,
   createWorkflowSession,
@@ -107,6 +109,8 @@ app.route('/api/admin/repos', orgReposAdminRouter);
 app.route('/api/repos/org', orgReposReadRouter);
 app.route('/api/personas', personasRouter);
 app.route('/api/me', orchestratorRouter);
+app.route('/api/sessions', tasksRouter);
+app.route('/api', mailboxRouter);
 app.route('/api/invites', invitesApiRouter);
 
 // Agent container proxy (protected)

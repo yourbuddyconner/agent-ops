@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
-import type { OrchestratorIdentity, OrchestratorMemory, AgentSession } from './types';
+import type { OrchestratorIdentity, OrchestratorMemory, AgentSession, MailboxMessage, UserNotificationPreference } from './types';
 
 export const orchestratorKeys = {
   all: ['orchestrator'] as const,
@@ -8,6 +8,10 @@ export const orchestratorKeys = {
   identity: () => [...orchestratorKeys.all, 'identity'] as const,
   checkHandle: (handle: string) => [...orchestratorKeys.all, 'check-handle', handle] as const,
   memories: (filters?: { category?: string }) => [...orchestratorKeys.all, 'memories', filters] as const,
+  inbox: (filters?: { messageType?: string; unreadOnly?: boolean }) => [...orchestratorKeys.all, 'inbox', filters] as const,
+  inboxCount: () => [...orchestratorKeys.all, 'inbox-count'] as const,
+  notificationPreferences: () => [...orchestratorKeys.all, 'notification-prefs'] as const,
+  orgAgents: () => [...orchestratorKeys.all, 'org-agents'] as const,
 };
 
 export function useOrchestratorInfo() {
@@ -129,5 +133,105 @@ export function useDeleteMemory() {
         queryKey: [...orchestratorKeys.all, 'memories'],
       });
     },
+  });
+}
+
+// ─── Inbox Hooks (Phase C) ──────────────────────────────────────────────
+
+export function useInbox(opts?: { messageType?: string; unreadOnly?: boolean; limit?: number }) {
+  return useQuery({
+    queryKey: orchestratorKeys.inbox({ messageType: opts?.messageType, unreadOnly: opts?.unreadOnly }),
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (opts?.messageType) params.set('messageType', opts.messageType);
+      if (opts?.unreadOnly) params.set('unreadOnly', 'true');
+      if (opts?.limit) params.set('limit', String(opts.limit));
+      const qs = params.toString();
+      return api.get<{ messages: MailboxMessage[]; cursor?: string; hasMore: boolean }>(
+        `/me/inbox${qs ? `?${qs}` : ''}`
+      );
+    },
+    staleTime: 15_000,
+  });
+}
+
+export function useInboxCount() {
+  return useQuery({
+    queryKey: orchestratorKeys.inboxCount(),
+    queryFn: () => api.get<{ count: number }>('/me/inbox/count'),
+    select: (data) => data.count,
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useMarkInboxRead() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (messageId: string) =>
+      api.put<{ success: boolean }>(`/me/inbox/${messageId}/read`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [...orchestratorKeys.all, 'inbox'] });
+      queryClient.invalidateQueries({ queryKey: orchestratorKeys.inboxCount() });
+    },
+  });
+}
+
+export function useReplyToInbox() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: { messageId: string; content: string }) =>
+      api.post<{ message: MailboxMessage }>(`/me/inbox/${data.messageId}/reply`, {
+        content: data.content,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [...orchestratorKeys.all, 'inbox'] });
+    },
+  });
+}
+
+// ─── Notification Preferences Hooks (Phase C) ──────────────────────────
+
+export function useNotificationPreferences() {
+  return useQuery({
+    queryKey: orchestratorKeys.notificationPreferences(),
+    queryFn: () =>
+      api.get<{ preferences: UserNotificationPreference[] }>('/me/notification-preferences'),
+    select: (data) => data.preferences,
+    staleTime: 60_000,
+  });
+}
+
+export function useUpdateNotificationPreferences() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: {
+      messageType: string;
+      webEnabled?: boolean;
+      slackEnabled?: boolean;
+      emailEnabled?: boolean;
+    }) =>
+      api.put<{ preference: UserNotificationPreference }>(
+        '/me/notification-preferences',
+        data
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: orchestratorKeys.notificationPreferences() });
+    },
+  });
+}
+
+// ─── Org Directory Hooks (Phase C) ──────────────────────────────────────
+
+export function useOrgAgents() {
+  return useQuery({
+    queryKey: orchestratorKeys.orgAgents(),
+    queryFn: () =>
+      api.get<{ agents: OrchestratorIdentity[] }>('/me/org-agents'),
+    select: (data) => data.agents,
+    staleTime: 60_000,
   });
 }

@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionParticipantSummary, SessionShareLink, AuditLogEntry, OrgRepository, AgentPersona, AgentPersonaFile, PersonaVisibility, OrchestratorIdentity, OrchestratorMemory, OrchestratorMemoryCategory, SessionPurpose } from '@agent-ops/shared';
+import type { AgentSession, Integration, Message, User, UserRole, OrgSettings, OrgApiKey, Invite, SyncStatusResponse, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionParticipantSummary, SessionShareLink, AuditLogEntry, OrgRepository, AgentPersona, AgentPersonaFile, PersonaVisibility, OrchestratorIdentity, OrchestratorMemory, OrchestratorMemoryCategory, SessionPurpose, MailboxMessage, SessionTask, UserNotificationPreference } from '@agent-ops/shared';
 
 /**
  * Database helper functions for D1
@@ -1969,4 +1969,503 @@ function mapSyncLog(row: any): SyncStatusResponse {
     startedAt: new Date(row.started_at),
     completedAt: row.completed_at ? new Date(row.completed_at) : undefined,
   };
+}
+
+// ─── Phase C: Mailbox Helpers ────────────────────────────────────────────────
+
+function mapMailboxMessage(row: any): MailboxMessage {
+  return {
+    id: row.id,
+    fromSessionId: row.from_session_id || undefined,
+    fromUserId: row.from_user_id || undefined,
+    toSessionId: row.to_session_id || undefined,
+    toUserId: row.to_user_id || undefined,
+    messageType: row.message_type,
+    content: row.content,
+    contextSessionId: row.context_session_id || undefined,
+    contextTaskId: row.context_task_id || undefined,
+    replyToId: row.reply_to_id || undefined,
+    read: !!row.read,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    fromSessionTitle: row.from_session_title || undefined,
+    fromUserName: row.from_user_name || undefined,
+    fromUserEmail: row.from_user_email || undefined,
+    toSessionTitle: row.to_session_title || undefined,
+    toUserName: row.to_user_name || undefined,
+  };
+}
+
+export async function createMailboxMessage(
+  db: D1Database,
+  data: {
+    fromSessionId?: string;
+    fromUserId?: string;
+    toSessionId?: string;
+    toUserId?: string;
+    messageType?: string;
+    content: string;
+    contextSessionId?: string;
+    contextTaskId?: string;
+    replyToId?: string;
+  },
+): Promise<MailboxMessage> {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO mailbox_messages (id, from_session_id, from_user_id, to_session_id, to_user_id, message_type, content, context_session_id, context_task_id, reply_to_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id,
+      data.fromSessionId || null,
+      data.fromUserId || null,
+      data.toSessionId || null,
+      data.toUserId || null,
+      data.messageType || 'message',
+      data.content,
+      data.contextSessionId || null,
+      data.contextTaskId || null,
+      data.replyToId || null,
+      now,
+      now,
+    )
+    .run();
+  return {
+    id,
+    fromSessionId: data.fromSessionId,
+    fromUserId: data.fromUserId,
+    toSessionId: data.toSessionId,
+    toUserId: data.toUserId,
+    messageType: (data.messageType as MailboxMessage['messageType']) || 'message',
+    content: data.content,
+    contextSessionId: data.contextSessionId,
+    contextTaskId: data.contextTaskId,
+    replyToId: data.replyToId,
+    read: false,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export async function getSessionMailbox(
+  db: D1Database,
+  sessionId: string,
+  opts?: { unreadOnly?: boolean; limit?: number; after?: string },
+): Promise<MailboxMessage[]> {
+  const conditions = ['m.to_session_id = ?'];
+  const params: (string | number)[] = [sessionId];
+
+  if (opts?.unreadOnly) {
+    conditions.push('m.read = 0');
+  }
+  if (opts?.after) {
+    conditions.push('m.created_at > ?');
+    params.push(opts.after);
+  }
+
+  const limit = opts?.limit ?? 50;
+  params.push(limit);
+
+  const result = await db
+    .prepare(
+      `SELECT m.*,
+              fs.title AS from_session_title,
+              fu.name AS from_user_name,
+              fu.email AS from_user_email
+       FROM mailbox_messages m
+       LEFT JOIN sessions fs ON m.from_session_id = fs.id
+       LEFT JOIN users fu ON m.from_user_id = fu.id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY m.created_at DESC
+       LIMIT ?`,
+    )
+    .bind(...params)
+    .all();
+
+  return (result.results || []).map(mapMailboxMessage);
+}
+
+export async function getUserInbox(
+  db: D1Database,
+  userId: string,
+  opts?: { unreadOnly?: boolean; messageType?: string; limit?: number; cursor?: string },
+): Promise<{ messages: MailboxMessage[]; cursor?: string; hasMore: boolean }> {
+  const conditions = ['m.to_user_id = ?'];
+  const params: (string | number)[] = [userId];
+
+  if (opts?.unreadOnly) {
+    conditions.push('m.read = 0');
+  }
+  if (opts?.messageType) {
+    conditions.push('m.message_type = ?');
+    params.push(opts.messageType);
+  }
+  if (opts?.cursor) {
+    conditions.push('m.created_at < ?');
+    params.push(opts.cursor);
+  }
+
+  const limit = (opts?.limit ?? 50) + 1;
+  params.push(limit);
+
+  const result = await db
+    .prepare(
+      `SELECT m.*,
+              fs.title AS from_session_title,
+              fu.name AS from_user_name,
+              fu.email AS from_user_email
+       FROM mailbox_messages m
+       LEFT JOIN sessions fs ON m.from_session_id = fs.id
+       LEFT JOIN users fu ON m.from_user_id = fu.id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY m.created_at DESC
+       LIMIT ?`,
+    )
+    .bind(...params)
+    .all();
+
+  const rows = result.results || [];
+  const hasMore = rows.length === limit;
+  const items = hasMore ? rows.slice(0, -1) : rows;
+  const messages = items.map(mapMailboxMessage);
+  const cursor = hasMore && messages.length > 0 ? messages[messages.length - 1].createdAt : undefined;
+
+  return { messages, cursor, hasMore };
+}
+
+export async function getUserInboxCount(db: D1Database, userId: string): Promise<number> {
+  const result = await db
+    .prepare('SELECT COUNT(*) as count FROM mailbox_messages WHERE to_user_id = ? AND read = 0')
+    .bind(userId)
+    .first<{ count: number }>();
+  return result?.count ?? 0;
+}
+
+export async function markSessionMailboxRead(db: D1Database, sessionId: string): Promise<number> {
+  const result = await db
+    .prepare("UPDATE mailbox_messages SET read = 1, updated_at = datetime('now') WHERE to_session_id = ? AND read = 0")
+    .bind(sessionId)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
+export async function markInboxMessageRead(db: D1Database, messageId: string, userId: string): Promise<boolean> {
+  const result = await db
+    .prepare("UPDATE mailbox_messages SET read = 1, updated_at = datetime('now') WHERE id = ? AND to_user_id = ?")
+    .bind(messageId, userId)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+export async function getMailboxMessage(db: D1Database, messageId: string): Promise<MailboxMessage | null> {
+  const row = await db
+    .prepare(
+      `SELECT m.*,
+              fs.title AS from_session_title,
+              fu.name AS from_user_name,
+              fu.email AS from_user_email,
+              ts.title AS to_session_title,
+              tu.name AS to_user_name
+       FROM mailbox_messages m
+       LEFT JOIN sessions fs ON m.from_session_id = fs.id
+       LEFT JOIN users fu ON m.from_user_id = fu.id
+       LEFT JOIN sessions ts ON m.to_session_id = ts.id
+       LEFT JOIN users tu ON m.to_user_id = tu.id
+       WHERE m.id = ?`,
+    )
+    .bind(messageId)
+    .first();
+  return row ? mapMailboxMessage(row) : null;
+}
+
+// ─── Phase C: Session Task Helpers ───────────────────────────────────────────
+
+function mapSessionTask(row: any): SessionTask {
+  return {
+    id: row.id,
+    orchestratorSessionId: row.orchestrator_session_id,
+    sessionId: row.session_id || undefined,
+    title: row.title,
+    description: row.description || undefined,
+    status: row.status,
+    result: row.result || undefined,
+    parentTaskId: row.parent_task_id || undefined,
+    blockedBy: row.blocked_by_ids ? row.blocked_by_ids.split(',').filter(Boolean) : undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    sessionTitle: row.session_title || undefined,
+  };
+}
+
+export async function createSessionTask(
+  db: D1Database,
+  data: {
+    orchestratorSessionId: string;
+    sessionId?: string;
+    title: string;
+    description?: string;
+    status?: string;
+    parentTaskId?: string;
+    blockedBy?: string[];
+  },
+): Promise<SessionTask> {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const status = data.blockedBy?.length ? 'blocked' : (data.status || 'pending');
+
+  await db
+    .prepare(
+      `INSERT INTO session_tasks (id, orchestrator_session_id, session_id, title, description, status, parent_task_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(id, data.orchestratorSessionId, data.sessionId || null, data.title, data.description || null, status, data.parentTaskId || null, now, now)
+    .run();
+
+  if (data.blockedBy?.length) {
+    for (const blockedById of data.blockedBy) {
+      await db
+        .prepare('INSERT INTO session_task_dependencies (task_id, blocked_by_task_id) VALUES (?, ?)')
+        .bind(id, blockedById)
+        .run();
+    }
+  }
+
+  return {
+    id,
+    orchestratorSessionId: data.orchestratorSessionId,
+    sessionId: data.sessionId,
+    title: data.title,
+    description: data.description,
+    status: status as SessionTask['status'],
+    parentTaskId: data.parentTaskId,
+    blockedBy: data.blockedBy,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export async function getSessionTasks(
+  db: D1Database,
+  orchestratorSessionId: string,
+  opts?: { status?: string; limit?: number },
+): Promise<SessionTask[]> {
+  const conditions = ['t.orchestrator_session_id = ?'];
+  const params: (string | number)[] = [orchestratorSessionId];
+
+  if (opts?.status) {
+    conditions.push('t.status = ?');
+    params.push(opts.status);
+  }
+
+  const limit = opts?.limit ?? 100;
+  params.push(limit);
+
+  const result = await db
+    .prepare(
+      `SELECT t.*,
+              s.title AS session_title,
+              GROUP_CONCAT(d.blocked_by_task_id) AS blocked_by_ids
+       FROM session_tasks t
+       LEFT JOIN sessions s ON t.session_id = s.id
+       LEFT JOIN session_task_dependencies d ON t.id = d.task_id
+       WHERE ${conditions.join(' AND ')}
+       GROUP BY t.id
+       ORDER BY t.created_at DESC
+       LIMIT ?`,
+    )
+    .bind(...params)
+    .all();
+
+  return (result.results || []).map(mapSessionTask);
+}
+
+export async function getMyTasks(
+  db: D1Database,
+  sessionId: string,
+  opts?: { status?: string; limit?: number },
+): Promise<SessionTask[]> {
+  const conditions = ['t.session_id = ?'];
+  const params: (string | number)[] = [sessionId];
+
+  if (opts?.status) {
+    conditions.push('t.status = ?');
+    params.push(opts.status);
+  }
+
+  const limit = opts?.limit ?? 100;
+  params.push(limit);
+
+  const result = await db
+    .prepare(
+      `SELECT t.*,
+              GROUP_CONCAT(d.blocked_by_task_id) AS blocked_by_ids
+       FROM session_tasks t
+       LEFT JOIN session_task_dependencies d ON t.id = d.task_id
+       WHERE ${conditions.join(' AND ')}
+       GROUP BY t.id
+       ORDER BY t.created_at DESC
+       LIMIT ?`,
+    )
+    .bind(...params)
+    .all();
+
+  return (result.results || []).map(mapSessionTask);
+}
+
+export async function updateSessionTask(
+  db: D1Database,
+  taskId: string,
+  updates: { status?: string; result?: string; description?: string; sessionId?: string; title?: string },
+): Promise<SessionTask | null> {
+  const setClauses: string[] = ["updated_at = datetime('now')"];
+  const params: (string | null)[] = [];
+
+  if (updates.status !== undefined) {
+    setClauses.push('status = ?');
+    params.push(updates.status);
+  }
+  if (updates.result !== undefined) {
+    setClauses.push('result = ?');
+    params.push(updates.result);
+  }
+  if (updates.description !== undefined) {
+    setClauses.push('description = ?');
+    params.push(updates.description);
+  }
+  if (updates.sessionId !== undefined) {
+    setClauses.push('session_id = ?');
+    params.push(updates.sessionId);
+  }
+  if (updates.title !== undefined) {
+    setClauses.push('title = ?');
+    params.push(updates.title);
+  }
+
+  params.push(taskId);
+
+  await db
+    .prepare(`UPDATE session_tasks SET ${setClauses.join(', ')} WHERE id = ?`)
+    .bind(...params)
+    .run();
+
+  const row = await db
+    .prepare(
+      `SELECT t.*, GROUP_CONCAT(d.blocked_by_task_id) AS blocked_by_ids
+       FROM session_tasks t
+       LEFT JOIN session_task_dependencies d ON t.id = d.task_id
+       WHERE t.id = ?
+       GROUP BY t.id`,
+    )
+    .bind(taskId)
+    .first();
+
+  return row ? mapSessionTask(row) : null;
+}
+
+export async function addTaskDependency(db: D1Database, taskId: string, blockedByTaskId: string): Promise<void> {
+  await db
+    .prepare('INSERT OR IGNORE INTO session_task_dependencies (task_id, blocked_by_task_id) VALUES (?, ?)')
+    .bind(taskId, blockedByTaskId)
+    .run();
+  // Auto-set status to blocked
+  await db
+    .prepare("UPDATE session_tasks SET status = 'blocked', updated_at = datetime('now') WHERE id = ? AND status = 'pending'")
+    .bind(taskId)
+    .run();
+}
+
+export async function getTaskDependencies(db: D1Database, taskId: string): Promise<string[]> {
+  const result = await db
+    .prepare('SELECT blocked_by_task_id FROM session_task_dependencies WHERE task_id = ?')
+    .bind(taskId)
+    .all<{ blocked_by_task_id: string }>();
+  return (result.results || []).map((r) => r.blocked_by_task_id);
+}
+
+// ─── Phase C: Notification Preferences Helpers ───────────────────────────────
+
+function mapNotificationPreference(row: any): UserNotificationPreference {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    messageType: row.message_type,
+    webEnabled: !!row.web_enabled,
+    slackEnabled: !!row.slack_enabled,
+    emailEnabled: !!row.email_enabled,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function getNotificationPreferences(
+  db: D1Database,
+  userId: string,
+): Promise<UserNotificationPreference[]> {
+  const result = await db
+    .prepare('SELECT * FROM user_notification_preferences WHERE user_id = ? ORDER BY message_type')
+    .bind(userId)
+    .all();
+  return (result.results || []).map(mapNotificationPreference);
+}
+
+export async function upsertNotificationPreference(
+  db: D1Database,
+  userId: string,
+  messageType: string,
+  prefs: { webEnabled?: boolean; slackEnabled?: boolean; emailEnabled?: boolean },
+): Promise<UserNotificationPreference> {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  await db
+    .prepare(
+      `INSERT INTO user_notification_preferences (id, user_id, message_type, web_enabled, slack_enabled, email_enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, message_type) DO UPDATE SET
+         web_enabled = COALESCE(excluded.web_enabled, user_notification_preferences.web_enabled),
+         slack_enabled = COALESCE(excluded.slack_enabled, user_notification_preferences.slack_enabled),
+         email_enabled = COALESCE(excluded.email_enabled, user_notification_preferences.email_enabled),
+         updated_at = excluded.updated_at`,
+    )
+    .bind(
+      id,
+      userId,
+      messageType,
+      prefs.webEnabled !== undefined ? (prefs.webEnabled ? 1 : 0) : 1,
+      prefs.slackEnabled !== undefined ? (prefs.slackEnabled ? 1 : 0) : 0,
+      prefs.emailEnabled !== undefined ? (prefs.emailEnabled ? 1 : 0) : 0,
+      now,
+      now,
+    )
+    .run();
+
+  const row = await db
+    .prepare('SELECT * FROM user_notification_preferences WHERE user_id = ? AND message_type = ?')
+    .bind(userId, messageType)
+    .first();
+
+  return mapNotificationPreference(row);
+}
+
+// ─── Phase C: Org Directory Helper ───────────────────────────────────────────
+
+export async function getOrgAgents(db: D1Database, orgId: string): Promise<OrchestratorIdentity[]> {
+  const result = await db
+    .prepare('SELECT * FROM orchestrator_identities WHERE org_id = ? ORDER BY name')
+    .bind(orgId)
+    .all();
+  return (result.results || []).map((row: any) => ({
+    id: row.id,
+    userId: row.user_id || undefined,
+    orgId: row.org_id,
+    type: row.type,
+    name: row.name,
+    handle: row.handle,
+    avatar: row.avatar || undefined,
+    customInstructions: row.custom_instructions || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
 }

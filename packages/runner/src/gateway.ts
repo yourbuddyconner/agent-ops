@@ -551,6 +551,34 @@ export interface GatewayCallbacks {
   onApproveExecution?: (executionId: string, params: { approve: boolean; resumeToken: string; reason?: string }) => Promise<{ success: boolean; status?: string }>;
   onCancelExecution?: (executionId: string, params: { reason?: string }) => Promise<{ success: boolean; status?: string }>;
   onTunnelsUpdated?: (tunnels: TunnelDescriptor[]) => void;
+  // Phase C: Mailbox + Task Board
+  onMailboxSend?: (params: {
+    toSessionId?: string;
+    toUserId?: string;
+    toHandle?: string;
+    messageType?: string;
+    content: string;
+    contextSessionId?: string;
+    contextTaskId?: string;
+    replyToId?: string;
+  }) => Promise<{ messageId: string }>;
+  onMailboxCheck?: (limit?: number, after?: string) => Promise<{ messages: unknown[] }>;
+  onTaskCreate?: (params: {
+    title: string;
+    description?: string;
+    sessionId?: string;
+    parentTaskId?: string;
+    blockedBy?: string[];
+  }) => Promise<{ task: unknown }>;
+  onTaskList?: (params?: { status?: string; limit?: number }) => Promise<{ tasks: unknown[] }>;
+  onTaskUpdate?: (taskId: string, updates: {
+    status?: string;
+    result?: string;
+    description?: string;
+    sessionId?: string;
+    title?: string;
+  }) => Promise<{ task: unknown }>;
+  onMyTasks?: (status?: string) => Promise<{ tasks: unknown[] }>;
 }
 
 export function startGateway(port: number, callbacks: GatewayCallbacks): void {
@@ -1267,6 +1295,151 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] Delete trigger error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // ─── Phase C: Mailbox API ──────────────────────────────────────────
+
+  app.post("/api/mailbox/send", async (c) => {
+    if (!callbacks.onMailboxSend) {
+      return c.json({ error: "Mailbox send handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as {
+        to_session_id?: string;
+        to_user_id?: string;
+        to_handle?: string;
+        message_type?: string;
+        content?: string;
+        context_session_id?: string;
+        context_task_id?: string;
+        reply_to_id?: string;
+      };
+      if (!body.content) {
+        return c.json({ error: "Missing required field: content" }, 400);
+      }
+      if (!body.to_session_id && !body.to_user_id && !body.to_handle) {
+        return c.json({ error: "Must specify to_session_id, to_user_id, or to_handle" }, 400);
+      }
+      const result = await callbacks.onMailboxSend({
+        toSessionId: body.to_session_id,
+        toUserId: body.to_user_id,
+        toHandle: body.to_handle,
+        messageType: body.message_type,
+        content: body.content,
+        contextSessionId: body.context_session_id,
+        contextTaskId: body.context_task_id,
+        replyToId: body.reply_to_id,
+      });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Mailbox send error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.get("/api/mailbox", async (c) => {
+    if (!callbacks.onMailboxCheck) {
+      return c.json({ error: "Mailbox check handler not configured" }, 500);
+    }
+    try {
+      const limitRaw = c.req.query("limit");
+      const limit = limitRaw ? parseInt(limitRaw, 10) : undefined;
+      const after = c.req.query("after") || undefined;
+      const result = await callbacks.onMailboxCheck(limit, after);
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Mailbox check error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // ─── Phase C: Task Board API ─────────────────────────────────────
+
+  app.post("/api/tasks", async (c) => {
+    if (!callbacks.onTaskCreate) {
+      return c.json({ error: "Task create handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as {
+        title?: string;
+        description?: string;
+        session_id?: string;
+        parent_task_id?: string;
+        blocked_by?: string[];
+      };
+      if (!body.title) {
+        return c.json({ error: "Missing required field: title" }, 400);
+      }
+      const result = await callbacks.onTaskCreate({
+        title: body.title,
+        description: body.description,
+        sessionId: body.session_id,
+        parentTaskId: body.parent_task_id,
+        blockedBy: body.blocked_by,
+      });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Task create error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.get("/api/tasks", async (c) => {
+    if (!callbacks.onTaskList) {
+      return c.json({ error: "Task list handler not configured" }, 500);
+    }
+    try {
+      const status = c.req.query("status") || undefined;
+      const limitRaw = c.req.query("limit");
+      const limit = limitRaw ? parseInt(limitRaw, 10) : undefined;
+      const result = await callbacks.onTaskList({ status, limit });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Task list error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.put("/api/tasks/:id", async (c) => {
+    if (!callbacks.onTaskUpdate) {
+      return c.json({ error: "Task update handler not configured" }, 500);
+    }
+    try {
+      const taskId = c.req.param("id");
+      if (!taskId) return c.json({ error: "Missing task id" }, 400);
+      const body = await c.req.json() as {
+        status?: string;
+        result?: string;
+        description?: string;
+        session_id?: string;
+        title?: string;
+      };
+      const result = await callbacks.onTaskUpdate(taskId, {
+        status: body.status,
+        result: body.result,
+        description: body.description,
+        sessionId: body.session_id,
+        title: body.title,
+      });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Task update error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.get("/api/my-tasks", async (c) => {
+    if (!callbacks.onMyTasks) {
+      return c.json({ error: "My tasks handler not configured" }, 500);
+    }
+    try {
+      const status = c.req.query("status") || undefined;
+      const result = await callbacks.onMyTasks(status);
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] My tasks error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });

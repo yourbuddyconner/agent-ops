@@ -319,3 +319,136 @@ orchestratorRouter.delete('/memories/:id', async (c) => {
 
   return c.json({ success: true });
 });
+
+// ─── Inbox Routes (Phase C) ────────────────────────────────────────────
+
+/**
+ * GET /api/me/inbox
+ * User inbox — paginated, filterable by messageType/unreadOnly.
+ */
+orchestratorRouter.get('/inbox', async (c) => {
+  const user = c.get('user');
+  const unreadOnly = c.req.query('unreadOnly') === 'true';
+  const messageType = c.req.query('messageType') || undefined;
+  const limitRaw = c.req.query('limit');
+  const limit = limitRaw ? parseInt(limitRaw, 10) : undefined;
+  const cursor = c.req.query('cursor') || undefined;
+
+  const result = await db.getUserInbox(c.env.DB, user.id, { unreadOnly, messageType, limit, cursor });
+  return c.json(result);
+});
+
+/**
+ * GET /api/me/inbox/count
+ * Unread count (for badge).
+ */
+orchestratorRouter.get('/inbox/count', async (c) => {
+  const user = c.get('user');
+  const count = await db.getUserInboxCount(c.env.DB, user.id);
+  return c.json({ count });
+});
+
+/**
+ * PUT /api/me/inbox/:messageId/read
+ * Mark single message read.
+ */
+orchestratorRouter.put('/inbox/:messageId/read', async (c) => {
+  const user = c.get('user');
+  const { messageId } = c.req.param();
+
+  const success = await db.markInboxMessageRead(c.env.DB, messageId, user.id);
+  if (!success) {
+    return c.json({ error: 'Message not found or already read' }, 404);
+  }
+  return c.json({ success: true });
+});
+
+/**
+ * POST /api/me/inbox/:messageId/reply
+ * Reply to an inbox message (creates reverse mailbox message).
+ */
+orchestratorRouter.post('/inbox/:messageId/reply', async (c) => {
+  const user = c.get('user');
+  const { messageId } = c.req.param();
+  const body = await c.req.json<{ content: string }>();
+
+  if (!body.content?.trim()) {
+    return c.json({ error: 'content is required' }, 400);
+  }
+
+  // Fetch the original message to determine reply routing
+  const original = await db.getMailboxMessage(c.env.DB, messageId);
+  if (!original || original.toUserId !== user.id) {
+    return c.json({ error: 'Message not found' }, 404);
+  }
+
+  const reply = await db.createMailboxMessage(c.env.DB, {
+    fromUserId: user.id,
+    toSessionId: original.fromSessionId,
+    toUserId: original.fromUserId,
+    messageType: original.messageType,
+    content: body.content,
+    contextSessionId: original.contextSessionId,
+    contextTaskId: original.contextTaskId,
+    replyToId: messageId,
+  });
+
+  return c.json({ message: reply }, 201);
+});
+
+// ─── Notification Preferences Routes (Phase C) ─────────────────────────
+
+/**
+ * GET /api/me/notification-preferences
+ */
+orchestratorRouter.get('/notification-preferences', async (c) => {
+  const user = c.get('user');
+  const preferences = await db.getNotificationPreferences(c.env.DB, user.id);
+  return c.json({ preferences });
+});
+
+/**
+ * PUT /api/me/notification-preferences
+ */
+orchestratorRouter.put('/notification-preferences', async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json<{
+    messageType: string;
+    webEnabled?: boolean;
+    slackEnabled?: boolean;
+    emailEnabled?: boolean;
+  }>();
+
+  if (!body.messageType) {
+    return c.json({ error: 'messageType is required' }, 400);
+  }
+
+  const pref = await db.upsertNotificationPreference(c.env.DB, user.id, body.messageType, {
+    webEnabled: body.webEnabled,
+    slackEnabled: body.slackEnabled,
+    emailEnabled: body.emailEnabled,
+  });
+
+  return c.json({ preference: pref });
+});
+
+// ─── Org Directory Routes (Phase C) ────────────────────────────────────
+
+/**
+ * GET /api/me/org-agents
+ * List orchestrator identities in org.
+ */
+orchestratorRouter.get('/org-agents', async (c) => {
+  const user = c.get('user');
+  // Get the user's org from settings
+  const orgSettings = await c.env.DB
+    .prepare('SELECT id FROM org_settings LIMIT 1')
+    .first<{ id: string }>();
+
+  if (!orgSettings) {
+    return c.json({ agents: [] });
+  }
+
+  const agents = await db.getOrgAgents(c.env.DB, orgSettings.id);
+  return c.json({ agents });
+});

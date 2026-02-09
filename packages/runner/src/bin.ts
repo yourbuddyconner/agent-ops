@@ -188,6 +188,25 @@ async function main() {
     onTunnelsUpdated: (tunnels) => {
       agentClient.sendTunnels(tunnels);
     },
+    // Phase C: Mailbox + Task Board
+    onMailboxSend: async (params) => {
+      return await agentClient.requestMailboxSend(params);
+    },
+    onMailboxCheck: async (limit, after) => {
+      return await agentClient.requestMailboxCheck(limit, after);
+    },
+    onTaskCreate: async (params) => {
+      return await agentClient.requestTaskCreate(params);
+    },
+    onTaskList: async (params) => {
+      return await agentClient.requestTaskList(params);
+    },
+    onTaskUpdate: async (taskId, updates) => {
+      return await agentClient.requestTaskUpdate(taskId, updates);
+    },
+    onMyTasks: async (status) => {
+      return await agentClient.requestMyTasks(status);
+    },
   });
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient, sessionId!);
 

@@ -1,5 +1,5 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask } from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
@@ -153,7 +153,7 @@ function deriveRuntimeStates(args: {
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'model-switched' | 'tunnels';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my';
   prNumber?: number;
   targetSessionId?: string;
   interrupt?: boolean;
@@ -247,6 +247,18 @@ interface RunnerMessage {
     error?: string | null;
   };
   tunnels?: Array<{ name: string; port: number; protocol?: string; path: string }>;
+  // Phase C: Mailbox + Task Board fields
+  toSessionId?: string;
+  toUserId?: string;
+  toHandle?: string;
+  messageType?: string;
+  contextSessionId?: string;
+  contextTaskId?: string;
+  replyToId?: string;
+  taskId?: string;
+  sessionId?: string;
+  parentTaskId?: string;
+  blockedBy?: string[];
 }
 
 /** Messages sent from DO to clients */
@@ -1812,6 +1824,31 @@ export class SessionAgentDO {
 
       case 'workflow-execution-result':
         await this.handleWorkflowExecutionResult(msg);
+        break;
+
+      // ─── Phase C: Mailbox + Task Board ──────────────────────────────
+      case 'mailbox-send':
+        await this.handleMailboxSend(msg.requestId!, msg);
+        break;
+
+      case 'mailbox-check':
+        await this.handleMailboxCheck(msg.requestId!, msg.limit, msg.after);
+        break;
+
+      case 'task-create':
+        await this.handleTaskCreate(msg.requestId!, msg);
+        break;
+
+      case 'task-list':
+        await this.handleTaskList(msg.requestId!, msg.status, msg.limit);
+        break;
+
+      case 'task-update':
+        await this.handleTaskUpdate(msg.requestId!, msg.taskId!, msg);
+        break;
+
+      case 'task-my':
+        await this.handleTaskMy(msg.requestId!, msg.status);
         break;
 
       case 'ping':
@@ -5678,6 +5715,155 @@ export class SessionAgentDO {
     const summary = `${who} disabled tunnel "${name}"`;
     this.appendAuditLog('tunnel.disabled', summary, actor?.actorId, { name });
     await this.handleSystemMessage(summary, { type: 'tunnel.disabled', name });
+  }
+
+  // ─── Phase C: Mailbox + Task Board Handlers ─────────────────────────
+
+  private async handleMailboxSend(requestId: string, msg: RunnerMessage) {
+    try {
+      const sessionId = this.getStateValue('sessionId');
+      const userId = this.getStateValue('userId');
+
+      // Resolve @handle to userId if provided
+      let toUserId = msg.toUserId;
+      if (msg.toHandle && !toUserId && !msg.toSessionId) {
+        const identity = await getOrchestratorIdentityByHandle(this.env.DB, msg.toHandle);
+        if (!identity) {
+          this.sendToRunner({ type: 'mailbox-send-result', requestId, error: `Handle @${msg.toHandle} not found` } as any);
+          return;
+        }
+        toUserId = identity.userId;
+      }
+
+      const message = await createMailboxMessage(this.env.DB, {
+        fromSessionId: sessionId || undefined,
+        fromUserId: userId || undefined,
+        toSessionId: msg.toSessionId,
+        toUserId,
+        messageType: msg.messageType,
+        content: msg.content!,
+        contextSessionId: msg.contextSessionId,
+        contextTaskId: msg.contextTaskId,
+        replyToId: msg.replyToId,
+      });
+
+      this.sendToRunner({ type: 'mailbox-send-result', requestId, messageId: message.id } as any);
+    } catch (err) {
+      this.sendToRunner({ type: 'mailbox-send-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleMailboxCheck(requestId: string, limit?: number, after?: string) {
+    try {
+      const sessionId = this.getStateValue('sessionId');
+      if (!sessionId) {
+        this.sendToRunner({ type: 'mailbox-check-result', requestId, error: 'No session ID' } as any);
+        return;
+      }
+
+      const messages = await getSessionMailbox(this.env.DB, sessionId, {
+        unreadOnly: true,
+        limit,
+        after,
+      });
+
+      // Auto-mark as read
+      if (messages.length > 0) {
+        await markSessionMailboxRead(this.env.DB, sessionId);
+      }
+
+      this.sendToRunner({ type: 'mailbox-check-result', requestId, messages } as any);
+    } catch (err) {
+      this.sendToRunner({ type: 'mailbox-check-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleTaskCreate(requestId: string, msg: RunnerMessage) {
+    try {
+      const sessionId = this.getStateValue('sessionId');
+      if (!sessionId) {
+        this.sendToRunner({ type: 'task-create-result', requestId, error: 'No session ID' } as any);
+        return;
+      }
+
+      // Determine orchestrator session ID: own session for orchestrators,
+      // or look up parent for child sessions
+      let orchestratorSessionId = sessionId;
+      const session = await getSession(this.env.DB, sessionId);
+      if (session?.parentSessionId) {
+        orchestratorSessionId = session.parentSessionId;
+      }
+
+      const task = await createSessionTask(this.env.DB, {
+        orchestratorSessionId,
+        sessionId: msg.sessionId,
+        title: msg.title!,
+        description: msg.description,
+        parentTaskId: msg.parentTaskId,
+        blockedBy: msg.blockedBy,
+      });
+
+      this.sendToRunner({ type: 'task-create-result', requestId, task } as any);
+    } catch (err) {
+      this.sendToRunner({ type: 'task-create-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleTaskList(requestId: string, status?: string, limit?: number) {
+    try {
+      const sessionId = this.getStateValue('sessionId');
+      if (!sessionId) {
+        this.sendToRunner({ type: 'task-list-result', requestId, error: 'No session ID' } as any);
+        return;
+      }
+
+      let orchestratorSessionId = sessionId;
+      const session = await getSession(this.env.DB, sessionId);
+      if (session?.parentSessionId) {
+        orchestratorSessionId = session.parentSessionId;
+      }
+
+      const tasks = await getSessionTasks(this.env.DB, orchestratorSessionId, { status, limit });
+      this.sendToRunner({ type: 'task-list-result', requestId, tasks } as any);
+    } catch (err) {
+      this.sendToRunner({ type: 'task-list-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleTaskUpdate(requestId: string, taskId: string, msg: RunnerMessage) {
+    try {
+      const task = await updateSessionTask(this.env.DB, taskId, {
+        status: msg.status as string | undefined,
+        result: msg.result as string | undefined,
+        description: msg.description,
+        sessionId: msg.sessionId,
+        title: msg.title,
+      });
+
+      if (!task) {
+        this.sendToRunner({ type: 'task-update-result', requestId, error: 'Task not found' } as any);
+        return;
+      }
+
+      this.sendToRunner({ type: 'task-update-result', requestId, task } as any);
+    } catch (err) {
+      this.sendToRunner({ type: 'task-update-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
+  }
+
+  private async handleTaskMy(requestId: string, status?: string) {
+    try {
+      const sessionId = this.getStateValue('sessionId');
+      if (!sessionId) {
+        this.sendToRunner({ type: 'task-my-result', requestId, error: 'No session ID' } as any);
+        return;
+      }
+
+      const tasks = await getMyTasks(this.env.DB, sessionId, { status });
+      this.sendToRunner({ type: 'task-my-result', requestId, tasks } as any);
+    } catch (err) {
+      this.sendToRunner({ type: 'task-my-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+    }
   }
 
   private sendToRunner(message: RunnerOutbound): void {

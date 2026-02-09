@@ -70,6 +70,12 @@ export type DOToRunnerMessage =
   | { type: "workflow-api-result"; requestId: string; data?: unknown; error?: string }
   | { type: "trigger-api-result"; requestId: string; data?: unknown; error?: string }
   | { type: "execution-api-result"; requestId: string; data?: unknown; error?: string }
+  | { type: "mailbox-send-result"; requestId: string; messageId?: string; error?: string }
+  | { type: "mailbox-check-result"; requestId: string; messages?: unknown[]; error?: string }
+  | { type: "task-create-result"; requestId: string; task?: unknown; error?: string }
+  | { type: "task-list-result"; requestId: string; tasks?: unknown[]; error?: string }
+  | { type: "task-update-result"; requestId: string; task?: unknown; error?: string }
+  | { type: "task-my-result"; requestId: string; tasks?: unknown[]; error?: string }
   | {
       type: "workflow-execute";
       executionId: string;
@@ -144,7 +150,13 @@ export type RunnerToDOMessage =
   | { type: "execution-api"; requestId: string; action: string; payload?: Record<string, unknown> }
   | { type: "workflow-execution-result"; executionId: string; envelope: WorkflowRunResultEnvelope }
   | { type: "model-switched"; messageId: string; fromModel: string; toModel: string; reason: string }
-  | { type: "tunnels"; tunnels: Array<{ name: string; port: number; protocol?: string; path: string }> };
+  | { type: "tunnels"; tunnels: Array<{ name: string; port: number; protocol?: string; path: string }> }
+  | { type: "mailbox-send"; requestId: string; toSessionId?: string; toUserId?: string; toHandle?: string; messageType?: string; content: string; contextSessionId?: string; contextTaskId?: string; replyToId?: string }
+  | { type: "mailbox-check"; requestId: string; limit?: number; after?: string }
+  | { type: "task-create"; requestId: string; title: string; description?: string; sessionId?: string; parentTaskId?: string; blockedBy?: string[] }
+  | { type: "task-list"; requestId: string; status?: string; limit?: number }
+  | { type: "task-update"; requestId: string; taskId: string; status?: string; result?: string; description?: string; sessionId?: string; title?: string }
+  | { type: "task-my"; requestId: string; status?: string };
 
 /** Structured review result data */
 export interface ReviewFinding {
