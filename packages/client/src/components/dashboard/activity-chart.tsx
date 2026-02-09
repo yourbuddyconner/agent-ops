@@ -65,7 +65,7 @@ export function ActivityChart({ data }: ActivityChartProps) {
     <div className="animate-stagger-in rounded-lg border border-neutral-200/80 bg-white p-6 shadow-[0_1px_2px_0_rgb(0_0_0/0.04)] dark:border-neutral-800 dark:bg-surface-1 dark:shadow-none" style={{ animationDelay: '200ms' }}>
       <h3 className="label-mono text-neutral-400 mb-4">Activity</h3>
       <ResponsiveContainer width="100%" height={260}>
-        <AreaChart data={data} margin={{ top: 4, right: -16, left: -20, bottom: 0 }}>
+        <AreaChart data={data} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
           <defs>
             <linearGradient id="gradSessions" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="rgb(99 102 241)" stopOpacity={0.12} />
@@ -94,7 +94,7 @@ export function ActivityChart({ data }: ActivityChartProps) {
             domain={[0, 'auto']}
             minTickGap={20}
             tickFormatter={(value: number) => Number.isInteger(value) ? String(value) : ''}
-            width={35}
+            width={45}
           />
           <YAxis
             yAxisId="messages"
@@ -106,7 +106,7 @@ export function ActivityChart({ data }: ActivityChartProps) {
             domain={[0, 'auto']}
             minTickGap={20}
             tickFormatter={(value: number) => Number.isInteger(value) ? String(value) : ''}
-            width={35}
+            width={45}
           />
           <Tooltip content={<CustomTooltip />} />
           <Legend content={<CustomLegend />} />
