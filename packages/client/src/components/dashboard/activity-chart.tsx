@@ -86,19 +86,6 @@ export function ActivityChart({ data }: ActivityChartProps) {
             interval="preserveStartEnd"
           />
           <YAxis
-            yAxisId="sessions"
-            tick={{ fontSize: 10, fill: '#a3a3a3', fontFamily: '"JetBrains Mono", monospace' }}
-            axisLine={false}
-            tickLine={false}
-            allowDecimals={false}
-            domain={[0, 'auto']}
-            minTickGap={20}
-            tickFormatter={(value: number) => Number.isInteger(value) ? String(value) : ''}
-            width={45}
-          />
-          <YAxis
-            yAxisId="messages"
-            orientation="right"
             tick={{ fontSize: 10, fill: '#a3a3a3', fontFamily: '"JetBrains Mono", monospace' }}
             axisLine={false}
             tickLine={false}
@@ -111,7 +98,6 @@ export function ActivityChart({ data }: ActivityChartProps) {
           <Tooltip content={<CustomTooltip />} />
           <Legend content={<CustomLegend />} />
           <Area
-            yAxisId="sessions"
             type="monotone"
             dataKey="sessions"
             name="Sessions"
@@ -122,7 +108,6 @@ export function ActivityChart({ data }: ActivityChartProps) {
             activeDot={{ r: 3.5, strokeWidth: 2, fill: 'white', stroke: 'rgb(99 102 241)' }}
           />
           <Area
-            yAxisId="messages"
             type="monotone"
             dataKey="messages"
             name="Messages"
