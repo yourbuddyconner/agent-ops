@@ -10,6 +10,7 @@ import { ChildSessionInlineList } from './child-session-card';
 import { useDrawer } from '@/routes/sessions/$sessionId';
 import type { ChildSessionEvent, ConnectedUser } from '@/hooks/use-chat';
 import type { ChildSessionSummary } from '@/api/types';
+import { MessageCopyButton } from './message-copy-button';
 
 type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error' | 'queued';
 
@@ -194,6 +195,15 @@ function mergeAssistantSegments(messages: Message[]): TurnSegment[] {
 function AssistantTurn({ messages }: { messages: Message[] }) {
   const firstMessage = messages[0];
   const segments = mergeAssistantSegments(messages);
+  const copyText = segments
+    .map((seg) => {
+      if (seg.kind === 'text') return seg.content;
+      if (seg.kind === 'forwarded') return seg.message.content;
+      return '';
+    })
+    .map((content) => content.trim())
+    .filter((content) => content.length > 0)
+    .join('\n\n');
 
   return (
     <div className="group relative flex gap-3 py-3 animate-fade-in">
@@ -209,6 +219,9 @@ function AssistantTurn({ messages }: { messages: Message[] }) {
           <span className="font-mono text-[10px] tabular-nums text-neutral-300 dark:text-neutral-600">
             {formatTime(firstMessage.createdAt)}
           </span>
+          {copyText.length > 0 && (
+            <MessageCopyButton text={copyText} className="text-[10px]" />
+          )}
         </div>
 
         <div className="space-y-1.5 border-l-[1.5px] border-accent/15 pl-3 dark:border-accent/10">

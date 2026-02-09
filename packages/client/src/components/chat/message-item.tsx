@@ -5,6 +5,7 @@ import { MarkdownContent } from './markdown';
 import { ToolCard, type ToolCallData, type ToolCallStatus } from './tool-cards';
 import { useDrawer } from '@/routes/sessions/$sessionId';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
+import { MessageCopyButton } from './message-copy-button';
 
 interface MessageItemProps {
   message: Message;
@@ -75,6 +76,9 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
             <span className="font-mono text-[9px] tabular-nums text-neutral-300 dark:text-neutral-600">
               {formatTime(message.createdAt)}
             </span>
+            {message.content.trim().length > 0 && (
+              <MessageCopyButton text={message.content} />
+            )}
             {onRevert && (
               <button
                 type="button"
@@ -155,6 +159,9 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
             <span className="font-mono text-[9px] tabular-nums text-neutral-300 dark:text-neutral-600">
               {formatTime(message.createdAt)}
             </span>
+            {message.content.trim().length > 0 && (
+              <MessageCopyButton text={message.content} />
+            )}
           </div>
           <div className="rounded-2xl rounded-bl-md bg-amber-500/[0.08] px-3 py-2 text-amber-800 shadow-sm dark:bg-amber-500/[0.12] dark:text-amber-100 dark:shadow-none">
             <MarkdownContent content={message.content} />
@@ -187,6 +194,9 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
           <span className="font-mono text-[10px] tabular-nums text-neutral-300 dark:text-neutral-600">
             {formatTime(message.createdAt)}
           </span>
+          {message.content.trim().length > 0 && (
+            <MessageCopyButton text={message.content} className="text-[10px]" />
+          )}
         </div>
         <div className="border-l-[1.5px] border-accent/15 pl-3 dark:border-accent/10">
           <MarkdownContent content={message.content} />
