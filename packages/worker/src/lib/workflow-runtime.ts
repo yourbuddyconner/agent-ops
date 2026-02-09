@@ -275,6 +275,9 @@ export async function dispatchOrchestratorPrompt(
       channelType: params.channelType,
       channelId: params.channelId,
       attachments: params.attachments,
+      authorName: params.authorName,
+      authorEmail: params.authorEmail,
+      authorId: params.userId,
     }),
   }));
 

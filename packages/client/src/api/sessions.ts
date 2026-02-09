@@ -8,6 +8,7 @@ import type {
   SessionGitState,
   SessionFileChanged,
   ChildSessionSummary,
+  ListChildSessionsResponse,
   SessionParticipant,
   SessionParticipantRole,
   SessionShareLink,
@@ -279,6 +280,41 @@ export function useSessionChildren(sessionId: string) {
     refetchInterval: (query) => {
       // Poll more aggressively when any child is still active
       const children = query.state.data?.children;
+      const hasActive = children?.some(
+        (c) => c.status !== 'terminated' && c.status !== 'hibernated',
+      );
+      return hasActive ? 5_000 : 30_000;
+    },
+  });
+}
+
+type ChildrenWithRuntime = ListChildSessionsResponse & { children: ChildSessionSummaryWithRuntime[] };
+
+export function useInfiniteSessionChildren(
+  sessionId: string,
+  options: { hideTerminated?: boolean } = {}
+) {
+  const { hideTerminated = false } = options;
+
+  return useInfiniteQuery({
+    queryKey: [...sessionKeys.children(sessionId), { hideTerminated }],
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams();
+      if (pageParam) params.set('cursor', pageParam);
+      if (hideTerminated) params.set('hideTerminated', 'true');
+      const qs = params.toString();
+      return api.get<ChildrenWithRuntime>(`/sessions/${sessionId}/children${qs ? `?${qs}` : ''}`);
+    },
+    enabled: !!sessionId,
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.cursor,
+    select: (data) => ({
+      children: data.pages.flatMap((page) => page.children),
+      hasMore: data.pages[data.pages.length - 1]?.hasMore ?? false,
+      totalCount: data.pages[0]?.totalCount ?? 0,
+    }),
+    refetchInterval: (query) => {
+      const children = query.state.data?.pages.flatMap((p) => p.children);
       const hasActive = children?.some(
         (c) => c.status !== 'terminated' && c.status !== 'hibernated',
       );

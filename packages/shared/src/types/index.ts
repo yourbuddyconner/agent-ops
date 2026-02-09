@@ -137,6 +137,13 @@ export interface ChildSessionSummary {
   createdAt: string;
 }
 
+export interface ListChildSessionsResponse {
+  children: ChildSessionSummary[];
+  cursor?: string;
+  hasMore: boolean;
+  totalCount: number;
+}
+
 // Session types
 export type SessionStatus = 'initializing' | 'running' | 'idle' | 'hibernating' | 'hibernated' | 'restoring' | 'terminated' | 'error';
 export type SessionPurpose = 'interactive' | 'orchestrator' | 'workflow';

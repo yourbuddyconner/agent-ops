@@ -902,20 +902,78 @@ export async function updateSessionTitle(db: D1Database, sessionId: string, titl
 }
 
 // Child sessions
-export async function getChildSessions(db: D1Database, parentSessionId: string): Promise<ChildSessionSummary[]> {
+export interface GetChildSessionsOptions {
+  limit?: number;
+  cursor?: string;
+  status?: string;
+  excludeStatuses?: string[];
+}
+
+export interface PaginatedChildSessions {
+  children: ChildSessionSummary[];
+  cursor?: string;
+  hasMore: boolean;
+  totalCount: number;
+}
+
+export async function getChildSessions(
+  db: D1Database,
+  parentSessionId: string,
+  options: GetChildSessionsOptions = {}
+): Promise<PaginatedChildSessions> {
+  const { limit = 20, cursor, status, excludeStatuses } = options;
+
+  // Build WHERE clauses
+  const whereClauses = ['s.parent_session_id = ?'];
+  const binds: (string | number)[] = [parentSessionId];
+
+  if (status) {
+    whereClauses.push('s.status = ?');
+    binds.push(status);
+  }
+
+  if (excludeStatuses && excludeStatuses.length > 0) {
+    const placeholders = excludeStatuses.map(() => '?').join(',');
+    whereClauses.push(`s.status NOT IN (${placeholders})`);
+    binds.push(...excludeStatuses);
+  }
+
+  if (cursor) {
+    whereClauses.push('s.created_at < ?');
+    binds.push(cursor);
+  }
+
+  const whereStr = whereClauses.join(' AND ');
+
+  // Count query (without cursor/limit for total)
+  const countClauses = whereClauses.filter((c) => !c.startsWith('s.created_at <'));
+  const countBinds = binds.filter((_, i) => !whereClauses[i]?.startsWith('s.created_at <'));
+  const countResult = await db
+    .prepare(`SELECT COUNT(*) as count FROM sessions s WHERE ${countClauses.join(' AND ')}`)
+    .bind(...countBinds)
+    .first<{ count: number }>();
+  const totalCount = countResult?.count ?? 0;
+
+  // Fetch limit + 1 to detect hasMore
+  const fetchLimit = limit + 1;
   const result = await db
     .prepare(
       `SELECT s.id, s.title, s.status, s.workspace, s.created_at,
               g.pr_number, g.pr_state, g.pr_url, g.pr_title
        FROM sessions s
        LEFT JOIN session_git_state g ON g.session_id = s.id
-       WHERE s.parent_session_id = ?
-       ORDER BY s.created_at DESC`
+       WHERE ${whereStr}
+       ORDER BY s.created_at DESC
+       LIMIT ?`
     )
-    .bind(parentSessionId)
+    .bind(...binds, fetchLimit)
     .all();
 
-  return (result.results || []).map((row: any) => ({
+  const rows = result.results || [];
+  const hasMore = rows.length > limit;
+  const pageRows = hasMore ? rows.slice(0, limit) : rows;
+
+  const children = pageRows.map((row: any) => ({
     id: row.id,
     title: row.title || undefined,
     status: row.status,
@@ -926,6 +984,63 @@ export async function getChildSessions(db: D1Database, parentSessionId: string):
     prTitle: row.pr_title || undefined,
     createdAt: row.created_at,
   }));
+
+  return {
+    children,
+    cursor: hasMore ? (pageRows[pageRows.length - 1]?.created_at as string | undefined) : undefined,
+    hasMore,
+    totalCount,
+  };
+}
+
+// Session concurrency check
+const ACTIVE_SESSION_STATUSES = ['initializing', 'running', 'idle', 'restoring'];
+const DEFAULT_MAX_ACTIVE_SESSIONS = 10;
+
+export interface ConcurrencyCheckResult {
+  allowed: boolean;
+  reason?: string;
+  activeCount: number;
+  limit: number;
+}
+
+export async function checkSessionConcurrency(
+  db: D1Database,
+  userId: string
+): Promise<ConcurrencyCheckResult> {
+  // Get user's custom limit (NULL = default)
+  const user = await db
+    .prepare('SELECT max_active_sessions FROM users WHERE id = ?')
+    .bind(userId)
+    .first<{ max_active_sessions: number | null }>();
+
+  const limit = user?.max_active_sessions ?? DEFAULT_MAX_ACTIVE_SESSIONS;
+
+  // Count active sessions (exclude orchestrator and workflow sessions)
+  const placeholders = ACTIVE_SESSION_STATUSES.map(() => '?').join(',');
+  const result = await db
+    .prepare(
+      `SELECT COUNT(*) as count FROM sessions
+       WHERE user_id = ?
+         AND status IN (${placeholders})
+         AND (parent_session_id IS NULL OR parent_session_id NOT LIKE 'orchestrator:%')
+         AND id NOT LIKE 'orchestrator:%'`
+    )
+    .bind(userId, ...ACTIVE_SESSION_STATUSES)
+    .first<{ count: number }>();
+
+  const activeCount = result?.count ?? 0;
+
+  if (activeCount >= limit) {
+    return {
+      allowed: false,
+      reason: `You have ${activeCount} active sessions (limit: ${limit}). Terminate some sessions before creating new ones.`,
+      activeCount,
+      limit,
+    };
+  }
+
+  return { allowed: true, activeCount, limit };
 }
 
 // Session files changed

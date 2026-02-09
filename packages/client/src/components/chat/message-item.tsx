@@ -48,12 +48,15 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
       .map((s) => s[0].toUpperCase())
       .join('');
 
+    const isScheduled = message.authorName === 'Scheduled Task';
+
     return (
       <div className="group relative flex justify-end gap-2 py-2.5 animate-fade-in">
         <div className={compact ? 'max-w-[90%]' : 'max-w-[75%]'}>
-          {(authorName || message.channelType) && (
+          {(authorName || message.channelType || isScheduled) && (
             <div className="mb-1 flex items-center justify-end gap-1.5 px-1">
-              {authorName && (
+              {isScheduled && <ScheduledBadge />}
+              {authorName && !isScheduled && (
                 <span className="font-mono text-[10px] font-medium text-neutral-400 dark:text-neutral-500">
                   {message.authorName || message.authorEmail}
                 </span>
@@ -464,12 +467,30 @@ function TelegramIcon({ className }: { className?: string }) {
   );
 }
 
+function ScheduledBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 font-mono text-[9px] font-medium text-amber-600 dark:bg-amber-500/15 dark:text-amber-400">
+      <ClockIcon className="h-2.5 w-2.5" />
+      scheduled
+    </span>
+  );
+}
+
 function ChannelBadge({ channelType }: { channelType: string }) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 font-mono text-[9px] font-medium text-blue-500 dark:bg-blue-500/15 dark:text-blue-400">
       {channelType === 'telegram' && <TelegramIcon className="h-2.5 w-2.5" />}
       via {channelType}
     </span>
+  );
+}
+
+function ClockIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
   );
 }
 

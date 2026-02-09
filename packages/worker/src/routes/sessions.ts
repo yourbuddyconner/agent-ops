@@ -59,7 +59,7 @@ function generateRunnerToken(): string {
 }
 
 type ChildTunnelSummary = { name: string; url?: string; path?: string; port?: number; protocol?: string };
-type ChildSummaryWithRuntime = Awaited<ReturnType<typeof db.getChildSessions>>[number] & {
+type ChildSummaryWithRuntime = Awaited<ReturnType<typeof db.getChildSessions>>['children'][number] & {
   prTitle?: string;
   gatewayUrl?: string;
   tunnels?: ChildTunnelSummary[];
@@ -106,7 +106,7 @@ function mapGitHubPullRequestState(input: string | undefined, draft: boolean, me
 
 async function enrichChildrenWithRuntimeStatus(
   env: Env,
-  children: Awaited<ReturnType<typeof db.getChildSessions>>
+  children: Awaited<ReturnType<typeof db.getChildSessions>>['children']
 ): Promise<ChildSummaryWithRuntime[]> {
   return Promise.all(
     children.map(async (child) => {
@@ -252,6 +252,18 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
 
   // Ensure user exists in DB
   await db.getOrCreateUser(c.env.DB, { id: user.id, email: user.email });
+
+  // Check concurrency limits (skip for orchestrator/workflow sessions)
+  const isOrchestratorSession = body.parentSessionId?.startsWith('orchestrator:');
+  if (!isOrchestratorSession) {
+    const concurrency = await db.checkSessionConcurrency(c.env.DB, user.id);
+    if (!concurrency.allowed) {
+      return c.json(
+        { error: concurrency.reason, activeCount: concurrency.activeCount, limit: concurrency.limit },
+        429
+      );
+    }
+  }
 
   // If persona requested, fetch and validate access
   let personaFiles: { filename: string; content: string; sortOrder: number }[] | undefined;
@@ -939,18 +951,35 @@ sessionsRouter.post('/bulk-delete', zValidator('json', bulkDeleteSchema), async 
 
 /**
  * GET /api/sessions/:id/children
- * Get child sessions for a parent session.
+ * Get child sessions for a parent session (paginated).
+ * Query params: ?limit=20&cursor=...&status=...&hideTerminated=true
  */
 sessionsRouter.get('/:id/children', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
+  const { limit, cursor, status, hideTerminated } = c.req.query();
 
   await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
 
-  const children = await db.getChildSessions(c.env.DB, id);
-  const enrichedChildren = await enrichChildrenWithRuntimeStatus(c.env, children);
+  const excludeStatuses = hideTerminated === 'true' ? ['terminated', 'error'] : undefined;
+
+  const result = await db.getChildSessions(c.env.DB, id, {
+    limit: limit ? parseInt(limit) : undefined,
+    cursor,
+    status,
+    excludeStatuses,
+  });
+
+  // Only enrich the current page (not all children)
+  const enrichedChildren = await enrichChildrenWithRuntimeStatus(c.env, result.children);
   const refreshedChildren = await refreshOpenChildPullRequestStates(c.env, user.id, enrichedChildren);
-  return c.json({ children: refreshedChildren });
+
+  return c.json({
+    children: refreshedChildren,
+    cursor: result.cursor,
+    hasMore: result.hasMore,
+    totalCount: result.totalCount,
+  });
 });
 
 /**

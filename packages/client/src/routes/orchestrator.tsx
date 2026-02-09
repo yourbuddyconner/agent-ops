@@ -12,9 +12,13 @@ import {
   useOrchestratorMemories,
   useDeleteMemory,
 } from '@/api/orchestrator';
-import { useSessionChildren, useSessionDoStatus } from '@/api/sessions';
+import { useInfiniteSessionChildren, useSessionDoStatus } from '@/api/sessions';
 import { formatRelativeTime } from '@/lib/format';
-import type { ChildSessionSummary, OrchestratorMemory, OrchestratorMemoryCategory } from '@/api/types';
+import type { OrchestratorMemory, OrchestratorMemoryCategory } from '@/api/types';
+import type { ChildSessionSummaryWithRuntime } from '@/api/sessions';
+import { Checkbox } from '@/components/ui/checkbox';
+import { LoadMoreButton } from '@/components/ui/load-more-button';
+import { BulkDeleteDialog } from '@/components/sessions/bulk-delete-dialog';
 
 export const Route = createFileRoute('/orchestrator')({
   component: OrchestratorPage,
@@ -215,7 +219,8 @@ const STATUS_VARIANTS: Record<string, 'default' | 'success' | 'warning' | 'error
 function OrchestratorDashboard() {
   const { data: orchInfo } = useOrchestratorInfo();
   const { data: doStatus } = useSessionDoStatus(orchInfo?.sessionId ?? '');
-  const { data: children } = useSessionChildren(orchInfo?.sessionId ?? '');
+  const [hideTerminated, setHideTerminated] = React.useState(true);
+  const childrenQuery = useInfiniteSessionChildren(orchInfo?.sessionId ?? '', { hideTerminated });
   const [memoryCategory, setMemoryCategory] = React.useState<string | undefined>();
   const { data: memories } = useOrchestratorMemories(memoryCategory);
 
@@ -223,6 +228,19 @@ function OrchestratorDashboard() {
   const session = orchInfo?.session;
   const needsRestart = orchInfo?.needsRestart;
   const sessionId = orchInfo!.sessionId;
+
+  const children = childrenQuery.data?.children ?? [];
+  const totalCount = childrenQuery.data?.totalCount ?? 0;
+  const hasMore = childrenQuery.data?.hasMore ?? false;
+
+  // Selection state for bulk delete
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
+  const [showDeleteDialog, setShowDeleteDialog] = React.useState(false);
+
+  // Clear selection when filter changes
+  React.useEffect(() => {
+    setSelectedIds(new Set());
+  }, [hideTerminated]);
 
   // Compute uptime from doStatus
   const runningStartedAt = (doStatus as any)?.runningStartedAt as string | undefined;
@@ -254,17 +272,27 @@ function OrchestratorDashboard() {
         ? 'Sleeping'
         : session.status;
 
-  // Sort children: active first, then by createdAt desc
-  const sortedChildren = React.useMemo(() => {
-    if (!children) return [];
-    return [...children].sort((a, b) => {
-      const aActive = a.status !== 'terminated' && a.status !== 'error';
-      const bActive = b.status !== 'terminated' && b.status !== 'error';
-      if (aActive && !bActive) return -1;
-      if (!aActive && bActive) return 1;
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  // Active count (derived from the non-filtered total or visible data)
+  const activeCount = children.filter(
+    (c) => c.status !== 'terminated' && c.status !== 'error' && c.status !== 'hibernated'
+  ).length;
+
+  const toggleSelection = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
     });
-  }, [children]);
+  };
+
+  const toggleAll = () => {
+    if (selectedIds.size === children.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(children.map((c) => c.id)));
+    }
+  };
 
   return (
     <PageContainer>
@@ -288,7 +316,7 @@ function OrchestratorDashboard() {
       />
 
       {/* Status bar */}
-      <div className="mb-6 flex items-center gap-4 rounded-lg border border-neutral-200 bg-white px-4 py-3 dark:border-neutral-700 dark:bg-neutral-800">
+      <div className="mb-6 flex flex-wrap items-center gap-4 rounded-lg border border-neutral-200 bg-white px-4 py-3 dark:border-neutral-700 dark:bg-neutral-800">
         <div className="flex items-center gap-2">
           <StatusDot status={session?.status ?? 'terminated'} />
           <span className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
@@ -302,26 +330,79 @@ function OrchestratorDashboard() {
           </div>
         )}
         <div className="flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
-          <span>Managed sessions:</span>
-          <span className="font-mono font-medium tabular-nums">{children?.length ?? 0}</span>
+          <span>Total sessions:</span>
+          <span className="font-mono font-medium tabular-nums">{totalCount}</span>
         </div>
+        {activeCount > 0 && (
+          <div className="flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+            <span>Active:</span>
+            <span className="font-mono font-medium tabular-nums text-green-600 dark:text-green-400">{activeCount}</span>
+          </div>
+        )}
       </div>
 
       <div className="space-y-8">
         {/* Managed Sessions */}
         <section>
-          <h2 className="mb-3 text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-            Managed Sessions
-          </h2>
-          {sortedChildren.length === 0 ? (
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+              Managed Sessions
+            </h2>
+            <div className="flex items-center gap-2">
+              {selectedIds.size > 0 && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowDeleteDialog(true)}
+                  className="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                >
+                  Delete {selectedIds.size} selected
+                </Button>
+              )}
+              <button
+                onClick={() => setHideTerminated((prev) => !prev)}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                  hideTerminated
+                    ? 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700'
+                    : 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                }`}
+              >
+                {hideTerminated ? 'Show terminated' : 'Hide terminated'}
+              </button>
+            </div>
+          </div>
+
+          {children.length === 0 ? (
             <div className="rounded-lg border border-neutral-200 bg-white p-6 text-center dark:border-neutral-700 dark:bg-neutral-800">
               <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                No managed sessions yet
+                {hideTerminated ? 'No active sessions' : 'No managed sessions yet'}
               </p>
             </div>
           ) : (
-            <ManagedSessionsTable sessions={sortedChildren} />
+            <>
+              <ManagedSessionsTable
+                sessions={children}
+                selectedIds={selectedIds}
+                onToggleSelection={toggleSelection}
+                onToggleAll={toggleAll}
+              />
+              <LoadMoreButton
+                onClick={() => childrenQuery.fetchNextPage()}
+                isLoading={childrenQuery.isFetchingNextPage}
+                hasMore={hasMore}
+              />
+            </>
           )}
+
+          <BulkDeleteDialog
+            sessionIds={Array.from(selectedIds)}
+            open={showDeleteDialog}
+            onOpenChange={setShowDeleteDialog}
+            onDeleted={() => {
+              setSelectedIds(new Set());
+              childrenQuery.refetch();
+            }}
+          />
         </section>
 
         {/* Memories */}
@@ -366,12 +447,33 @@ function RestartButton({ identity }: { identity: { name: string; handle: string;
 // Managed Sessions Table
 // ---------------------------------------------------------------------------
 
-function ManagedSessionsTable({ sessions }: { sessions: ChildSessionSummary[] }) {
+function ManagedSessionsTable({
+  sessions,
+  selectedIds,
+  onToggleSelection,
+  onToggleAll,
+}: {
+  sessions: ChildSessionSummaryWithRuntime[];
+  selectedIds: Set<string>;
+  onToggleSelection: (id: string) => void;
+  onToggleAll: () => void;
+}) {
+  const allSelected = sessions.length > 0 && selectedIds.size === sessions.length;
+  const someSelected = selectedIds.size > 0 && selectedIds.size < sessions.length;
+
   return (
     <div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800/50">
+            <th className="w-10 px-3 py-2.5">
+              <Checkbox
+                checked={allSelected}
+                indeterminate={someSelected}
+                onChange={onToggleAll}
+                aria-label="Select all sessions"
+              />
+            </th>
             <th className="px-3 py-2.5 text-left font-medium text-neutral-500 dark:text-neutral-400">
               Session
             </th>
@@ -385,7 +487,12 @@ function ManagedSessionsTable({ sessions }: { sessions: ChildSessionSummary[] })
         </thead>
         <tbody className="divide-y divide-neutral-200 dark:divide-neutral-700">
           {sessions.map((s) => (
-            <ManagedSessionRow key={s.id} session={s} />
+            <ManagedSessionRow
+              key={s.id}
+              session={s}
+              selected={selectedIds.has(s.id)}
+              onToggle={() => onToggleSelection(s.id)}
+            />
           ))}
         </tbody>
       </table>
@@ -393,9 +500,24 @@ function ManagedSessionsTable({ sessions }: { sessions: ChildSessionSummary[] })
   );
 }
 
-function ManagedSessionRow({ session }: { session: ChildSessionSummary }) {
+function ManagedSessionRow({
+  session,
+  selected,
+  onToggle,
+}: {
+  session: ChildSessionSummaryWithRuntime;
+  selected: boolean;
+  onToggle: () => void;
+}) {
   return (
     <tr className="bg-white transition-colors hover:bg-neutral-50 dark:bg-neutral-900 dark:hover:bg-neutral-800/50">
+      <td className="w-10 px-3 py-2.5">
+        <Checkbox
+          checked={selected}
+          onChange={onToggle}
+          aria-label={`Select ${session.title || session.workspace}`}
+        />
+      </td>
       <td className="px-3 py-2.5">
         <Link
           to="/sessions/$sessionId"

@@ -555,7 +555,7 @@ export class SessionAgentDO {
       }
       case '/prompt': {
         // HTTP-based prompt submission (alternative to WebSocket)
-        const body = await request.json() as { content?: string; model?: string; attachments?: PromptAttachment[]; interrupt?: boolean; queueMode?: string; channelType?: string; channelId?: string };
+        const body = await request.json() as { content?: string; model?: string; attachments?: PromptAttachment[]; interrupt?: boolean; queueMode?: string; channelType?: string; channelId?: string; authorName?: string; authorEmail?: string; authorId?: string };
         const content = body.content ?? '';
         const attachments = sanitizePromptAttachments(body.attachments);
         if (!content && attachments.length === 0) {
@@ -580,15 +580,21 @@ export class SessionAgentDO {
           return Response.json({ success: true, debounced: true });
         }
 
+        const author = (body.authorId || body.authorEmail) ? {
+          id: body.authorId || '',
+          email: body.authorEmail || '',
+          name: body.authorName,
+        } : undefined;
+
         switch (effectiveMode) {
           case 'steer':
             await this.handleInterruptPrompt(content, body.model);
             break;
           case 'collect':
-            await this.handleCollectPrompt(content, body.model, undefined, attachments);
+            await this.handleCollectPrompt(content, body.model, author, attachments);
             break;
           default:
-            await this.handlePrompt(content, body.model, undefined, attachments, body.channelType, body.channelId);
+            await this.handlePrompt(content, body.model, author, attachments, body.channelType, body.channelId);
             break;
         }
         return Response.json({ success: true });
@@ -4372,7 +4378,7 @@ export class SessionAgentDO {
   private async handleListChildSessions(requestId: string) {
     try {
       const sessionId = this.getStateValue('sessionId')!;
-      const children = await getChildSessions(this.env.DB, sessionId);
+      const { children } = await getChildSessions(this.env.DB, sessionId);
       this.sendToRunner({ type: 'list-child-sessions-result', requestId, children } as any);
     } catch (err) {
       console.error('[SessionAgentDO] Failed to list child sessions:', err);
@@ -4807,7 +4813,7 @@ export class SessionAgentDO {
     // Cascade: terminate all active child sessions (best-effort)
     if (sessionId) {
       try {
-        const children = await getChildSessions(this.env.DB, sessionId);
+        const { children } = await getChildSessions(this.env.DB, sessionId);
         const activeChildren = children.filter(
           (c) => c.status !== 'terminated',
         );

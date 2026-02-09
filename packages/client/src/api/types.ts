@@ -33,6 +33,7 @@ export type {
   AdoptionMetrics,
   SessionFileChanged,
   ChildSessionSummary,
+  ListChildSessionsResponse,
   SessionParticipant,
   SessionParticipantRole,
   SessionParticipantSummary,
