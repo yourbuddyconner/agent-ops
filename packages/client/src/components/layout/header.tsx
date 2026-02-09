@@ -36,7 +36,7 @@ export function Header() {
         <MobileNavMenu />
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="ml-auto flex items-center gap-2">
         <button
           onClick={() => {
             if (theme === 'system') {
