@@ -160,7 +160,7 @@ export type RunnerToDOMessage =
   | { type: "task-list"; requestId: string; status?: string; limit?: number }
   | { type: "task-update"; requestId: string; taskId: string; status?: string; result?: string; description?: string; sessionId?: string; title?: string }
   | { type: "task-my"; requestId: string; status?: string }
-  | { type: "channel-reply"; requestId: string; channelType: string; channelId: string; message: string; imageBase64?: string; imageMimeType?: string }
+  | { type: "channel-reply"; requestId: string; channelType: string; channelId: string; message: string; imageBase64?: string; imageMimeType?: string; followUp?: boolean }
   | { type: "audio-transcript"; messageId: string; transcript: string }
   | { type: "command-result"; requestId: string; command: string; result?: unknown; error?: string };
 

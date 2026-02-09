@@ -279,6 +279,7 @@ interface RunnerMessage {
   message?: string;
   imageBase64?: string;
   imageMimeType?: string;
+  followUp?: boolean;
 }
 
 /** Messages sent from DO to clients */
@@ -403,6 +404,17 @@ const SCHEMA_SQL = `
     metadata TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     flushed INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS channel_followups (
+    id TEXT PRIMARY KEY,
+    channel_type TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    original_content TEXT,
+    created_at INTEGER NOT NULL,
+    next_reminder_at INTEGER NOT NULL,
+    reminder_count INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'resolved'))
   );
 `;
 
@@ -1054,7 +1066,43 @@ export class SessionAgentDO {
       });
     }
 
-    // If there are still pending questions with future expiry, schedule next alarm
+    // ─── Channel Follow-up Reminders ────────────────────────────────
+    const dueFollowups = this.ctx.storage.sql
+      .exec(
+        "SELECT id, channel_type, channel_id, original_content, created_at, reminder_count FROM channel_followups WHERE status = 'pending' AND next_reminder_at <= ?",
+        now
+      )
+      .toArray();
+
+    for (const fu of dueFollowups) {
+      const createdMs = fu.created_at as number;
+      const elapsed = now - createdMs;
+      const minutes = Math.floor(elapsed / 60_000);
+      const timeAgo = minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+      const count = ((fu.reminder_count as number) || 0) + 1;
+      const truncatedContent = ((fu.original_content as string) || '').slice(0, 200);
+
+      const reminderContent = [
+        `\u23F0 Reminder: You received a message via ${fu.channel_type} (chatId: ${fu.channel_id}) ${timeAgo} ago:`,
+        `"${truncatedContent}"`,
+        `You acknowledged it but haven't sent a substantive follow-up yet. If the work is done or has meaningful progress, use channel_reply to update the requester. If you need more time, that's fine \u2014 this reminder will repeat.`,
+        `(Reminder #${count}, use channel_reply with follow_up=true to clear)`,
+      ].join('\n');
+
+      // Inject as a wake-able system message
+      await this.handleSystemMessage(reminderContent, undefined, true);
+
+      // Bump reminder count and schedule next reminder
+      const intervalMs = parseInt(this.getStateValue('channelFollowupIntervalMs') || '300000');
+      this.ctx.storage.sql.exec(
+        'UPDATE channel_followups SET reminder_count = ?, next_reminder_at = ? WHERE id = ?',
+        count, now + intervalMs, fu.id as string
+      );
+    }
+
+    // If there are still pending questions with future expiry, or pending followups, schedule next alarm
+    let nextAlarmMs: number | null = null;
+
     const nextExpiry = this.ctx.storage.sql
       .exec(
         "SELECT MIN(expires_at) as next FROM questions WHERE status = 'pending' AND expires_at IS NOT NULL"
@@ -1062,10 +1110,24 @@ export class SessionAgentDO {
       .toArray();
 
     if (nextExpiry.length > 0 && nextExpiry[0].next) {
-      const nextMs = (nextExpiry[0].next as number) * 1000;
-      if (nextMs > now) {
-        this.ctx.storage.setAlarm(nextMs);
+      const questionMs = (nextExpiry[0].next as number) * 1000;
+      if (questionMs > now) {
+        nextAlarmMs = questionMs;
       }
+    }
+
+    const nextFollowup = this.ctx.storage.sql
+      .exec("SELECT MIN(next_reminder_at) as next FROM channel_followups WHERE status = 'pending'")
+      .toArray();
+    if (nextFollowup.length > 0 && nextFollowup[0].next) {
+      const followupMs = nextFollowup[0].next as number;
+      if (followupMs > now && (nextAlarmMs === null || followupMs < nextAlarmMs)) {
+        nextAlarmMs = followupMs;
+      }
+    }
+
+    if (nextAlarmMs !== null) {
+      this.ctx.storage.setAlarm(nextAlarmMs);
     }
   }
 
@@ -1315,6 +1377,9 @@ export class SessionAgentDO {
     // Track channel context for auto-reply on completion
     if (channelType && channelId) {
       this.pendingChannelReply = { channelType, channelId, resultContent: null, resultMessageId: null, handled: false };
+
+      // Record a follow-up reminder so the agent gets nudged if it doesn't send a substantive reply
+      this.insertChannelFollowup(channelType, channelId, content);
     } else {
       this.pendingChannelReply = null;
     }
@@ -1468,7 +1533,7 @@ export class SessionAgentDO {
   }
 
   private rescheduleCollectAlarm(flushAt: number): void {
-    // Use the earliest of: collect flush, idle timeout, question expiry
+    // Use the earliest of: collect flush, idle timeout, question expiry, channel followups
     let earliestAlarm = flushAt;
 
     const idleTimeoutMsStr = this.getStateValue('idleTimeoutMs');
@@ -1484,6 +1549,14 @@ export class SessionAgentDO {
     if (nextExpiry.length > 0 && nextExpiry[0].next) {
       const questionMs = (nextExpiry[0].next as number) * 1000;
       if (questionMs < earliestAlarm) earliestAlarm = questionMs;
+    }
+
+    const nextFollowup = this.ctx.storage.sql
+      .exec("SELECT MIN(next_reminder_at) as next FROM channel_followups WHERE status = 'pending'")
+      .toArray();
+    if (nextFollowup.length > 0 && nextFollowup[0].next) {
+      const followupMs = nextFollowup[0].next as number;
+      if (followupMs < earliestAlarm) earliestAlarm = followupMs;
     }
 
     this.ctx.storage.setAlarm(earliestAlarm);
@@ -2208,8 +2281,9 @@ export class SessionAgentDO {
 
       // ─── Phase D: Channel Reply ──────────────────────────────────────
       case 'channel-reply':
-        await this.handleChannelReply(msg.requestId!, msg.channelType!, msg.channelId!, msg.message || '', msg.imageBase64, msg.imageMimeType);
+        await this.handleChannelReply(msg.requestId!, msg.channelType!, msg.channelId!, msg.message || '', msg.imageBase64, msg.imageMimeType, msg.followUp);
         break;
+
 
       case 'ping':
         // Keepalive from runner — respond with pong
@@ -4597,11 +4671,12 @@ export class SessionAgentDO {
       initialModel?: string;
     };
 
-    // Clear old session data (messages, queue, audit log) for a fresh start.
+    // Clear old session data (messages, queue, audit log, followups) for a fresh start.
     // This is important for well-known DOs (orchestrators) that get reused.
     this.ctx.storage.sql.exec('DELETE FROM messages');
     this.ctx.storage.sql.exec('DELETE FROM prompt_queue');
     this.ctx.storage.sql.exec('DELETE FROM audit_log');
+    this.ctx.storage.sql.exec('DELETE FROM channel_followups');
 
     // Store session state in durable SQLite
     this.setStateValue('sessionId', body.sessionId);
@@ -4652,6 +4727,11 @@ export class SessionAgentDO {
     // Initialize queue mode (Phase D)
     this.setStateValue('queueMode', (body as any).queueMode || 'followup');
     this.setStateValue('collectDebounceMs', String((body as any).collectDebounceMs || 3000));
+
+    // Channel follow-up reminder interval (default: 5 minutes)
+    if ((body as any).channelFollowupIntervalMs) {
+      this.setStateValue('channelFollowupIntervalMs', String((body as any).channelFollowupIntervalMs));
+    }
 
     // Initialize idle tracking
     this.setStateValue('lastUserActivityAt', String(Date.now()));
@@ -5103,6 +5183,9 @@ export class SessionAgentDO {
     const queueChannelId = (prompt.channel_id as string) || undefined;
     if (queueChannelType && queueChannelId) {
       this.pendingChannelReply = { channelType: queueChannelType, channelId: queueChannelId, resultContent: null, resultMessageId: null, handled: false };
+
+      // Record a follow-up reminder so the agent gets nudged if it doesn't send a substantive reply
+      this.insertChannelFollowup(queueChannelType, queueChannelId, prompt.content as string);
     } else {
       this.pendingChannelReply = null;
     }
@@ -5850,6 +5933,17 @@ export class SessionAgentDO {
       }
     }
 
+    // Also consider pending channel followup reminders
+    const nextFollowup = this.ctx.storage.sql
+      .exec("SELECT MIN(next_reminder_at) as next FROM channel_followups WHERE status = 'pending'")
+      .toArray();
+    if (nextFollowup.length > 0 && nextFollowup[0].next) {
+      const followupMs = nextFollowup[0].next as number;
+      if (followupMs < earliestAlarm) {
+        earliestAlarm = followupMs;
+      }
+    }
+
     this.ctx.storage.setAlarm(earliestAlarm);
   }
 
@@ -6266,7 +6360,7 @@ export class SessionAgentDO {
 
   // ─── Phase D: Channel Reply Handler ──────────────────────────────────
 
-  private async handleChannelReply(requestId: string, channelType: string, channelId: string, message: string, imageBase64?: string, imageMimeType?: string) {
+  private async handleChannelReply(requestId: string, channelType: string, channelId: string, message: string, imageBase64?: string, imageMimeType?: string, followUp?: boolean) {
     try {
       const userId = this.getStateValue('userId');
       if (!userId) {
@@ -6300,6 +6394,11 @@ export class SessionAgentDO {
             && this.pendingChannelReply.channelType === channelType
             && this.pendingChannelReply.channelId === channelId) {
             this.pendingChannelReply.handled = true;
+          }
+
+          // Resolve follow-up reminder if this is a substantive reply (followUp !== false)
+          if (followUp !== false) {
+            this.resolveChannelFollowups(channelType, channelId);
           }
 
           this.sendToRunner({ type: 'channel-reply-result', requestId, success: true } as any);
@@ -6380,6 +6479,11 @@ export class SessionAgentDO {
       console.error('[SessionAgentDO] Auto channel reply error:', err);
     }
 
+    // Auto-reply counts as a substantive reply — resolve any pending followup reminders
+    if (sent) {
+      this.resolveChannelFollowups(pending.channelType, pending.channelId);
+    }
+
     // Stamp the assistant message with channel metadata so the UI shows a badge
     if (sent && pending.resultMessageId) {
       this.ctx.storage.sql.exec(
@@ -6398,6 +6502,30 @@ export class SessionAgentDO {
         },
       });
     }
+  }
+
+  // ─── Channel Follow-up Helpers ─────────────────────────────────────
+
+  private insertChannelFollowup(channelType: string, channelId: string, content: string): void {
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const intervalMs = parseInt(this.getStateValue('channelFollowupIntervalMs') || '300000');
+    const truncated = (content || '').slice(0, 200);
+
+    this.ctx.storage.sql.exec(
+      'INSERT INTO channel_followups (id, channel_type, channel_id, original_content, created_at, next_reminder_at, reminder_count, status) VALUES (?, ?, ?, ?, ?, ?, 0, ?)',
+      id, channelType, channelId, truncated, now, now + intervalMs, 'pending'
+    );
+
+    // Ensure the alarm is scheduled to cover this new followup
+    this.rescheduleIdleAlarm();
+  }
+
+  private resolveChannelFollowups(channelType: string, channelId: string): void {
+    this.ctx.storage.sql.exec(
+      "UPDATE channel_followups SET status = 'resolved' WHERE status = 'pending' AND channel_type = ? AND channel_id = ?",
+      channelType, channelId
+    );
   }
 
   private sendToRunner(message: RunnerOutbound): void {

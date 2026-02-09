@@ -20,6 +20,13 @@ export default tool({
       .string()
       .optional()
       .describe("Absolute path to an image file to send (PNG, JPEG, GIF, WebP)"),
+    follow_up: tool.schema
+      .boolean()
+      .optional()
+      .describe(
+        "Set to false if this is just an acknowledgment and you plan to follow up later with a substantive reply. " +
+        "The system will remind you to send a substantive reply. Defaults to true (substantive reply that clears the reminder timer)."
+      ),
   },
   async execute(args) {
     if (!args.channel_type || !args.channel_id || (!args.message?.trim() && !args.image_path)) {
@@ -27,10 +34,11 @@ export default tool({
     }
 
     try {
-      const payload: Record<string, string> = {
+      const payload: Record<string, unknown> = {
         channelType: args.channel_type,
         channelId: args.channel_id,
         message: args.message || "",
+        followUp: args.follow_up !== false,
       }
 
       if (args.image_path) {
