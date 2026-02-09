@@ -5,6 +5,57 @@ import { telegramScopeKey } from '@agent-ops/shared';
 import * as db from '../lib/db.js';
 import { dispatchOrchestratorPrompt } from '../lib/workflow-runtime.js';
 
+// ─── Forward / Quote Formatting ──────────────────────────────────────────────
+
+/**
+ * Extract forward attribution from a Telegram message.
+ * Returns a display name like "Forwarded from Wyatt Benno" or null.
+ */
+function getForwardAttribution(message: Record<string, unknown>): string | null {
+  const origin = message.forward_origin as Record<string, unknown> | undefined;
+  if (!origin) return null;
+
+  const type = origin.type as string;
+  switch (type) {
+    case 'user': {
+      const user = origin.sender_user as Record<string, unknown> | undefined;
+      if (!user) return 'Forwarded message';
+      const name = [user.first_name, user.last_name].filter(Boolean).join(' ');
+      const username = user.username ? ` (@${user.username})` : '';
+      return `Forwarded from ${name}${username}`;
+    }
+    case 'hidden_user': {
+      const name = origin.sender_user_name as string | undefined;
+      return name ? `Forwarded from ${name}` : 'Forwarded message';
+    }
+    case 'chat': {
+      const chat = origin.sender_chat as Record<string, unknown> | undefined;
+      const title = chat?.title as string | undefined;
+      return title ? `Forwarded from ${title}` : 'Forwarded from a group chat';
+    }
+    case 'channel': {
+      const chat = origin.chat as Record<string, unknown> | undefined;
+      const title = chat?.title as string | undefined;
+      return title ? `Forwarded from ${title}` : 'Forwarded from a channel';
+    }
+    default:
+      return 'Forwarded message';
+  }
+}
+
+/**
+ * Format a Telegram message, wrapping forwarded messages in a quote block
+ * with attribution so the agent sees the context.
+ */
+function formatTelegramMessage(text: string, message: Record<string, unknown>): string {
+  const attribution = getForwardAttribution(message);
+  if (!attribution) return text;
+
+  // Format as a markdown blockquote with attribution header
+  const quotedLines = text.split('\n').map((line) => `> ${line}`).join('\n');
+  return `**${attribution}:**\n${quotedLines}`;
+}
+
 // ─── Webhook Router (unauthenticated — Telegram calls this) ─────────────────
 
 export const telegramRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -37,7 +88,10 @@ telegramRouter.post('/webhook/:userId', async (c) => {
 
   bot.on('message:text', async (ctx) => {
     const chatId = String(ctx.chat.id);
-    const text = ctx.message.text;
+    const rawText = ctx.message.text;
+
+    // Format forwarded messages with attribution and quote block
+    const content = formatTelegramMessage(rawText, ctx.message);
 
     // Check for channel binding
     const scopeKey = telegramScopeKey(userId, chatId);
@@ -51,7 +105,7 @@ telegramRouter.post('/webhook/:userId', async (c) => {
           new Request('http://do/prompt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: text, queueMode: binding.queueMode }),
+            body: JSON.stringify({ content, queueMode: binding.queueMode }),
           }),
         );
         if (resp.ok) return;
@@ -63,7 +117,7 @@ telegramRouter.post('/webhook/:userId', async (c) => {
     // Dispatch to orchestrator with structured channel metadata
     const result = await dispatchOrchestratorPrompt(c.env, {
       userId,
-      content: text,
+      content,
       channelType: 'telegram',
       channelId: chatId,
       authorName: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '),

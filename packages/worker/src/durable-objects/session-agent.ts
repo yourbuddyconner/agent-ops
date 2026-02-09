@@ -434,6 +434,20 @@ export class SessionAgentDO {
     handled: boolean;
   } | null = null;
 
+  // ─── Channel Message Debouncing ─────────────────────────────────────
+  // When messages arrive from external channels (e.g. Telegram forwards),
+  // multiple messages can arrive within milliseconds. We buffer them and
+  // flush after a short delay so the agent sees them as one combined prompt.
+  private channelDebounceBuffer: Array<{
+    content: string;
+    model?: string;
+    attachments: PromptAttachment[];
+    channelType: string;
+    channelId: string;
+  }> = [];
+  private channelDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private static CHANNEL_DEBOUNCE_MS = 1500;
+
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
     this.env = env;
@@ -545,6 +559,24 @@ export class SessionAgentDO {
           return new Response(JSON.stringify({ error: 'Missing content or attachments' }), { status: 400 });
         }
         const effectiveMode = body.interrupt ? 'steer' : (body.queueMode || this.getStateValue('queueMode') || 'followup');
+
+        // Debounce channel messages (e.g. Telegram forwards arrive as multiple rapid messages)
+        if (body.channelType && body.channelId && effectiveMode === 'followup') {
+          this.channelDebounceBuffer.push({
+            content,
+            model: body.model,
+            attachments,
+            channelType: body.channelType,
+            channelId: body.channelId,
+          });
+          // Reset the debounce timer
+          if (this.channelDebounceTimer) clearTimeout(this.channelDebounceTimer);
+          this.channelDebounceTimer = setTimeout(() => {
+            this.ctx.waitUntil(this.flushChannelDebounce());
+          }, SessionAgentDO.CHANNEL_DEBOUNCE_MS);
+          return Response.json({ success: true, debounced: true });
+        }
+
         switch (effectiveMode) {
           case 'steer':
             await this.handleInterruptPrompt(content, body.model);
@@ -1100,6 +1132,31 @@ export class SessionAgentDO {
         break;
       }
     }
+  }
+
+  private async flushChannelDebounce() {
+    this.channelDebounceTimer = null;
+    const entries = this.channelDebounceBuffer.splice(0);
+    if (entries.length === 0) return;
+
+    // Merge all buffered messages into one prompt
+    const contentParts: string[] = [];
+    const allAttachments: PromptAttachment[] = [];
+    let model: string | undefined;
+    // Use the channel info from the first entry (all should be the same channel)
+    const channelType = entries[0].channelType;
+    const channelId = entries[0].channelId;
+
+    for (const entry of entries) {
+      if (entry.content.trim()) contentParts.push(entry.content);
+      allAttachments.push(...entry.attachments);
+      if (entry.model) model = entry.model;
+    }
+
+    const mergedContent = contentParts.join('\n\n');
+    console.log(`[SessionAgentDO] Flushing channel debounce: ${entries.length} message(s) merged, ${allAttachments.length} attachment(s)`);
+
+    await this.handlePrompt(mergedContent, model, undefined, allAttachments, channelType, channelId);
   }
 
   private async handlePrompt(

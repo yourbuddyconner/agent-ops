@@ -82,7 +82,7 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
             </div>
           )}
           {showMessageContent(message.content || '', audioParts.length > 0) && (
-            <div className="rounded-2xl rounded-br-md bg-neutral-900 px-4 py-2.5 text-white shadow-sm dark:bg-neutral-100 dark:text-neutral-900 dark:shadow-none [&_.markdown-body]:text-white/95 [&_.markdown-body]:dark:text-neutral-900">
+            <div className="user-bubble rounded-2xl rounded-br-md bg-neutral-900 px-4 py-2.5 text-white shadow-sm dark:bg-neutral-100 dark:text-neutral-900 dark:shadow-none [&_.markdown-body]:text-white/95 [&_.markdown-body]:dark:text-neutral-900">
               <MarkdownContent content={message.content || ''} />
             </div>
           )}

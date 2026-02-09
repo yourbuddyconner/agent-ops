@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { Button } from '@/components/ui/button';
 import { useFileFinder, type FileReadResponse } from '@/api/files';
 import { api } from '@/api/client';
 import { useWakeSession } from '@/api/sessions';
@@ -583,7 +582,7 @@ export function ChatInput({
           ))}
         </div>
       )}
-      <div className="relative flex gap-2">
+      <div className="relative flex items-end gap-2">
         {showModelOverlay && (
           <div
             ref={overlayRef}
@@ -615,7 +614,7 @@ export function ChatInput({
                         }`}
                         onMouseEnter={() => setHighlightIndex(idx)}
                         onMouseDown={(e) => {
-                          e.preventDefault(); // prevent blur
+                          e.preventDefault();
                           selectModel(m);
                         }}
                       >
@@ -671,146 +670,141 @@ export function ChatInput({
             )}
           </div>
         )}
+        {/* + actions button — outside container, like ChatGPT */}
         {showActionsButton && (
-          <Button
+          <button
             type="button"
-            variant="secondary"
-            size="sm"
             onClick={onOpenActions}
-            className="h-11 w-11 shrink-0 rounded-full p-0 md:h-7 md:w-7"
+            className="mb-1.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-neutral-200 bg-surface-1/60 text-neutral-500 transition-colors hover:bg-surface-2 hover:text-neutral-700 dark:border-neutral-700 dark:bg-surface-2 dark:text-neutral-400 dark:hover:bg-surface-3 dark:hover:text-neutral-300"
             title="Open actions"
             aria-label="Open actions"
           >
-            <PlusIcon className="h-5 w-5 md:h-3.5 md:w-3.5" />
-          </Button>
+            <PlusIcon className="h-4 w-4" />
+          </button>
         )}
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          onClick={() => fileInputRef.current?.click()}
-          className="h-11 w-11 shrink-0 rounded-full p-0 md:h-7 md:w-7"
-          title="Attach images"
-          aria-label="Attach images"
-        >
-          <ImageIcon className="h-5 w-5 md:h-3.5 md:w-3.5" />
-        </Button>
-        {isRecording ? (
-          <div className="flex items-center gap-1.5">
-            <Button
+        {/* Input container — textarea + toolbar + send, all in one box */}
+        <div className="flex min-w-0 flex-1 flex-col rounded-2xl border border-neutral-200 bg-surface-1/40 transition-colors focus-within:border-accent/30 focus-within:bg-surface-0 focus-within:ring-1 focus-within:ring-accent/20 dark:border-neutral-700 dark:bg-surface-1 dark:focus-within:border-accent/30 dark:focus-within:bg-surface-0">
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => {
+              setValue(e.target.value);
+              updateCursorPos();
+            }}
+            onKeyDown={handleKeyDown}
+            onFocus={handleFocus}
+            onBlur={() => onFocusChange?.(false)}
+            onSelect={updateCursorPos}
+            onClick={updateCursorPos}
+            placeholder={placeholder}
+            disabled={disabled}
+            rows={1}
+            className="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-base leading-5 text-neutral-900 placeholder:text-neutral-400 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-100 dark:placeholder:text-neutral-500 md:text-[13px] md:leading-normal"
+          />
+          <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
+            <button
               type="button"
-              variant="secondary"
-              size="sm"
-              onClick={cancelRecording}
-              className="h-11 w-11 shrink-0 rounded-full p-0 md:h-7 md:w-7"
-              title="Cancel recording"
-              aria-label="Cancel recording"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-surface-2 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-surface-3 dark:hover:text-neutral-300"
+              title="Attach images"
+              aria-label="Attach images"
             >
-              <CloseIcon className="h-4 w-4 md:h-3 md:w-3" />
-            </Button>
-            <span className="flex items-center gap-1.5 font-mono text-xs text-red-500">
-              <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-500" />
-              {formatRecordingDuration(recordingDuration)}
-            </span>
-            <Button
-              type="button"
-              size="sm"
-              onClick={handleMicClick}
-              className="h-11 w-11 shrink-0 rounded-full p-0 md:h-7 md:w-7"
-              title="Stop recording"
-              aria-label="Stop recording"
-            >
-              <MicStopIcon className="h-5 w-5 md:h-3.5 md:w-3.5" />
-            </Button>
-          </div>
-        ) : (
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={handleMicClick}
-            className="h-11 w-11 shrink-0 rounded-full p-0 md:h-7 md:w-7"
-            title="Record voice note"
-            aria-label="Record voice note"
-          >
-            <MicIcon className="h-5 w-5 md:h-3.5 md:w-3.5" />
-          </Button>
-        )}
-        {micError && (
-          <span className="font-mono text-[10px] text-red-400">{micError}</span>
-        )}
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(e) => {
-            setValue(e.target.value);
-            updateCursorPos();
-          }}
-          onKeyDown={handleKeyDown}
-          onFocus={handleFocus}
-          onBlur={() => onFocusChange?.(false)}
-          onSelect={updateCursorPos}
-          onClick={updateCursorPos}
-          placeholder={placeholder}
-          disabled={disabled}
-          rows={1}
-          className="flex-1 resize-none rounded-lg border border-neutral-200 bg-surface-1/40 px-3.5 py-2.5 text-base leading-5 text-neutral-900 placeholder:text-neutral-400 transition-colors focus-visible:border-accent/30 focus-visible:bg-surface-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:bg-surface-1 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus-visible:border-accent/30 dark:focus-visible:bg-surface-0 md:text-[13px] md:leading-normal"
-        />
-        {isAgentActive ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            onClick={onAbort}
-            className="h-11 min-w-[3.5rem] rounded-xl px-3 text-[14px] md:h-7 md:min-w-0 md:rounded-md md:px-2.5 md:text-[13px]"
-          >
-            Stop
-          </Button>
-        ) : (
-          <Button
-            type="submit"
-            disabled={(!value.trim() && attachments.length === 0) || disabled || sendDisabled || isSendingFiles}
-            size="sm"
-            className="h-11 min-w-[3.5rem] rounded-xl px-3 text-[15px] md:h-7 md:min-w-0 md:rounded-md md:px-2.5 md:text-[13px]"
-          >
-            {isSendingFiles ? 'Loading...' : 'Send'}
-          </Button>
-        )}
-      </div>
-      <div className={`flex items-center justify-between gap-3 ${compact ? 'mt-1' : 'mt-1.5'}`}>
-        {!compact && (
-          <p className="font-mono text-[9px] tracking-wide text-neutral-400/70 dark:text-neutral-500">
-            {sessionStatus === 'restoring'
-              ? 'restoring session...'
-              : sessionStatus === 'hibernated'
-                ? 'hibernated — focus to restore'
-                  : sessionStatus === 'hibernating'
-                    ? 'hibernating...'
-                  : isAgentActive
-                    ? 'esc to stop · shift+enter for new line · @ files · /model · drag images · mic'
-                    : 'enter to send · shift+enter for new line · @ files · /model · drag images · mic'}
-          </p>
-        )}
-        {compact && <div className="flex-1" />}
-        {hasModels && (
-          <select
-            value={selectedModel}
-            onChange={(e) => onModelChange?.(e.target.value)}
-            className="shrink-0 cursor-pointer appearance-none rounded-md border border-neutral-200/80 bg-surface-1/60 px-2 py-1 font-mono text-xs font-medium text-neutral-500 transition-colors hover:border-neutral-300 hover:text-neutral-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/30 dark:border-neutral-700 dark:bg-surface-2 dark:text-neutral-400 dark:hover:border-neutral-600 md:py-0.5 md:text-[9px]"
-          >
-            <option value="">Default model</option>
-            {availableModels.map((provider) => (
-              <optgroup key={provider.provider} label={provider.provider}>
-                {provider.models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                  </option>
+              <ImageIcon className="h-4 w-4" />
+            </button>
+            {isRecording ? (
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={cancelRecording}
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-surface-2 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-surface-3 dark:hover:text-neutral-300"
+                  title="Cancel recording"
+                  aria-label="Cancel recording"
+                >
+                  <CloseIcon className="h-3.5 w-3.5" />
+                </button>
+                <span className="flex items-center gap-1 font-mono text-[10px] text-red-500">
+                  <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
+                  {formatRecordingDuration(recordingDuration)}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleMicClick}
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-red-500/10 text-red-500 transition-colors hover:bg-red-500/20"
+                  title="Stop recording"
+                  aria-label="Stop recording"
+                >
+                  <MicStopIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleMicClick}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-surface-2 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-surface-3 dark:hover:text-neutral-300"
+                title="Record voice note"
+                aria-label="Record voice note"
+              >
+                <MicIcon className="h-4 w-4" />
+              </button>
+            )}
+            {micError && (
+              <span className="font-mono text-[10px] text-red-400">{micError}</span>
+            )}
+            <div className="flex-1" />
+            {hasModels && (
+              <select
+                value={selectedModel}
+                onChange={(e) => onModelChange?.(e.target.value)}
+                className="shrink-0 cursor-pointer appearance-none rounded-md border border-neutral-200/60 bg-transparent px-1.5 py-0.5 font-mono text-[10px] font-medium text-neutral-400 transition-colors hover:border-neutral-300 hover:text-neutral-600 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/30 dark:border-neutral-700/60 dark:text-neutral-500 dark:hover:border-neutral-600 dark:hover:text-neutral-400"
+              >
+                <option value="">Default model</option>
+                {availableModels.map((provider) => (
+                  <optgroup key={provider.provider} label={provider.provider}>
+                    {provider.models.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
-              </optgroup>
-            ))}
-          </select>
-        )}
+              </select>
+            )}
+            {/* Send / Stop — circle button inside the container */}
+            {isAgentActive ? (
+              <button
+                type="button"
+                onClick={onAbort}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-neutral-600 text-white transition-colors hover:bg-neutral-700 dark:bg-neutral-400 dark:text-neutral-900 dark:hover:bg-neutral-300"
+                aria-label="Stop"
+              >
+                <StopIcon className="h-3.5 w-3.5" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={(!value.trim() && attachments.length === 0) || disabled || sendDisabled || isSendingFiles}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-white transition-colors hover:bg-neutral-800 disabled:bg-neutral-300 disabled:text-neutral-500 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500"
+                aria-label="Send"
+              >
+                <SendIcon className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
       </div>
+      {!compact && (
+        <p className="mt-1 hidden font-mono text-[9px] tracking-wide text-neutral-400/70 dark:text-neutral-500 md:block">
+          {sessionStatus === 'restoring'
+            ? 'restoring session...'
+            : sessionStatus === 'hibernated'
+              ? 'hibernated — focus to restore'
+                : sessionStatus === 'hibernating'
+                  ? 'hibernating...'
+                : isAgentActive
+                  ? 'esc to stop · shift+enter for new line · @ files · /model · drag images · mic'
+                  : 'enter to send · shift+enter for new line · @ files · /model · drag images · mic'}
+        </p>
+      )}
     </form>
   );
 }
@@ -909,6 +903,41 @@ function MicStopIcon({ className }: { className?: string }) {
       strokeWidth="1.75"
       strokeLinecap="round"
       strokeLinejoin="round"
+      className={className}
+    >
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
+  );
+}
+
+function SendIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M12 19V5" />
+      <path d="m5 12 7-7 7 7" />
+    </svg>
+  );
+}
+
+function StopIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="currentColor"
       className={className}
     >
       <rect x="6" y="6" width="12" height="12" rx="2" />

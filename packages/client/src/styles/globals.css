@@ -135,7 +135,23 @@
   }
 
   .markdown-body blockquote {
-    @apply my-2 border-l-2 border-neutral-300 pl-3 text-neutral-500 dark:border-neutral-600 dark:text-neutral-400;
+    @apply my-2.5 rounded-r-md border-l-[3px] border-neutral-300 bg-neutral-100/60 py-2 pl-3.5 pr-3 text-[0.9em] text-neutral-600 dark:border-neutral-500 dark:bg-neutral-800/60 dark:text-neutral-300;
+  }
+
+  /* Blockquote inside user bubbles (dark bg in light mode, light bg in dark mode) */
+  .user-bubble .markdown-body blockquote {
+    @apply border-white/30 bg-white/10 text-white/80 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-300;
+  }
+
+  /* Prevent explicit color overrides on strong/heading elements from clashing with bubble text color */
+  .user-bubble .markdown-body strong,
+  .user-bubble .markdown-body h1,
+  .user-bubble .markdown-body h2,
+  .user-bubble .markdown-body h3,
+  .user-bubble .markdown-body h4,
+  .user-bubble .markdown-body h5,
+  .user-bubble .markdown-body h6 {
+    color: inherit;
   }
 
   .markdown-body hr {
