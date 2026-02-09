@@ -158,26 +158,30 @@ dashboardRouter.get('/stats', async (c) => {
       LIMIT 8
     `).bind(periodStartStr).all(),
 
-    // Recent sessions (org-wide)
+    // Recent sessions (user-accessible: owned or participant)
     c.env.DB.prepare(`
-      SELECT
-        id, workspace, status, message_count, tool_call_count,
-        active_seconds as duration_seconds,
-        created_at, last_active_at, error_message
-      FROM sessions
-      WHERE COALESCE(purpose, 'interactive') != 'workflow'
-      ORDER BY created_at DESC
+      SELECT DISTINCT
+        s.id, s.workspace, s.status, s.message_count, s.tool_call_count,
+        s.active_seconds as duration_seconds,
+        s.created_at, s.last_active_at, s.error_message
+      FROM sessions s
+      LEFT JOIN session_participants sp ON sp.session_id = s.id AND sp.user_id = ?
+      WHERE (s.user_id = ? OR sp.user_id IS NOT NULL)
+        AND COALESCE(s.purpose, 'interactive') != 'workflow'
+      ORDER BY s.created_at DESC
       LIMIT 10
-    `).all(),
+    `).bind(user.id, user.id).all(),
 
-    // Currently active sessions (org-wide)
+    // Currently active sessions (user-accessible: owned or participant)
     c.env.DB.prepare(`
-      SELECT id, workspace, status, created_at, last_active_at
-      FROM sessions
-      WHERE status IN ('running', 'idle', 'initializing', 'restoring')
-        AND COALESCE(purpose, 'interactive') != 'workflow'
-      ORDER BY last_active_at DESC
-    `).all(),
+      SELECT DISTINCT s.id, s.workspace, s.status, s.created_at, s.last_active_at
+      FROM sessions s
+      LEFT JOIN session_participants sp ON sp.session_id = s.id AND sp.user_id = ?
+      WHERE (s.user_id = ? OR sp.user_id IS NOT NULL)
+        AND s.status IN ('running', 'idle', 'initializing', 'restoring')
+        AND COALESCE(s.purpose, 'interactive') != 'workflow'
+      ORDER BY s.last_active_at DESC
+    `).bind(user.id, user.id).all(),
   ]);
 
   function buildHero(agg: AggRow) {
