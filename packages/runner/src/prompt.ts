@@ -801,10 +801,40 @@ export class PromptHandler {
         }
       }
 
-      // Store failover state
+      // Transcribe audio attachments before sending to OpenCode
+      let effectiveContent = content;
+      let effectiveAttachments = attachments ?? [];
+      const hasAudio = effectiveAttachments.some(a => a.mime.startsWith('audio/'));
+      if (hasAudio) {
+        let transcribed = false;
+        try {
+          const { transcriptions, remaining } = await this.transcribeAudioAttachments(effectiveAttachments);
+          if (transcriptions.length > 0) {
+            transcribed = true;
+            const transcriptText = transcriptions.join('\n\n');
+            const transcriptBlock = transcriptions.map(t => `[Transcribed voice note]\n${t}`).join('\n\n');
+            effectiveContent = effectiveContent
+              ? `${transcriptBlock}\n\n${effectiveContent}`
+              : transcriptBlock;
+            // Send transcript back to DO so UI can display it alongside audio player
+            this.agentClient.sendAudioTranscript(messageId, transcriptText);
+          }
+          effectiveAttachments = remaining;
+        } catch (err) {
+          console.error('[PromptHandler] Failed to transcribe audio:', err);
+        }
+        // Strip audio from what goes to OpenCode — it can't process audio files
+        effectiveAttachments = effectiveAttachments.filter(a => !a.mime.startsWith('audio/'));
+        // If transcription failed and content is empty, provide a fallback so the prompt isn't empty
+        if (!transcribed && !effectiveContent?.trim()) {
+          effectiveContent = '[The user sent a voice note but transcription is unavailable. Please ask them to type their message instead.]';
+        }
+      }
+
+      // Store failover state (use post-transcription values so model failover doesn't re-transcribe)
       this.currentModelPreferences = failoverChain.length > 0 ? failoverChain : undefined;
-      this.pendingRetryContent = content;
-      this.pendingRetryAttachments = attachments ?? [];
+      this.pendingRetryContent = effectiveContent;
+      this.pendingRetryAttachments = effectiveAttachments;
       this.pendingRetryAuthor = author;
 
       // Determine which model to use: explicit model takes priority, then first preference
@@ -820,13 +850,13 @@ export class PromptHandler {
 
       // Send message async (fire-and-forget)
       try {
-        await this.sendPromptAsync(this.sessionId, content, effectiveModel, attachments, author, channelType, channelId);
+        await this.sendPromptAsync(this.sessionId, effectiveContent, effectiveModel, effectiveAttachments, author, channelType, channelId);
       } catch (err) {
         if (this.isSessionGone(err)) {
           console.warn("[PromptHandler] OpenCode session missing; recreating session and retrying prompt");
           this.sessionId = await this.createSession();
           await this.startEventStream();
-          await this.sendPromptAsync(this.sessionId, content, effectiveModel, attachments, author, channelType, channelId);
+          await this.sendPromptAsync(this.sessionId, effectiveContent, effectiveModel, effectiveAttachments, author, channelType, channelId);
         } else {
           throw err;
         }
@@ -1509,6 +1539,120 @@ export class PromptHandler {
       console.warn("[PromptHandler] Error fetching available models:", err);
       return [];
     }
+  }
+
+  // ─── Audio Transcription ─────────────────────────────────────────────
+
+  private static AUDIO_EXTENSIONS: Record<string, string> = {
+    'audio/ogg': 'ogg',
+    'audio/mpeg': 'mp3',
+    'audio/mp3': 'mp3',
+    'audio/wav': 'wav',
+    'audio/x-wav': 'wav',
+    'audio/webm': 'webm',
+    'audio/mp4': 'mp4',
+    'audio/m4a': 'm4a',
+    'audio/flac': 'flac',
+  };
+
+  private async transcribeAudioAttachments(
+    attachments: PromptAttachment[],
+  ): Promise<{ transcriptions: string[]; remaining: PromptAttachment[] }> {
+    const fs = await import('fs/promises');
+    const transcriptions: string[] = [];
+    const remaining: PromptAttachment[] = [];
+
+    for (const attachment of attachments) {
+      if (!attachment.mime.startsWith('audio/')) {
+        remaining.push(attachment);
+        continue;
+      }
+
+      const uid = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const ext = PromptHandler.AUDIO_EXTENSIONS[attachment.mime] || 'ogg';
+      const srcPath = `/tmp/voice-${uid}.${ext}`;
+      const wavPath = `/tmp/voice-${uid}.wav`;
+      const outBase = `/tmp/voice-${uid}-out`;
+      const txtPath = `${outBase}.txt`;
+
+      try {
+        // Decode base64 data URL → write to temp file
+        const commaIdx = attachment.url.indexOf(',');
+        if (commaIdx === -1) {
+          console.warn('[PromptHandler] Invalid audio data URL, skipping');
+          remaining.push(attachment);
+          continue;
+        }
+        const b64 = attachment.url.slice(commaIdx + 1);
+        const bytes = Buffer.from(b64, 'base64');
+        await Bun.write(srcPath, bytes);
+        console.log(`[PromptHandler] Wrote audio file: ${srcPath} (${bytes.length} bytes, ${attachment.mime})`);
+
+        // Convert to WAV (16kHz mono) via ffmpeg — whisper-cli needs WAV input
+        const needsConvert = ext !== 'wav';
+        const whisperInput = needsConvert ? wavPath : srcPath;
+
+        if (needsConvert) {
+          const ffmpegProc = Bun.spawn([
+            'ffmpeg', '-i', srcPath,
+            '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le',
+            '-y', wavPath,
+          ], { stdout: 'pipe', stderr: 'pipe' });
+          const ffmpegExit = await ffmpegProc.exited;
+          if (ffmpegExit !== 0) {
+            const stderr = await new Response(ffmpegProc.stderr).text();
+            console.error(`[PromptHandler] ffmpeg conversion failed (exit ${ffmpegExit}): ${stderr.slice(-500)}`);
+            remaining.push(attachment);
+            continue;
+          }
+          console.log(`[PromptHandler] Converted ${ext} → WAV: ${wavPath}`);
+        }
+
+        // Run whisper-cli
+        const whisperProc = Bun.spawn([
+          'whisper-cli',
+          '--model', '/models/whisper/ggml-base.en.bin',
+          '--file', whisperInput,
+          '--output-txt',
+          '--output-file', outBase,
+          '--no-timestamps',
+        ], { stdout: 'pipe', stderr: 'pipe' });
+
+        const exitCode = await whisperProc.exited;
+        const stderr = await new Response(whisperProc.stderr).text();
+        if (exitCode !== 0) {
+          console.error(`[PromptHandler] whisper-cli failed (exit ${exitCode}): ${stderr.slice(-500)}`);
+          remaining.push(attachment);
+          continue;
+        }
+
+        // Read transcript
+        if (!await Bun.file(txtPath).exists()) {
+          console.error(`[PromptHandler] whisper-cli produced no output file at ${txtPath}. stderr: ${stderr.slice(-500)}`);
+          remaining.push(attachment);
+          continue;
+        }
+
+        const transcript = (await Bun.file(txtPath).text()).trim();
+        if (transcript) {
+          transcriptions.push(transcript);
+          console.log(`[PromptHandler] Transcribed audio (${attachment.filename || 'voice'}): "${transcript.slice(0, 100)}..."`);
+        } else {
+          console.warn(`[PromptHandler] whisper-cli produced empty transcript`);
+          remaining.push(attachment);
+        }
+      } catch (err) {
+        console.error('[PromptHandler] Audio transcription error:', err);
+        remaining.push(attachment);
+      } finally {
+        // Clean up all temp files
+        for (const p of [srcPath, wavPath, txtPath]) {
+          try { await fs.unlink(p); } catch {}
+        }
+      }
+    }
+
+    return { transcriptions, remaining };
   }
 
   private async sendPromptAsync(sessionId: string, content: string, model?: string, attachments?: PromptAttachment[], author?: PromptAuthor, channelType?: string, channelId?: string): Promise<void> {

@@ -63,11 +63,23 @@ def get_base_image() -> modal.Image:
             "chromium",
             "imagemagick",
             "xdotool",
+            "ffmpeg",
         )
         # TTYD (web terminal)
         .run_commands(
             'curl -fsSL -o /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64"',
             "chmod +x /usr/local/bin/ttyd",
+        )
+        # whisper.cpp (speech-to-text) — build from source with shared libs installed
+        .apt_install("cmake")
+        .run_commands(
+            "git clone --depth 1 https://github.com/ggml-org/whisper.cpp /tmp/whisper-build",
+            "cd /tmp/whisper-build && cmake -B build && cmake --build build --config Release -j$(nproc)",
+            "cp /tmp/whisper-build/build/bin/whisper-cli /usr/local/bin/whisper-cli",
+            "cp /tmp/whisper-build/build/src/libwhisper.so* /usr/local/lib/",
+            "cp /tmp/whisper-build/build/ggml/src/libggml*.so* /usr/local/lib/",
+            "ldconfig",
+            "rm -rf /tmp/whisper-build",
         )
         # Runner package (Bun/TS — runs inside sandbox)
         # Exclude node_modules - it contains symlinks to monorepo root that cause timeouts
@@ -113,7 +125,7 @@ def get_base_image() -> modal.Image:
                 "DISPLAY": ":99",
                 "HOME": "/root",
                 # Force image rebuild on deploy (change this value to trigger rebuild)
-                "IMAGE_BUILD_VERSION": "2026-02-08-v100-channel-metadata",
+                "IMAGE_BUILD_VERSION": "2026-02-08-v103-ffmpeg-convert",
                 "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
             }
         )

@@ -151,6 +151,151 @@ telegramRouter.post('/webhook/:userId', async (c) => {
     }
   });
 
+  bot.on('message:voice', async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const caption = ctx.message.caption || '';
+    const duration = ctx.message.voice.duration;
+
+    const file = await ctx.api.getFile(ctx.message.voice.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${botToken}/${file.file_path}`;
+
+    const resp = await fetch(fileUrl);
+    if (!resp.ok) {
+      await ctx.reply('Failed to download voice note.');
+      return;
+    }
+
+    const buffer = await resp.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const base64 = btoa(binary);
+    const dataUrl = `data:audio/ogg;base64,${base64}`;
+
+    const attachment = {
+      type: 'file' as const,
+      mime: 'audio/ogg',
+      url: dataUrl,
+      filename: file.file_path?.split('/').pop() || `voice-${Date.now()}.ogg`,
+    };
+
+    const content = caption || `[Voice note, ${duration}s]`;
+
+    const scopeKey = telegramScopeKey(userId, chatId);
+    const binding = await db.getChannelBindingByScopeKey(c.env.DB, scopeKey);
+
+    if (binding) {
+      const doId = c.env.SESSIONS.idFromName(binding.sessionId);
+      const sessionDO = c.env.SESSIONS.get(doId);
+      try {
+        const doResp = await sessionDO.fetch(
+          new Request('http://do/prompt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              content,
+              attachments: [attachment],
+              queueMode: binding.queueMode,
+            }),
+          }),
+        );
+        if (doResp.ok) return;
+      } catch (err) {
+        console.error(`Telegram: failed to route voice to session ${binding.sessionId}:`, err);
+      }
+    }
+
+    const result = await dispatchOrchestratorPrompt(c.env, {
+      userId,
+      content,
+      channelType: 'telegram',
+      channelId: chatId,
+      authorName: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '),
+      attachments: [attachment],
+    });
+
+    if (!result.dispatched) {
+      await ctx.reply(
+        'Your orchestrator is not running. Start it from the Agent-Ops dashboard.',
+      );
+    }
+  });
+
+  bot.on('message:audio', async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const caption = ctx.message.caption || '';
+    const audio = ctx.message.audio;
+
+    const file = await ctx.api.getFile(audio.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${botToken}/${file.file_path}`;
+
+    const resp = await fetch(fileUrl);
+    if (!resp.ok) {
+      await ctx.reply('Failed to download audio file.');
+      return;
+    }
+
+    const buffer = await resp.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const base64 = btoa(binary);
+    const mime = audio.mime_type || 'audio/mpeg';
+    const dataUrl = `data:${mime};base64,${base64}`;
+
+    const attachment = {
+      type: 'file' as const,
+      mime,
+      url: dataUrl,
+      filename: audio.file_name || file.file_path?.split('/').pop() || `audio-${Date.now()}.mp3`,
+    };
+
+    const content = caption || `[Audio: ${audio.title || audio.file_name || 'untitled'}, ${audio.duration}s]`;
+
+    const scopeKey = telegramScopeKey(userId, chatId);
+    const binding = await db.getChannelBindingByScopeKey(c.env.DB, scopeKey);
+
+    if (binding) {
+      const doId = c.env.SESSIONS.idFromName(binding.sessionId);
+      const sessionDO = c.env.SESSIONS.get(doId);
+      try {
+        const doResp = await sessionDO.fetch(
+          new Request('http://do/prompt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              content,
+              attachments: [attachment],
+              queueMode: binding.queueMode,
+            }),
+          }),
+        );
+        if (doResp.ok) return;
+      } catch (err) {
+        console.error(`Telegram: failed to route audio to session ${binding.sessionId}:`, err);
+      }
+    }
+
+    const result = await dispatchOrchestratorPrompt(c.env, {
+      userId,
+      content,
+      channelType: 'telegram',
+      channelId: chatId,
+      authorName: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '),
+      attachments: [attachment],
+    });
+
+    if (!result.dispatched) {
+      await ctx.reply(
+        'Your orchestrator is not running. Start it from the Agent-Ops dashboard.',
+      );
+    }
+  });
+
   const handler = webhookCallback(bot, 'hono');
   return handler(c);
 });

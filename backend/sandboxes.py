@@ -12,6 +12,8 @@ from config import (
     MAX_TIMEOUT_SECONDS,
     MODAL_IDLE_TIMEOUT_BUFFER_SECONDS,
     OPENCODE_PORT,
+    WHISPER_MODELS_MOUNT,
+    WHISPER_MODELS_VOLUME,
     get_secret,
 )
 from images.base import get_base_image
@@ -88,6 +90,7 @@ class SandboxManager:
                     f"workspace-{config.session_id.replace(':', '-')}",
                     create_if_missing=True,
                 ),
+                WHISPER_MODELS_MOUNT: modal.Volume.from_name(WHISPER_MODELS_VOLUME),
             },
         )
 
@@ -171,6 +174,7 @@ class SandboxManager:
                     f"workspace-{config.session_id.replace(':', '-')}",
                     create_if_missing=True,
                 ),
+                WHISPER_MODELS_MOUNT: modal.Volume.from_name(WHISPER_MODELS_VOLUME),
             },
         )
 

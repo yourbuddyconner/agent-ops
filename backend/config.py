@@ -9,6 +9,10 @@ MAX_TIMEOUT_SECONDS = 24 * 60 * 60  # 24 hours
 OPENCODE_PORT = 4096
 GATEWAY_PORT = 9000
 
+# Whisper (speech-to-text)
+WHISPER_MODELS_VOLUME = "whisper-models"
+WHISPER_MODELS_MOUNT = "/models/whisper"
+
 # Image defaults
 BASE_IMAGE_TAG = "debian:bookworm-slim"
 NODE_VERSION = "22"

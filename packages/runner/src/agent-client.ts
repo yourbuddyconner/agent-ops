@@ -278,6 +278,10 @@ export class AgentClient {
     this.send({ type: "child-session", childSessionId, title } as any);
   }
 
+  sendAudioTranscript(messageId: string, transcript: string): void {
+    this.send({ type: "audio-transcript", messageId, transcript } as any);
+  }
+
   // ─── Request/Response (Runner → DO → Runner) ─────────────────────────
 
   requestSpawnChild(params: {

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+
 import modal
+
+from config import WHISPER_MODELS_MOUNT, WHISPER_MODELS_VOLUME
 
 app = modal.App("agent-ops-backend")
 
@@ -21,7 +25,7 @@ from session import CreateSessionRequest, SessionManager
 session_manager = SessionManager(app)
 
 
-@app.function(image=fn_image, timeout=900)
+@app.function(image=fn_image, timeout=1800)
 @modal.fastapi_endpoint(method="POST", label="create-session")
 async def create_session(request: dict) -> dict:
     """Create a new session and spawn a sandbox.
@@ -102,7 +106,7 @@ async def hibernate_session(request: dict) -> dict:
     return {"snapshotImageId": snapshot_image_id}
 
 
-@app.function(image=fn_image, timeout=900)
+@app.function(image=fn_image, timeout=1800)
 @modal.fastapi_endpoint(method="POST", label="restore-session")
 async def restore_session(request: dict) -> dict:
     """Restore a session from a filesystem snapshot.
@@ -158,3 +162,33 @@ async def session_status(request: dict) -> dict:
     """
     sandbox_id = request["sandboxId"]
     return await session_manager.status(sandbox_id)
+
+
+@app.function(
+    image=fn_image,
+    volumes={WHISPER_MODELS_MOUNT: modal.Volume.from_name(WHISPER_MODELS_VOLUME, create_if_missing=True)},
+    timeout=1800,
+)
+def setup_whisper_models():
+    """Download whisper.cpp GGML models into the shared volume. Run once.
+
+    Usage: modal run backend/app.py::setup_whisper_models
+    """
+    import urllib.request
+
+    mount = "/models/whisper"
+    base_url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+    models = [
+        ("ggml-base.en.bin", 142_000_000),
+        ("ggml-large-v3.bin", 3_095_000_000),
+    ]
+    for name, expected_size in models:
+        path = f"{mount}/{name}"
+        if os.path.exists(path) and os.path.getsize(path) > expected_size * 0.9:
+            print(f"Already exists: {name} ({os.path.getsize(path)} bytes)")
+            continue
+        print(f"Downloading {name}...")
+        urllib.request.urlretrieve(f"{base_url}/{name}", path)
+        print(f"Downloaded {name} ({os.path.getsize(path)} bytes)")
+
+    modal.Volume.from_name("whisper-models").commit()

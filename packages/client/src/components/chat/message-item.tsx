@@ -1,3 +1,4 @@
+import { useState, useRef, useCallback, useEffect } from 'react';
 import type { Message } from '@/api/types';
 import type { ConnectedUser } from '@/hooks/use-chat';
 import { formatTime } from '@/lib/format';
@@ -25,6 +26,9 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
 
   // Extract base64 screenshot parts if present
   const screenshotParts = getScreenshotParts(message.parts);
+
+  // Extract audio parts for inline player
+  const audioParts = getAudioParts(message.parts);
 
   // Extract structured tool data from parts (for tool messages)
   const toolData = isTool ? getToolCallFromParts(message.parts) : null;
@@ -70,16 +74,23 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
               ))}
             </div>
           )}
-          {message.content.trim().length > 0 && (
+          {audioParts.length > 0 && (
+            <div className="mb-2 space-y-1.5">
+              {audioParts.map((audio, i) => (
+                <AudioPlayer key={i} src={audio.src} filename={audio.filename} transcript={audio.transcript} />
+              ))}
+            </div>
+          )}
+          {showMessageContent(message.content || '', audioParts.length > 0) && (
             <div className="rounded-2xl rounded-br-md bg-neutral-900 px-4 py-2.5 text-white shadow-sm dark:bg-neutral-100 dark:text-neutral-900 dark:shadow-none [&_.markdown-body]:text-white/95 [&_.markdown-body]:dark:text-neutral-900">
-              <MarkdownContent content={message.content} />
+              <MarkdownContent content={message.content || ''} />
             </div>
           )}
           <div className="mt-1 flex items-center justify-end gap-2 px-1">
             <span className="font-mono text-[9px] tabular-nums text-neutral-300 dark:text-neutral-600">
               {formatTime(message.createdAt)}
             </span>
-            {message.content.trim().length > 0 && (
+            {(message.content || '').trim().length > 0 && (
               <MessageCopyButton text={message.content} />
             )}
             {onRevert && (
@@ -162,12 +173,12 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
             <span className="font-mono text-[9px] tabular-nums text-neutral-300 dark:text-neutral-600">
               {formatTime(message.createdAt)}
             </span>
-            {message.content.trim().length > 0 && (
+            {(message.content || '').trim().length > 0 && (
               <MessageCopyButton text={message.content} />
             )}
           </div>
           <div className="rounded-2xl rounded-bl-md bg-amber-500/[0.08] px-3 py-2 text-amber-800 shadow-sm dark:bg-amber-500/[0.12] dark:text-amber-100 dark:shadow-none">
-            <MarkdownContent content={message.content} />
+            <MarkdownContent content={message.content || ''} />
           </div>
         </div>
       </div>
@@ -197,12 +208,12 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
           <span className="font-mono text-[10px] tabular-nums text-neutral-300 dark:text-neutral-600">
             {formatTime(message.createdAt)}
           </span>
-          {message.content.trim().length > 0 && (
+          {(message.content || '').trim().length > 0 && (
             <MessageCopyButton text={message.content} className="text-[10px]" />
           )}
         </div>
         <div className="border-l-[1.5px] border-accent/15 pl-3 dark:border-accent/10">
-          <MarkdownContent content={message.content} />
+          <MarkdownContent content={message.content || ''} />
         </div>
         {screenshotParts.length > 0 && (
           <div className="mt-2 space-y-2">
@@ -239,6 +250,176 @@ function getToolCallFromParts(parts: unknown): ToolCallData | null {
   }
 
   return null;
+}
+
+/** Check whether to show textual message content, hiding auto-generated voice note placeholders. */
+function showMessageContent(content: string | undefined, hasAudio: boolean): boolean {
+  const trimmed = (content || '').trim();
+  if (trimmed.length === 0) return false;
+  // Hide auto-generated placeholders like "[Voice note, 5s]" or "[Audio: title, 10s]"
+  if (hasAudio && /^\[(?:Voice note|Audio)[^\]]*\]$/.test(trimmed)) return false;
+  return true;
+}
+
+interface AudioPartData {
+  src: string;
+  filename?: string;
+  transcript?: string;
+}
+
+/** Extract audio data URIs from message parts (if they exist). */
+function getAudioParts(parts: unknown): AudioPartData[] {
+  if (!parts || typeof parts !== 'object') return [];
+
+  const result: AudioPartData[] = [];
+  const items = Array.isArray(parts) ? parts : [parts];
+
+  for (const part of items) {
+    if (!part || typeof part !== 'object') continue;
+    const p = part as Record<string, unknown>;
+
+    if (p.type === 'audio' && typeof p.data === 'string') {
+      const mime = typeof p.mimeType === 'string' ? p.mimeType : 'audio/webm';
+      result.push({
+        src: `data:${mime};base64,${p.data}`,
+        filename: typeof p.filename === 'string' ? p.filename : undefined,
+        transcript: typeof p.transcript === 'string' ? p.transcript : undefined,
+      });
+    }
+  }
+
+  return result;
+}
+
+/** Inline audio player with play/pause, waveform-style progress bar, and duration. */
+function AudioPlayer({ src, filename, transcript }: { src: string; filename?: string; transcript?: string }) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const onLoadedMetadata = () => setDuration(audio.duration);
+    const onTimeUpdate = () => setCurrentTime(audio.currentTime);
+    const onEnded = () => { setIsPlaying(false); setCurrentTime(0); };
+
+    audio.addEventListener('loadedmetadata', onLoadedMetadata);
+    audio.addEventListener('timeupdate', onTimeUpdate);
+    audio.addEventListener('ended', onEnded);
+
+    return () => {
+      audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+      audio.removeEventListener('timeupdate', onTimeUpdate);
+      audio.removeEventListener('ended', onEnded);
+    };
+  }, []);
+
+  const togglePlay = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (isPlaying) {
+      audio.pause();
+      setIsPlaying(false);
+    } else {
+      audio.play();
+      setIsPlaying(true);
+    }
+  }, [isPlaying]);
+
+  const handleSeek = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const audio = audioRef.current;
+    if (!audio || !duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    audio.currentTime = ratio * duration;
+    setCurrentTime(audio.currentTime);
+  }, [duration]);
+
+  const formatDuration = (seconds: number) => {
+    if (!seconds || !isFinite(seconds)) return '0:00';
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  return (
+    <>
+    <div className="flex items-center gap-2.5 rounded-2xl rounded-br-md bg-neutral-900 px-3 py-2.5 shadow-sm dark:bg-neutral-100">
+      <audio ref={audioRef} src={src} preload="metadata" />
+      <button
+        type="button"
+        onClick={togglePlay}
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent/90"
+        aria-label={isPlaying ? 'Pause' : 'Play'}
+      >
+        {isPlaying ? (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="4" width="4" height="16" rx="1" />
+            <rect x="14" y="4" width="4" height="16" rx="1" />
+          </svg>
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        )}
+      </button>
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div
+          className="group relative h-5 cursor-pointer rounded-full"
+          onClick={handleSeek}
+        >
+          {/* Waveform-style bars */}
+          <div className="absolute inset-0 flex items-center gap-[2px] px-0.5">
+            {Array.from({ length: 32 }).map((_, i) => {
+              // Pseudo-random heights for waveform look (seeded by index)
+              const h = 30 + ((i * 7 + 13) % 70);
+              const filled = (i / 32) * 100 < progress;
+              return (
+                <div
+                  key={i}
+                  className={`flex-1 rounded-full transition-colors ${
+                    filled
+                      ? 'bg-white dark:bg-neutral-800'
+                      : 'bg-white/25 dark:bg-neutral-400/30'
+                  }`}
+                  style={{ height: `${h}%` }}
+                />
+              );
+            })}
+          </div>
+        </div>
+        <div className="flex items-center justify-between px-0.5">
+          <span className="font-mono text-[9px] tabular-nums text-white/50 dark:text-neutral-500">
+            {formatDuration(currentTime)}
+          </span>
+          <span className="font-mono text-[9px] tabular-nums text-white/50 dark:text-neutral-500">
+            {formatDuration(duration)}
+          </span>
+        </div>
+      </div>
+      {filename && !transcript && (
+        <span className="hidden max-w-[80px] truncate font-mono text-[9px] text-white/30 dark:text-neutral-400 sm:block">
+          {filename}
+        </span>
+      )}
+    </div>
+    {transcript && (
+      <div className="mt-1 rounded-2xl rounded-tr-md bg-neutral-900/80 px-4 py-2 dark:bg-neutral-200/80">
+        <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-white/40 dark:text-neutral-500">
+          Transcript
+        </p>
+        <p className="mt-0.5 text-[13px] leading-relaxed text-white/90 dark:text-neutral-800">
+          {transcript}
+        </p>
+      </div>
+    )}
+    </>
+  );
 }
 
 /** Extract base64 image data URIs from message parts (if they exist). */

@@ -4,6 +4,7 @@ import { useFileFinder, type FileReadResponse } from '@/api/files';
 import { api } from '@/api/client';
 import { useWakeSession } from '@/api/sessions';
 import type { PromptAttachment, ProviderModels } from '@/hooks/use-chat';
+import { useAudioRecorder } from '@/hooks/use-audio-recorder';
 
 interface ChatInputProps {
   onSend: (content: string, model?: string, attachments?: PromptAttachment[]) => void;
@@ -335,6 +336,33 @@ export function ChatInput({
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
+  // Audio recording
+  const { isRecording, duration: recordingDuration, error: micError, startRecording, stopRecording, cancelRecording } = useAudioRecorder();
+
+  const handleMicClick = useCallback(async () => {
+    if (isRecording) {
+      const blob = await stopRecording();
+      if (blob && blob.size > 0) {
+        const url = await readFileAsDataUrl(new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' }));
+        const attachment: PromptAttachment = {
+          type: 'file',
+          mime: 'audio/webm',
+          url,
+          filename: `voice-${Date.now()}.webm`,
+        };
+        setAttachments((prev) => [...prev, attachment].slice(0, MAX_IMAGE_ATTACHMENTS));
+      }
+    } else {
+      await startRecording();
+    }
+  }, [isRecording, stopRecording, startRecording, readFileAsDataUrl]);
+
+  const formatRecordingDuration = (seconds: number) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = (seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const hasText = !!value.trim();
@@ -526,19 +554,28 @@ export function ChatInput({
         <div className="mb-2 flex gap-2 overflow-x-auto pb-0.5">
           {attachments.map((attachment, index) => (
             <div
-              key={`${attachment.filename || 'image'}-${index}`}
-              className="relative h-14 w-14 shrink-0 overflow-hidden rounded-md border border-neutral-200 bg-surface-1 dark:border-neutral-700 dark:bg-surface-2"
+              key={`${attachment.filename || 'file'}-${index}`}
+              className="relative h-14 shrink-0 overflow-hidden rounded-md border border-neutral-200 bg-surface-1 dark:border-neutral-700 dark:bg-surface-2"
             >
-              <img
-                src={attachment.url}
-                alt={attachment.filename || `Attachment ${index + 1}`}
-                className="h-full w-full object-cover"
-              />
+              {attachment.mime.startsWith('audio/') ? (
+                <div className="flex h-full w-28 items-center gap-1.5 px-2">
+                  <MicIcon className="h-4 w-4 shrink-0 text-accent" />
+                  <span className="truncate font-mono text-[10px] text-neutral-500">
+                    {attachment.filename || 'voice'}
+                  </span>
+                </div>
+              ) : (
+                <img
+                  src={attachment.url}
+                  alt={attachment.filename || `Attachment ${index + 1}`}
+                  className="h-full w-14 object-cover"
+                />
+              )}
               <button
                 type="button"
                 onClick={() => removeAttachment(index)}
                 className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/70 text-white"
-                aria-label="Remove image attachment"
+                aria-label="Remove attachment"
               >
                 <CloseIcon className="h-2.5 w-2.5" />
               </button>
@@ -658,6 +695,50 @@ export function ChatInput({
         >
           <ImageIcon className="h-5 w-5 md:h-3.5 md:w-3.5" />
         </Button>
+        {isRecording ? (
+          <div className="flex items-center gap-1.5">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={cancelRecording}
+              className="h-11 w-11 shrink-0 rounded-full p-0 md:h-7 md:w-7"
+              title="Cancel recording"
+              aria-label="Cancel recording"
+            >
+              <CloseIcon className="h-4 w-4 md:h-3 md:w-3" />
+            </Button>
+            <span className="flex items-center gap-1.5 font-mono text-xs text-red-500">
+              <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-500" />
+              {formatRecordingDuration(recordingDuration)}
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              onClick={handleMicClick}
+              className="h-11 w-11 shrink-0 rounded-full p-0 md:h-7 md:w-7"
+              title="Stop recording"
+              aria-label="Stop recording"
+            >
+              <MicStopIcon className="h-5 w-5 md:h-3.5 md:w-3.5" />
+            </Button>
+          </div>
+        ) : (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={handleMicClick}
+            className="h-11 w-11 shrink-0 rounded-full p-0 md:h-7 md:w-7"
+            title="Record voice note"
+            aria-label="Record voice note"
+          >
+            <MicIcon className="h-5 w-5 md:h-3.5 md:w-3.5" />
+          </Button>
+        )}
+        {micError && (
+          <span className="font-mono text-[10px] text-red-400">{micError}</span>
+        )}
         <textarea
           ref={textareaRef}
           value={value}
@@ -706,8 +787,8 @@ export function ChatInput({
                   : sessionStatus === 'hibernating'
                     ? 'hibernating...'
                   : isAgentActive
-                    ? 'esc to stop · shift+enter for new line · @ files · /model · drag images'
-                    : 'enter to send · shift+enter for new line · @ files · /model · drag images'}
+                    ? 'esc to stop · shift+enter for new line · @ files · /model · drag images · mic'
+                    : 'enter to send · shift+enter for new line · @ files · /model · drag images · mic'}
           </p>
         )}
         {compact && <div className="flex-1" />}
@@ -791,6 +872,46 @@ function CloseIcon({ className }: { className?: string }) {
     >
       <path d="M18 6 6 18" />
       <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function MicIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <line x1="12" x2="12" y1="19" y2="22" />
+    </svg>
+  );
+}
+
+function MicStopIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <rect x="6" y="6" width="12" height="12" rx="2" />
     </svg>
   );
 }

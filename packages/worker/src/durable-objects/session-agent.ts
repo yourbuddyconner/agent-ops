@@ -36,7 +36,7 @@ function sanitizePromptAttachments(input: unknown): PromptAttachment[] {
 
     const mime = record.mime.trim().toLowerCase();
     const url = record.url.trim();
-    if (!mime.startsWith('image/')) continue;
+    if (!mime.startsWith('image/') && !mime.startsWith('audio/')) continue;
     if (!url.startsWith('data:') || !url.includes(';base64,')) continue;
     if (url.length > MAX_PROMPT_ATTACHMENT_URL_LENGTH) continue;
 
@@ -49,18 +49,28 @@ function sanitizePromptAttachments(input: unknown): PromptAttachment[] {
 }
 
 function attachmentPartsForMessage(attachments: PromptAttachment[]): Array<Record<string, unknown>> {
-  return attachments
-    .map((attachment) => {
-      const data = parseBase64DataUrl(attachment.url);
-      if (!data) return null;
-      return {
+  const parts: Array<Record<string, unknown>> = [];
+  for (const attachment of attachments) {
+    const data = parseBase64DataUrl(attachment.url);
+    if (!data) continue;
+
+    if (attachment.mime.startsWith('image/')) {
+      parts.push({
         type: 'image',
         data,
         mimeType: attachment.mime,
         ...(attachment.filename ? { filename: attachment.filename } : {}),
-      } as Record<string, unknown>;
-    })
-    .filter((part): part is Record<string, unknown> => part !== null);
+      });
+    } else if (attachment.mime.startsWith('audio/')) {
+      parts.push({
+        type: 'audio',
+        data,
+        mimeType: attachment.mime,
+        ...(attachment.filename ? { filename: attachment.filename } : {}),
+      });
+    }
+  }
+  return parts;
 }
 
 function parseQueuedPromptAttachments(raw: unknown): PromptAttachment[] {
@@ -154,7 +164,8 @@ function deriveRuntimeStates(args: {
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply' | 'audio-transcript';
+  transcript?: string;
   prNumber?: number;
   targetSessionId?: string;
   interrupt?: boolean;
@@ -1626,6 +1637,41 @@ export class SessionAgentDO {
             createdAt: Math.floor(Date.now() / 1000),
           },
         });
+        break;
+      }
+
+      case 'audio-transcript': {
+        // Runner transcribed audio attachments — update the original user message parts with transcript
+        if (msg.messageId && msg.transcript) {
+          const existing = this.ctx.storage.sql.exec(
+            'SELECT parts FROM messages WHERE id = ?', msg.messageId,
+          ).toArray();
+          if (existing.length > 0) {
+            const rawParts = existing[0].parts as string | null;
+            let parts: Array<Record<string, unknown>> = [];
+            if (rawParts) {
+              try {
+                const parsed = JSON.parse(rawParts);
+                parts = Array.isArray(parsed) ? parsed : [parsed];
+              } catch { /* ignore */ }
+            }
+            // Add transcript to each audio part
+            for (const part of parts) {
+              if (part.type === 'audio') {
+                part.transcript = msg.transcript;
+              }
+            }
+            this.ctx.storage.sql.exec(
+              'UPDATE messages SET parts = ? WHERE id = ?',
+              JSON.stringify(parts), msg.messageId,
+            );
+            // Broadcast updated message to all clients
+            this.broadcastToClients({
+              type: 'message.updated',
+              data: { id: msg.messageId, parts },
+            });
+          }
+        }
         break;
       }
 
