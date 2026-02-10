@@ -14,6 +14,7 @@ export interface WorkflowRunResultStep {
   attempt?: number;
   startedAt?: string;
   completedAt?: string;
+  input?: unknown;
   output?: unknown;
   error?: string;
 }

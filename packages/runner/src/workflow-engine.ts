@@ -20,6 +20,7 @@ export interface WorkflowStepResult {
   attempt: number;
   startedAt: string;
   completedAt?: string;
+  input?: unknown;
   output?: unknown;
   error?: string;
 }
@@ -280,6 +281,20 @@ function stepOutputVariable(step: NormalizedWorkflowStep): string | null {
   return null;
 }
 
+function buildStepInput(step: NormalizedWorkflowStep): Record<string, unknown> {
+  const input: Record<string, unknown> = {
+    type: step.type,
+    name: typeof step.name === 'string' ? step.name : step.id,
+  };
+  if (step.tool) input.tool = step.tool;
+  if (step.goal) input.goal = step.goal;
+  if (step.context) input.context = step.context;
+  if (typeof step.prompt === 'string') input.prompt = step.prompt;
+  if (step.condition !== undefined) input.condition = step.condition;
+  if (step.arguments) input.arguments = step.arguments;
+  return input;
+}
+
 function createApprovalToken(executionId: string, stepId: string, attempt: number): Promise<string> {
   return sha256Hex(`${executionId}:${stepId}:${attempt}`).then((digest) => `wrf_rt_${digest.slice(0, 24)}`);
 }
@@ -301,6 +316,7 @@ async function executeSteps(
       status: 'running',
       attempt: ctx.attempt,
       startedAt,
+      input: buildStepInput(step),
     };
 
     ctx.steps.push(result);

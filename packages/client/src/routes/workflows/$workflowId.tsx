@@ -525,6 +525,45 @@ function ExecutionDetail({ execution }: { execution: Execution }) {
   );
 }
 
+/* ─── Step type detection ─── */
+
+type DetectedStepType = 'bash' | 'approval' | 'agent' | 'agent_message' | 'conditional' | 'parallel' | 'tool' | 'unknown';
+
+function detectStepType(step: { input?: unknown; output?: unknown }): DetectedStepType {
+  const input = isRecord(step.input) ? step.input : null;
+  const output = isRecord(step.output) ? step.output : null;
+
+  // Priority 1: input.type (populated by workflow engine)
+  if (input?.type) {
+    const t = String(input.type);
+    if (t === 'tool' && input.tool === 'bash') return 'bash';
+    if (t === 'approval') return 'approval';
+    if (t === 'agent') return 'agent';
+    if (t === 'agent_message') return 'agent_message';
+    if (t === 'conditional') return 'conditional';
+    if (t === 'parallel') return 'parallel';
+    if (t === 'tool') return 'tool';
+  }
+
+  // Priority 2: output heuristics (backward compat for old traces)
+  if (output) {
+    if (output.tool === 'bash') return 'bash';
+    if (output.condition !== undefined) return 'conditional';
+    if (output.prompt !== undefined) return 'approval';
+    if (output.branchCount !== undefined) return 'parallel';
+    if (output.type === 'agent' || output.type === 'agent_message') return output.type as DetectedStepType;
+    if (output.type === 'tool') return 'tool';
+  }
+
+  return 'unknown';
+}
+
+function getStepDisplayName(step: { stepId: string; input?: unknown }): string {
+  const input = isRecord(step.input) ? step.input : null;
+  if (input?.name && typeof input.name === 'string') return input.name;
+  return step.stepId;
+}
+
 /* ─── Step trace row (GH Actions style) ─── */
 
 function StepTraceRow({
@@ -536,6 +575,7 @@ function StepTraceRow({
     stepId: string;
     attempt: number;
     status: string;
+    input: unknown;
     output: unknown;
     error: string | null;
     startedAt: string | null;
@@ -556,6 +596,10 @@ function StepTraceRow({
         return `${(ms / 1000).toFixed(1)}s`;
       })()
     : null;
+
+  const stepType = detectStepType(step);
+  const displayName = getStepDisplayName(step);
+  const showStepId = displayName !== step.stepId;
 
   return (
     <div className="group">
@@ -590,16 +634,35 @@ function StepTraceRow({
           <span className="size-3 shrink-0" />
         )}
 
-        {/* Step name */}
+        {/* Type icon */}
+        <span className="inline-flex size-4 shrink-0 items-center justify-center rounded bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+          <StepTypeIcon type={stepType} className="size-2.5" />
+        </span>
+
+        {/* Step name + type badge */}
         <span className={cn(
-          'flex-1 truncate text-xs',
-          step.status === 'failed'
-            ? 'font-medium text-red-600 dark:text-red-400'
-            : 'text-neutral-700 dark:text-neutral-300',
+          'flex min-w-0 flex-1 items-center gap-1.5',
         )}>
-          {step.stepId}
+          <span className={cn(
+            'truncate text-xs',
+            step.status === 'failed'
+              ? 'font-medium text-red-600 dark:text-red-400'
+              : 'text-neutral-700 dark:text-neutral-300',
+          )}>
+            {displayName}
+          </span>
+          {stepType !== 'unknown' && (
+            <Badge variant="secondary" className="shrink-0 text-[9px]">
+              {stepType === 'agent_message' ? 'message' : stepType}
+            </Badge>
+          )}
+          {showStepId && (
+            <span className="hidden shrink-0 font-mono text-[9px] text-neutral-400 sm:inline">
+              {step.stepId}
+            </span>
+          )}
           {step.attempt > 1 && (
-            <span className="ml-1 text-2xs text-neutral-400">(attempt {step.attempt})</span>
+            <span className="shrink-0 text-2xs text-neutral-400">(attempt {step.attempt})</span>
           )}
         </span>
 
@@ -620,7 +683,7 @@ function StepTraceRow({
             </div>
           )}
           {hasOutput && (
-            <StepOutputCompact output={step.output} />
+            <StepOutputContent type={stepType} output={step.output} input={step.input} />
           )}
         </div>
       )}
@@ -628,51 +691,259 @@ function StepTraceRow({
   );
 }
 
-/* ─── Compact step output ─── */
+/* ─── Type-aware step output dispatcher ─── */
 
-function StepOutputCompact({ output }: { output: unknown }) {
+function StepOutputContent({ type, output, input }: { type: DetectedStepType; output: unknown; input?: unknown }) {
+  switch (type) {
+    case 'bash':
+      return <BashStepContent output={output} input={input} />;
+    case 'approval':
+      return <ApprovalStepContent output={output} />;
+    case 'agent':
+    case 'agent_message':
+      return <AgentStepContent output={output} input={input} type={type} />;
+    case 'conditional':
+      return <ConditionalStepContent output={output} />;
+    case 'parallel':
+      return <ParallelStepContent output={output} />;
+    case 'tool':
+      return <ToolStepContent output={output} input={input} />;
+    default:
+      return <GenericStepContent output={output} />;
+  }
+}
+
+/* ─── Bash step content ─── */
+
+function BashStepContent({ output, input }: { output: unknown; input?: unknown }) {
   const commandOutput = getCommandOutputCandidate(output);
+  const inputRecord = isRecord(input) ? input : null;
+  const command = typeof commandOutput?.command === 'string'
+    ? commandOutput.command
+    : (isRecord(inputRecord?.arguments) ? String((inputRecord!.arguments as Record<string, unknown>).command ?? '') : '');
 
   if (commandOutput) {
     const stdout = typeof commandOutput.stdout === 'string' ? commandOutput.stdout : '';
     const stderr = typeof commandOutput.stderr === 'string' ? commandOutput.stderr : '';
     const exitCode = commandOutput.exitCode;
     const durationMs = commandOutput.durationMs;
+    const hasMeta = (exitCode !== undefined && exitCode !== null) || (durationMs !== undefined && durationMs !== null) || (typeof commandOutput.cwd === 'string' && commandOutput.cwd);
 
     return (
       <div className="text-2xs">
-        {/* Compact meta line */}
-        <div className="flex items-center gap-3 border-b border-neutral-100 bg-neutral-50/50 px-3 py-1 font-mono text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900/30 dark:text-neutral-400">
-          {exitCode !== undefined && exitCode !== null && (
-            <span className={cn(exitCode === 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
-              exit {String(exitCode)}
-            </span>
-          )}
-          {durationMs !== undefined && durationMs !== null && (
-            <span>{Number(durationMs) < 1000 ? `${durationMs}ms` : `${(Number(durationMs) / 1000).toFixed(1)}s`}</span>
-          )}
-          {typeof commandOutput.cwd === 'string' && commandOutput.cwd && (
-            <span className="truncate">{commandOutput.cwd}</span>
-          )}
-        </div>
+        {/* Command prompt bar */}
+        {command && (
+          <div className="bg-neutral-900 px-3 py-2 dark:bg-neutral-950">
+            <code className="font-mono text-xs text-sky-300">$ {command}</code>
+          </div>
+        )}
+        {/* stdout */}
         {stdout && (
           <pre className="max-h-52 overflow-auto whitespace-pre-wrap bg-neutral-950 px-3 py-2 font-mono text-2xs leading-5 text-emerald-300 dark:bg-neutral-950">
             {stdout}
           </pre>
         )}
+        {/* stderr */}
         {stderr && (
           <pre className="max-h-32 overflow-auto whitespace-pre-wrap bg-red-950/80 px-3 py-2 font-mono text-2xs leading-5 text-red-300">
             {stderr}
           </pre>
         )}
-        {!stdout && !stderr && (
+        {/* Meta footer (exit code + duration + cwd) */}
+        {hasMeta && (
+          <div className="flex items-center gap-3 border-t border-neutral-800 bg-neutral-900/60 px-3 py-1 font-mono text-neutral-500 dark:bg-neutral-950/60 dark:text-neutral-400">
+            {exitCode !== undefined && exitCode !== null && (
+              <span className={cn(exitCode === 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                exit {String(exitCode)}
+              </span>
+            )}
+            {durationMs !== undefined && durationMs !== null && (
+              <span>{Number(durationMs) < 1000 ? `${durationMs}ms` : `${(Number(durationMs) / 1000).toFixed(1)}s`}</span>
+            )}
+            {typeof commandOutput.cwd === 'string' && commandOutput.cwd && (
+              <span className="truncate">{commandOutput.cwd}</span>
+            )}
+          </div>
+        )}
+        {!stdout && !stderr && !command && (
           <div className="px-3 py-1.5 text-neutral-400">No output</div>
         )}
       </div>
     );
   }
 
-  // Generic JSON output
+  return <GenericStepContent output={output} />;
+}
+
+/* ─── Approval step content ─── */
+
+function ApprovalStepContent({ output }: { output: unknown }) {
+  const out = isRecord(output) ? output : {};
+  const prompt = typeof out.prompt === 'string' ? out.prompt : null;
+  const decision = typeof out.decision === 'string' ? out.decision : null;
+  const replayed = out.replayed === true;
+
+  return (
+    <div className="text-2xs">
+      {prompt && (
+        <div className="flex items-start gap-2 border-b border-amber-200/50 bg-amber-50/50 px-3 py-2 dark:border-amber-900/30 dark:bg-amber-950/10">
+          <ShieldIcon className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+          <p className="text-xs text-amber-800 dark:text-amber-300">{prompt}</p>
+        </div>
+      )}
+      {decision && (
+        <div className="flex items-center gap-2 px-3 py-1.5">
+          <span className="text-2xs text-neutral-500 dark:text-neutral-400">Decision:</span>
+          <span className={cn(
+            'inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium',
+            decision === 'approve'
+              ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+              : 'bg-red-500/10 text-red-700 dark:text-red-400',
+          )}>
+            {decision === 'approve' ? 'Approved' : 'Denied'}
+          </span>
+          {replayed && (
+            <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[9px] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+              replayed
+            </span>
+          )}
+        </div>
+      )}
+      {!decision && !prompt && (
+        <div className="px-3 py-1.5 text-neutral-400">Waiting for approval</div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Agent step content ─── */
+
+function AgentStepContent({ output, input, type }: { output: unknown; input?: unknown; type: 'agent' | 'agent_message' }) {
+  const out = isRecord(output) ? output : {};
+  const inp = isRecord(input) ? input : {};
+  const name = typeof (inp.name ?? out.name) === 'string' ? String(inp.name ?? out.name) : null;
+  const goal = typeof (inp.goal ?? out.goal) === 'string' ? String(inp.goal ?? out.goal) : null;
+  const context = typeof (inp.context ?? out.context) === 'string' ? String(inp.context ?? out.context) : null;
+
+  if (type === 'agent_message') {
+    return (
+      <div className="text-2xs">
+        {goal && (
+          <div className="rounded-br-lg rounded-tr-lg border-l-2 border-sky-400 bg-sky-50/50 px-3 py-2 dark:bg-sky-950/10">
+            <p className="text-xs text-neutral-700 dark:text-neutral-300">{goal}</p>
+          </div>
+        )}
+        {context && (
+          <div className="px-3 py-1.5 text-neutral-500 dark:text-neutral-400">
+            {context}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-2xs">
+      {name && (
+        <div className="flex items-center gap-2 border-b border-neutral-100 bg-neutral-50/50 px-3 py-1.5 dark:border-neutral-800 dark:bg-neutral-900/30">
+          <span className="text-2xs text-neutral-500 dark:text-neutral-400">Agent:</span>
+          <span className="font-medium text-neutral-700 dark:text-neutral-300">{name}</span>
+        </div>
+      )}
+      {goal && (
+        <div className="border-b border-neutral-100 px-3 py-2 dark:border-neutral-800">
+          <p className="mb-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-neutral-400">Goal</p>
+          <p className="text-xs text-neutral-700 dark:text-neutral-300">{goal}</p>
+        </div>
+      )}
+      {context && (
+        <div className="px-3 py-2">
+          <p className="mb-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-neutral-400">Context</p>
+          <p className="text-xs text-neutral-500 dark:text-neutral-400">{context}</p>
+        </div>
+      )}
+      {!name && !goal && !context && (
+        <GenericStepContent output={output} />
+      )}
+    </div>
+  );
+}
+
+/* ─── Conditional step content ─── */
+
+function ConditionalStepContent({ output }: { output: unknown }) {
+  const out = isRecord(output) ? output : {};
+  const condition = out.condition;
+  const branch = typeof out.branch === 'string' ? out.branch : null;
+
+  return (
+    <div className="flex items-center gap-3 px-3 py-2 text-2xs">
+      <span className="text-neutral-500 dark:text-neutral-400">Condition:</span>
+      <span className={cn(
+        'inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium',
+        condition ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'bg-neutral-200/50 text-neutral-600 dark:bg-neutral-700/50 dark:text-neutral-400',
+      )}>
+        {condition ? 'true' : 'false'}
+      </span>
+      {branch && (
+        <>
+          <span className="text-neutral-400">-&gt;</span>
+          <span className="font-mono text-xs text-neutral-700 dark:text-neutral-300">{branch}</span>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ─── Parallel step content ─── */
+
+function ParallelStepContent({ output }: { output: unknown }) {
+  const out = isRecord(output) ? output : {};
+  const branchCount = typeof out.branchCount === 'number' ? out.branchCount : null;
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 text-2xs">
+      <ParallelIcon className="size-3 text-neutral-400" />
+      <span className="text-neutral-500 dark:text-neutral-400">
+        {branchCount !== null ? `${branchCount} parallel branch${branchCount === 1 ? '' : 'es'}` : 'Parallel execution'}
+      </span>
+    </div>
+  );
+}
+
+/* ─── Tool step content ─── */
+
+function ToolStepContent({ output, input }: { output: unknown; input?: unknown }) {
+  const out = isRecord(output) ? output : {};
+  const inp = isRecord(input) ? input : {};
+  const toolName = typeof (inp.tool ?? out.tool) === 'string' ? String(inp.tool ?? out.tool) : null;
+  const args = (inp.arguments ?? out.arguments) as Record<string, unknown> | null;
+
+  return (
+    <div className="text-2xs">
+      {toolName && (
+        <div className="flex items-center gap-2 border-b border-neutral-100 bg-neutral-50/50 px-3 py-1.5 dark:border-neutral-800 dark:bg-neutral-900/30">
+          <span className="text-2xs text-neutral-500 dark:text-neutral-400">Tool:</span>
+          <code className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-2xs text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+            {toolName}
+          </code>
+        </div>
+      )}
+      {args && Object.keys(args).length > 0 && (
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap bg-neutral-950 px-3 py-2 font-mono text-2xs leading-5 text-neutral-300">
+          {JSON.stringify(args, null, 2)}
+        </pre>
+      )}
+      {!toolName && (!args || Object.keys(args).length === 0) && (
+        <GenericStepContent output={output} />
+      )}
+    </div>
+  );
+}
+
+/* ─── Generic JSON fallback ─── */
+
+function GenericStepContent({ output }: { output: unknown }) {
   return (
     <pre className="max-h-52 overflow-auto whitespace-pre-wrap bg-neutral-950 px-3 py-2 font-mono text-2xs leading-5 text-neutral-300 dark:bg-neutral-950">
       {formatExecutionValue(output)}
@@ -725,7 +996,6 @@ function CompactStepRow({
   index: number;
   isLast: boolean;
 }) {
-  const [expanded, setExpanded] = React.useState(false);
   const childSteps = countNestedSteps(step);
   const hasDetails = !!(
     step.goal || step.context || step.tool || step.arguments ||
@@ -734,6 +1004,12 @@ function CompactStepRow({
     (step.else && step.else.length > 0) ||
     (step.steps && step.steps.length > 0)
   );
+  // Start expanded unless step has many nested children (which would be long)
+  const defaultExpanded = hasDetails && childSteps <= 5;
+  const [expanded, setExpanded] = React.useState(defaultExpanded);
+  const bashCommand = step.type === 'tool' && step.tool === 'bash' && typeof step.arguments?.command === 'string'
+    ? step.arguments.command as string
+    : null;
 
   return (
     <div>
@@ -798,6 +1074,11 @@ function CompactStepRow({
               {step.goal}
             </p>
           )}
+          {bashCommand && !expanded && (
+            <p className="mt-0.5 truncate font-mono text-2xs text-neutral-400">
+              $ {bashCommand}
+            </p>
+          )}
         </button>
 
         {/* Edit button */}
@@ -825,13 +1106,173 @@ function CompactStepRow({
   );
 }
 
-/* ─── Step detail panel (inline expansion) ─── */
+/* ─── Step detail panel (type-aware inline expansion) ─── */
 
 function StepDetailPanel({ step }: { step: WorkflowStep }) {
+  // Route to type-specific panels
+  if (step.type === 'tool' && step.tool === 'bash') {
+    return <BashStepDetailPanel step={step} />;
+  }
+  if (step.type === 'approval') {
+    return <ApprovalStepDetailPanel step={step} />;
+  }
+  if (step.type === 'agent' || step.type === 'agent_message') {
+    return <AgentStepDetailPanel step={step} />;
+  }
+  if (step.type === 'conditional') {
+    return <ConditionalStepDetailPanel step={step} />;
+  }
+  if (step.type === 'tool') {
+    return <ToolStepDetailPanel step={step} />;
+  }
+  return <GenericStepDetailPanel step={step} />;
+}
+
+/* ─── Bash step detail (terminal-style command) ─── */
+
+function BashStepDetailPanel({ step }: { step: WorkflowStep }) {
+  const command = typeof step.arguments?.command === 'string' ? step.arguments.command : null;
+  const cwd = typeof step.arguments?.cwd === 'string' ? step.arguments.cwd : null;
+  const timeoutRaw = step.arguments?.timeout ?? step.arguments?.timeoutMs;
+  const timeout = typeof timeoutRaw === 'number' || typeof timeoutRaw === 'string' ? String(timeoutRaw) : null;
+  const otherArgs = step.arguments
+    ? Object.fromEntries(Object.entries(step.arguments).filter(([k]) => !['command', 'cwd', 'timeout', 'timeoutMs'].includes(k)))
+    : null;
+  const hasOtherArgs = otherArgs && Object.keys(otherArgs).length > 0;
+
+  return (
+    <div className="ml-[2.65rem] mr-3 mb-2 overflow-hidden rounded border border-neutral-200 dark:border-neutral-700">
+      {command && (
+        <div className="bg-neutral-900 px-3 py-2 dark:bg-neutral-950">
+          <code className="font-mono text-xs leading-relaxed text-sky-300">$ {command}</code>
+        </div>
+      )}
+      {(cwd || timeout) && (
+        <div className="flex items-center gap-3 border-t border-neutral-800 bg-neutral-900/80 px-3 py-1.5 font-mono text-2xs text-neutral-400 dark:bg-neutral-950/80">
+          {cwd && <span>cwd: {cwd}</span>}
+          {timeout && <span>timeout: {timeout}ms</span>}
+        </div>
+      )}
+      {hasOtherArgs && (
+        <div className="border-t border-neutral-200 bg-neutral-50/50 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900/30">
+          <p className="mb-1 font-mono text-[9px] font-semibold uppercase tracking-wider text-neutral-400">Arguments</p>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-neutral-950 px-2.5 py-2 font-mono text-2xs leading-5 text-emerald-300">
+            {JSON.stringify(otherArgs, null, 2)}
+          </pre>
+        </div>
+      )}
+      <StepDetailFooter step={step} />
+    </div>
+  );
+}
+
+/* ─── Approval step detail (amber callout) ─── */
+
+function ApprovalStepDetailPanel({ step }: { step: WorkflowStep }) {
+  const prompt = step.goal || step.context || step.content;
+
+  return (
+    <div className="ml-[2.65rem] mr-3 mb-2 overflow-hidden rounded border border-amber-200 dark:border-amber-800/40">
+      {prompt && (
+        <div className="flex items-start gap-2 bg-amber-50/50 px-3 py-2.5 dark:bg-amber-950/10">
+          <ShieldIcon className="mt-0.5 size-4 shrink-0 text-amber-500" />
+          <p className="text-xs leading-relaxed text-amber-800 dark:text-amber-300">{prompt}</p>
+        </div>
+      )}
+      <StepDetailFooter step={step} borderClass="border-amber-200 dark:border-amber-800/40" />
+    </div>
+  );
+}
+
+/* ─── Agent step detail (goal + context) ─── */
+
+function AgentStepDetailPanel({ step }: { step: WorkflowStep }) {
+  return (
+    <div className="ml-[2.65rem] mr-3 mb-2 overflow-hidden rounded border border-neutral-200 dark:border-neutral-700">
+      {step.goal && (
+        <div className="border-b border-neutral-200 px-3 py-2.5 dark:border-neutral-700">
+          <p className="mb-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-neutral-400">Goal</p>
+          <p className="text-xs leading-relaxed text-neutral-700 dark:text-neutral-300">{step.goal}</p>
+        </div>
+      )}
+      {step.context && (
+        <div className="bg-neutral-50/50 px-3 py-2.5 dark:bg-neutral-900/30">
+          <p className="mb-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-neutral-400">Context</p>
+          <p className="text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">{step.context}</p>
+        </div>
+      )}
+      {step.type === 'agent_message' && step.content && (
+        <div className="rounded-br-lg rounded-tr-lg border-l-2 border-sky-400 bg-sky-50/50 px-3 py-2.5 dark:bg-sky-950/10">
+          <p className="text-xs leading-relaxed text-neutral-700 dark:text-neutral-300">{step.content}</p>
+        </div>
+      )}
+      <StepDetailFooter step={step} />
+    </div>
+  );
+}
+
+/* ─── Conditional step detail (condition + branches) ─── */
+
+function ConditionalStepDetailPanel({ step }: { step: WorkflowStep }) {
+  return (
+    <div className="ml-[2.65rem] mr-3 mb-2 overflow-hidden rounded border border-neutral-200 dark:border-neutral-700">
+      {step.condition !== undefined && step.condition !== null && (
+        <div className="border-b border-neutral-200 px-3 py-2.5 dark:border-neutral-700">
+          <p className="mb-1 font-mono text-[9px] font-semibold uppercase tracking-wider text-neutral-400">Condition</p>
+          <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded bg-neutral-950 px-2.5 py-2 font-mono text-2xs leading-5 text-amber-300">
+            {typeof step.condition === 'string' ? step.condition : JSON.stringify(step.condition, null, 2)}
+          </pre>
+        </div>
+      )}
+      {step.then && step.then.length > 0 && (
+        <div className="border-b border-neutral-200 px-3 py-2.5 dark:border-neutral-700">
+          <p className="mb-1 font-mono text-[9px] font-semibold uppercase tracking-wider text-emerald-500">Then ({step.then.length} steps)</p>
+          <NestedStepList steps={step.then} />
+        </div>
+      )}
+      {step.else && step.else.length > 0 && (
+        <div className="px-3 py-2.5">
+          <p className="mb-1 font-mono text-[9px] font-semibold uppercase tracking-wider text-red-400">Else ({step.else.length} steps)</p>
+          <NestedStepList steps={step.else} />
+        </div>
+      )}
+      <StepDetailFooter step={step} />
+    </div>
+  );
+}
+
+/* ─── Tool step detail ─── */
+
+function ToolStepDetailPanel({ step }: { step: WorkflowStep }) {
+  return (
+    <div className="ml-[2.65rem] mr-3 mb-2 overflow-hidden rounded border border-neutral-200 dark:border-neutral-700">
+      {step.tool && (
+        <div className="flex items-center gap-2 border-b border-neutral-200 bg-neutral-50/50 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900/30">
+          <span className="text-2xs text-neutral-500 dark:text-neutral-400">Tool:</span>
+          <code className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-2xs text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+            {step.tool}
+          </code>
+        </div>
+      )}
+      {step.arguments && Object.keys(step.arguments).length > 0 && (
+        <div className="px-3 py-2.5">
+          <p className="mb-1 font-mono text-[9px] font-semibold uppercase tracking-wider text-neutral-400">Arguments</p>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-neutral-950 px-2.5 py-2 font-mono text-2xs leading-5 text-emerald-300">
+            {JSON.stringify(step.arguments, null, 2)}
+          </pre>
+        </div>
+      )}
+      <StepDetailFooter step={step} />
+    </div>
+  );
+}
+
+/* ─── Generic step detail (fallback) ─── */
+
+function GenericStepDetailPanel({ step }: { step: WorkflowStep }) {
   return (
     <div className="ml-[2.65rem] mr-3 mb-2 rounded border border-neutral-200 bg-neutral-50/50 dark:border-neutral-700 dark:bg-neutral-900/30">
       <div className="divide-y divide-neutral-200 dark:divide-neutral-700/50">
-        {/* Goal / Context */}
         {step.goal && (
           <StepDetailField label="Goal">
             <p className="text-xs text-neutral-700 dark:text-neutral-300">{step.goal}</p>
@@ -842,8 +1283,6 @@ function StepDetailPanel({ step }: { step: WorkflowStep }) {
             <p className="text-xs text-neutral-700 dark:text-neutral-300">{step.context}</p>
           </StepDetailField>
         )}
-
-        {/* Tool + Arguments */}
         {step.tool && (
           <StepDetailField label="Tool">
             <code className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-2xs text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
@@ -858,17 +1297,6 @@ function StepDetailPanel({ step }: { step: WorkflowStep }) {
             </pre>
           </StepDetailField>
         )}
-
-        {/* Output variable */}
-        {step.outputVariable && (
-          <StepDetailField label="Output Variable">
-            <code className="rounded bg-cyan-500/10 px-1.5 py-0.5 font-mono text-2xs text-cyan-700 dark:text-cyan-300">
-              {step.outputVariable}
-            </code>
-          </StepDetailField>
-        )}
-
-        {/* Condition (conditional steps) */}
         {step.condition !== undefined && step.condition !== null && (
           <StepDetailField label="Condition">
             <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded bg-neutral-950 px-2.5 py-2 font-mono text-2xs leading-5 text-amber-300">
@@ -876,8 +1304,6 @@ function StepDetailPanel({ step }: { step: WorkflowStep }) {
             </pre>
           </StepDetailField>
         )}
-
-        {/* Then / Else branches */}
         {step.then && step.then.length > 0 && (
           <StepDetailField label={`Then Branch (${step.then.length} steps)`}>
             <NestedStepList steps={step.then} />
@@ -888,14 +1314,47 @@ function StepDetailPanel({ step }: { step: WorkflowStep }) {
             <NestedStepList steps={step.else} />
           </StepDetailField>
         )}
-
-        {/* Nested steps (parallel/loop/subworkflow) */}
         {step.steps && step.steps.length > 0 && (
           <StepDetailField label={`Nested Steps (${step.steps.length})`}>
             <NestedStepList steps={step.steps} />
           </StepDetailField>
         )}
+        {step.outputVariable && (
+          <StepDetailField label="Output Variable">
+            <code className="rounded bg-cyan-500/10 px-1.5 py-0.5 font-mono text-2xs text-cyan-700 dark:text-cyan-300">
+              {step.outputVariable}
+            </code>
+          </StepDetailField>
+        )}
       </div>
+    </div>
+  );
+}
+
+/* ─── Shared footer for step detail panels ─── */
+
+function StepDetailFooter({ step, borderClass }: { step: WorkflowStep; borderClass?: string }) {
+  const hasOutput = !!step.outputVariable;
+  const hasNested = (step.steps && step.steps.length > 0) || (step.then && step.then.length > 0) || (step.else && step.else.length > 0);
+
+  if (!hasOutput && !hasNested) return null;
+
+  return (
+    <div className={cn('divide-y', borderClass || 'divide-neutral-200 dark:divide-neutral-700/50')}>
+      {step.outputVariable && (
+        <div className={cn('flex items-center gap-2 px-3 py-1.5', borderClass ? `border-t ${borderClass}` : 'border-t border-neutral-200 dark:border-neutral-700')}>
+          <span className="font-mono text-[9px] font-semibold uppercase tracking-wider text-neutral-400">Output</span>
+          <code className="rounded bg-cyan-500/10 px-1.5 py-0.5 font-mono text-2xs text-cyan-700 dark:text-cyan-300">
+            {step.outputVariable}
+          </code>
+        </div>
+      )}
+      {step.steps && step.steps.length > 0 && (
+        <div className={cn('px-3 py-2.5', borderClass ? `border-t ${borderClass}` : 'border-t border-neutral-200 dark:border-neutral-700')}>
+          <p className="mb-1 font-mono text-[9px] font-semibold uppercase tracking-wider text-neutral-400">Nested Steps ({step.steps.length})</p>
+          <NestedStepList steps={step.steps} />
+        </div>
+      )}
     </div>
   );
 }
@@ -1405,7 +1864,23 @@ function EditIcon({ className }: { className?: string }) {
   );
 }
 
-function StepTypeIcon({ type, className }: { type: WorkflowStep['type']; className?: string }) {
+function ShieldIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+    </svg>
+  );
+}
+
+function ParallelIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M6 5h12" /><path d="M6 12h12" /><path d="M6 19h12" />
+    </svg>
+  );
+}
+
+function StepTypeIcon({ type, className }: { type: string; className?: string }) {
   if (type === 'agent') {
     return (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
@@ -1453,6 +1928,20 @@ function StepTypeIcon({ type, className }: { type: WorkflowStep['type']; classNa
     return (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
         <path d="m5 13 4 4L19 7" />
+      </svg>
+    );
+  }
+  if (type === 'bash') {
+    return (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
+      </svg>
+    );
+  }
+  if (type === 'tool') {
+    return (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
       </svg>
     );
   }
