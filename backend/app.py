@@ -164,6 +164,23 @@ async def session_status(request: dict) -> dict:
     return await session_manager.status(sandbox_id)
 
 
+@app.function(image=fn_image)
+@modal.fastapi_endpoint(method="POST", label="delete-workspace")
+async def delete_workspace(request: dict) -> dict:
+    """Delete a session's persisted workspace volume.
+
+    Request body:
+        sessionId: str
+
+    Returns:
+        success: bool
+        deleted: bool
+    """
+    session_id = request["sessionId"]
+    deleted = await session_manager.delete_workspace(session_id)
+    return {"success": True, "deleted": deleted}
+
+
 @app.function(
     image=fn_image,
     volumes={WHISPER_MODELS_MOUNT: modal.Volume.from_name(WHISPER_MODELS_VOLUME, create_if_missing=True)},

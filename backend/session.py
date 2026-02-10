@@ -61,6 +61,10 @@ class SessionManager:
         """Terminate a session's sandbox."""
         await self.sandbox_manager.terminate_sandbox(sandbox_id)
 
+    async def delete_workspace(self, session_id: str) -> bool:
+        """Delete a session's persisted workspace volume."""
+        return await self.sandbox_manager.delete_workspace_volume(session_id)
+
     async def hibernate(self, sandbox_id: str) -> str:
         """Hibernate a session by snapshotting its sandbox filesystem and terminating it.
 

@@ -53,6 +53,11 @@ class SandboxManager:
     def __init__(self, app: modal.App) -> None:
         self.app = app
 
+    @staticmethod
+    def workspace_volume_name(session_id: str) -> str:
+        """Return the Modal volume name used for a session workspace."""
+        return f"workspace-{session_id.replace(':', '-')}"
+
     async def create_sandbox(self, config: SandboxConfig) -> SandboxResult:
         """Create a new Modal sandbox for a session."""
         image = self._get_image(config.image_type)
@@ -87,7 +92,7 @@ class SandboxManager:
             secrets=[modal.Secret.from_dict(secrets_dict)],
             volumes={
                 "/workspace": modal.Volume.from_name(
-                    f"workspace-{config.session_id.replace(':', '-')}",
+                    self.workspace_volume_name(config.session_id),
                     create_if_missing=True,
                 ),
                 WHISPER_MODELS_MOUNT: modal.Volume.from_name(WHISPER_MODELS_VOLUME),
@@ -115,6 +120,15 @@ class SandboxManager:
         """Terminate a running sandbox."""
         sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
         await sandbox.terminate.aio()
+
+    async def delete_workspace_volume(self, session_id: str) -> bool:
+        """Delete a session's workspace volume. Returns True when deleted."""
+        volume_name = self.workspace_volume_name(session_id)
+        try:
+            await modal.Volume.delete.aio(volume_name)
+            return True
+        except modal.exception.NotFoundError:
+            return False
 
     async def get_sandbox_status(self, sandbox_id: str) -> dict:
         """Check sandbox status."""
@@ -171,7 +185,7 @@ class SandboxManager:
             secrets=[modal.Secret.from_dict(secrets_dict)],
             volumes={
                 "/workspace": modal.Volume.from_name(
-                    f"workspace-{config.session_id.replace(':', '-')}",
+                    self.workspace_volume_name(config.session_id),
                     create_if_missing=True,
                 ),
                 WHISPER_MODELS_MOUNT: modal.Volume.from_name(WHISPER_MODELS_VOLUME),

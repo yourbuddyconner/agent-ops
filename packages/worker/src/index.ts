@@ -804,7 +804,8 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
 
 /**
  * Archive terminated sessions older than 7 days.
- * GCs the Durable Object storage, then marks the session as 'archived' in D1.
+ * GCs the Durable Object storage, deletes the persisted workspace volume,
+ * then marks the session as 'archived' in D1.
  */
 async function archiveTerminatedSessions(env: Env): Promise<void> {
   const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
@@ -833,13 +834,50 @@ async function archiveTerminatedSessions(env: Env): Promise<void> {
     })
   );
 
-  // Collect IDs where GC succeeded
-  const archivedIds: string[] = [];
+  // Collect IDs where DO GC succeeded
+  const gcSucceededIds: string[] = [];
   for (const result of gcResults) {
     if (result.status === 'fulfilled') {
-      archivedIds.push(result.value);
+      gcSucceededIds.push(result.value);
     } else {
       console.error('Failed to GC session DO:', result.reason);
+    }
+  }
+
+  if (gcSucceededIds.length === 0) return;
+
+  // Fan-out: delete each session's persisted workspace volume
+  const deleteWorkspaceUrl = env.MODAL_BACKEND_URL.replace('{label}', 'delete-workspace');
+  const workspaceDeleteResults = await Promise.allSettled(
+    gcSucceededIds.map(async (sessionId) => {
+      const response = await fetch(deleteWorkspaceUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId }),
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`HTTP ${response.status}: ${text.slice(0, 200)}`);
+      }
+
+      const payload = await response.json() as { success?: boolean; deleted?: boolean };
+      if (!payload.success) {
+        throw new Error('Modal backend returned success=false');
+      }
+
+      return { sessionId, deleted: payload.deleted === true };
+    })
+  );
+
+  const archivedIds: string[] = [];
+  let deletedCount = 0;
+  for (const result of workspaceDeleteResults) {
+    if (result.status === 'fulfilled') {
+      archivedIds.push(result.value.sessionId);
+      if (result.value.deleted) deletedCount += 1;
+    } else {
+      console.error('Failed to delete workspace volume during archive:', result.reason);
     }
   }
 
@@ -853,7 +891,7 @@ async function archiveTerminatedSessions(env: Env): Promise<void> {
     .bind(...archivedIds)
     .run();
 
-  console.log(`Archived ${archivedIds.length} sessions`);
+  console.log(`Archived ${archivedIds.length} sessions (workspace volumes deleted: ${deletedCount})`);
 }
 
 export default {
