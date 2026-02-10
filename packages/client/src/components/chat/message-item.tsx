@@ -137,6 +137,19 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
     );
   }
 
+  // Session break marker: full-width divider
+  if (isSystem && systemParts?.type === 'session-break') {
+    return (
+      <div className="flex items-center gap-3 py-4">
+        <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
+        <span className="shrink-0 font-mono text-[10px] font-medium uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+          New session
+        </span>
+        <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
+      </div>
+    );
+  }
+
   // Model-switched notices: subtle inline notification
   if (isSystem && message.content.startsWith('Model switched from ')) {
     return (

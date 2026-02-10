@@ -93,6 +93,7 @@ export type DOToRunnerMessage =
     }
   | { type: "tunnel-delete"; name: string; actorId?: string; actorName?: string; actorEmail?: string }
   | { type: "opencode-command"; command: string; args?: string; requestId: string }
+  | { type: "new-session"; channelType: string; channelId: string; requestId: string }
   | { type: "init" };
 
 /** Tool call status values */
@@ -165,7 +166,8 @@ export type RunnerToDOMessage =
   | { type: "channel-reply"; requestId: string; channelType: string; channelId: string; message: string; imageBase64?: string; imageMimeType?: string; followUp?: boolean }
   | { type: "audio-transcript"; messageId: string; transcript: string }
   | { type: "command-result"; requestId: string; command: string; result?: unknown; error?: string }
-  | { type: "channel-session-created"; channelKey: string; opencodeSessionId: string };
+  | { type: "channel-session-created"; channelKey: string; opencodeSessionId: string }
+  | { type: "session-reset"; channelType: string; channelId: string; requestId: string };
 
 /** Structured review result data */
 export interface ReviewFinding {

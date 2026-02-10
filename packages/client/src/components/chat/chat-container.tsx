@@ -40,6 +40,10 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     isAgentThinking,
     agentStatus,
     agentStatusDetail,
+    streamingChannelType,
+    streamingChannelId,
+    agentStatusChannelType,
+    agentStatusChannelId,
     availableModels,
     selectedModel,
     setSelectedModel,
@@ -90,6 +94,38 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     [channels, selectedChannel]
   );
 
+  // Determine if streaming content belongs to the selected channel
+  const showStreamingForChannel = useMemo(() => {
+    if (!selectedChannel) return true; // "All channels" shows everything
+    const streamCt = streamingChannelType || 'web';
+    const streamCi = streamingChannelId || 'default';
+    const [filterType, ...rest] = selectedChannel.split(':');
+    const filterId = rest.join(':') || 'default';
+    return streamCt === filterType && streamCi === filterId;
+  }, [selectedChannel, streamingChannelType, streamingChannelId]);
+
+  // Determine if agent status belongs to the selected channel
+  const showAgentStatusForChannel = useMemo(() => {
+    if (!selectedChannel) return true;
+    const statusCt = agentStatusChannelType || 'web';
+    const statusCi = agentStatusChannelId || 'default';
+    const [filterType, ...rest] = selectedChannel.split(':');
+    const filterId = rest.join(':') || 'default';
+    return statusCt === filterType && statusCi === filterId;
+  }, [selectedChannel, agentStatusChannelType, agentStatusChannelId]);
+
+  // Filter pending questions by selected channel
+  const filteredPendingQuestions = useMemo(() => {
+    if (!selectedChannel) return pendingQuestions;
+    const [filterType, ...rest] = selectedChannel.split(':');
+    const filterId = rest.join(':') || 'default';
+    return pendingQuestions.filter((q) => {
+      const ct = q.channelType || 'web';
+      const ci = q.channelId || 'default';
+      return ct === filterType && ci === filterId;
+    });
+  }, [pendingQuestions, selectedChannel]);
+
   const handleSendMessage = useCallback(
     (content: string, model?: string, attachments?: Parameters<typeof sendMessage>[2]) => {
       if (selectedChannelOption) {
@@ -108,6 +144,13 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
       abort();
     }
   }, [abort, selectedChannelOption]);
+
+  const handleCommand = useCallback(
+    (command: string, args?: string) => {
+      executeCommand(command, args, selectedChannelOption?.channelType, selectedChannelOption?.channelId);
+    },
+    [executeCommand, selectedChannelOption]
+  );
 
   // Share dialog state
   const [shareOpen, setShareOpen] = useState(false);
@@ -309,17 +352,17 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           <div className="relative flex min-h-0 flex-1 flex-col">
             <MessageList
               messages={filteredMessages}
-              streamingContent={streamingContent}
-              isAgentThinking={isAgentThinking}
-              agentStatus={agentStatus}
-              agentStatusDetail={agentStatusDetail}
+              streamingContent={showStreamingForChannel ? streamingContent : ''}
+              isAgentThinking={showAgentStatusForChannel ? isAgentThinking : false}
+              agentStatus={showAgentStatusForChannel ? agentStatus : 'idle'}
+              agentStatusDetail={showAgentStatusForChannel ? agentStatusDetail : undefined}
               onRevert={revertMessage}
               childSessionEvents={childSessionEvents}
               childSessions={childSessions}
               connectedUsers={connectedUsers}
             />
           </div>
-          {pendingQuestions.map((q) => (
+          {filteredPendingQuestions.map((q) => (
             <QuestionPrompt
               key={q.questionId}
               questionId={q.questionId}
@@ -347,6 +390,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             onSend={handleSendMessage}
             disabled={isDisabled}
             sendDisabled={false}
+
             placeholder={
               isDisabled
                 ? 'Session is not available'
@@ -365,7 +409,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             showActionsButton={isMobile}
             onOpenActions={() => setMobileActionsOpen(true)}
             onFocusChange={setComposerFocused}
-            onCommand={executeCommand}
+            onCommand={handleCommand}
           />
           {isMobile && (
             <MobileActionsSheet

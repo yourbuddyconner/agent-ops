@@ -94,6 +94,8 @@ interface ClientMessage {
   requestId?: string;
   command?: string;
   args?: string;
+  channelType?: string;
+  channelId?: string;
 }
 
 /** Agent status values for activity indication */
@@ -166,7 +168,7 @@ function deriveRuntimeStates(args: {
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'command-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply' | 'audio-transcript' | 'channel-session-created';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'command-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply' | 'audio-transcript' | 'channel-session-created' | 'session-reset';
   transcript?: string;
   prNumber?: number;
   targetSessionId?: string;
@@ -460,6 +462,13 @@ export class SessionAgentDO {
     resultMessageId: string | null;
     handled: boolean;
   } | null = null;
+
+  /** Returns the channel metadata for the currently active prompt, if any. */
+  private get activeChannel(): { channelType: string; channelId: string } | null {
+    return this.pendingChannelReply
+      ? { channelType: this.pendingChannelReply.channelType, channelId: this.pendingChannelReply.channelId }
+      : null;
+  }
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -1264,6 +1273,17 @@ export class SessionAgentDO {
               requestId: crypto.randomUUID(),
             } as any);
             break;
+          case 'new-session': {
+            const channelType = msg.channelType || 'web';
+            const channelId = msg.channelId || 'default';
+            this.sendToRunner({
+              type: 'new-session',
+              channelType,
+              channelId,
+              requestId: crypto.randomUUID(),
+            } as any);
+            break;
+          }
           default:
             ws.send(JSON.stringify({ type: 'error', message: `Unknown command: ${cmd}` }));
         }
@@ -1749,23 +1769,27 @@ export class SessionAgentDO {
         break;
       }
 
-      case 'stream':
+      case 'stream': {
         // Forward stream chunks to all clients (don't store)
         // Client expects 'chunk' type for streaming content
+        const streamCh = this.activeChannel;
         this.broadcastToClients({
           type: 'chunk',
           content: msg.content,
+          ...(streamCh ? { channelType: streamCh.channelType, channelId: streamCh.channelId } : {}),
         });
         break;
+      }
 
       case 'result': {
         // Store final assistant message and broadcast
         // Always generate a new ID - msg.messageId is the prompt ID which is already used for the user message
         const resultId = crypto.randomUUID();
+        const resultCh = this.activeChannel;
         console.log(`[SessionAgentDO] Storing assistant result: id=${resultId}, content length=${(msg.content || '').length}`);
         this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
-          resultId, 'assistant', msg.content || ''
+          'INSERT INTO messages (id, role, content, channel_type, channel_id) VALUES (?, ?, ?, ?, ?)',
+          resultId, 'assistant', msg.content || '', resultCh?.channelType ?? null, resultCh?.channelId ?? null
         );
         this.broadcastToClients({
           type: 'message',
@@ -1774,6 +1798,7 @@ export class SessionAgentDO {
             role: 'assistant',
             content: msg.content,
             createdAt: Math.floor(Date.now() / 1000),
+            ...(resultCh ? { channelType: resultCh.channelType, channelId: resultCh.channelId } : {}),
           },
         });
         console.log(`[SessionAgentDO] Assistant result stored and broadcast`);
@@ -1790,6 +1815,7 @@ export class SessionAgentDO {
         // Upsert tool call by callID — each tool gets one row that updates in place
         const toolId = msg.callID || crypto.randomUUID();
         const toolStatus = (msg.status as ToolCallStatus) || 'completed';
+        const toolCh = this.activeChannel;
         const parts = JSON.stringify({
           toolName: msg.toolName,
           status: toolStatus,
@@ -1806,8 +1832,8 @@ export class SessionAgentDO {
         if (existing.length === 0) {
           // First time seeing this callID — insert and broadcast as new message
           this.ctx.storage.sql.exec(
-            'INSERT INTO messages (id, role, content, parts) VALUES (?, ?, ?, ?)',
-            toolId, 'tool', content, parts
+            'INSERT INTO messages (id, role, content, parts, channel_type, channel_id) VALUES (?, ?, ?, ?, ?, ?)',
+            toolId, 'tool', content, parts, toolCh?.channelType ?? null, toolCh?.channelId ?? null
           );
           this.broadcastToClients({
             type: 'message',
@@ -1817,14 +1843,15 @@ export class SessionAgentDO {
               content,
               parts: { toolName: msg.toolName, status: toolStatus, args: msg.args, result: msg.result },
               createdAt: Math.floor(Date.now() / 1000),
+              ...(toolCh ? { channelType: toolCh.channelType, channelId: toolCh.channelId } : {}),
             },
           });
           this.appendAuditLog('agent.tool_call', `${msg.toolName || 'unknown'}`, undefined, { toolId, toolName: msg.toolName });
         } else {
           // Update existing row and broadcast as message.updated
           this.ctx.storage.sql.exec(
-            'UPDATE messages SET content = ?, parts = ? WHERE id = ?',
-            content, parts, toolId
+            'UPDATE messages SET content = ?, parts = ?, channel_type = COALESCE(channel_type, ?), channel_id = COALESCE(channel_id, ?) WHERE id = ?',
+            content, parts, toolCh?.channelType ?? null, toolCh?.channelId ?? null, toolId
           );
           this.broadcastToClients({
             type: 'message.updated',
@@ -1834,6 +1861,7 @@ export class SessionAgentDO {
               content,
               parts: { toolName: msg.toolName, status: toolStatus, args: msg.args, result: msg.result },
               createdAt: Math.floor(Date.now() / 1000),
+              ...(toolCh ? { channelType: toolCh.channelType, channelId: toolCh.channelId } : {}),
             },
           });
           if (toolStatus === 'completed' || toolStatus === 'error') {
@@ -1854,6 +1882,7 @@ export class SessionAgentDO {
       case 'question': {
         // Store question and broadcast to all clients
         const qId = msg.questionId || crypto.randomUUID();
+        const questionCh = this.activeChannel;
         const QUESTION_TIMEOUT_SECS = 5 * 60; // 5 minutes
         const expiresAt = Math.floor(Date.now() / 1000) + QUESTION_TIMEOUT_SECS;
         this.ctx.storage.sql.exec(
@@ -1866,6 +1895,7 @@ export class SessionAgentDO {
           text: msg.text,
           options: msg.options,
           expiresAt,
+          ...(questionCh ? { channelType: questionCh.channelType, channelId: questionCh.channelId } : {}),
         });
 
         // Schedule an alarm to expire the question if unanswered
@@ -1884,10 +1914,12 @@ export class SessionAgentDO {
       case 'screenshot': {
         // Store screenshot reference and broadcast
         const ssId = crypto.randomUUID();
+        const ssCh = this.activeChannel;
         this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content, parts) VALUES (?, ?, ?, ?)',
+          'INSERT INTO messages (id, role, content, parts, channel_type, channel_id) VALUES (?, ?, ?, ?, ?, ?)',
           ssId, 'system', msg.description || 'Screenshot',
-          JSON.stringify({ type: 'screenshot', data: msg.data })
+          JSON.stringify({ type: 'screenshot', data: msg.data }),
+          ssCh?.channelType ?? null, ssCh?.channelId ?? null
         );
         this.broadcastToClients({
           type: 'message',
@@ -1897,6 +1929,7 @@ export class SessionAgentDO {
             content: msg.description || 'Screenshot',
             parts: { type: 'screenshot', data: msg.data },
             createdAt: Math.floor(Date.now() / 1000),
+            ...(ssCh ? { channelType: ssCh.channelType, channelId: ssCh.channelId } : {}),
           },
         });
         break;
@@ -1942,15 +1975,17 @@ export class SessionAgentDO {
         // Always generate a new ID — msg.messageId is the prompt's user message ID,
         // which already exists in the messages table (PRIMARY KEY conflict).
         const errId = crypto.randomUUID();
+        const errCh = this.activeChannel;
         const errorText = msg.error || msg.content || 'Unknown error';
         this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
-          errId, 'system', `Error: ${errorText}`
+          'INSERT INTO messages (id, role, content, channel_type, channel_id) VALUES (?, ?, ?, ?, ?)',
+          errId, 'system', `Error: ${errorText}`, errCh?.channelType ?? null, errCh?.channelId ?? null
         );
         this.broadcastToClients({
           type: 'error',
           messageId: errId,
           error: msg.error || msg.content,
+          ...(errCh ? { channelType: errCh.channelType, channelId: errCh.channelId } : {}),
         });
         this.appendAuditLog('agent.error', errorText.slice(0, 120));
 
@@ -1975,12 +2010,14 @@ export class SessionAgentDO {
         this.ctx.waitUntil(this.flushMetrics());
         break;
 
-      case 'agentStatus':
+      case 'agentStatus': {
         // Forward agent status to all clients for real-time activity indication
+        const statusCh = this.activeChannel;
         this.broadcastToClients({
           type: 'agentStatus',
           status: msg.status,
           detail: msg.detail,
+          ...(statusCh ? { channelType: statusCh.channelType, channelId: statusCh.channelId } : {}),
         });
         if (msg.status === 'idle') {
           console.log(`[SessionAgentDO] agentStatus: idle (runnerConnected=${this.ctx.getWebSockets('runner').length > 0}, queued=${this.getQueueLength()})`);
@@ -1994,6 +2031,7 @@ export class SessionAgentDO {
           this.setStateValue('lastParentIdleNotice', '');
         }
         break;
+      }
 
       case 'create-pr': {
         // Runner requests PR creation — call GitHub API directly
@@ -2251,6 +2289,32 @@ export class SessionAgentDO {
           this.setChannelOcSessionId(csChannelKey, csOcSessionId);
           console.log(`[SessionAgentDO] Channel session created: ${csChannelKey} -> ${csOcSessionId}`);
         }
+        break;
+      }
+
+      case 'session-reset': {
+        // Runner confirmed session rotation — insert visual break marker
+        const breakId = crypto.randomUUID();
+        const srChannelType = (msg as any).channelType as string | undefined;
+        const srChannelId = (msg as any).channelId as string | undefined;
+        this.ctx.storage.sql.exec(
+          'INSERT INTO messages (id, role, content, parts, channel_type, channel_id) VALUES (?, ?, ?, ?, ?, ?)',
+          breakId, 'system', 'New session started',
+          JSON.stringify({ type: 'session-break' }),
+          srChannelType ?? null, srChannelId ?? null
+        );
+        this.broadcastToClients({
+          type: 'message',
+          data: {
+            id: breakId,
+            role: 'system',
+            content: 'New session started',
+            parts: { type: 'session-break' },
+            createdAt: Math.floor(Date.now() / 1000),
+            channelType: srChannelType,
+            channelId: srChannelId,
+          },
+        });
         break;
       }
 
@@ -6652,9 +6716,10 @@ export class SessionAgentDO {
         const msgId = crypto.randomUUID();
         const channelLabel = `Sent image to ${channelType}`;
         this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content, parts) VALUES (?, ?, ?, ?)',
+          'INSERT INTO messages (id, role, content, parts, channel_type, channel_id) VALUES (?, ?, ?, ?, ?, ?)',
           msgId, 'system', message || channelLabel,
           JSON.stringify({ type: 'image', data: imageBase64, mimeType: imageMimeType || 'image/jpeg' }),
+          channelType, channelId,
         );
         this.broadcastToClients({
           type: 'message',
@@ -6664,6 +6729,8 @@ export class SessionAgentDO {
             content: message || channelLabel,
             parts: { type: 'image', data: imageBase64, mimeType: imageMimeType || 'image/jpeg' },
             createdAt: Math.floor(Date.now() / 1000),
+            channelType,
+            channelId,
           },
         });
       }

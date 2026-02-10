@@ -1270,6 +1270,32 @@ export class PromptHandler {
     }
   }
 
+  async handleNewSession(channelType: string, channelId: string, requestId: string): Promise<void> {
+    const channel = this.getOrCreateChannel(channelType, channelId);
+
+    // Delete old OpenCode session if it exists
+    if (channel.opencodeSessionId) {
+      const oldId = channel.opencodeSessionId;
+      this.ocSessionToChannel.delete(oldId);
+      try {
+        await this.deleteSession(oldId);
+      } catch (err) {
+        console.warn(`[PromptHandler] Failed to delete old session ${oldId}:`, err);
+      }
+    }
+
+    // Create fresh session
+    channel.opencodeSessionId = await this.createSession();
+    this.ocSessionToChannel.set(channel.opencodeSessionId, channel);
+    channel.resetPromptState();
+
+    // Notify DO
+    this.agentClient.sendChannelSessionCreated(channel.channelKey, channel.opencodeSessionId);
+    this.agentClient.sendSessionReset(channelType, channelId, requestId);
+
+    console.log(`[PromptHandler] Session rotated for ${channel.channelKey} -> ${channel.opencodeSessionId}`);
+  }
+
   async handleRevert(doMessageId: string): Promise<void> {
     if (!this.sessionId) return;
 

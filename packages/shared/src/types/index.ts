@@ -862,6 +862,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'undo', description: 'Undo last agent change', handler: 'opencode', availableIn: ['ui'], category: 'OpenCode' },
   { name: 'redo', description: 'Redo last undo', handler: 'opencode', availableIn: ['ui'], category: 'OpenCode' },
   { name: 'compact', description: 'Compact/summarize conversation', handler: 'opencode', availableIn: ['ui'], category: 'OpenCode' },
+  { name: 'new-session', description: 'Start fresh AI context (keeps history)', handler: 'websocket', availableIn: ['ui'], category: 'Session' },
 ];
 
 // Audit log types

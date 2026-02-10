@@ -65,6 +65,7 @@ export class AgentClient {
     decision?: "approve" | "deny";
     payload: Record<string, unknown>;
   }) => void | Promise<void>) | null = null;
+  private newSessionHandler: ((channelType: string, channelId: string, requestId: string) => void | Promise<void>) | null = null;
   private initHandler: (() => void | Promise<void>) | null = null;
 
   private pendingRequests = new Map<string, {
@@ -262,6 +263,10 @@ export class AgentClient {
 
   sendChannelSessionCreated(channelKey: string, opencodeSessionId: string): void {
     this.send({ type: "channel-session-created", channelKey, opencodeSessionId });
+  }
+
+  sendSessionReset(channelType: string, channelId: string, requestId: string): void {
+    this.send({ type: "session-reset", channelType, channelId, requestId });
   }
 
   sendReverted(messageIds: string[]): void {
@@ -745,6 +750,10 @@ export class AgentClient {
     this.workflowExecuteHandler = handler;
   }
 
+  onNewSession(handler: (channelType: string, channelId: string, requestId: string) => void | Promise<void>): void {
+    this.newSessionHandler = handler;
+  }
+
   onInit(handler: () => void | Promise<void>): void {
     this.initHandler = handler;
   }
@@ -823,6 +832,10 @@ export class AgentClient {
           break;
         case "opencode-command":
           await this.openCodeCommandHandler?.(msg.command, msg.args, msg.requestId);
+          break;
+
+        case "new-session":
+          await this.newSessionHandler?.(msg.channelType, msg.channelId, msg.requestId);
           break;
 
         case "pong":

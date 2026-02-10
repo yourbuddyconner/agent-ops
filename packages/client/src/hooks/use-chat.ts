@@ -12,6 +12,8 @@ export interface PendingQuestion {
   text: string;
   options?: string[];
   expiresAt?: number;
+  channelType?: string;
+  channelId?: string;
 }
 
 export interface LogEntry {
@@ -99,6 +101,10 @@ interface ChatState {
   reviewError: string | null;
   reviewLoading: boolean;
   reviewDiffFiles: DiffFile[] | null;
+  streamingChannelType?: string;
+  streamingChannelId?: string;
+  agentStatusChannelType?: string;
+  agentStatusChannelId?: string;
 }
 
 interface WebSocketInitMessage {
@@ -164,6 +170,8 @@ interface WebSocketStatusMessage {
 interface WebSocketChunkMessage {
   type: 'chunk';
   content: string;
+  channelType?: string;
+  channelId?: string;
 }
 
 interface WebSocketQuestionMessage {
@@ -172,12 +180,16 @@ interface WebSocketQuestionMessage {
   text: string;
   options?: string[];
   expiresAt?: number;
+  channelType?: string;
+  channelId?: string;
 }
 
 interface WebSocketAgentStatusMessage {
   type: 'agentStatus';
   status: 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
   detail?: string;
+  channelType?: string;
+  channelId?: string;
 }
 
 interface WebSocketMessageUpdatedMessage {
@@ -198,6 +210,8 @@ interface WebSocketErrorMessage {
   messageId: string;
   error?: string;
   content?: string;
+  channelType?: string;
+  channelId?: string;
 }
 
 interface WebSocketModelsMessage {
@@ -552,6 +566,8 @@ export function useChat(sessionId: string) {
             // Clear streaming content when an assistant message arrives
             // (the text is now persisted as a stored message segment)
             streamingContent: d.role === 'assistant' ? '' : prev.streamingContent,
+            // Clear streaming channel metadata when assistant message arrives
+            ...(d.role === 'assistant' ? { streamingChannelType: undefined, streamingChannelId: undefined } : {}),
             // Stop thinking when assistant responds; reset status after tool results
             isAgentThinking: d.role === 'assistant' ? false : prev.isAgentThinking,
             ...(d.role === 'tool'
@@ -629,33 +645,41 @@ export function useChat(sessionId: string) {
         break;
       }
 
-      case 'chunk':
+      case 'chunk': {
+        const chunkMsg = message as WebSocketChunkMessage;
         setState((prev) => {
           // Ignore trailing chunks after abort (agent is idle)
           if (prev.agentStatus === 'idle') return prev;
           return {
             ...prev,
-            streamingContent: prev.streamingContent + message.content,
+            streamingContent: prev.streamingContent + chunkMsg.content,
+            streamingChannelType: chunkMsg.channelType ?? prev.streamingChannelType,
+            streamingChannelId: chunkMsg.channelId ?? prev.streamingChannelId,
             // Stop thinking when streaming starts
             isAgentThinking: false,
           };
         });
         break;
+      }
 
-      case 'question':
+      case 'question': {
+        const qMsg = message as WebSocketQuestionMessage;
         setState((prev) => ({
           ...prev,
           pendingQuestions: [
             ...prev.pendingQuestions,
             {
-              questionId: message.questionId,
-              text: message.text,
-              options: message.options,
-              expiresAt: message.expiresAt,
+              questionId: qMsg.questionId,
+              text: qMsg.text,
+              options: qMsg.options,
+              expiresAt: qMsg.expiresAt,
+              channelType: qMsg.channelType,
+              channelId: qMsg.channelId,
             },
           ],
         }));
         break;
+      }
 
       case 'agentStatus': {
         const statusMsg = message as WebSocketAgentStatusMessage;
@@ -663,8 +687,12 @@ export function useChat(sessionId: string) {
           ...prev,
           agentStatus: statusMsg.status,
           agentStatusDetail: statusMsg.detail,
+          agentStatusChannelType: statusMsg.channelType,
+          agentStatusChannelId: statusMsg.channelId,
           // Also update isAgentThinking for backward compatibility
           isAgentThinking: statusMsg.status !== 'idle',
+          // Clear streaming channel metadata when agent goes idle
+          ...(statusMsg.status === 'idle' ? { streamingChannelType: undefined, streamingChannelId: undefined } : {}),
         }));
         break;
       }
@@ -681,6 +709,8 @@ export function useChat(sessionId: string) {
           sessionId: sessionIdRef.current,
           role: 'system',
           content: `Error: ${errorText}`,
+          channelType: errorMsg.channelType,
+          channelId: errorMsg.channelId,
           createdAt: new Date(),
         };
         setState((prev) => ({
@@ -989,7 +1019,7 @@ export function useChat(sessionId: string) {
   }, []);
 
   const executeCommand = useCallback(
-    async (command: string, _args?: string) => {
+    async (command: string, _args?: string, channelType?: string, channelId?: string) => {
       const def = SLASH_COMMANDS.find((c) => c.name === command);
       if (!def) return;
 
@@ -1017,6 +1047,14 @@ export function useChat(sessionId: string) {
               break;
             case 'stop':
               abort();
+              break;
+            case 'new-session':
+              send({
+                type: 'command',
+                command: 'new-session',
+                channelType: channelType || 'web',
+                channelId: channelId || 'default',
+              });
               break;
           }
           break;
@@ -1102,6 +1140,10 @@ export function useChat(sessionId: string) {
     isAgentThinking: state.isAgentThinking,
     agentStatus: state.agentStatus,
     agentStatusDetail: state.agentStatusDetail,
+    streamingChannelType: state.streamingChannelType,
+    streamingChannelId: state.streamingChannelId,
+    agentStatusChannelType: state.agentStatusChannelType,
+    agentStatusChannelId: state.agentStatusChannelId,
     availableModels: state.availableModels,
     selectedModel,
     setSelectedModel: handleModelChange,

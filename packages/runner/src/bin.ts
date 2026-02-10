@@ -260,6 +260,11 @@ async function main() {
     await promptHandler.executeOpenCodeCommand(command, args, requestId);
   });
 
+  agentClient.onNewSession(async (channelType, channelId, requestId) => {
+    console.log(`[Runner] New session requested for ${channelType}:${channelId}`);
+    await promptHandler.handleNewSession(channelType, channelId, requestId);
+  });
+
   agentClient.onTunnelDelete(async (name, actor) => {
     console.log(`[Runner] Received tunnel delete: ${name} (actor=${actor?.name || actor?.email || actor?.id || "unknown"})`);
     try {
