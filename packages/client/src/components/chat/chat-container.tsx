@@ -190,21 +190,8 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
       {/* Desktop action toolbar */}
       {!isMobile && (
         <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-neutral-100 bg-surface-0 px-2 dark:border-neutral-800/50 dark:bg-surface-0">
-          <Button variant="ghost" size="sm" onClick={drawer.toggleEditor} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
-            <EditorIcon className="h-3 w-3" />
-            Editor
-          </Button>
-          <Button variant="ghost" size="sm" onClick={drawer.toggleFiles} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
-            <FilesIcon className="h-3 w-3" />
-            Files
-          </Button>
-          <Button variant="ghost" size="sm" onClick={drawer.toggleReview} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
-            <ReviewIcon className="h-3 w-3" />
-            Review
-          </Button>
-          <Button variant="ghost" size="sm" onClick={drawer.toggleLogs} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
-            <LogsIcon className="h-3 w-3" />
-            Logs
+          <Button variant="ghost" size="sm" onClick={drawer.toggleSidebar} title="Toggle session info sidebar" className="h-6 px-1.5 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300">
+            <InfoIcon className="h-3 w-3" />
           </Button>
           {gitState?.prUrl && (
             <a href={gitState.prUrl} target="_blank" rel="noopener noreferrer">
@@ -228,8 +215,21 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             </a>
           )}
           <div className="flex-1" />
-          <Button variant="ghost" size="sm" onClick={drawer.toggleSidebar} title="Toggle session info sidebar" className="h-6 px-1.5 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300">
-            <InfoIcon className="h-3 w-3" />
+          <Button variant="ghost" size="sm" onClick={drawer.toggleEditor} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+            <EditorIcon className="h-3 w-3" />
+            Editor
+          </Button>
+          <Button variant="ghost" size="sm" onClick={drawer.toggleFiles} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+            <FilesIcon className="h-3 w-3" />
+            Files
+          </Button>
+          <Button variant="ghost" size="sm" onClick={drawer.toggleReview} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+            <ReviewIcon className="h-3 w-3" />
+            Review
+          </Button>
+          <Button variant="ghost" size="sm" onClick={drawer.toggleLogs} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+            <LogsIcon className="h-3 w-3" />
+            Logs
           </Button>
         </div>
       )}
