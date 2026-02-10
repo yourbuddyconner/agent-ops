@@ -533,9 +533,12 @@ function ExecutionDetail({ execution }: { execution: Execution }) {
           </div>
         ) : steps.length > 0 ? (
           <div className="py-1">
-            {steps.map((step, i) => (
-              <StepTraceRow key={step.id} step={step} isLast={i === steps.length - 1} />
-            ))}
+            {steps.map((step, i) => {
+              const depth = getStepDepth(step, steps);
+              return (
+                <StepTraceRow key={step.id} step={step} isLast={i === steps.length - 1} depth={depth} />
+              );
+            })}
           </div>
         ) : (
           <div className="px-4 py-8 text-center text-xs text-neutral-400">
@@ -592,6 +595,7 @@ function getStepDisplayName(step: { stepId: string; input?: unknown }): string {
 function StepTraceRow({
   step,
   isLast,
+  depth = 0,
 }: {
   step: {
     id: string;
@@ -605,6 +609,7 @@ function StepTraceRow({
     completedAt: string | null;
   };
   isLast: boolean;
+  depth?: number;
 }) {
   const [expanded, setExpanded] = React.useState(false);
   const hasOutput = step.output !== null && step.output !== undefined;
@@ -624,17 +629,21 @@ function StepTraceRow({
   const displayName = getStepDisplayName(step);
   const showStepId = displayName !== step.stepId;
 
+  const indentPx = depth * 24;
+
   return (
     <div className="group">
       <button
         type="button"
         onClick={() => isExpandable && setExpanded(!expanded)}
         disabled={!isExpandable}
+        style={indentPx > 0 ? { paddingLeft: `calc(1rem + ${indentPx}px)` } : undefined}
         className={cn(
           'flex w-full items-center gap-2 px-4 py-1.5 text-left transition-colors',
           isExpandable && 'cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-900/50',
           !isExpandable && 'cursor-default',
           expanded && 'bg-neutral-50/50 dark:bg-neutral-900/30',
+          depth > 0 && 'border-l-2 border-neutral-200 dark:border-neutral-700',
         )}
       >
         {/* Status dot + connector */}
@@ -699,7 +708,10 @@ function StepTraceRow({
 
       {/* Expanded content */}
       {expanded && (
-        <div className="border-l-2 border-neutral-200 ml-[1.15rem] mr-4 mb-1 dark:border-neutral-700">
+        <div
+          className="border-l-2 border-neutral-200 ml-[1.15rem] mr-4 mb-1 dark:border-neutral-700"
+          style={indentPx > 0 ? { marginLeft: `calc(1.15rem + ${indentPx}px)` } : undefined}
+        >
           {hasError && (
             <div className="bg-red-50 px-3 py-1.5 font-mono text-2xs text-red-600 dark:bg-red-950/20 dark:text-red-400">
               {step.error}
@@ -1827,6 +1839,35 @@ function getCommandOutputCandidate(value: unknown): Record<string, unknown> | nu
 
 function countNestedSteps(step: WorkflowStep): number {
   return (step.steps?.length ?? 0) + (step.then?.length ?? 0) + (step.else?.length ?? 0);
+}
+
+/**
+ * Determine nesting depth for a step trace based on stepId prefix matching.
+ * Steps whose stepId starts with a parallel/conditional parent's stepId (and is longer)
+ * are considered children and get indented.
+ */
+function getStepDepth(
+  step: { stepId: string; input?: unknown },
+  allSteps: { stepId: string; input?: unknown }[],
+): number {
+  let depth = 0;
+  const containerTypes = new Set(['parallel', 'conditional']);
+
+  for (const other of allSteps) {
+    if (other.stepId === step.stepId) continue;
+    // Check if this step's ID starts with the other step's ID (prefix match)
+    if (!step.stepId.startsWith(other.stepId)) continue;
+    // Must be strictly longer (a child, not the same step)
+    if (step.stepId.length <= other.stepId.length) continue;
+    // Parent must be a container type (parallel, conditional)
+    const otherInput = isRecord(other.input) ? other.input : null;
+    const otherType = typeof otherInput?.type === 'string' ? otherInput.type : '';
+    if (containerTypes.has(otherType)) {
+      depth += 1;
+    }
+  }
+
+  return depth;
 }
 
 /* ═══════════════════════════════════════════════════════════
