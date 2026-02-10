@@ -203,6 +203,7 @@ export interface Message {
   authorAvatarUrl?: string;
   channelType?: string;
   channelId?: string;
+  opencodeSessionId?: string;
   createdAt: Date;
 }
 

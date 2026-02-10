@@ -721,13 +721,15 @@ sessionsRouter.post('/:id/messages', zValidator('json', sendMessageSchema), asyn
     throw new ValidationError('Session has been terminated');
   }
 
-  // Save message to D1 for API access
+  // Save message to D1 for API access (INSERT OR IGNORE deduplicates with DO flush)
   const messageId = crypto.randomUUID();
   await db.saveMessage(c.env.DB, {
     id: messageId,
     sessionId: id,
     role: 'user',
     content: body.content,
+    authorId: user.id,
+    authorEmail: user.email,
   });
 
   // Forward prompt to SessionAgent DO for queuing and runner delivery

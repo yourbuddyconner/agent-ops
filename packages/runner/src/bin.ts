@@ -231,9 +231,13 @@ async function main() {
     process.exit(0);
   });
 
-  agentClient.onAbort(async () => {
-    console.log("[Runner] Received abort signal");
-    await promptHandler.handleAbort();
+  agentClient.onAbort(async (channelType, channelId) => {
+    console.log(`[Runner] Received abort signal${channelType ? ` (channel: ${channelType}:${channelId})` : ''}`);
+    await promptHandler.handleAbort(channelType, channelId);
+  });
+
+  agentClient.onInit(async () => {
+    console.log("[Runner] Received init from DO");
   });
 
   agentClient.onRevert(async (messageId) => {

@@ -51,7 +51,7 @@ export class AgentClient {
   private promptHandler: ((messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string) => void | Promise<void>) | null = null;
   private answerHandler: ((questionId: string, answer: string | boolean) => void | Promise<void>) | null = null;
   private stopHandler: (() => void) | null = null;
-  private abortHandler: (() => void | Promise<void>) | null = null;
+  private abortHandler: ((channelType?: string, channelId?: string) => void | Promise<void>) | null = null;
   private revertHandler: ((messageId: string) => void | Promise<void>) | null = null;
   private diffHandler: ((requestId: string) => void | Promise<void>) | null = null;
   private reviewHandler: ((requestId: string) => void | Promise<void>) | null = null;
@@ -65,6 +65,7 @@ export class AgentClient {
     decision?: "approve" | "deny";
     payload: Record<string, unknown>;
   }) => void | Promise<void>) | null = null;
+  private initHandler: (() => void | Promise<void>) | null = null;
 
   private pendingRequests = new Map<string, {
     resolve: (value: any) => void;
@@ -257,6 +258,10 @@ export class AgentClient {
 
   sendAborted(): void {
     this.send({ type: "aborted" });
+  }
+
+  sendChannelSessionCreated(channelKey: string, opencodeSessionId: string): void {
+    this.send({ type: "channel-session-created", channelKey, opencodeSessionId });
   }
 
   sendReverted(messageIds: string[]): void {
@@ -705,7 +710,7 @@ export class AgentClient {
     this.stopHandler = handler;
   }
 
-  onAbort(handler: () => void | Promise<void>): void {
+  onAbort(handler: (channelType?: string, channelId?: string) => void | Promise<void>): void {
     this.abortHandler = handler;
   }
 
@@ -738,6 +743,10 @@ export class AgentClient {
     payload: Record<string, unknown>;
   }) => void | Promise<void>): void {
     this.workflowExecuteHandler = handler;
+  }
+
+  onInit(handler: () => void | Promise<void>): void {
+    this.initHandler = handler;
   }
 
   // ─── Keepalive ──────────────────────────────────────────────────────
@@ -801,7 +810,7 @@ export class AgentClient {
           this.stopHandler?.();
           break;
         case "abort":
-          await this.abortHandler?.();
+          await this.abortHandler?.(msg.channelType, msg.channelId);
           break;
         case "revert":
           await this.revertHandler?.(msg.messageId);
@@ -818,6 +827,10 @@ export class AgentClient {
 
         case "pong":
           // Keepalive response — no action needed
+          break;
+
+        case "init":
+          await this.initHandler?.();
           break;
 
         case "spawn-child-result":

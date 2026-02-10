@@ -43,7 +43,7 @@ export type DOToRunnerMessage =
       gitName?: string; gitEmail?: string }
   | { type: "answer"; questionId: string; answer: string | boolean }
   | { type: "stop" }
-  | { type: "abort" }
+  | { type: "abort"; channelType?: string; channelId?: string }
   | { type: "revert"; messageId: string }
   | { type: "diff"; requestId: string }
   | { type: "review"; requestId: string }
@@ -92,7 +92,8 @@ export type DOToRunnerMessage =
       };
     }
   | { type: "tunnel-delete"; name: string; actorId?: string; actorName?: string; actorEmail?: string }
-  | { type: "opencode-command"; command: string; args?: string; requestId: string };
+  | { type: "opencode-command"; command: string; args?: string; requestId: string }
+  | { type: "init" };
 
 /** Tool call status values */
 export type ToolCallStatus = "pending" | "running" | "completed" | "error";
@@ -163,7 +164,8 @@ export type RunnerToDOMessage =
   | { type: "task-my"; requestId: string; status?: string }
   | { type: "channel-reply"; requestId: string; channelType: string; channelId: string; message: string; imageBase64?: string; imageMimeType?: string; followUp?: boolean }
   | { type: "audio-transcript"; messageId: string; transcript: string }
-  | { type: "command-result"; requestId: string; command: string; result?: unknown; error?: string };
+  | { type: "command-result"; requestId: string; command: string; result?: unknown; error?: string }
+  | { type: "channel-session-created"; channelKey: string; opencodeSessionId: string };
 
 /** Structured review result data */
 export interface ReviewFinding {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import { useNavigate, useRouter } from '@tanstack/react-router';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useChat } from '@/hooks/use-chat';
@@ -7,6 +7,7 @@ import { useDrawer } from '@/routes/sessions/$sessionId';
 import { MessageList } from './message-list';
 import { ChatInput } from './chat-input';
 import { QuestionPrompt } from './question-prompt';
+import { ChannelSwitcher, deriveChannels } from './channel-switcher';
 import { SessionActionsMenu } from '@/components/sessions/session-actions-menu';
 import { ShareSessionDialog } from '@/components/sessions/share-session-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -68,6 +69,46 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   }, [selectedModel, drawer.setSelectedModel]);
 
 
+  // Channel switcher state (orchestrator sessions only)
+  const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
+  const channels = useMemo(() => deriveChannels(messages), [messages]);
+  const showChannelSwitcher = session?.isOrchestrator === true && channels.length >= 1;
+
+  const filteredMessages = useMemo(() => {
+    if (!selectedChannel) return messages;
+    const [filterType, ...rest] = selectedChannel.split(':');
+    const filterId = rest.join(':') || 'default';
+    return messages.filter((msg) => {
+      const ct = msg.channelType || 'web';
+      const ci = msg.channelId || 'default';
+      return ct === filterType && ci === filterId;
+    });
+  }, [messages, selectedChannel]);
+
+  const selectedChannelOption = useMemo(
+    () => (selectedChannel ? channels.find((c) => `${c.channelType}:${c.channelId}` === selectedChannel) : null),
+    [channels, selectedChannel]
+  );
+
+  const handleSendMessage = useCallback(
+    (content: string, model?: string, attachments?: Parameters<typeof sendMessage>[2]) => {
+      if (selectedChannelOption) {
+        sendMessage(content, model, attachments, selectedChannelOption.channelType, selectedChannelOption.channelId);
+      } else {
+        sendMessage(content, model, attachments);
+      }
+    },
+    [sendMessage, selectedChannelOption]
+  );
+
+  const handleAbort = useCallback(() => {
+    if (selectedChannelOption) {
+      abort(selectedChannelOption.channelType, selectedChannelOption.channelId);
+    } else {
+      abort();
+    }
+  }, [abort, selectedChannelOption]);
+
   // Share dialog state
   const [shareOpen, setShareOpen] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
@@ -114,12 +155,12 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && isAgentActive) {
         e.preventDefault();
-        abort();
+        handleAbort();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isAgentActive, abort]);
+  }, [isAgentActive, handleAbort]);
 
   return (
     <div className="flex h-full flex-col">
@@ -161,6 +202,16 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
               status={displaySessionStatus}
               errorMessage={session?.errorMessage}
             />
+            {showChannelSwitcher && (
+              <>
+                <div className="h-3 w-px bg-neutral-200 dark:bg-neutral-800" />
+                <ChannelSwitcher
+                  channels={channels}
+                  selectedChannel={selectedChannel}
+                  onSelectChannel={setSelectedChannel}
+                />
+              </>
+            )}
             <SessionStatusIndicator sessionStatus={displaySessionStatus} connectionStatus={connectionStatus} />
           </div>
           <div className="flex items-center gap-0.5">
@@ -257,7 +308,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
         <>
           <div className="relative flex min-h-0 flex-1 flex-col">
             <MessageList
-              messages={messages}
+              messages={filteredMessages}
               streamingContent={streamingContent}
               isAgentThinking={isAgentThinking}
               agentStatus={agentStatus}
@@ -278,19 +329,35 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
               onAnswer={answerQuestion}
             />
           ))}
+          {selectedChannelOption && (
+            <div className="flex items-center gap-2 border-t border-neutral-100 bg-surface-0 px-3 py-1 dark:border-neutral-800/50 dark:bg-surface-0">
+              <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
+                Sending to: <span className="font-semibold text-neutral-600 dark:text-neutral-300">{selectedChannelOption.label}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedChannel(null)}
+                className="rounded px-1 py-0.5 font-mono text-[10px] text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+              >
+                clear
+              </button>
+            </div>
+          )}
           <ChatInput
-            onSend={sendMessage}
+            onSend={handleSendMessage}
             disabled={isDisabled}
             sendDisabled={false}
             placeholder={
               isDisabled
                 ? 'Session is not available'
-                : 'Ask or build anything...'
+                : selectedChannelOption
+                  ? `Message ${selectedChannelOption.label}...`
+                  : 'Ask or build anything...'
             }
             availableModels={availableModels}
             selectedModel={selectedModel}
             onModelChange={setSelectedModel}
-            onAbort={abort}
+            onAbort={handleAbort}
             isAgentActive={isAgentActive}
             sessionId={sessionId}
             sessionStatus={sessionStatus}

@@ -876,7 +876,7 @@ export function useChat(sessionId: string) {
   });
 
   const sendMessage = useCallback(
-    (content: string, model?: string, attachments?: PromptAttachment[]) => {
+    (content: string, model?: string, attachments?: PromptAttachment[], channelType?: string, channelId?: string) => {
       if (!isConnected) return;
 
       send({
@@ -884,6 +884,8 @@ export function useChat(sessionId: string) {
         content,
         ...(model ? { model } : {}),
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
+        ...(channelType ? { channelType } : {}),
+        ...(channelId ? { channelId } : {}),
       });
       // Start thinking indicator when user sends a message
       setState((prev) => ({ ...prev, isAgentThinking: true }));
@@ -891,9 +893,13 @@ export function useChat(sessionId: string) {
     [isConnected, send]
   );
 
-  const abort = useCallback(() => {
+  const abort = useCallback((channelType?: string, channelId?: string) => {
     if (!isConnected) return;
-    send({ type: 'abort' });
+    send({
+      type: 'abort',
+      ...(channelType ? { channelType } : {}),
+      ...(channelId ? { channelId } : {}),
+    });
     // Optimistically clear streaming state
     setState((prev) => ({
       ...prev,

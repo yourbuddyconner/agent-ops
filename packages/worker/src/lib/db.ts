@@ -347,11 +347,11 @@ export async function getSyncLog(db: D1Database, id: string): Promise<SyncStatus
 // Message operations
 export async function saveMessage(
   db: D1Database,
-  data: { id: string; sessionId: string; role: string; content: string; toolCalls?: unknown[]; authorId?: string; authorEmail?: string; authorName?: string; channelType?: string; channelId?: string }
+  data: { id: string; sessionId: string; role: string; content: string; toolCalls?: unknown[]; parts?: unknown; authorId?: string; authorEmail?: string; authorName?: string; authorAvatarUrl?: string; channelType?: string; channelId?: string; opencodeSessionId?: string }
 ): Promise<void> {
   await db
-    .prepare('INSERT INTO messages (id, session_id, role, content, tool_calls, author_id, author_email, author_name, channel_type, channel_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(data.id, data.sessionId, data.role, data.content, data.toolCalls ? JSON.stringify(data.toolCalls) : null, data.authorId || null, data.authorEmail || null, data.authorName || null, data.channelType || null, data.channelId || null)
+    .prepare('INSERT OR IGNORE INTO messages (id, session_id, role, content, tool_calls, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(data.id, data.sessionId, data.role, data.content, data.toolCalls ? JSON.stringify(data.toolCalls) : null, data.parts ? JSON.stringify(data.parts) : null, data.authorId || null, data.authorEmail || null, data.authorName || null, data.authorAvatarUrl || null, data.channelType || null, data.channelId || null, data.opencodeSessionId || null)
     .run();
 }
 
@@ -2082,12 +2082,15 @@ function mapMessage(row: any): Message {
     sessionId: row.session_id,
     role: row.role,
     content: row.content,
+    parts: row.parts ? JSON.parse(row.parts) : undefined,
     toolCalls: row.tool_calls ? JSON.parse(row.tool_calls) : undefined,
     authorId: row.author_id || undefined,
     authorEmail: row.author_email || undefined,
     authorName: row.author_name || undefined,
+    authorAvatarUrl: row.author_avatar_url || undefined,
     channelType: row.channel_type || undefined,
     channelId: row.channel_id || undefined,
+    opencodeSessionId: row.opencode_session_id || undefined,
     createdAt: new Date(row.created_at),
   };
 }

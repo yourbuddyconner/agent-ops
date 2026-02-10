@@ -339,43 +339,196 @@ function isRetriableProviderError(errorMsg: string): boolean {
   return RETRIABLE_ERROR_PATTERNS.some((pattern) => pattern.test(errorMsg));
 }
 
+// ─── Per-Channel Session State ──────────────────────────────────────────
+// Each channel (web, telegram, slack, etc.) gets its own OpenCode session
+// so prompts from different channels don't interfere with each other.
+
+export class ChannelSession {
+  readonly channelKey: string;
+  opencodeSessionId: string | null = null;
+
+  // Track current prompt so we can route events back to the DO
+  activeMessageId: string | null = null;
+  streamedContent = "";
+  committedAssistantContent = "";
+  hasActivity = false;
+  lastChunkTime = 0;
+
+  // Track tool states to detect completion (pending/running → completed)
+  toolStates = new Map<string, { status: ToolStatus; toolName: string }>();
+  // Track last full text by part ID when SSE omits incremental `delta`
+  textPartSnapshots = new Map<string, string>();
+  // Track last full text by message ID to handle providers that rotate part IDs
+  // while emitting full-text snapshots (no true deltas).
+  messageTextSnapshots = new Map<string, string>();
+  // Track message roles so we can ignore user parts in SSE updates
+  messageRoles = new Map<string, string>();
+  // Assistant message IDs seen for the active DO prompt
+  activeAssistantMessageIds = new Set<string>();
+  // Latest full assistant text snapshot observed via message.updated
+  latestAssistantTextSnapshot = "";
+  // Compact event trace for debugging empty-response classification
+  recentEventTrace: string[] = [];
+  lastError: string | null = null;
+  hadToolSinceLastText = false;
+  idleNotified = false;
+
+  // Message ID mapping: DO message IDs ↔ OpenCode message IDs
+  doToOcMessageId = new Map<string, string>();
+  ocToDOMessageId = new Map<string, string>();
+
+  // Model failover state for current prompt
+  currentModelPreferences: string[] | undefined;
+  currentModelIndex = 0;
+  pendingRetryContent: string | null = null;
+  pendingRetryAttachments: PromptAttachment[] = [];
+  pendingRetryAuthor: PromptAuthor | undefined;
+  waitForEventForced = false;
+  failoverInProgress = false;
+  retryPending = false;
+  finalizeInFlight = false;
+  awaitingAssistantForAttempt = false;
+
+  constructor(channelKey: string) {
+    this.channelKey = channelKey;
+  }
+
+  /** Reset per-prompt state (called at start of each new prompt). */
+  resetPromptState(): void {
+    this.streamedContent = "";
+    this.committedAssistantContent = "";
+    this.hasActivity = false;
+    this.hadToolSinceLastText = false;
+    this.lastChunkTime = 0;
+    this.lastError = null;
+    this.toolStates.clear();
+    this.textPartSnapshots.clear();
+    this.messageTextSnapshots.clear();
+    this.messageRoles.clear();
+    this.activeAssistantMessageIds.clear();
+    this.latestAssistantTextSnapshot = "";
+    this.recentEventTrace = [];
+    this.waitForEventForced = false;
+    this.awaitingAssistantForAttempt = false;
+  }
+
+  /** Reset state for model failover retry (keep activeMessageId). */
+  resetForRetry(): void {
+    this.streamedContent = "";
+    this.committedAssistantContent = "";
+    this.hasActivity = false;
+    this.hadToolSinceLastText = false;
+    this.lastChunkTime = 0;
+    this.lastError = null;
+    this.toolStates.clear();
+    this.textPartSnapshots.clear();
+    this.messageTextSnapshots.clear();
+    this.messageRoles.clear();
+    this.activeAssistantMessageIds.clear();
+    this.latestAssistantTextSnapshot = "";
+    this.recentEventTrace = [];
+    this.awaitingAssistantForAttempt = false;
+  }
+
+  /** Reset state on abort. */
+  resetForAbort(): void {
+    this.activeMessageId = null;
+    this.streamedContent = "";
+    this.committedAssistantContent = "";
+    this.hasActivity = false;
+    this.hadToolSinceLastText = false;
+    this.lastChunkTime = 0;
+    this.lastError = null;
+    this.toolStates.clear();
+    this.textPartSnapshots.clear();
+    this.messageTextSnapshots.clear();
+    this.messageRoles.clear();
+    this.activeAssistantMessageIds.clear();
+    this.latestAssistantTextSnapshot = "";
+    this.recentEventTrace = [];
+    this.awaitingAssistantForAttempt = false;
+  }
+
+  static channelKeyFrom(channelType?: string, channelId?: string): string {
+    if (channelType && channelId) return `${channelType}:${channelId}`;
+    return "web:default";
+  }
+}
+
 export class PromptHandler {
   private opencodeUrl: string;
   private agentClient: AgentClient;
   private runnerSessionId: string | null;
-  private sessionId: string | null = null;
   private eventStreamActive = false;
-
-  // Track current prompt so we can route events back to the DO
-  private activeMessageId: string | null = null;
-  private streamedContent = "";
-  private committedAssistantContent = "";
-  private hasActivity = false; // true if any text or tool events were received
-  private lastChunkTime = 0;
   private responseTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
-  // Track tool states to detect completion (pending/running → completed)
-  private toolStates = new Map<string, { status: ToolStatus; toolName: string }>();
-  // Track last full text by part ID when SSE omits incremental `delta`
-  private textPartSnapshots = new Map<string, string>();
-  // Track last full text by message ID to handle providers that rotate part IDs
-  // while emitting full-text snapshots (no true deltas).
-  private messageTextSnapshots = new Map<string, string>();
-  // Track message roles so we can ignore user parts in SSE updates
-  private messageRoles = new Map<string, string>();
-  // Assistant message IDs seen for the active DO prompt
-  private activeAssistantMessageIds = new Set<string>();
-  // Latest full assistant text snapshot observed via message.updated
-  private latestAssistantTextSnapshot = "";
-  // Compact event trace for debugging empty-response classification
-  private recentEventTrace: string[] = [];
-  private lastError: string | null = null; // Track session errors
-  private hadToolSinceLastText = false; // Track if tools ran since last text chunk
-  private idleNotified = false;
+  // Per-channel OpenCode session state
+  private channels = new Map<string, ChannelSession>();
+  private ocSessionToChannel = new Map<string, ChannelSession>(); // reverse lookup for SSE routing
 
-  // Message ID mapping: DO message IDs ↔ OpenCode message IDs
-  private doToOcMessageId = new Map<string, string>();
-  private ocToDOMessageId = new Map<string, string>();
+  // Active channel — set when a prompt arrives, used by methods that haven't been
+  // updated to accept a channel parameter yet (backward compat bridge)
+  private activeChannel: ChannelSession | null = null;
+
+  // Legacy single-session compat — points to activeChannel's OC session ID
+  // Used by ephemeral sessions, reviews, etc. that don't need per-channel routing
+  private get sessionId(): string | null {
+    return this.activeChannel?.opencodeSessionId ?? null;
+  }
+  private set sessionId(val: string | null) {
+    if (this.activeChannel) {
+      this.activeChannel.opencodeSessionId = val;
+    }
+  }
+
+  // Delegate per-prompt fields to activeChannel for backward compat
+  private get activeMessageId(): string | null { return this.activeChannel?.activeMessageId ?? null; }
+  private set activeMessageId(val: string | null) { if (this.activeChannel) this.activeChannel.activeMessageId = val; }
+  private get streamedContent(): string { return this.activeChannel?.streamedContent ?? ""; }
+  private set streamedContent(val: string) { if (this.activeChannel) this.activeChannel.streamedContent = val; }
+  private get committedAssistantContent(): string { return this.activeChannel?.committedAssistantContent ?? ""; }
+  private set committedAssistantContent(val: string) { if (this.activeChannel) this.activeChannel.committedAssistantContent = val; }
+  private get hasActivity(): boolean { return this.activeChannel?.hasActivity ?? false; }
+  private set hasActivity(val: boolean) { if (this.activeChannel) this.activeChannel.hasActivity = val; }
+  private get lastChunkTime(): number { return this.activeChannel?.lastChunkTime ?? 0; }
+  private set lastChunkTime(val: number) { if (this.activeChannel) this.activeChannel.lastChunkTime = val; }
+  private get toolStates(): Map<string, { status: ToolStatus; toolName: string }> { return this.activeChannel?.toolStates ?? new Map(); }
+  private get textPartSnapshots(): Map<string, string> { return this.activeChannel?.textPartSnapshots ?? new Map(); }
+  private get messageTextSnapshots(): Map<string, string> { return this.activeChannel?.messageTextSnapshots ?? new Map(); }
+  private get messageRoles(): Map<string, string> { return this.activeChannel?.messageRoles ?? new Map(); }
+  private get activeAssistantMessageIds(): Set<string> { return this.activeChannel?.activeAssistantMessageIds ?? new Set(); }
+  private get latestAssistantTextSnapshot(): string { return this.activeChannel?.latestAssistantTextSnapshot ?? ""; }
+  private set latestAssistantTextSnapshot(val: string) { if (this.activeChannel) this.activeChannel.latestAssistantTextSnapshot = val; }
+  private get recentEventTrace(): string[] { return this.activeChannel?.recentEventTrace ?? []; }
+  private set recentEventTrace(val: string[]) { if (this.activeChannel) this.activeChannel.recentEventTrace = val; }
+  private get lastError(): string | null { return this.activeChannel?.lastError ?? null; }
+  private set lastError(val: string | null) { if (this.activeChannel) this.activeChannel.lastError = val; }
+  private get hadToolSinceLastText(): boolean { return this.activeChannel?.hadToolSinceLastText ?? false; }
+  private set hadToolSinceLastText(val: boolean) { if (this.activeChannel) this.activeChannel.hadToolSinceLastText = val; }
+  private get idleNotified(): boolean { return this.activeChannel?.idleNotified ?? false; }
+  private set idleNotified(val: boolean) { if (this.activeChannel) this.activeChannel.idleNotified = val; }
+  private get doToOcMessageId(): Map<string, string> { return this.activeChannel?.doToOcMessageId ?? new Map(); }
+  private get ocToDOMessageId(): Map<string, string> { return this.activeChannel?.ocToDOMessageId ?? new Map(); }
+  private get currentModelPreferences(): string[] | undefined { return this.activeChannel?.currentModelPreferences; }
+  private set currentModelPreferences(val: string[] | undefined) { if (this.activeChannel) this.activeChannel.currentModelPreferences = val; }
+  private get currentModelIndex(): number { return this.activeChannel?.currentModelIndex ?? 0; }
+  private set currentModelIndex(val: number) { if (this.activeChannel) this.activeChannel.currentModelIndex = val; }
+  private get pendingRetryContent(): string | null { return this.activeChannel?.pendingRetryContent ?? null; }
+  private set pendingRetryContent(val: string | null) { if (this.activeChannel) this.activeChannel.pendingRetryContent = val; }
+  private get pendingRetryAttachments(): PromptAttachment[] { return this.activeChannel?.pendingRetryAttachments ?? []; }
+  private set pendingRetryAttachments(val: PromptAttachment[]) { if (this.activeChannel) this.activeChannel.pendingRetryAttachments = val; }
+  private get pendingRetryAuthor(): PromptAuthor | undefined { return this.activeChannel?.pendingRetryAuthor; }
+  private set pendingRetryAuthor(val: PromptAuthor | undefined) { if (this.activeChannel) this.activeChannel.pendingRetryAuthor = val; }
+  private get waitForEventForced(): boolean { return this.activeChannel?.waitForEventForced ?? false; }
+  private set waitForEventForced(val: boolean) { if (this.activeChannel) this.activeChannel.waitForEventForced = val; }
+  private get failoverInProgress(): boolean { return this.activeChannel?.failoverInProgress ?? false; }
+  private set failoverInProgress(val: boolean) { if (this.activeChannel) this.activeChannel.failoverInProgress = val; }
+  private get retryPending(): boolean { return this.activeChannel?.retryPending ?? false; }
+  private set retryPending(val: boolean) { if (this.activeChannel) this.activeChannel.retryPending = val; }
+  private get finalizeInFlight(): boolean { return this.activeChannel?.finalizeInFlight ?? false; }
+  private set finalizeInFlight(val: boolean) { if (this.activeChannel) this.activeChannel.finalizeInFlight = val; }
+  private get awaitingAssistantForAttempt(): boolean { return this.activeChannel?.awaitingAssistantForAttempt ?? false; }
+  private set awaitingAssistantForAttempt(val: boolean) { if (this.activeChannel) this.activeChannel.awaitingAssistantForAttempt = val; }
 
   // Ephemeral session tracking — resolved when the session becomes idle via SSE
   private idleWaiters = new Map<string, () => void>();
@@ -385,23 +538,23 @@ export class PromptHandler {
   private pendingQuestionRequests = new Map<string, { answers: (string[] | null)[] }>();
   private promptToQuestion = new Map<string, { requestID: string; index: number }>();
 
-  // Model failover state for current prompt
-  private currentModelPreferences: string[] | undefined;
-  private currentModelIndex = 0;
-  private pendingRetryContent: string | null = null;
-  private pendingRetryAttachments: PromptAttachment[] = [];
-  private pendingRetryAuthor: { authorId?: string; gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string } | undefined;
-  private waitForEventForced = false;
-  private failoverInProgress = false;
-  private retryPending = false;
-  private finalizeInFlight = false;
-  private awaitingAssistantForAttempt = false;
-
   constructor(opencodeUrl: string, agentClient: AgentClient, runnerSessionId?: string) {
     this.opencodeUrl = opencodeUrl;
     this.agentClient = agentClient;
     this.runnerSessionId = runnerSessionId?.trim() || null;
   }
+
+  /** Get or create a ChannelSession for the given channel. */
+  getOrCreateChannel(channelType?: string, channelId?: string): ChannelSession {
+    const key = ChannelSession.channelKeyFrom(channelType, channelId);
+    let ch = this.channels.get(key);
+    if (!ch) {
+      ch = new ChannelSession(key);
+      this.channels.set(key, ch);
+    }
+    return ch;
+  }
+
 
   private normalizeWorkflowHash(hash: string | undefined): string {
     const cleaned = (hash || "").trim();
@@ -741,6 +894,10 @@ export class PromptHandler {
       return;
     }
 
+    // Resolve per-channel session
+    const channel = this.getOrCreateChannel(channelType, channelId);
+    this.activeChannel = channel;
+
     try {
       // Set git config for author attribution before processing
       if (author?.gitName || author?.authorName) {
@@ -758,8 +915,8 @@ export class PromptHandler {
         }
       }
 
-      // If there's a pending response from a previous prompt, finalize it first
-      if (this.activeMessageId && this.hasActivity) {
+      // If there's a pending response from a previous prompt on this channel, finalize it first
+      if (channel.activeMessageId && channel.hasActivity) {
         console.log(`[PromptHandler] Finalizing previous response before new prompt`);
         this.finalizeResponse();
       }
@@ -767,29 +924,22 @@ export class PromptHandler {
       // Clear any pending timeout from previous prompt
       this.clearResponseTimeout();
 
-      // Create OpenCode session if needed
-      if (!this.sessionId) {
-        this.sessionId = await this.createSession();
-        // Start event stream after session exists
+      // Create OpenCode session for this channel if needed
+      if (!channel.opencodeSessionId) {
+        channel.opencodeSessionId = await this.createSession();
+        this.ocSessionToChannel.set(channel.opencodeSessionId, channel);
+        // Report the new OC session ID back to the DO for reconnection tracking
+        this.agentClient.sendChannelSessionCreated(channel.channelKey, channel.opencodeSessionId);
+      }
+
+      // Ensure event stream is active — it may not have been started if this
+      // channel's OC session was restored from init rather than freshly created.
+      if (!this.eventStreamActive) {
         await this.startEventStream();
       }
 
-      this.activeMessageId = messageId;
-      this.streamedContent = "";
-      this.committedAssistantContent = "";
-      this.hasActivity = false;
-      this.hadToolSinceLastText = false;
-      this.lastChunkTime = 0;
-      this.lastError = null;
-      this.toolStates.clear();
-      this.textPartSnapshots.clear();
-      this.messageTextSnapshots.clear();
-      this.messageRoles.clear();
-      this.activeAssistantMessageIds.clear();
-      this.latestAssistantTextSnapshot = "";
-      this.recentEventTrace = [];
-      this.waitForEventForced = false;
-      this.awaitingAssistantForAttempt = false;
+      channel.activeMessageId = messageId;
+      channel.resetPromptState();
 
       // Build failover chain with explicit model first (if provided), then
       // user preferences. This keeps failover anchored to the actual selected model.
@@ -850,18 +1000,21 @@ export class PromptHandler {
 
       // Send message async (fire-and-forget)
       try {
-        await this.sendPromptAsync(this.sessionId, effectiveContent, effectiveModel, effectiveAttachments, author, channelType, channelId);
+        await this.sendPromptAsync(channel.opencodeSessionId!, effectiveContent, effectiveModel, effectiveAttachments, author, channelType, channelId);
       } catch (err) {
         if (this.isSessionGone(err)) {
           console.warn("[PromptHandler] OpenCode session missing; recreating session and retrying prompt");
-          this.sessionId = await this.createSession();
-          await this.startEventStream();
-          await this.sendPromptAsync(this.sessionId, effectiveContent, effectiveModel, effectiveAttachments, author, channelType, channelId);
+          const oldId = channel.opencodeSessionId;
+          if (oldId) this.ocSessionToChannel.delete(oldId);
+          channel.opencodeSessionId = await this.createSession();
+          this.ocSessionToChannel.set(channel.opencodeSessionId, channel);
+          this.agentClient.sendChannelSessionCreated(channel.channelKey, channel.opencodeSessionId);
+          await this.sendPromptAsync(channel.opencodeSessionId!, effectiveContent, effectiveModel, effectiveAttachments, author, channelType, channelId);
         } else {
           throw err;
         }
       }
-      console.log(`[PromptHandler] Prompt ${messageId} sent to OpenCode${effectiveModel ? ` (model: ${effectiveModel})` : ''}`);
+      console.log(`[PromptHandler] Prompt ${messageId} sent to OpenCode (channel: ${channel.channelKey})${effectiveModel ? ` (model: ${effectiveModel})` : ''}`);
 
       // Response will arrive via SSE events — don't block here
     } catch (err) {
@@ -899,26 +1052,15 @@ export class PromptHandler {
     }
 
     // Reset stream state for retry (keep activeMessageId)
-    this.streamedContent = "";
-    this.committedAssistantContent = "";
-    this.hasActivity = false;
-    this.hadToolSinceLastText = false;
-    this.lastChunkTime = 0;
-    this.lastError = null;
-    this.toolStates.clear();
-    this.textPartSnapshots.clear();
-    this.messageTextSnapshots.clear();
-    this.messageRoles.clear();
-    this.activeAssistantMessageIds.clear();
-    this.latestAssistantTextSnapshot = "";
-    this.recentEventTrace = [];
-    this.awaitingAssistantForAttempt = false;
+    if (this.activeChannel) this.activeChannel.resetForRetry();
 
     // Retry with next model
     try {
       this.agentClient.sendAgentStatus("thinking");
       this.awaitingAssistantForAttempt = true;
-      await this.sendPromptAsync(this.sessionId!, this.pendingRetryContent!, toModel, this.pendingRetryAttachments, this.pendingRetryAuthor);
+      const ocSessionId = this.activeChannel?.opencodeSessionId;
+      if (!ocSessionId) throw new Error("No OpenCode session for active channel");
+      await this.sendPromptAsync(ocSessionId, this.pendingRetryContent!, toModel, this.pendingRetryAttachments, this.pendingRetryAuthor);
       console.log(`[PromptHandler] Retry sent with model ${toModel}`);
       return true;
     } catch (err) {
@@ -1084,43 +1226,47 @@ export class PromptHandler {
     return { text, options: optionLabels.length > 0 ? optionLabels : undefined };
   }
 
-  async handleAbort(): Promise<void> {
-    if (!this.sessionId) return;
+  async handleAbort(channelType?: string, channelId?: string): Promise<void> {
+    // If channel is specified, abort only that channel; otherwise abort all
+    const targetChannels: ChannelSession[] = [];
+    if (channelType && channelId) {
+      const key = ChannelSession.channelKeyFrom(channelType, channelId);
+      const ch = this.channels.get(key);
+      if (ch) targetChannels.push(ch);
+    } else {
+      // Abort all active channels
+      for (const ch of this.channels.values()) {
+        if (ch.opencodeSessionId) targetChannels.push(ch);
+      }
+    }
 
-    console.log("[PromptHandler] Aborting current generation");
+    if (targetChannels.length === 0) return;
+
+    console.log(`[PromptHandler] Aborting ${targetChannels.length} channel(s): ${targetChannels.map(c => c.channelKey).join(', ')}`);
 
     // Clear prompt state BEFORE the fetch so the SSE handler stops
     // forwarding events immediately (handlePartUpdated checks activeMessageId)
     this.clearResponseTimeout();
-    this.activeMessageId = null;
-    this.streamedContent = "";
-    this.committedAssistantContent = "";
-    this.hasActivity = false;
-    this.hadToolSinceLastText = false;
-    this.lastChunkTime = 0;
-    this.lastError = null;
-    this.toolStates.clear();
-    this.textPartSnapshots.clear();
-    this.messageTextSnapshots.clear();
-    this.messageRoles.clear();
-    this.activeAssistantMessageIds.clear();
-    this.latestAssistantTextSnapshot = "";
-    this.recentEventTrace = [];
-    this.awaitingAssistantForAttempt = false;
+    for (const ch of targetChannels) {
+      ch.resetForAbort();
+      ch.idleNotified = true;
+    }
 
     // Tell DO first so clients get immediate feedback
     this.agentClient.sendAborted();
     this.agentClient.sendAgentStatus("idle");
-    this.idleNotified = true;
 
-    // Then tell OpenCode to stop generating (may be slow)
-    try {
-      const res = await fetch(`${this.opencodeUrl}/session/${this.sessionId}/abort`, {
-        method: "POST",
-      });
-      console.log(`[PromptHandler] Abort response: ${res.status}`);
-    } catch (err) {
-      console.error("[PromptHandler] Error calling abort:", err);
+    // Then tell OpenCode to stop generating for each channel (may be slow)
+    for (const ch of targetChannels) {
+      if (!ch.opencodeSessionId) continue;
+      try {
+        const res = await fetch(`${this.opencodeUrl}/session/${ch.opencodeSessionId}/abort`, {
+          method: "POST",
+        });
+        console.log(`[PromptHandler] Abort response for channel ${ch.channelKey}: ${res.status}`);
+      } catch (err) {
+        console.error(`[PromptHandler] Error calling abort for channel ${ch.channelKey}:`, err);
+      }
     }
   }
 
@@ -1887,8 +2033,27 @@ export class PromptHandler {
       if (eventSessionId !== this.sessionId) return;
     }
 
-    // Filter to our session
-    if (eventSessionId && eventSessionId !== this.sessionId) return;
+    // Route to the correct channel session via OC session ID
+    let eventChannel: ChannelSession | undefined;
+    if (eventSessionId) {
+      eventChannel = this.ocSessionToChannel.get(eventSessionId);
+      if (!eventChannel) {
+        // Not one of our channel sessions — skip unless it's the legacy single session
+        // (backward compat for channels created before per-channel routing)
+        if (this.activeChannel?.opencodeSessionId === eventSessionId) {
+          eventChannel = this.activeChannel;
+        } else {
+          return;
+        }
+      }
+    } else {
+      // No session ID in event — use the active channel
+      eventChannel = this.activeChannel ?? undefined;
+    }
+
+    // Set activeChannel for the duration of event processing so delegate accessors work
+    const prevChannel = this.activeChannel;
+    if (eventChannel) this.activeChannel = eventChannel;
 
     const tracePart = props.part as Record<string, unknown> | undefined;
     const traceInfo = (props.info ?? props) as Record<string, unknown>;
@@ -1901,6 +2066,7 @@ export class PromptHandler {
     const traceType = tracePart?.type ? String(tracePart.type) : undefined;
     this.appendEventTrace(`${event.type}${traceType ? `:${traceType}` : ""}${traceRole ? ` role=${traceRole}` : ""}${traceMsgId ? ` msg=${traceMsgId}` : ""}${traceDelta ? ` d=${traceDelta}` : ""}`);
 
+    try {
     switch (event.type) {
       case "message.part.updated": {
         this.handlePartUpdated(props);
@@ -1919,7 +2085,7 @@ export class PromptHandler {
 
       case "session.idle": {
         // Dedicated idle event — finalize response (even if no activity, to handle empty responses)
-        console.log(`[PromptHandler] session.idle (activeMessageId: ${this.activeMessageId ? 'yes' : 'no'}, hasActivity: ${this.hasActivity})`);
+        console.log(`[PromptHandler] session.idle (channel: ${eventChannel?.channelKey ?? 'unknown'}, activeMessageId: ${this.activeMessageId ? 'yes' : 'no'}, hasActivity: ${this.hasActivity})`);
         if (this.activeMessageId && !this.retryPending && !this.awaitingAssistantForAttempt) {
           console.log(`[PromptHandler] Session idle, finalizing response`);
           this.finalizeResponse();
@@ -2017,6 +2183,10 @@ export class PromptHandler {
       default:
         console.log(`[PromptHandler] Unhandled event: ${event.type}`);
         break;
+    }
+    } finally {
+      // Restore the previous active channel
+      this.activeChannel = prevChannel;
     }
   }
 
