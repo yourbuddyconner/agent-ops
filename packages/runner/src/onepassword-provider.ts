@@ -7,11 +7,11 @@
 
 import type { SecretsProvider, SecretListEntry } from "./secrets.js";
 
-// Lazy-imported SDK types
+// Lazy-imported SDK types (matches @1password/sdk v0.3.x)
 type OPClient = {
   secrets: { resolve: (ref: string) => Promise<string> };
-  vaults: { listAll: () => AsyncIterable<{ id: string; title: string }> };
-  items: { listAll: (vaultId: string) => AsyncIterable<{ id: string; title: string; vaultId: string }> };
+  vaults: { list: () => Promise<{ id: string; title: string }[]> };
+  items: { list: (vaultId: string) => Promise<{ id: string; title: string; vaultId: string }[]> };
 };
 
 let clientInstance: OPClient | null = null;
@@ -52,7 +52,8 @@ export class OnePasswordProvider implements SecretsProvider {
     if (options?.vaultId) {
       await this.listVaultItems(client, options.vaultId, entries);
     } else {
-      for await (const vault of client.vaults.listAll()) {
+      const vaults = await client.vaults.list();
+      for (const vault of vaults) {
         await this.listVaultItems(client, vault.id, entries, vault.title);
       }
     }
@@ -68,7 +69,8 @@ export class OnePasswordProvider implements SecretsProvider {
   ): Promise<void> {
     const resolvedTitle = vaultTitle || vaultId;
 
-    for await (const item of client.items.listAll(vaultId)) {
+    const items = await client.items.list(vaultId);
+    for (const item of items) {
       entries.push({
         provider: this.name,
         vault: resolvedTitle,
