@@ -524,28 +524,7 @@ function ExecutionDetail({ execution }: { execution: Execution }) {
       )}
 
       {/* Step traces */}
-      <div className="flex-1 overflow-y-auto">
-        {isLoading ? (
-          <div className="space-y-1 p-3">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-8 w-full" />
-            ))}
-          </div>
-        ) : steps.length > 0 ? (
-          <div className="py-1">
-            {steps.map((step, i) => {
-              const depth = getStepDepth(step, steps);
-              return (
-                <StepTraceRow key={step.id} step={step} isLast={i === steps.length - 1} depth={depth} />
-              );
-            })}
-          </div>
-        ) : (
-          <div className="px-4 py-8 text-center text-xs text-neutral-400">
-            No step traces captured yet
-          </div>
-        )}
-      </div>
+      <StepTracesSection steps={steps} isLoading={isLoading} />
     </div>
   );
 }
@@ -590,12 +569,68 @@ function getStepDisplayName(step: { stepId: string; input?: unknown }): string {
   return step.stepId;
 }
 
+/* ─── Step traces section with expand/collapse all ─── */
+
+function StepTracesSection({ steps, isLoading }: {
+  steps: Array<{
+    id: string;
+    stepId: string;
+    attempt: number;
+    status: string;
+    input: unknown;
+    output: unknown;
+    error: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+  }>;
+  isLoading: boolean;
+}) {
+  const [expandSignal, setExpandSignal] = React.useState<{ expanded: boolean; generation: number }>({ expanded: false, generation: 0 });
+  const allExpanded = expandSignal.expanded;
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      {isLoading ? (
+        <div className="space-y-1 p-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-8 w-full" />
+          ))}
+        </div>
+      ) : steps.length > 0 ? (
+        <div className="py-1">
+          <div className="flex items-center justify-end px-4 pb-1">
+            <button
+              type="button"
+              onClick={() => setExpandSignal(prev => ({ expanded: !prev.expanded, generation: prev.generation + 1 }))}
+              className="flex items-center gap-1.5 rounded px-2 py-1 text-2xs text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+            >
+              <ExpandCollapseIcon expanded={allExpanded} className="size-3" />
+              {allExpanded ? 'Collapse all' : 'Expand all'}
+            </button>
+          </div>
+          {steps.map((step, i) => {
+            const depth = getStepDepth(step, steps);
+            return (
+              <StepTraceRow key={step.id} step={step} isLast={i === steps.length - 1} depth={depth} expandSignal={expandSignal} />
+            );
+          })}
+        </div>
+      ) : (
+        <div className="px-4 py-8 text-center text-xs text-neutral-400">
+          No step traces captured yet
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── Step trace row (GH Actions style) ─── */
 
 function StepTraceRow({
   step,
   isLast,
   depth = 0,
+  expandSignal,
 }: {
   step: {
     id: string;
@@ -610,8 +645,20 @@ function StepTraceRow({
   };
   isLast: boolean;
   depth?: number;
+  expandSignal?: { expanded: boolean; generation: number };
 }) {
   const [expanded, setExpanded] = React.useState(false);
+
+  // Sync with parent expand/collapse all signal
+  const lastGenRef = React.useRef(expandSignal?.generation ?? 0);
+  React.useEffect(() => {
+    if (expandSignal && expandSignal.generation !== lastGenRef.current) {
+      lastGenRef.current = expandSignal.generation;
+      const hasOutput = step.output !== null && step.output !== undefined;
+      const hasError = !!step.error;
+      if (hasOutput || hasError) setExpanded(expandSignal.expanded);
+    }
+  }, [expandSignal?.generation, expandSignal?.expanded, step.output, step.error]);
   const hasOutput = step.output !== null && step.output !== undefined;
   const hasError = !!step.error;
   const isExpandable = hasOutput || hasError;
@@ -999,6 +1046,9 @@ function StepsPanel({
   workflow: NonNullable<ReturnType<typeof useWorkflow>['data']>['workflow'];
   steps: WorkflowStep[];
 }) {
+  const [expandSignal, setExpandSignal] = React.useState<{ expanded: boolean; generation: number }>({ expanded: true, generation: 0 });
+  const allExpanded = expandSignal.expanded;
+
   if (steps.length === 0) {
     return (
       <div className="py-8 text-center text-xs text-neutral-400">
@@ -1008,16 +1058,29 @@ function StepsPanel({
   }
 
   return (
-    <div className="space-y-px">
-      {steps.map((step, index) => (
-        <CompactStepRow
-          key={step.id}
-          workflow={workflow}
-          step={step}
-          index={index}
-          isLast={index === steps.length - 1}
-        />
-      ))}
+    <div>
+      <div className="mb-2 flex items-center justify-end">
+        <button
+          type="button"
+          onClick={() => setExpandSignal(prev => ({ expanded: !prev.expanded, generation: prev.generation + 1 }))}
+          className="flex items-center gap-1.5 rounded px-2 py-1 text-2xs text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+        >
+          <ExpandCollapseIcon expanded={allExpanded} className="size-3" />
+          {allExpanded ? 'Collapse all' : 'Expand all'}
+        </button>
+      </div>
+      <div className="space-y-px">
+        {steps.map((step, index) => (
+          <CompactStepRow
+            key={step.id}
+            workflow={workflow}
+            step={step}
+            index={index}
+            isLast={index === steps.length - 1}
+            expandSignal={expandSignal}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -1027,11 +1090,13 @@ function CompactStepRow({
   step,
   index,
   isLast,
+  expandSignal,
 }: {
   workflow: NonNullable<ReturnType<typeof useWorkflow>['data']>['workflow'];
   step: WorkflowStep;
   index: number;
   isLast: boolean;
+  expandSignal?: { expanded: boolean; generation: number };
 }) {
   const childSteps = countNestedSteps(step);
   const hasDetails = !!(
@@ -1044,6 +1109,15 @@ function CompactStepRow({
   // Start expanded unless step has many nested children (which would be long)
   const defaultExpanded = hasDetails && childSteps <= 5;
   const [expanded, setExpanded] = React.useState(defaultExpanded);
+
+  // Sync with parent expand/collapse all signal
+  const lastGenRef = React.useRef(expandSignal?.generation ?? 0);
+  React.useEffect(() => {
+    if (expandSignal && expandSignal.generation !== lastGenRef.current) {
+      lastGenRef.current = expandSignal.generation;
+      if (hasDetails) setExpanded(expandSignal.expanded);
+    }
+  }, [expandSignal?.generation, expandSignal?.expanded, hasDetails]);
   const bashCommand = step.type === 'bash' && step.command
     ? step.command
     : step.type === 'tool' && step.tool === 'bash' && typeof step.arguments?.command === 'string'
@@ -1886,6 +1960,25 @@ function ChevronIcon({ className }: { className?: string }) {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <path d="m9 18 6-6-6-6" />
+    </svg>
+  );
+}
+
+function ExpandCollapseIcon({ expanded, className }: { expanded: boolean; className?: string }) {
+  // ChevronsDownUp when expanded (collapse), ChevronsUpDown when collapsed (expand)
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      {expanded ? (
+        <>
+          <path d="m7 20 5-5 5 5" />
+          <path d="m7 4 5 5 5-5" />
+        </>
+      ) : (
+        <>
+          <path d="m7 15 5 5 5-5" />
+          <path d="m7 9 5-5 5 5" />
+        </>
+      )}
     </svg>
   );
 }
