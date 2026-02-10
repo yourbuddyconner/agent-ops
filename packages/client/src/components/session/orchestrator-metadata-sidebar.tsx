@@ -106,7 +106,7 @@ export function OrchestratorMetadataSidebar({
   const nonTerminalChildren = useMemo(
     () =>
       (childSessions ?? []).filter((c) => {
-        return c.status !== 'terminated' && c.status !== 'error';
+        return c.status !== 'terminated' && c.status !== 'archived' && c.status !== 'error';
       }),
     [childSessions],
   );

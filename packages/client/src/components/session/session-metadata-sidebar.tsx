@@ -44,7 +44,7 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
     return `${s}s`;
   };
 
-  const activeChildren = (childSessions ?? []).filter((c) => c.status !== 'terminated' && c.status !== 'error');
+  const activeChildren = (childSessions ?? []).filter((c) => c.status !== 'terminated' && c.status !== 'archived' && c.status !== 'error');
   const tunnels = Array.isArray((doStatus as { tunnels?: unknown })?.tunnels)
     ? ((doStatus as { tunnels: Array<{ name: string; url?: string; path?: string; port?: number; protocol?: string }> }).tunnels || [])
     : [];
@@ -316,6 +316,7 @@ export function StatusDot({ status }: { status: string }) {
     initializing: 'bg-amber-400',
     idle: 'bg-neutral-400',
     terminated: 'bg-neutral-300 dark:bg-neutral-600',
+    archived: 'bg-neutral-300 dark:bg-neutral-600',
     error: 'bg-red-400',
     hibernated: 'bg-neutral-300 dark:bg-neutral-600',
   };

@@ -100,7 +100,7 @@ interface ClientMessage {
 
 /** Agent status values for activity indication */
 type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error';
-type SessionLifecycleStatus = 'initializing' | 'running' | 'idle' | 'hibernating' | 'hibernated' | 'restoring' | 'terminated' | 'error';
+type SessionLifecycleStatus = 'initializing' | 'running' | 'idle' | 'hibernating' | 'hibernated' | 'restoring' | 'terminated' | 'archived' | 'error';
 type SandboxRuntimeState = 'starting' | 'running' | 'hibernating' | 'hibernated' | 'restoring' | 'stopped' | 'error';
 type AgentRuntimeState = 'starting' | 'busy' | 'idle' | 'queued' | 'sleeping' | 'standby' | 'stopped' | 'error';
 type JointRuntimeState = 'starting' | 'running_busy' | 'running_idle' | 'queued' | 'waking' | 'sleeping' | 'standby' | 'stopped' | 'error';
@@ -122,7 +122,7 @@ function deriveRuntimeStates(args: {
 
   const sandboxState: SandboxRuntimeState = (() => {
     if (lifecycle === 'error') return 'error';
-    if (lifecycle === 'terminated') return 'stopped';
+    if (lifecycle === 'terminated' || lifecycle === 'archived') return 'stopped';
     if (lifecycle === 'hibernating') return 'hibernating';
     if (lifecycle === 'hibernated') return 'hibernated';
     if (lifecycle === 'restoring') return 'restoring';
@@ -134,7 +134,7 @@ function deriveRuntimeStates(args: {
 
   const agentState: AgentRuntimeState = (() => {
     if (lifecycle === 'error') return 'error';
-    if (lifecycle === 'terminated') return 'stopped';
+    if (lifecycle === 'terminated' || lifecycle === 'archived') return 'stopped';
     if (lifecycle === 'hibernating' || lifecycle === 'hibernated') return 'sleeping';
     if (lifecycle === 'initializing' || lifecycle === 'restoring') {
       return hasQueue ? 'queued' : 'starting';
@@ -5162,7 +5162,7 @@ export class SessionAgentDO {
       try {
         const { children } = await getChildSessions(this.env.DB, sessionId);
         const activeChildren = children.filter(
-          (c) => c.status !== 'terminated',
+          (c) => c.status !== 'terminated' && c.status !== 'archived',
         );
         await Promise.allSettled(
           activeChildren.map(async (child) => {

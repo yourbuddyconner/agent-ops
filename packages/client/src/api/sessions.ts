@@ -281,7 +281,7 @@ export function useSessionChildren(sessionId: string) {
       // Poll more aggressively when any child is still active
       const children = query.state.data?.children;
       const hasActive = children?.some(
-        (c) => c.status !== 'terminated' && c.status !== 'hibernated',
+        (c) => c.status !== 'terminated' && c.status !== 'archived' && c.status !== 'hibernated',
       );
       return hasActive ? 5_000 : 30_000;
     },
@@ -316,7 +316,7 @@ export function useInfiniteSessionChildren(
     refetchInterval: (query) => {
       const children = query.state.data?.pages.flatMap((p) => p.children);
       const hasActive = children?.some(
-        (c) => c.status !== 'terminated' && c.status !== 'hibernated',
+        (c) => c.status !== 'terminated' && c.status !== 'archived' && c.status !== 'hibernated',
       );
       return hasActive ? 5_000 : 30_000;
     },

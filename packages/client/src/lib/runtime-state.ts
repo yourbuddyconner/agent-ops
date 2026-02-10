@@ -37,6 +37,7 @@ const LIFECYCLE_VALUES: SessionLifecycleStatus[] = [
   'hibernated',
   'restoring',
   'terminated',
+  'archived',
   'error',
 ];
 
@@ -116,7 +117,7 @@ export function deriveRuntimeStates(args: DeriveRuntimeStatesArgs): {
 
   const sandboxState: SandboxRuntimeState = (() => {
     if (lifecycleStatus === 'error') return 'error';
-    if (lifecycleStatus === 'terminated') return 'stopped';
+    if (lifecycleStatus === 'terminated' || lifecycleStatus === 'archived') return 'stopped';
     if (lifecycleStatus === 'hibernating') return 'hibernating';
     if (lifecycleStatus === 'hibernated') return 'hibernated';
     if (lifecycleStatus === 'restoring') return 'restoring';
@@ -128,7 +129,7 @@ export function deriveRuntimeStates(args: DeriveRuntimeStatesArgs): {
 
   const agentState: AgentRuntimeState = (() => {
     if (lifecycleStatus === 'error') return 'error';
-    if (lifecycleStatus === 'terminated') return 'stopped';
+    if (lifecycleStatus === 'terminated' || lifecycleStatus === 'archived') return 'stopped';
     if (lifecycleStatus === 'hibernating' || lifecycleStatus === 'hibernated') return 'sleeping';
     if (lifecycleStatus === 'initializing' || lifecycleStatus === 'restoring') {
       return hasQueue ? 'queued' : 'starting';

@@ -26,7 +26,7 @@ interface SessionActionsMenuProps {
 
 const ACTIVE_STATUSES: SessionStatus[] = ['running', 'idle', 'initializing', 'hibernated', 'restoring', 'hibernating'];
 const HIBERNATABLE_STATUSES: SessionStatus[] = ['running'];
-const DELETABLE_STATUSES: SessionStatus[] = ['terminated', 'error'];
+const DELETABLE_STATUSES: SessionStatus[] = ['terminated', 'archived', 'error'];
 
 export function SessionActionsMenu({
   session,

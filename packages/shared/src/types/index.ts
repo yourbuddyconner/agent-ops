@@ -145,7 +145,7 @@ export interface ListChildSessionsResponse {
 }
 
 // Session types
-export type SessionStatus = 'initializing' | 'running' | 'idle' | 'hibernating' | 'hibernated' | 'restoring' | 'terminated' | 'error';
+export type SessionStatus = 'initializing' | 'running' | 'idle' | 'hibernating' | 'hibernated' | 'restoring' | 'terminated' | 'archived' | 'error';
 export type SessionPurpose = 'interactive' | 'orchestrator' | 'workflow';
 
 // Lightweight participant info for list views

@@ -29,7 +29,7 @@ export function TerminateSessionDialog({
   const { data: children } = useSessionChildren(sessionId);
 
   const activeChildren = children?.filter(
-    (c) => c.status !== 'terminated' && c.status !== 'hibernated',
+    (c) => c.status !== 'terminated' && c.status !== 'archived' && c.status !== 'hibernated',
   ) ?? [];
 
   const handleTerminate = async () => {

@@ -224,7 +224,7 @@ type OrchestratorPromptDispatchResult = {
   reason?: string;
 };
 
-const ORCHESTRATOR_UNAVAILABLE_STATUSES = new Set(['terminated', 'error']);
+const ORCHESTRATOR_UNAVAILABLE_STATUSES = new Set(['terminated', 'archived', 'error']);
 
 export async function dispatchOrchestratorPrompt(
   env: Env,

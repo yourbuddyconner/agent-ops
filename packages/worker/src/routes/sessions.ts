@@ -65,7 +65,7 @@ type ChildSummaryWithRuntime = Awaited<ReturnType<typeof db.getChildSessions>>['
   tunnels?: ChildTunnelSummary[];
 };
 
-const NON_ACTIVE_TUNNEL_STATUSES = new Set(['terminated', 'error', 'hibernated']);
+const NON_ACTIVE_TUNNEL_STATUSES = new Set(['terminated', 'error', 'hibernated', 'archived']);
 const PR_REFRESH_INTERVAL_MS = 60_000;
 const childPrRefreshCache = new Map<string, number>();
 
@@ -604,8 +604,8 @@ sessionsRouter.get('/:id/sandbox-token', async (c) => {
 
   const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
 
-  // Don't attempt token generation for terminated sessions
-  if (session.status === 'terminated' || session.status === 'error') {
+  // Don't attempt token generation for non-running sessions
+  if (session.status === 'terminated' || session.status === 'error' || session.status === 'archived') {
     return c.json({ error: 'Session is not running' }, 503);
   }
 
@@ -979,7 +979,7 @@ sessionsRouter.get('/:id/children', async (c) => {
 
   await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
 
-  const excludeStatuses = hideTerminated === 'true' ? ['terminated', 'error'] : undefined;
+  const excludeStatuses = hideTerminated === 'true' ? ['terminated', 'archived', 'error'] : undefined;
 
   const result = await db.getChildSessions(c.env.DB, id, {
     limit: limit ? parseInt(limit) : undefined,

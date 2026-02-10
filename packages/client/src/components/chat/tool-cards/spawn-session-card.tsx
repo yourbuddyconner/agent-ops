@@ -200,7 +200,7 @@ function StatusDot({ status }: { status?: string }) {
     return <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" />;
   }
 
-  if (status === 'terminated' || status === 'hibernated') {
+  if (status === 'terminated' || status === 'archived' || status === 'hibernated') {
     return <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-neutral-400" />;
   }
 

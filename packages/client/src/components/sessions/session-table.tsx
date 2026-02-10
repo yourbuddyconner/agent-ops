@@ -18,6 +18,7 @@ const STATUS_OPTIONS: { value: SessionStatus | 'all'; label: string }[] = [
   { value: 'running', label: 'Running' },
   { value: 'idle', label: 'Idle' },
   { value: 'terminated', label: 'Terminated' },
+  { value: 'archived', label: 'Archived' },
   { value: 'error', label: 'Error' },
 ];
 
@@ -38,6 +39,7 @@ const STATUS_VARIANTS: Record<
   hibernated: 'secondary',
   restoring: 'warning',
   terminated: 'secondary',
+  archived: 'secondary',
   error: 'error',
 };
 

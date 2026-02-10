@@ -36,7 +36,7 @@ export function EditorDrawer({ sessionId, activeTab }: EditorDrawerProps) {
           Sandbox starting up...
         </div>
       )}
-      {tokenError && session && session.status !== 'initializing' && session.status !== 'terminated' && (
+      {tokenError && session && session.status !== 'initializing' && session.status !== 'terminated' && session.status !== 'archived' && (
         <div className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-3 py-1.5 font-mono text-[11px] text-red-800 dark:border-red-800 dark:bg-red-950/50 dark:text-red-300">
           <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
           Connection lost. Retrying...

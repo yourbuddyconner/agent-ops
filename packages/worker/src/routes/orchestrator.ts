@@ -49,7 +49,7 @@ function generateRunnerToken(): string {
 
 // ─── Orchestrator Routes ────────────────────────────────────────────────
 
-const TERMINAL_STATUSES = new Set(['terminated', 'error']);
+const TERMINAL_STATUSES = new Set(['terminated', 'archived', 'error']);
 
 /**
  * GET /api/me/orchestrator

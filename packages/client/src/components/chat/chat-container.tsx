@@ -182,7 +182,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   }, [editTitleValue, sessionTitle, session?.title, sessionId, updateTitle]);
 
   const isLoading = connectionStatus === 'connecting';
-  const isTerminated = sessionStatus === 'terminated';
+  const isTerminated = sessionStatus === 'terminated' || sessionStatus === 'archived';
   const isDisabled = !isConnected || isTerminated;
   const isAgentActive = (isAgentThinking && agentStatus !== 'queued') || agentStatus === 'thinking' || agentStatus === 'tool_calling' || agentStatus === 'streaming';
   const displaySessionStatus = agentStatus === 'queued' && !runnerConnected ? 'restoring' : sessionStatus;
@@ -444,6 +444,7 @@ function SessionStatusBadge({ status, errorMessage }: { status: string; errorMes
     hibernated: 'secondary',
     restoring: 'warning',
     terminated: 'secondary',
+    archived: 'secondary',
     error: 'error',
   };
 
@@ -455,7 +456,7 @@ function SessionStatusIndicator({ sessionStatus, connectionStatus }: { sessionSt
   const isTransitioning = sessionStatus === 'hibernating' || sessionStatus === 'restoring' || sessionStatus === 'initializing';
   const isRunning = sessionStatus === 'running' || sessionStatus === 'idle';
   const isSleeping = sessionStatus === 'hibernated';
-  const isTerminated = sessionStatus === 'terminated';
+  const isTerminated = sessionStatus === 'terminated' || sessionStatus === 'archived';
   const isError = sessionStatus === 'error' || connectionStatus === 'error';
   const isDisconnected = connectionStatus === 'disconnected' || connectionStatus === 'connecting';
 

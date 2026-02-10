@@ -9,7 +9,7 @@ export function useSession(sessionId: string) {
     error,
     isIdle: session?.status === 'idle',
     isRunning: session?.status === 'running',
-    isTerminated: session?.status === 'terminated',
+    isTerminated: session?.status === 'terminated' || session?.status === 'archived',
     isError: session?.status === 'error',
   };
 }

@@ -213,6 +213,7 @@ const STATUS_VARIANTS: Record<string, 'default' | 'success' | 'warning' | 'error
   hibernated: 'secondary',
   restoring: 'warning',
   terminated: 'secondary',
+  archived: 'secondary',
   error: 'error',
 };
 
@@ -274,7 +275,7 @@ function OrchestratorDashboard() {
 
   // Active count (derived from the non-filtered total or visible data)
   const activeCount = children.filter(
-    (c) => c.status !== 'terminated' && c.status !== 'error' && c.status !== 'hibernated'
+    (c) => c.status !== 'terminated' && c.status !== 'archived' && c.status !== 'error' && c.status !== 'hibernated'
   ).length;
 
   const toggleSelection = (id: string) => {

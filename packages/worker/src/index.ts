@@ -173,6 +173,15 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (event, env, ctx) 
   } catch (error) {
     console.error('Scheduled workflow dispatch error:', error);
   }
+
+  // Nightly: archive terminated sessions older than 7 days
+  if (event.cron === '0 3 * * *') {
+    try {
+      await archiveTerminatedSessions(env);
+    } catch (error) {
+      console.error('Session archive error:', error);
+    }
+  }
 };
 
 function hasPromptDispatch(runtimeStateRaw: string | null): boolean {
@@ -791,6 +800,60 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
   }
 
   console.log(`Scheduled dispatch complete: ${dispatched} trigger(s) processed`);
+}
+
+/**
+ * Archive terminated sessions older than 7 days.
+ * GCs the Durable Object storage, then marks the session as 'archived' in D1.
+ */
+async function archiveTerminatedSessions(env: Env): Promise<void> {
+  const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+
+  const rows = await env.DB.prepare(
+    `SELECT id FROM sessions
+     WHERE status IN ('terminated', 'error')
+       AND last_active_at < ?
+     LIMIT 50`
+  )
+    .bind(cutoff)
+    .all<{ id: string }>();
+
+  const sessionIds = rows.results?.map((r) => r.id) ?? [];
+  if (sessionIds.length === 0) return;
+
+  console.log(`Archiving ${sessionIds.length} terminated sessions older than 7 days`);
+
+  // Fan-out: GC each SessionAgent DO's storage
+  const gcResults = await Promise.allSettled(
+    sessionIds.map(async (sessionId) => {
+      const doId = env.SESSIONS.idFromName(sessionId);
+      const sessionDO = env.SESSIONS.get(doId);
+      await sessionDO.fetch(new Request('http://do/gc', { method: 'POST' }));
+      return sessionId;
+    })
+  );
+
+  // Collect IDs where GC succeeded
+  const archivedIds: string[] = [];
+  for (const result of gcResults) {
+    if (result.status === 'fulfilled') {
+      archivedIds.push(result.value);
+    } else {
+      console.error('Failed to GC session DO:', result.reason);
+    }
+  }
+
+  if (archivedIds.length === 0) return;
+
+  // Batch-update status to 'archived' (re-check status to avoid race conditions)
+  const placeholders = archivedIds.map(() => '?').join(',');
+  await env.DB.prepare(
+    `UPDATE sessions SET status = 'archived' WHERE id IN (${placeholders}) AND status IN ('terminated', 'error')`
+  )
+    .bind(...archivedIds)
+    .run();
+
+  console.log(`Archived ${archivedIds.length} sessions`);
 }
 
 export default {
