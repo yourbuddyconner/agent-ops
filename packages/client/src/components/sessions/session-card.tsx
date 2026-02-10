@@ -54,6 +54,7 @@ function StatusBadge({ status }: { status: AgentSession['status'] }) {
     hibernated: 'secondary',
     restoring: 'warning',
     terminated: 'secondary',
+    archived: 'secondary',
     error: 'error',
   };
 
