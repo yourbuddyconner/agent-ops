@@ -37,6 +37,37 @@ function normalizeStep(stepValue: unknown, path: string, errors: WorkflowCompile
   }
   const normalizedType = type.trim();
 
+  const VALID_STEP_TYPES = new Set([
+    'agent', 'agent_message', 'tool', 'bash', 'conditional', 'loop', 'parallel', 'subworkflow', 'approval',
+  ]);
+  if (!VALID_STEP_TYPES.has(normalizedType)) {
+    errors.push({
+      message: `Unknown step type "${normalizedType}". Valid types: ${[...VALID_STEP_TYPES].join(', ')}`,
+      path: `${path}.type`,
+    });
+    return null;
+  }
+
+  if (normalizedType === 'bash') {
+    const command = stepValue.command;
+    if (typeof command !== 'string' || !command.trim()) {
+      errors.push({
+        message: 'bash step requires a "command" field (string). Example: { "type": "bash", "command": "echo hello" }',
+        path: `${path}.command`,
+      });
+    }
+  }
+
+  if (normalizedType === 'tool') {
+    const tool = stepValue.tool;
+    if (typeof tool !== 'string' || !tool.trim()) {
+      errors.push({
+        message: 'tool step requires a "tool" field (string). For bash commands, prefer type: "bash" with a "command" field instead.',
+        path: `${path}.tool`,
+      });
+    }
+  }
+
   if (normalizedType === 'agent_message') {
     const content =
       (typeof stepValue.content === 'string' ? stepValue.content : '') ||

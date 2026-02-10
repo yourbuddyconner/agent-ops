@@ -536,6 +536,7 @@ function detectStepType(step: { input?: unknown; output?: unknown }): DetectedSt
   // Priority 1: input.type (populated by workflow engine)
   if (input?.type) {
     const t = String(input.type);
+    if (t === 'bash') return 'bash';
     if (t === 'tool' && input.tool === 'bash') return 'bash';
     if (t === 'approval') return 'approval';
     if (t === 'agent') return 'agent';
@@ -720,7 +721,9 @@ function BashStepContent({ output, input }: { output: unknown; input?: unknown }
   const inputRecord = isRecord(input) ? input : null;
   const command = typeof commandOutput?.command === 'string'
     ? commandOutput.command
-    : (isRecord(inputRecord?.arguments) ? String((inputRecord!.arguments as Record<string, unknown>).command ?? '') : '');
+    : typeof inputRecord?.command === 'string'
+      ? inputRecord.command
+      : (isRecord(inputRecord?.arguments) ? String((inputRecord!.arguments as Record<string, unknown>).command ?? '') : '');
 
   if (commandOutput) {
     const stdout = typeof commandOutput.stdout === 'string' ? commandOutput.stdout : '';
@@ -998,8 +1001,8 @@ function CompactStepRow({
 }) {
   const childSteps = countNestedSteps(step);
   const hasDetails = !!(
-    step.goal || step.context || step.tool || step.arguments ||
-    step.condition || step.outputVariable ||
+    step.goal || step.context || step.tool || step.command || step.arguments ||
+    step.condition || step.outputVariable || step.content || step.prompt || step.description ||
     (step.then && step.then.length > 0) ||
     (step.else && step.else.length > 0) ||
     (step.steps && step.steps.length > 0)
@@ -1007,9 +1010,11 @@ function CompactStepRow({
   // Start expanded unless step has many nested children (which would be long)
   const defaultExpanded = hasDetails && childSteps <= 5;
   const [expanded, setExpanded] = React.useState(defaultExpanded);
-  const bashCommand = step.type === 'tool' && step.tool === 'bash' && typeof step.arguments?.command === 'string'
-    ? step.arguments.command as string
-    : null;
+  const bashCommand = step.type === 'bash' && step.command
+    ? step.command
+    : step.type === 'tool' && step.tool === 'bash' && typeof step.arguments?.command === 'string'
+      ? step.arguments.command as string
+      : null;
 
   return (
     <div>
@@ -1110,6 +1115,9 @@ function CompactStepRow({
 
 function StepDetailPanel({ step }: { step: WorkflowStep }) {
   // Route to type-specific panels
+  if (step.type === 'bash') {
+    return <BashStepDetailPanel step={step} />;
+  }
   if (step.type === 'tool' && step.tool === 'bash') {
     return <BashStepDetailPanel step={step} />;
   }
@@ -1131,7 +1139,9 @@ function StepDetailPanel({ step }: { step: WorkflowStep }) {
 /* ─── Bash step detail (terminal-style command) ─── */
 
 function BashStepDetailPanel({ step }: { step: WorkflowStep }) {
-  const command = typeof step.arguments?.command === 'string' ? step.arguments.command : null;
+  // Support both type:"bash" (command at top level) and type:"tool" tool:"bash" (command in arguments)
+  const command = step.command
+    ?? (typeof step.arguments?.command === 'string' ? step.arguments.command : null);
   const cwd = typeof step.arguments?.cwd === 'string' ? step.arguments.cwd : null;
   const timeoutRaw = step.arguments?.timeout ?? step.arguments?.timeoutMs;
   const timeout = typeof timeoutRaw === 'number' || typeof timeoutRaw === 'string' ? String(timeoutRaw) : null;
@@ -1142,6 +1152,11 @@ function BashStepDetailPanel({ step }: { step: WorkflowStep }) {
 
   return (
     <div className="ml-[2.65rem] mr-3 mb-2 overflow-hidden rounded border border-neutral-200 dark:border-neutral-700">
+      {step.description && (
+        <div className="border-b border-neutral-200 bg-neutral-50/50 px-3 py-1.5 dark:border-neutral-700 dark:bg-neutral-900/30">
+          <p className="text-2xs text-neutral-500 dark:text-neutral-400">{step.description}</p>
+        </div>
+      )}
       {command && (
         <div className="bg-neutral-900 px-3 py-2 dark:bg-neutral-950">
           <code className="font-mono text-xs leading-relaxed text-sky-300">$ {command}</code>

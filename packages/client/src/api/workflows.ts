@@ -44,12 +44,15 @@ export interface VariableDefinition {
 export interface WorkflowStep {
   id: string;
   name: string;
-  type: 'agent' | 'agent_message' | 'tool' | 'conditional' | 'loop' | 'parallel' | 'subworkflow' | 'approval';
+  type: 'agent' | 'agent_message' | 'tool' | 'bash' | 'conditional' | 'loop' | 'parallel' | 'subworkflow' | 'approval';
   tool?: string;
+  command?: string;
+  description?: string;
   arguments?: Record<string, unknown>;
   goal?: string;
   context?: string;
   content?: string;
+  prompt?: string;
   interrupt?: boolean;
   await_response?: boolean;
   await_timeout_ms?: number;

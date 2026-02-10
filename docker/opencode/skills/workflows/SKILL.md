@@ -110,27 +110,126 @@ Repository context behavior:
 Minimum requirement:
 
 - `workflow.steps` must be a non-empty array.
+- Each step must have `id` (string), `name` (string), and `type` (string).
 
-Common step types:
+Valid step types: `bash`, `tool`, `approval`, `conditional`, `parallel`, `agent`, `agent_message`.
 
-- `tool` (including `bash` via `tool: "bash"` and `arguments.command`)
-- `approval`
-- `conditional`
-- `parallel`
-- `agent`
-- `agent_message`
+### `bash` step (preferred for shell commands)
 
-`agent_message` step contract:
+Use `type: "bash"` for shell commands. This is a first-class step type.
 
-- Provide message via `content` (preferred), or `message`, or `goal`.
-- Optional `interrupt` (boolean).
-- Optional `await_response` (or `awaitResponse`) boolean.
-- Optional `await_timeout_ms` (or `awaitTimeoutMs`) number, minimum 1000.
+Required fields:
+- `command` (string): The shell command to execute.
 
-`agent_message` behavior:
+Optional fields:
+- `description` (string): Human-readable description of what this command does.
+- `cwd` (string): Working directory.
+- `timeoutMs` (number): Timeout in milliseconds (default 120000, max 600000).
+- `outputVariable` (string): Variable name to store command output.
 
+Example:
+```json
+{
+  "id": "1",
+  "name": "Run tests",
+  "type": "bash",
+  "command": "npm test",
+  "description": "Run the test suite"
+}
+```
+
+**Do NOT use `type: "tool"` with `tool: "bash"` for shell commands.** Use `type: "bash"` instead.
+
+### `tool` step
+
+For non-bash tools only. Requires `tool` (string) and optionally `arguments` (object).
+
+### `approval` step
+
+Pauses execution and waits for human approval.
+
+Optional fields:
+- `prompt` (string): Message shown to the approver.
+
+### `conditional` step
+
+Evaluates a condition and runs `then` or `else` branch.
+
+Required fields:
+- `condition`: Boolean value, or object like `{ "variable": "varName", "equals": "value" }`.
+
+Optional fields:
+- `then` (array of steps): Steps to run when condition is true.
+- `else` (array of steps): Steps to run when condition is false.
+
+### `parallel` step
+
+Runs nested steps. Requires `steps` (array of steps).
+
+### `agent` step
+
+Dispatches work to an AI agent.
+
+Optional fields:
+- `goal` (string): What the agent should accomplish.
+- `context` (string): Additional context for the agent.
+
+### `agent_message` step
+
+Sends a message to the workflow session agent.
+
+Required: Provide message via `content` (preferred), or `message`, or `goal`.
+
+Optional fields:
+- `interrupt` (boolean).
+- `await_response` (or `awaitResponse`) boolean.
+- `await_timeout_ms` (or `awaitTimeoutMs`) number, minimum 1000.
+
+Behavior:
 - Non-await mode sends a message to the current workflow session agent.
 - Await mode runs a temporary OpenCode session and returns response text in step output.
+
+### Complete workflow example
+
+```json
+{
+  "steps": [
+    {
+      "id": "1",
+      "name": "Install dependencies",
+      "type": "bash",
+      "command": "npm install",
+      "description": "Install project dependencies"
+    },
+    {
+      "id": "2",
+      "name": "Run linter",
+      "type": "bash",
+      "command": "npm run lint",
+      "description": "Check code quality"
+    },
+    {
+      "id": "3",
+      "name": "Run tests",
+      "type": "bash",
+      "command": "npm test",
+      "outputVariable": "test_results"
+    },
+    {
+      "id": "4",
+      "name": "Approve deployment",
+      "type": "approval",
+      "prompt": "Tests passed. Deploy to production?"
+    },
+    {
+      "id": "5",
+      "name": "Deploy",
+      "type": "bash",
+      "command": "npm run deploy"
+    }
+  ]
+}
+```
 
 ## Reliable operating playbook
 

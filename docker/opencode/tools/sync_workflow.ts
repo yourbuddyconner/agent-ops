@@ -19,6 +19,10 @@ function hasValidSteps(payload: Record<string, unknown>): boolean {
   return Array.isArray(steps) && steps.length > 0
 }
 
+const VALID_STEP_TYPES = new Set([
+  "agent", "agent_message", "tool", "bash", "conditional", "loop", "parallel", "subworkflow", "approval",
+])
+
 function validateStep(step: unknown, path: string): string | null {
   if (!step || typeof step !== "object" || Array.isArray(step)) {
     return `${path} must be an object`
@@ -27,7 +31,39 @@ function validateStep(step: unknown, path: string): string | null {
   const stepRecord = step as Record<string, unknown>
   const stepType = stepRecord.type
   if (typeof stepType !== "string" || !stepType.trim()) {
-    return `${path}.type is required`
+    return `${path}.type is required. Valid types: ${[...VALID_STEP_TYPES].join(", ")}`
+  }
+
+  const normalizedType = stepType.trim()
+
+  if (!VALID_STEP_TYPES.has(normalizedType)) {
+    return `${path}.type "${normalizedType}" is not valid. Valid types: ${[...VALID_STEP_TYPES].join(", ")}. For shell commands, use type: "bash" with a "command" field.`
+  }
+
+  // Type-specific validation
+  if (normalizedType === "bash") {
+    if (typeof stepRecord.command !== "string" || !stepRecord.command.trim()) {
+      return `${path}: bash step requires a "command" field (string). Example: { "type": "bash", "command": "npm test" }`
+    }
+  }
+
+  if (normalizedType === "tool") {
+    if (typeof stepRecord.tool !== "string" || !stepRecord.tool.trim()) {
+      return `${path}: tool step requires a "tool" field (string). For shell commands, prefer type: "bash" with a "command" field instead.`
+    }
+    // Suggest bash type if they're using tool+bash
+    if (stepRecord.tool === "bash") {
+      return `${path}: instead of type: "tool" with tool: "bash", use type: "bash" with a "command" field. Example: { "type": "bash", "command": "npm test" }`
+    }
+  }
+
+  if (normalizedType === "agent_message") {
+    const hasContent = (typeof stepRecord.content === "string" && stepRecord.content.trim()) ||
+      (typeof stepRecord.message === "string" && (stepRecord.message as string).trim()) ||
+      (typeof stepRecord.goal === "string" && stepRecord.goal.trim())
+    if (!hasContent) {
+      return `${path}: agent_message step requires content. Provide "content" (preferred), "message", or "goal" field.`
+    }
   }
 
   for (const nestedKey of ["then", "else", "steps"] as const) {
@@ -62,7 +98,9 @@ function validateWorkflowPayload(payload: Record<string, unknown>): string | nul
 export default tool({
   description:
     "Create or update a workflow in Agent-Ops. " +
-    "This immediately syncs the workflow to the backend so it appears on the Workflows page.",
+    "This immediately syncs the workflow to the backend so it appears on the Workflows page. " +
+    "Step types: bash (requires command field), approval, conditional, parallel, agent, agent_message. " +
+    "For shell commands use type: \"bash\" with a \"command\" field — NOT type: \"tool\" with tool: \"bash\".",
   args: {
     id: z.string().optional().describe("Optional stable workflow ID"),
     slug: z.string().optional().describe("Optional workflow slug"),
@@ -72,7 +110,11 @@ export default tool({
     data_json: z
       .string()
       .optional()
-      .describe("Workflow definition JSON object string (must include a non-empty steps array)"),
+      .describe(
+        'Workflow definition JSON string with a non-empty "steps" array. ' +
+        'Each step needs id, name, type. Bash steps: {"id":"1","name":"Run tests","type":"bash","command":"npm test"}. ' +
+        'Do NOT use type:"tool" with tool:"bash" — use type:"bash" with command field instead.'
+      ),
     workflow_json: z
       .string()
       .optional()

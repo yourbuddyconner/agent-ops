@@ -201,6 +201,23 @@ async function executeBashToolStep(step: NormalizedWorkflowStep): Promise<Workfl
   return { status: 'completed', output };
 }
 
+function executeBashStep(step: NormalizedWorkflowStep): Promise<WorkflowStepExecutionResult> {
+  const command = typeof step.command === 'string' ? step.command.trim() : '';
+  if (!command) {
+    return Promise.resolve({
+      status: 'failed',
+      error: 'bash_missing_command',
+      output: { type: 'bash' },
+    });
+  }
+
+  const cwd = typeof step.cwd === 'string' && (step.cwd as string).trim() ? (step.cwd as string).trim() : undefined;
+  const timeoutRaw = typeof step.timeoutMs === 'number' ? step.timeoutMs as number : DEFAULT_BASH_TIMEOUT_MS;
+  // Reuse the existing executeBashToolStep by wrapping into the tool step shape
+  const toolStep = { ...step, type: 'tool', tool: 'bash', arguments: { command, cwd, timeoutMs: timeoutRaw } } as NormalizedWorkflowStep;
+  return executeBashToolStep(toolStep);
+}
+
 async function executeStepAction(step: NormalizedWorkflowStep, ctx: ExecutionContext): Promise<WorkflowStepExecutionResult> {
   const context: WorkflowStepExecutionContext = {
     executionId: ctx.executionId,
@@ -208,6 +225,10 @@ async function executeStepAction(step: NormalizedWorkflowStep, ctx: ExecutionCon
     variables: ctx.variables,
     outputs: ctx.outputs,
   };
+
+  if (step.type === 'bash') {
+    return executeBashStep(step);
+  }
 
   if (step.type === 'tool') {
     if (ctx.hooks?.onToolStep) {
@@ -287,6 +308,7 @@ function buildStepInput(step: NormalizedWorkflowStep): Record<string, unknown> {
     name: typeof step.name === 'string' ? step.name : step.id,
   };
   if (step.tool) input.tool = step.tool;
+  if (typeof step.command === 'string') input.command = step.command;
   if (step.goal) input.goal = step.goal;
   if (step.context) input.context = step.context;
   if (typeof step.prompt === 'string') input.prompt = step.prompt;
