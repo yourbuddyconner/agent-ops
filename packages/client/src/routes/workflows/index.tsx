@@ -1,19 +1,7 @@
-import { createFileRoute } from '@tanstack/react-router';
-import { PageContainer, PageHeader } from '@/components/layout/page-container';
-import { WorkflowList } from '@/components/workflows/workflow-list';
+import { createFileRoute, redirect } from '@tanstack/react-router';
 
 export const Route = createFileRoute('/workflows/')({
-  component: WorkflowsPage,
+  beforeLoad: () => {
+    throw redirect({ to: '/automation/workflows' });
+  },
 });
-
-function WorkflowsPage() {
-  return (
-    <PageContainer>
-      <PageHeader
-        title="Workflows"
-        description="Manage your automated workflows and triggers"
-      />
-      <WorkflowList />
-    </PageContainer>
-  );
-}

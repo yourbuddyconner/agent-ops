@@ -12,7 +12,7 @@ export function WorkflowCard({ workflow }: WorkflowCardProps) {
   const stepCount = workflow.data?.steps?.length ?? 0;
 
   return (
-    <Link to="/workflows/$workflowId" params={{ workflowId: workflow.id }} search={{ tab: 'runs' }}>
+    <Link to="/automation/workflows/$workflowId" params={{ workflowId: workflow.id }} search={{ tab: 'runs' }}>
       <Card className="h-full hover:border-neutral-300 dark:hover:border-neutral-600">
         <CardHeader className="pb-2">
           <div className="flex items-start justify-between gap-2">

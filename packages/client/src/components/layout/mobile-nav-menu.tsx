@@ -6,7 +6,8 @@ import { cn } from '@/lib/cn';
 const navItems = [
   { href: '/', label: 'Dashboard', icon: DashboardIcon },
   { href: '/orchestrator', label: 'Orchestrator', icon: OrchestratorIcon },
-  { href: '/workflows', label: 'Workflows', icon: WorkflowsIcon },
+  { href: '/inbox', label: 'Inbox', icon: InboxIcon },
+  { href: '/automation', label: 'Automation', icon: AutomationIcon },
   { href: '/sessions', label: 'Sessions', icon: SessionsIcon },
   { href: '/integrations', label: 'Integrations', icon: IntegrationsIcon },
   { href: '/settings', label: 'Settings', icon: SettingsIcon },
@@ -229,12 +230,10 @@ function SessionsIcon({ className }: { className?: string }) {
   );
 }
 
-function WorkflowsIcon({ className }: { className?: string }) {
+function AutomationIcon({ className }: { className?: string }) {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <rect width="8" height="4" x="8" y="2" rx="1" ry="1" />
-      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
-      <path d="m9 14 2 2 4-4" />
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
     </svg>
   );
 }
@@ -259,6 +258,15 @@ function OrchestratorIcon({ className }: { className?: string }) {
       <path d="M12 16a4 4 0 1 0 0-8" />
       <path d="M12 16v4h4" />
       <rect width="8" height="4" x="8" y="18" rx="1" ry="1" />
+    </svg>
+  );
+}
+
+function InboxIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
+      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
     </svg>
   );
 }

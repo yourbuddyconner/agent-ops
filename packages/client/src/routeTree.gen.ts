@@ -13,6 +13,7 @@ import { Route as OrchestratorRouteImport } from './routes/orchestrator'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as InboxRouteImport } from './routes/inbox'
+import { Route as AutomationRouteImport } from './routes/automation'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as WorkflowsIndexRouteImport } from './routes/workflows/index'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
@@ -26,6 +27,10 @@ import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessio
 import { Route as InviteCodeRouteImport } from './routes/invite/$code'
 import { Route as IntegrationsCallbackRouteImport } from './routes/integrations/callback'
 import { Route as AuthCallbackRouteImport } from './routes/auth/callback'
+import { Route as AutomationWorkflowsIndexRouteImport } from './routes/automation/workflows/index'
+import { Route as AutomationTriggersIndexRouteImport } from './routes/automation/triggers/index'
+import { Route as AutomationExecutionsIndexRouteImport } from './routes/automation/executions/index'
+import { Route as AutomationWorkflowsWorkflowIdRouteImport } from './routes/automation/workflows/$workflowId'
 import { Route as SessionsSessionIdIndexRouteImport } from './routes/sessions/$sessionId/index'
 import { Route as SessionsJoinTokenRouteImport } from './routes/sessions/join/$token'
 
@@ -47,6 +52,11 @@ const LoginRoute = LoginRouteImport.update({
 const InboxRoute = InboxRouteImport.update({
   id: '/inbox',
   path: '/inbox',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AutomationRoute = AutomationRouteImport.update({
+  id: '/automation',
+  path: '/automation',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -114,6 +124,26 @@ const AuthCallbackRoute = AuthCallbackRouteImport.update({
   path: '/auth/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AutomationWorkflowsIndexRoute = AutomationWorkflowsIndexRouteImport.update({
+  id: '/automation/workflows/',
+  path: '/workflows/',
+  getParentRoute: () => AutomationRoute,
+} as any)
+const AutomationTriggersIndexRoute = AutomationTriggersIndexRouteImport.update({
+  id: '/automation/triggers/',
+  path: '/triggers/',
+  getParentRoute: () => AutomationRoute,
+} as any)
+const AutomationExecutionsIndexRoute = AutomationExecutionsIndexRouteImport.update({
+  id: '/automation/executions/',
+  path: '/executions/',
+  getParentRoute: () => AutomationRoute,
+} as any)
+const AutomationWorkflowsWorkflowIdRoute = AutomationWorkflowsWorkflowIdRouteImport.update({
+  id: '/automation/workflows/$workflowId',
+  path: '/workflows/$workflowId',
+  getParentRoute: () => AutomationRoute,
+} as any)
 const SessionsSessionIdIndexRoute = SessionsSessionIdIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -127,6 +157,7 @@ const SessionsJoinTokenRoute = SessionsJoinTokenRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/automation': typeof AutomationRouteWithChildren
   '/inbox': typeof InboxRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
@@ -143,6 +174,10 @@ export interface FileRoutesByFullPath {
   '/sessions/': typeof SessionsIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/workflows/': typeof WorkflowsIndexRoute
+  '/automation/executions/': typeof AutomationExecutionsIndexRoute
+  '/automation/triggers/': typeof AutomationTriggersIndexRoute
+  '/automation/workflows/': typeof AutomationWorkflowsIndexRoute
+  '/automation/workflows/$workflowId': typeof AutomationWorkflowsWorkflowIdRoute
   '/sessions/join/$token': typeof SessionsJoinTokenRoute
   '/sessions/$sessionId/': typeof SessionsSessionIdIndexRoute
 }
@@ -163,12 +198,17 @@ export interface FileRoutesByTo {
   '/sessions': typeof SessionsIndexRoute
   '/settings': typeof SettingsIndexRoute
   '/workflows': typeof WorkflowsIndexRoute
+  '/automation/executions': typeof AutomationExecutionsIndexRoute
+  '/automation/triggers': typeof AutomationTriggersIndexRoute
+  '/automation/workflows': typeof AutomationWorkflowsIndexRoute
+  '/automation/workflows/$workflowId': typeof AutomationWorkflowsWorkflowIdRoute
   '/sessions/join/$token': typeof SessionsJoinTokenRoute
   '/sessions/$sessionId': typeof SessionsSessionIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/automation': typeof AutomationRouteWithChildren
   '/inbox': typeof InboxRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
@@ -185,6 +225,10 @@ export interface FileRoutesById {
   '/sessions/': typeof SessionsIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/workflows/': typeof WorkflowsIndexRoute
+  '/automation/executions/': typeof AutomationExecutionsIndexRoute
+  '/automation/triggers/': typeof AutomationTriggersIndexRoute
+  '/automation/workflows/': typeof AutomationWorkflowsIndexRoute
+  '/automation/workflows/$workflowId': typeof AutomationWorkflowsWorkflowIdRoute
   '/sessions/join/$token': typeof SessionsJoinTokenRoute
   '/sessions/$sessionId/': typeof SessionsSessionIdIndexRoute
 }
@@ -192,6 +236,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/automation'
     | '/inbox'
     | '/login'
     | '/onboarding'
@@ -208,6 +253,10 @@ export interface FileRouteTypes {
     | '/sessions/'
     | '/settings/'
     | '/workflows/'
+    | '/automation/executions/'
+    | '/automation/triggers/'
+    | '/automation/workflows/'
+    | '/automation/workflows/$workflowId'
     | '/sessions/join/$token'
     | '/sessions/$sessionId/'
   fileRoutesByTo: FileRoutesByTo
@@ -228,11 +277,16 @@ export interface FileRouteTypes {
     | '/sessions'
     | '/settings'
     | '/workflows'
+    | '/automation/executions'
+    | '/automation/triggers'
+    | '/automation/workflows'
+    | '/automation/workflows/$workflowId'
     | '/sessions/join/$token'
     | '/sessions/$sessionId'
   id:
     | '__root__'
     | '/'
+    | '/automation'
     | '/inbox'
     | '/login'
     | '/onboarding'
@@ -249,12 +303,46 @@ export interface FileRouteTypes {
     | '/sessions/'
     | '/settings/'
     | '/workflows/'
+    | '/automation/executions/'
+    | '/automation/triggers/'
+    | '/automation/workflows/'
+    | '/automation/workflows/$workflowId'
     | '/sessions/join/$token'
     | '/sessions/$sessionId/'
   fileRoutesById: FileRoutesById
 }
+
+interface AutomationRouteChildren {
+  AutomationExecutionsIndexRoute: typeof AutomationExecutionsIndexRoute
+  AutomationTriggersIndexRoute: typeof AutomationTriggersIndexRoute
+  AutomationWorkflowsIndexRoute: typeof AutomationWorkflowsIndexRoute
+  AutomationWorkflowsWorkflowIdRoute: typeof AutomationWorkflowsWorkflowIdRoute
+}
+
+const AutomationRouteChildren: AutomationRouteChildren = {
+  AutomationExecutionsIndexRoute: AutomationExecutionsIndexRoute,
+  AutomationTriggersIndexRoute: AutomationTriggersIndexRoute,
+  AutomationWorkflowsIndexRoute: AutomationWorkflowsIndexRoute,
+  AutomationWorkflowsWorkflowIdRoute: AutomationWorkflowsWorkflowIdRoute,
+}
+
+const AutomationRouteWithChildren =
+  AutomationRoute._addFileChildren(AutomationRouteChildren)
+
+interface SessionsSessionIdRouteChildren {
+  SessionsSessionIdIndexRoute: typeof SessionsSessionIdIndexRoute
+}
+
+const SessionsSessionIdRouteChildren: SessionsSessionIdRouteChildren = {
+  SessionsSessionIdIndexRoute: SessionsSessionIdIndexRoute,
+}
+
+const SessionsSessionIdRouteWithChildren =
+  SessionsSessionIdRoute._addFileChildren(SessionsSessionIdRouteChildren)
+
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AutomationRoute: typeof AutomationRouteWithChildren
   InboxRoute: typeof InboxRoute
   LoginRoute: typeof LoginRoute
   OnboardingRoute: typeof OnboardingRoute
@@ -273,6 +361,31 @@ export interface RootRouteChildren {
   WorkflowsIndexRoute: typeof WorkflowsIndexRoute
   SessionsJoinTokenRoute: typeof SessionsJoinTokenRoute
 }
+
+const rootRouteChildren: RootRouteChildren = {
+  IndexRoute: IndexRoute,
+  AutomationRoute: AutomationRouteWithChildren,
+  InboxRoute: InboxRoute,
+  LoginRoute: LoginRoute,
+  OnboardingRoute: OnboardingRoute,
+  OrchestratorRoute: OrchestratorRoute,
+  AuthCallbackRoute: AuthCallbackRoute,
+  IntegrationsCallbackRoute: IntegrationsCallbackRoute,
+  InviteCodeRoute: InviteCodeRoute,
+  SessionsSessionIdRoute: SessionsSessionIdRouteWithChildren,
+  SettingsAdminRoute: SettingsAdminRoute,
+  SettingsPersonasRoute: SettingsPersonasRoute,
+  WorkflowsWorkflowIdRoute: WorkflowsWorkflowIdRoute,
+  WorkflowsExecutionsRoute: WorkflowsExecutionsRoute,
+  IntegrationsIndexRoute: IntegrationsIndexRoute,
+  SessionsIndexRoute: SessionsIndexRoute,
+  SettingsIndexRoute: SettingsIndexRoute,
+  WorkflowsIndexRoute: WorkflowsIndexRoute,
+  SessionsJoinTokenRoute: SessionsJoinTokenRoute,
+}
+export const routeTree = rootRouteImport
+  ._addFileChildren(rootRouteChildren)
+  ._addFileTypes<FileRouteTypes>()
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
@@ -302,6 +415,13 @@ declare module '@tanstack/react-router' {
       path: '/inbox'
       fullPath: '/inbox'
       preLoaderRoute: typeof InboxRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/automation': {
+      id: '/automation'
+      path: '/automation'
+      fullPath: '/automation'
+      preLoaderRoute: typeof AutomationRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -395,6 +515,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/automation/executions/': {
+      id: '/automation/executions/'
+      path: '/executions'
+      fullPath: '/automation/executions/'
+      preLoaderRoute: typeof AutomationExecutionsIndexRouteImport
+      parentRoute: typeof AutomationRouteImport
+    }
+    '/automation/triggers/': {
+      id: '/automation/triggers/'
+      path: '/triggers'
+      fullPath: '/automation/triggers/'
+      preLoaderRoute: typeof AutomationTriggersIndexRouteImport
+      parentRoute: typeof AutomationRouteImport
+    }
+    '/automation/workflows/': {
+      id: '/automation/workflows/'
+      path: '/workflows'
+      fullPath: '/automation/workflows/'
+      preLoaderRoute: typeof AutomationWorkflowsIndexRouteImport
+      parentRoute: typeof AutomationRouteImport
+    }
+    '/automation/workflows/$workflowId': {
+      id: '/automation/workflows/$workflowId'
+      path: '/workflows/$workflowId'
+      fullPath: '/automation/workflows/$workflowId'
+      preLoaderRoute: typeof AutomationWorkflowsWorkflowIdRouteImport
+      parentRoute: typeof AutomationRouteImport
+    }
     '/sessions/$sessionId/': {
       id: '/sessions/$sessionId/'
       path: '/'
@@ -411,38 +559,3 @@ declare module '@tanstack/react-router' {
     }
   }
 }
-
-interface SessionsSessionIdRouteChildren {
-  SessionsSessionIdIndexRoute: typeof SessionsSessionIdIndexRoute
-}
-
-const SessionsSessionIdRouteChildren: SessionsSessionIdRouteChildren = {
-  SessionsSessionIdIndexRoute: SessionsSessionIdIndexRoute,
-}
-
-const SessionsSessionIdRouteWithChildren =
-  SessionsSessionIdRoute._addFileChildren(SessionsSessionIdRouteChildren)
-
-const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
-  InboxRoute: InboxRoute,
-  LoginRoute: LoginRoute,
-  OnboardingRoute: OnboardingRoute,
-  OrchestratorRoute: OrchestratorRoute,
-  AuthCallbackRoute: AuthCallbackRoute,
-  IntegrationsCallbackRoute: IntegrationsCallbackRoute,
-  InviteCodeRoute: InviteCodeRoute,
-  SessionsSessionIdRoute: SessionsSessionIdRouteWithChildren,
-  SettingsAdminRoute: SettingsAdminRoute,
-  SettingsPersonasRoute: SettingsPersonasRoute,
-  WorkflowsWorkflowIdRoute: WorkflowsWorkflowIdRoute,
-  WorkflowsExecutionsRoute: WorkflowsExecutionsRoute,
-  IntegrationsIndexRoute: IntegrationsIndexRoute,
-  SessionsIndexRoute: SessionsIndexRoute,
-  SettingsIndexRoute: SettingsIndexRoute,
-  WorkflowsIndexRoute: WorkflowsIndexRoute,
-  SessionsJoinTokenRoute: SessionsJoinTokenRoute,
-}
-export const routeTree = rootRouteImport
-  ._addFileChildren(rootRouteChildren)
-  ._addFileTypes<FileRouteTypes>()
