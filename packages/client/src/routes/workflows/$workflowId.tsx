@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import React from 'react';
 import { PageContainer } from '@/components/layout/page-container';
 import {
@@ -25,8 +25,15 @@ import { WorkflowTriggerManager } from '@/components/workflows/workflow-trigger-
 import { formatRelativeTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
+const VALID_TABS = ['runs', 'steps', 'triggers', 'proposals', 'history'] as const;
+type TabId = (typeof VALID_TABS)[number];
+
 export const Route = createFileRoute('/workflows/$workflowId')({
   component: WorkflowDetailPage,
+  validateSearch: (search: Record<string, unknown>): { tab: TabId; run?: string } => ({
+    tab: (VALID_TABS.includes(search.tab as TabId) ? search.tab : 'runs') as TabId,
+    ...(typeof search.run === 'string' ? { run: search.run } : {}),
+  }),
 });
 
 /* ─── Execution duration helper ─── */
@@ -47,6 +54,8 @@ function executionDuration(exec: Execution): string {
 
 function WorkflowDetailPage() {
   const { workflowId } = Route.useParams();
+  const { tab, run: selectedExecId } = Route.useSearch();
+  const navigate = useNavigate();
   const { data, isLoading, error } = useWorkflow(workflowId);
   const { data: executionsData, isLoading: executionsLoading } = useWorkflowExecutions(workflowId);
   const { data: proposalsData, isLoading: proposalsLoading } = useWorkflowProposals(workflowId);
@@ -63,13 +72,18 @@ function WorkflowDetailPage() {
   const history = historyData?.history ?? [];
   const triggers = (triggersData?.triggers ?? []).filter((t) => t.workflowId === workflowId);
 
-  const [selectedExecId, setSelectedExecId] = React.useState<string | null>(null);
-  const [tab, setTab] = React.useState('runs');
+  function setTab(newTab: string) {
+    navigate({ to: '/workflows/$workflowId', params: { workflowId }, search: { tab: newTab as TabId, run: selectedExecId }, replace: true });
+  }
+
+  function setSelectedExecId(id: string | null) {
+    navigate({ to: '/workflows/$workflowId', params: { workflowId }, search: { tab, run: id ?? undefined }, replace: true });
+  }
 
   // Auto-select first execution, or running/pending one
   React.useEffect(() => {
     if (executions.length === 0) {
-      setSelectedExecId(null);
+      if (selectedExecId) setSelectedExecId(null);
       return;
     }
     const activeExec = executions.find(
@@ -326,7 +340,7 @@ function RunsPanel({
 }: {
   executions: Execution[];
   executionsLoading: boolean;
-  selectedExecId: string | null;
+  selectedExecId: string | undefined;
   onSelectExec: (id: string) => void;
   selectedExec: Execution | null;
 }) {
