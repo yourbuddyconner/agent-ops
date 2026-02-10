@@ -1,20 +1,25 @@
-import { useState } from 'react';
 import { useSession, useSessionToken } from '@/api/sessions';
 import { useDrawer } from '@/routes/sessions/$sessionId';
 import { VSCodePanel, VNCPanel, TerminalPanel } from '@/components/panels';
 import { cn } from '@/lib/cn';
 
-type EditorTab = 'vscode' | 'desktop' | 'terminal';
+export type EditorTab = 'vscode' | 'desktop' | 'terminal';
+
+const tabLabels: Record<EditorTab, string> = {
+  vscode: 'VS Code',
+  desktop: 'Desktop',
+  terminal: 'Terminal',
+};
 
 interface EditorDrawerProps {
   sessionId: string;
+  activeTab: EditorTab;
 }
 
-export function EditorDrawer({ sessionId }: EditorDrawerProps) {
+export function EditorDrawer({ sessionId, activeTab }: EditorDrawerProps) {
   const { data: session, isLoading: sessionLoading } = useSession(sessionId);
   const { data: tokenData, isLoading: tokenLoading, isError: tokenError } = useSessionToken(sessionId);
   const { closeDrawer } = useDrawer();
-  const [activeTab, setActiveTab] = useState<EditorTab>('vscode');
 
   const gatewayUrl = tokenData?.tunnelUrls?.gateway || session?.gatewayUrl;
   const token = tokenData?.token;
@@ -41,7 +46,7 @@ export function EditorDrawer({ sessionId }: EditorDrawerProps) {
       {/* Header */}
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 bg-surface-1 px-2 dark:border-neutral-800 dark:bg-surface-1">
         <span className="px-2.5 font-mono text-[11px] font-medium text-neutral-900 dark:text-neutral-100">
-          Editor
+          {tabLabels[activeTab]}
         </span>
         <button
           type="button"
@@ -49,21 +54,8 @@ export function EditorDrawer({ sessionId }: EditorDrawerProps) {
           className="flex items-center gap-1.5 rounded px-2.5 py-1 font-mono text-[11px] font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
         >
           <PanelCloseIcon className="h-3.5 w-3.5" />
-          Close Editor
+          Close
         </button>
-      </div>
-
-      {/* Tab bar */}
-      <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-neutral-200 bg-surface-1 px-2 dark:border-neutral-800 dark:bg-surface-1">
-        <TabButton active={activeTab === 'vscode'} onClick={() => setActiveTab('vscode')}>
-          VS Code
-        </TabButton>
-        <TabButton active={activeTab === 'desktop'} onClick={() => setActiveTab('desktop')}>
-          Desktop
-        </TabButton>
-        <TabButton active={activeTab === 'terminal'} onClick={() => setActiveTab('terminal')}>
-          Terminal
-        </TabButton>
       </div>
 
       {/* Panel content */}
@@ -121,27 +113,3 @@ function PanelCloseIcon({ className }: { className?: string }) {
   );
 }
 
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'flex items-center gap-1.5 rounded px-2.5 py-1 font-mono text-[11px] font-medium transition-colors',
-        active
-          ? 'bg-surface-0 text-neutral-900 shadow-sm dark:bg-surface-2 dark:text-neutral-100'
-          : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-300'
-      )}
-    >
-      {children}
-    </button>
-  );
-}

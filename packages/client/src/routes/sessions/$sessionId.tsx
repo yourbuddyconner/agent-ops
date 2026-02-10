@@ -12,7 +12,7 @@ import { useSession } from '@/api/sessions';
 import type { LogEntry, ConnectedUser } from '@/hooks/use-chat';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 
-type DrawerPanel = 'editor' | 'files' | 'review' | 'logs' | null;
+type DrawerPanel = 'vscode' | 'desktop' | 'terminal' | 'files' | 'review' | 'logs' | null;
 
 const DRAWER_STORAGE_KEY = 'agent-ops:drawer-panel';
 const LAYOUT_STORAGE_KEY = 'agent-ops:editor-layout';
@@ -21,7 +21,7 @@ const SIDEBAR_STORAGE_KEY = 'agent-ops:metadata-sidebar';
 function loadDrawerState(): DrawerPanel {
   try {
     const val = localStorage.getItem(DRAWER_STORAGE_KEY);
-    if (val === 'editor' || val === 'files' || val === 'review' || val === 'logs') return val;
+    if (val === 'vscode' || val === 'desktop' || val === 'terminal' || val === 'files' || val === 'review' || val === 'logs') return val;
   } catch {
     // ignore
   }
@@ -67,12 +67,16 @@ export type SessionOverlay =
 
 export interface DrawerContextValue {
   activePanel: DrawerPanel;
-  openEditor: () => void;
+  openVscode: () => void;
+  openDesktop: () => void;
+  openTerminal: () => void;
   openFiles: () => void;
   openReview: () => void;
   openLogs: () => void;
   closeDrawer: () => void;
-  toggleEditor: () => void;
+  toggleVscode: () => void;
+  toggleDesktop: () => void;
+  toggleTerminal: () => void;
   toggleFiles: () => void;
   toggleReview: () => void;
   toggleLogs: () => void;
@@ -93,12 +97,16 @@ export interface DrawerContextValue {
 
 const DrawerCtx = createContext<DrawerContextValue>({
   activePanel: null,
-  openEditor: () => {},
+  openVscode: () => {},
+  openDesktop: () => {},
+  openTerminal: () => {},
   openFiles: () => {},
   openReview: () => {},
   openLogs: () => {},
   closeDrawer: () => {},
-  toggleEditor: () => {},
+  toggleVscode: () => {},
+  toggleDesktop: () => {},
+  toggleTerminal: () => {},
   toggleFiles: () => {},
   toggleReview: () => {},
   toggleLogs: () => {},
@@ -143,9 +151,19 @@ function SessionLayout() {
     } catch { return true; }
   });
 
-  const openEditor = useCallback(() => {
-    setActivePanel('editor');
-    saveDrawerState('editor');
+  const openVscode = useCallback(() => {
+    setActivePanel('vscode');
+    saveDrawerState('vscode');
+  }, []);
+
+  const openDesktop = useCallback(() => {
+    setActivePanel('desktop');
+    saveDrawerState('desktop');
+  }, []);
+
+  const openTerminal = useCallback(() => {
+    setActivePanel('terminal');
+    saveDrawerState('terminal');
   }, []);
 
   const openFiles = useCallback(() => {
@@ -168,9 +186,25 @@ function SessionLayout() {
     saveDrawerState(null);
   }, []);
 
-  const toggleEditor = useCallback(() => {
+  const toggleVscode = useCallback(() => {
     setActivePanel((prev) => {
-      const next = prev === 'editor' ? null : 'editor';
+      const next = prev === 'vscode' ? null : 'vscode';
+      saveDrawerState(next);
+      return next;
+    });
+  }, []);
+
+  const toggleDesktop = useCallback(() => {
+    setActivePanel((prev) => {
+      const next = prev === 'desktop' ? null : 'desktop';
+      saveDrawerState(next);
+      return next;
+    });
+  }, []);
+
+  const toggleTerminal = useCallback(() => {
+    setActivePanel((prev) => {
+      const next = prev === 'terminal' ? null : 'terminal';
       saveDrawerState(next);
       return next;
     });
@@ -225,12 +259,16 @@ function SessionLayout() {
 
   const ctx: DrawerContextValue = {
     activePanel,
-    openEditor,
+    openVscode,
+    openDesktop,
+    openTerminal,
     openFiles,
     openReview,
     openLogs,
     closeDrawer,
-    toggleEditor,
+    toggleVscode,
+    toggleDesktop,
+    toggleTerminal,
     toggleFiles,
     toggleReview,
     toggleLogs,
@@ -276,8 +314,8 @@ function SessionLayout() {
                     : <SessionMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} compact />
                 )}
                 <div className="flex-1 min-w-0">
-                  {activePanel === 'editor' && (
-                    <EditorDrawer sessionId={sessionId} />
+                  {(activePanel === 'vscode' || activePanel === 'desktop' || activePanel === 'terminal') && (
+                    <EditorDrawer sessionId={sessionId} activeTab={activePanel} />
                   )}
                   {activePanel === 'files' && (
                     <FilesDrawer sessionId={sessionId} />
@@ -305,9 +343,9 @@ function SessionLayout() {
               )}
             </div>
 
-            {isMobile && activePanel === 'editor' && (
+            {isMobile && (activePanel === 'vscode' || activePanel === 'desktop' || activePanel === 'terminal') && (
               <div className="absolute inset-0 z-40 bg-surface-0">
-                <EditorDrawer sessionId={sessionId} />
+                <EditorDrawer sessionId={sessionId} activeTab={activePanel} />
               </div>
             )}
             {isMobile && activePanel === 'files' && (

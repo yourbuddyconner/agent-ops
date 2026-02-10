@@ -190,9 +190,17 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
       {/* Desktop action toolbar */}
       {!isMobile && (
         <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-neutral-100 bg-surface-0 px-2 dark:border-neutral-800/50 dark:bg-surface-0">
-          <Button variant="ghost" size="sm" onClick={drawer.toggleEditor} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+          <Button variant="ghost" size="sm" onClick={drawer.toggleVscode} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
             <EditorIcon className="h-3 w-3" />
-            Editor
+            VS Code
+          </Button>
+          <Button variant="ghost" size="sm" onClick={drawer.toggleDesktop} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+            <DesktopIcon className="h-3 w-3" />
+            Desktop
+          </Button>
+          <Button variant="ghost" size="sm" onClick={drawer.toggleTerminal} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+            <TerminalIcon className="h-3 w-3" />
+            Terminal
           </Button>
           <Button variant="ghost" size="sm" onClick={drawer.toggleFiles} className="h-6 gap-1 px-2 text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
             <FilesIcon className="h-3 w-3" />
@@ -296,7 +304,9 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             <MobileActionsSheet
               open={mobileActionsOpen}
               onOpenChange={setMobileActionsOpen}
-              onEditor={() => drawer.openEditor()}
+              onVscode={() => drawer.openVscode()}
+              onDesktop={() => drawer.openDesktop()}
+              onTerminal={() => drawer.openTerminal()}
               onFiles={() => drawer.openFiles()}
               onReview={() => drawer.openReview()}
               onLogs={() => drawer.openLogs()}
@@ -415,7 +425,9 @@ function ChatSkeleton() {
 interface MobileActionsSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onEditor: () => void;
+  onVscode: () => void;
+  onDesktop: () => void;
+  onTerminal: () => void;
   onFiles: () => void;
   onReview: () => void;
   onLogs: () => void;
@@ -427,7 +439,9 @@ interface MobileActionsSheetProps {
 function MobileActionsSheet({
   open,
   onOpenChange,
-  onEditor,
+  onVscode,
+  onDesktop,
+  onTerminal,
   onFiles,
   onReview,
   onLogs,
@@ -449,7 +463,9 @@ function MobileActionsSheet({
             Actions
           </Dialog.Title>
           <div className="grid grid-cols-2 gap-2">
-            <MobileActionButton icon={<EditorIcon className="h-4 w-4" />} label="Editor" onClick={() => run(onEditor)} />
+            <MobileActionButton icon={<EditorIcon className="h-4 w-4" />} label="VS Code" onClick={() => run(onVscode)} />
+            <MobileActionButton icon={<DesktopIcon className="h-4 w-4" />} label="Desktop" onClick={() => run(onDesktop)} />
+            <MobileActionButton icon={<TerminalIcon className="h-4 w-4" />} label="Terminal" onClick={() => run(onTerminal)} />
             <MobileActionButton icon={<FilesIcon className="h-4 w-4" />} label="Files" onClick={() => run(onFiles)} />
             <MobileActionButton icon={<ReviewIcon className="h-4 w-4" />} label="Review" onClick={() => run(onReview)} />
             <MobileActionButton icon={<LogsIcon className="h-4 w-4" />} label="Logs" onClick={() => run(onLogs)} />
@@ -578,6 +594,25 @@ function LogsIcon({ className }: { className?: string }) {
       <path d="M8 12h1" />
       <path d="M8 18h1" />
       <path d="M8 6h1" />
+    </svg>
+  );
+}
+
+function DesktopIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <rect width="20" height="14" x="2" y="3" rx="2" />
+      <line x1="8" x2="16" y1="21" y2="21" />
+      <line x1="12" x2="12" y1="17" y2="21" />
+    </svg>
+  );
+}
+
+function TerminalIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <polyline points="4 17 10 11 4 5" />
+      <line x1="12" x2="20" y1="19" y2="19" />
     </svg>
   );
 }
