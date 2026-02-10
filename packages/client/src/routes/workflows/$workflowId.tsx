@@ -235,7 +235,7 @@ function WorkflowDetailPage() {
 
         {tab === 'steps' && (
           <div className="h-full overflow-y-auto p-4">
-            <div className="mx-auto max-w-3xl">
+            <div className="max-w-3xl">
               <StepsPanel workflow={workflow} steps={steps} />
             </div>
           </div>
@@ -243,7 +243,7 @@ function WorkflowDetailPage() {
 
         {tab === 'triggers' && (
           <div className="h-full overflow-y-auto p-4">
-            <div className="mx-auto max-w-3xl">
+            <div className="max-w-3xl">
               <WorkflowTriggerManager workflowId={workflowId} triggers={triggers} />
             </div>
           </div>
@@ -251,7 +251,7 @@ function WorkflowDetailPage() {
 
         {tab === 'proposals' && (
           <div className="h-full overflow-y-auto p-4">
-            <div className="mx-auto max-w-3xl">
+            <div className="max-w-3xl">
               <ProposalsPanel
                 proposals={proposals}
                 proposalsLoading={proposalsLoading}
@@ -265,7 +265,7 @@ function WorkflowDetailPage() {
 
         {tab === 'history' && (
           <div className="h-full overflow-y-auto p-4">
-            <div className="mx-auto max-w-3xl">
+            <div className="max-w-3xl">
               <HistoryPanel
                 history={history}
                 historyLoading={historyLoading}
@@ -436,7 +436,7 @@ function ExecutionDetail({ execution }: { execution: Execution }) {
   const isActive = execution.status === 'running' || execution.status === 'pending';
 
   return (
-    <div className="flex flex-col">
+    <div className="flex max-w-3xl flex-col">
       {/* Execution header */}
       <div className="shrink-0 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
         <div className="flex items-center gap-2.5">
