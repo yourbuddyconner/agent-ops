@@ -235,37 +235,45 @@ function WorkflowDetailPage() {
 
         {tab === 'steps' && (
           <div className="h-full overflow-y-auto p-4">
-            <StepsPanel workflow={workflow} steps={steps} />
+            <div className="mx-auto max-w-3xl">
+              <StepsPanel workflow={workflow} steps={steps} />
+            </div>
           </div>
         )}
 
         {tab === 'triggers' && (
           <div className="h-full overflow-y-auto p-4">
-            <WorkflowTriggerManager workflowId={workflowId} triggers={triggers} />
+            <div className="mx-auto max-w-3xl">
+              <WorkflowTriggerManager workflowId={workflowId} triggers={triggers} />
+            </div>
           </div>
         )}
 
         {tab === 'proposals' && (
           <div className="h-full overflow-y-auto p-4">
-            <ProposalsPanel
-              proposals={proposals}
-              proposalsLoading={proposalsLoading}
-              workflowId={workflowId}
-              reviewProposal={reviewProposal}
-              applyProposal={applyProposal}
-            />
+            <div className="mx-auto max-w-3xl">
+              <ProposalsPanel
+                proposals={proposals}
+                proposalsLoading={proposalsLoading}
+                workflowId={workflowId}
+                reviewProposal={reviewProposal}
+                applyProposal={applyProposal}
+              />
+            </div>
           </div>
         )}
 
         {tab === 'history' && (
           <div className="h-full overflow-y-auto p-4">
-            <HistoryPanel
-              history={history}
-              historyLoading={historyLoading}
-              currentHash={historyData?.currentWorkflowHash}
-              workflowId={workflowId}
-              rollbackWorkflow={rollbackWorkflow}
-            />
+            <div className="mx-auto max-w-3xl">
+              <HistoryPanel
+                history={history}
+                historyLoading={historyLoading}
+                currentHash={historyData?.currentWorkflowHash}
+                workflowId={workflowId}
+                rollbackWorkflow={rollbackWorkflow}
+              />
+            </div>
           </div>
         )}
       </div>
