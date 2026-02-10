@@ -21,8 +21,27 @@ authRouter.get('/me', async (c) => {
     db.getOrgSettings(c.env.DB),
   ]);
 
+  let user = fullUser ?? authUser;
+
+  // Backfill git config defaults from profile data if not already set
+  if (fullUser && (!fullUser.gitName || !fullUser.gitEmail)) {
+    const inferredGitName = fullUser.name || fullUser.githubUsername || undefined;
+    const inferredGitEmail = fullUser.githubId && fullUser.githubUsername
+      ? `${fullUser.githubId}+${fullUser.githubUsername}@users.noreply.github.com`
+      : fullUser.email || undefined;
+
+    const backfill: { gitName?: string; gitEmail?: string } = {};
+    if (!fullUser.gitName && inferredGitName) backfill.gitName = inferredGitName;
+    if (!fullUser.gitEmail && inferredGitEmail) backfill.gitEmail = inferredGitEmail;
+
+    if (backfill.gitName || backfill.gitEmail) {
+      const updated = await db.backfillGitConfig(c.env.DB, fullUser.id, backfill);
+      if (updated) user = updated;
+    }
+  }
+
   return c.json({
-    user: fullUser ?? authUser,
+    user,
     providers: {
       github: hasGitHub,
       google: hasGoogle,

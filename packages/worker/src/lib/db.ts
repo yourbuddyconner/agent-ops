@@ -573,6 +573,36 @@ export async function updateUserProfile(
   return getUserById(db, userId);
 }
 
+export async function backfillGitConfig(
+  db: D1Database,
+  userId: string,
+  data: { gitName?: string; gitEmail?: string }
+): Promise<User | null> {
+  const sets: string[] = [];
+  const binds: (string | null)[] = [];
+
+  if (data.gitName) {
+    sets.push('git_name = COALESCE(git_name, ?)');
+    binds.push(data.gitName);
+  }
+  if (data.gitEmail) {
+    sets.push('git_email = COALESCE(git_email, ?)');
+    binds.push(data.gitEmail);
+  }
+
+  if (sets.length === 0) return getUserById(db, userId);
+
+  sets.push("updated_at = datetime('now')");
+  binds.push(userId);
+
+  await db
+    .prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`)
+    .bind(...binds)
+    .run();
+
+  return getUserById(db, userId);
+}
+
 export async function hasOAuthProvider(db: D1Database, userId: string, provider: string): Promise<boolean> {
   const result = await db
     .prepare('SELECT 1 FROM oauth_tokens WHERE user_id = ? AND provider = ?')
@@ -2101,6 +2131,7 @@ function mapUser(row: any): User {
     email: row.email,
     name: row.name || undefined,
     avatarUrl: row.avatar_url || undefined,
+    githubId: row.github_id || undefined,
     githubUsername: row.github_username || undefined,
     gitName: row.git_name || undefined,
     gitEmail: row.git_email || undefined,

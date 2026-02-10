@@ -232,6 +232,7 @@ export interface User {
   email: string;
   name?: string;
   avatarUrl?: string;
+  githubId?: string;
   githubUsername?: string;
   gitName?: string;
   gitEmail?: string;

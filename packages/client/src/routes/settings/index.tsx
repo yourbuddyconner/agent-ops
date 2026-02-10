@@ -180,11 +180,15 @@ function GitConfigSection() {
   const updateProfile = useUpdateProfile();
   const [gitName, setGitName] = React.useState(user?.gitName ?? '');
   const [gitEmail, setGitEmail] = React.useState(user?.gitEmail ?? '');
+  const [noReply, setNoReply] = React.useState(
+    () => !!user?.gitEmail?.endsWith('@users.noreply.github.com')
+  );
   const [saved, setSaved] = React.useState(false);
 
   React.useEffect(() => {
     setGitName(user?.gitName ?? '');
     setGitEmail(user?.gitEmail ?? '');
+    setNoReply(!!user?.gitEmail?.endsWith('@users.noreply.github.com'));
   }, [user?.gitName, user?.gitEmail]);
 
   const hasChanges =
@@ -239,15 +243,37 @@ function GitConfigSection() {
             type="email"
             value={gitEmail}
             onChange={(e) => setGitEmail(e.target.value)}
+            disabled={noReply}
             placeholder={user?.email || 'you@example.com'}
-            className="mt-1 block w-full max-w-md rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
+            className="mt-1 block w-full max-w-md rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
           />
-          <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
-            For GitHub private emails, use{' '}
-            <code className="rounded bg-neutral-100 px-1 py-0.5 dark:bg-neutral-800">
-              username@users.noreply.github.com
-            </code>
-          </p>
+          {user?.githubUsername && (() => {
+            const noReplyAddr = user.githubId
+              ? `${user.githubId}+${user.githubUsername}@users.noreply.github.com`
+              : `${user.githubUsername}@users.noreply.github.com`;
+            return (
+              <label className="mt-2 flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-400">
+                <input
+                  type="checkbox"
+                  checked={noReply}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setNoReply(checked);
+                    if (checked) {
+                      setGitEmail(noReplyAddr);
+                    } else {
+                      setGitEmail(user.gitEmail?.endsWith('@users.noreply.github.com') ? '' : user.gitEmail ?? '');
+                    }
+                  }}
+                  className="h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-100 dark:focus:ring-neutral-400"
+                />
+                Use noreply email
+                <code className="rounded bg-neutral-100 px-1 py-0.5 text-xs dark:bg-neutral-800">
+                  {noReplyAddr}
+                </code>
+              </label>
+            );
+          })()}
         </div>
         <div className="flex items-center gap-3">
           <Button
