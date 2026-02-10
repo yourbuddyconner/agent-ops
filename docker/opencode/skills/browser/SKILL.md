@@ -111,8 +111,9 @@ agent-browser --headed wait <selector>         # Wait for element to appear
 agent-browser --headed wait 2000               # Wait 2 seconds
 agent-browser --headed wait --text "Success"   # Wait for text to appear
 agent-browser --headed wait --url "**/dashboard" # Wait for URL pattern
-agent-browser --headed wait --load networkidle # Wait for network idle
 ```
+
+**NEVER use `wait --load networkidle`** — many sites never reach network idle (analytics, websockets, polling). It will hang indefinitely and can break the session.
 
 ## Semantic Finding
 
@@ -163,20 +164,21 @@ agent-browser --headed storage local <key>   # Get specific key
 ### Navigate and extract content
 
 ```bash
-agent-browser --headed open "https://example.com"
-agent-browser --headed wait --load networkidle
-agent-browser --headed get title
+timeout 15 agent-browser --headed open "https://example.com"
 agent-browser --headed snapshot -i -c
+agent-browser --headed get title
 ```
 
 ### Fill a form
 
 ```bash
-agent-browser --headed open "https://example.com/login"
-agent-browser --headed fill "input[name=email]" "user@example.com"
-agent-browser --headed fill "input[name=password]" "password123"
-agent-browser --headed click "button[type=submit]"
-agent-browser --headed wait --load networkidle
+timeout 15 agent-browser --headed open "https://example.com/login"
+agent-browser --headed snapshot -i -c
+timeout 10 agent-browser --headed fill @e3 "user@example.com"
+timeout 10 agent-browser --headed fill @e5 "password123"
+timeout 15 agent-browser --headed click @e7
+agent-browser --headed wait 2000
+agent-browser --headed snapshot -i -c
 ```
 
 ### Using snapshot refs
@@ -189,10 +191,29 @@ agent-browser --headed click @e5    # Click the 5th interactive element
 agent-browser --headed get title    # Verify navigation
 ```
 
+## Avoiding Hangs
+
+Browser commands can hang if a page never finishes loading or a click triggers an unexpected navigation. **Always wrap browser commands with `timeout`** to prevent blocking the session:
+
+```bash
+timeout 15 agent-browser --headed click @e3
+timeout 15 agent-browser --headed open "https://example.com"
+timeout 15 agent-browser --headed fill @e7 "text"
+```
+
+Use `timeout 15` (15 seconds) as a sensible default. If a command times out, take a snapshot to see what happened and adjust your approach.
+
+**Never use `wait --load networkidle`** — it hangs on most real-world sites. Instead, wait for specific elements:
+
+```bash
+timeout 10 agent-browser --headed wait "input[name=email]"  # Wait for a specific element
+timeout 10 agent-browser --headed wait --text "Welcome"     # Wait for specific text
+```
+
 ## Tips
 
+- **Always take a screenshot** with `browser_screenshot` after navigating or clicking so you and the user can see the result.
 - Use `snapshot -i -c` as your go-to for understanding page structure.
 - Prefer `fill` over `type` for form fields (it clears first).
-- After interactions, use `browser_screenshot` tool to show the user what the page looks like.
 - The browser persists between commands within a session. No need to reopen it.
 - If the browser isn't running, `agent-browser --headed open <url>` will start it.
