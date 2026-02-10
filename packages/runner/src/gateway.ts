@@ -1526,6 +1526,30 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
     }
   });
 
+  app.post("/api/secrets/fill", async (c) => {
+    try {
+      const secrets = await import("./secrets.js");
+      if (!(await secrets.isConfigured())) {
+        return c.json({ error: "No secrets provider configured" }, 501);
+      }
+      const body = await c.req.json() as {
+        selector?: string;
+        secret_ref?: string;
+        timeout?: number;
+      };
+      if (!body.selector || !body.secret_ref) {
+        return c.json({ error: "Missing required fields: selector, secret_ref" }, 400);
+      }
+      const result = await secrets.fillBrowserField(body.selector, body.secret_ref, {
+        timeout: body.timeout,
+      });
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Secrets fill error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
   // ─── Execution API ─────────────────────────────────────────────────
 
   app.get("/api/executions/:id", async (c) => {

@@ -226,6 +226,68 @@ export async function runWithSecrets(
   };
 }
 
+// ─── Fill Browser Field ──────────────────────────────────────────────
+
+export interface FillBrowserFieldResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+}
+
+export async function fillBrowserField(
+  selector: string,
+  secretRef: string,
+  options?: { timeout?: number },
+): Promise<FillBrowserFieldResult> {
+  if (!selector || !selector.trim()) {
+    throw new Error("selector must be a non-empty string");
+  }
+  if (!secretRef || !secretRef.startsWith("op://")) {
+    throw new Error("secret_ref must be a valid op:// reference");
+  }
+
+  const timeout = options?.timeout ?? 30_000;
+
+  // Resolve the single secret reference
+  const resolved = await resolveSecrets([secretRef]);
+  const secretValue = resolved.get(secretRef);
+  if (!secretValue || secretValue.startsWith("[RESOLUTION_FAILED:")) {
+    throw new Error(`Failed to resolve secret: ${secretRef}`);
+  }
+
+  // Spawn agent-browser with args array (no shell) to avoid special char expansion
+  let timedOut = false;
+  const proc = Bun.spawn(["agent-browser", "--headed", "fill", selector, secretValue], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    proc.kill();
+  }, timeout);
+
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+
+  await proc.exited;
+  clearTimeout(timer);
+
+  // Mask the secret value in any output
+  const maskedStdout = maskSecrets(stdout, [secretValue]);
+  const maskedStderr = maskSecrets(stderr, [secretValue]);
+
+  return {
+    exitCode: proc.exitCode ?? 1,
+    stdout: maskedStdout,
+    stderr: maskedStderr,
+    timedOut,
+  };
+}
+
 // ─── Secret Masking ─────────────────────────────────────────────────────
 
 export function maskSecrets(text: string, secrets: string[]): string {
