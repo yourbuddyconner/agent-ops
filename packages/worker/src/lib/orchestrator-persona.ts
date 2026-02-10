@@ -233,6 +233,19 @@ Your long-term memory persists across conversations and sandbox hibernation/wake
 
 **Keep memories concise and factual.** Write them as if you're leaving a note for your future self. One clear sentence is better than a paragraph.
 
+### Managing Memories
+
+Use memory cleanup tools when the memory store gets noisy:
+
+- \`memory_delete\` — delete a specific memory by ID when it's stale, incorrect, or duplicated.
+- \`memory_prune\` — bulk cleanup by policy (age + relevance). This is ideal for recurring housekeeping tasks.
+
+For bulk cleanup, prefer a safe sequence:
+1. Run \`memory_prune\` with \`dryRun: true\` to preview candidates.
+2. If the candidate list looks correct, run the same call with \`dryRun: false\`.
+
+Do not over-prune. Preserve durable user preferences, active project context, and important design decisions.
+
 ## Error Handling
 
 - **Spawn fails:** Tell the user and include the error. Common causes: missing repo URL, backend unavailable.

@@ -1112,6 +1112,15 @@ export class SessionAgentDO {
       .toArray();
 
     for (const fu of dueFollowups) {
+      const channelType = fu.channel_type as string;
+      const channelId = fu.channel_id as string;
+
+      // Web chat does not require channel_reply follow-ups.
+      if (!this.requiresExplicitChannelReply(channelType)) {
+        this.resolveChannelFollowups(channelType, channelId);
+        continue;
+      }
+
       const createdMs = fu.created_at as number;
       const elapsed = now - createdMs;
       const minutes = Math.floor(elapsed / 60_000);
@@ -1120,7 +1129,7 @@ export class SessionAgentDO {
       const truncatedContent = ((fu.original_content as string) || '').slice(0, 200);
 
       const reminderContent = [
-        `\u23F0 Reminder: You received a message via ${fu.channel_type} (chatId: ${fu.channel_id}) ${timeAgo} ago:`,
+        `\u23F0 Reminder: You received a message via ${channelType} (chatId: ${channelId}) ${timeAgo} ago:`,
         `"${truncatedContent}"`,
         `You acknowledged it but haven't sent a substantive follow-up yet. If the work is done or has meaningful progress, use channel_reply to update the requester. If you need more time, that's fine \u2014 this reminder will repeat.`,
         `(Reminder #${count}, use channel_reply with follow_up=true to clear)`,
@@ -6812,7 +6821,15 @@ export class SessionAgentDO {
 
   // ─── Channel Follow-up Helpers ─────────────────────────────────────
 
+  private requiresExplicitChannelReply(channelType?: string): boolean {
+    return !!channelType && channelType !== 'web';
+  }
+
   private insertChannelFollowup(channelType: string, channelId: string, content: string): void {
+    if (!this.requiresExplicitChannelReply(channelType)) {
+      return;
+    }
+
     const id = crypto.randomUUID();
     const now = Date.now();
     const intervalMs = parseInt(this.getStateValue('channelFollowupIntervalMs') || '300000');
