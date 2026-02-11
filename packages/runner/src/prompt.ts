@@ -160,7 +160,15 @@ function normalizeOpenCodeEvent(raw: unknown): OpenCodeEvent | null {
   const maybePayload = isRecord(raw.payload) ? raw.payload : raw;
   const type = maybePayload.type;
   if (typeof type !== "string") return null;
-  const properties = isRecord(maybePayload.properties) ? maybePayload.properties : {};
+  const properties = isRecord(maybePayload.properties)
+    ? maybePayload.properties
+    : Object.fromEntries(
+        Object.entries(maybePayload).filter(([key]) =>
+          key !== "type" &&
+          key !== "payload" &&
+          key !== "time"
+        ),
+      );
   return {
     type,
     properties,
@@ -184,6 +192,10 @@ function openCodeErrorToMessage(raw: unknown): string | null {
 
 // Emergency fallback timeout — only fires if no idle/completion event arrives
 const EMERGENCY_TIMEOUT_MS = 60_000;
+
+// Timeout for awaiting the first assistant message after sending a prompt.
+// If the model/provider never responds, this prevents the session from hanging forever.
+const FIRST_RESPONSE_TIMEOUT_MS = 90_000;
 
 // Review polling configuration
 const REVIEW_POLL_INTERVAL_MS = 500;
@@ -466,6 +478,7 @@ export class PromptHandler {
   private runnerSessionId: string | null;
   private eventStreamActive = false;
   private responseTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  private firstResponseTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
   // Per-channel OpenCode session state
   private channels = new Map<string, ChannelSession>();
@@ -544,6 +557,11 @@ export class PromptHandler {
   private promptToQuestion = new Map<string, { requestID: string; index: number }>();
   private workflowExecutionModel: string | undefined;
   private workflowExecutionModelPreferences: string[] | undefined;
+  private readonly verboseSseDebug = process.env.RUNNER_DEBUG_SSE_RAW === "1";
+  private sseDebugLogCount = 0;
+  private readonly sseDebugLogLimit = 80;
+  private sseParseWarnCount = 0;
+  private sseDroppedEventCount = 0;
 
   constructor(opencodeUrl: string, agentClient: AgentClient, runnerSessionId?: string) {
     this.opencodeUrl = opencodeUrl;
@@ -580,15 +598,26 @@ export class PromptHandler {
     channel.adoptedPersistedSession = false;
 
     try {
-      // Clear any stale in-flight generation state carried across runner restarts.
-      const res = await fetch(`${this.opencodeUrl}/session/${sessionId}/abort`, { method: "POST" });
-      if (res.status === 404 || res.status === 410) {
+      // Verify the persisted session still exists and check its status.
+      // Only abort if the session is actively busy — aborting an idle session
+      // can cause OpenCode to enter a state where subsequent prompts are silently dropped.
+      const statusRes = await fetch(`${this.opencodeUrl}/session/${sessionId}`);
+      if (statusRes.status === 404 || statusRes.status === 410) {
         console.warn("[PromptHandler] Persisted OpenCode session missing; recreating");
         return this.recreateChannelOpenCodeSession(channel);
       }
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        console.warn(`[PromptHandler] Persisted session abort returned ${res.status}: ${body.slice(0, 200)}`);
+
+      if (statusRes.ok) {
+        const sessionData = await statusRes.json().catch(() => null) as Record<string, unknown> | null;
+        const status = sessionData?.status as Record<string, unknown> | string | undefined;
+        const statusType = typeof status === "string" ? status : (status as Record<string, unknown>)?.type;
+
+        if (statusType === "busy" || statusType === "retry") {
+          console.log(`[PromptHandler] Persisted session is ${statusType} — aborting before prompt`);
+          await fetch(`${this.opencodeUrl}/session/${sessionId}/abort`, { method: "POST" });
+        } else {
+          console.log(`[PromptHandler] Persisted session is ${statusType ?? "idle"} — no abort needed`);
+        }
       }
     } catch (err) {
       console.warn("[PromptHandler] Failed to resync adopted session:", err);
@@ -1156,6 +1185,7 @@ export class PromptHandler {
 
       // Clear any pending timeout from previous prompt
       this.clearResponseTimeout();
+      this.clearFirstResponseTimeout();
 
       // Ensure this channel has an OpenCode session and active SSE stream.
       await this.ensureChannelOpenCodeSession(channel);
@@ -1221,6 +1251,11 @@ export class PromptHandler {
       });
       console.log(`[PromptHandler] Prompt ${messageId} sent to OpenCode (channel: ${channel.channelKey})${effectiveModel ? ` (model: ${effectiveModel})` : ''}`);
 
+      // Start a timeout for the first assistant response. If the model/provider
+      // never responds (e.g. hangs, free-tier timeout), this prevents the session
+      // from being stuck in "Thinking" forever.
+      this.startFirstResponseTimeout();
+
       // Response will arrive via SSE events — don't block here
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -1274,6 +1309,7 @@ export class PromptHandler {
         channelId: channelContext.channelId,
       });
       console.log(`[PromptHandler] Retry sent with model ${toModel}`);
+      this.startFirstResponseTimeout();
       return true;
     } catch (err) {
       console.error(`[PromptHandler] Failed to retry with model ${toModel}:`, err);
@@ -2157,18 +2193,38 @@ export class PromptHandler {
   // ─── SSE Event Stream ─────────────────────────────────────────────────
 
   private async consumeEventStream(): Promise<void> {
-    const url = `${this.opencodeUrl}/event`;
-    console.log(`[PromptHandler] GET ${url} (SSE)`);
+    const streamCandidates = ["/global/event", "/event"];
+    let res: Response | null = null;
+    let selectedPath: string | null = null;
+    let lastError: Error | null = null;
 
-    const res = await fetch(url, {
-      headers: { Accept: "text/event-stream" },
-    });
-
-    console.log(`[PromptHandler] Event stream response: ${res.status} (type: ${res.headers.get("content-type")})`);
-
-    if (!res.ok || !res.body) {
-      throw new Error(`Failed to connect to event stream: ${res.status}`);
+    for (const path of streamCandidates) {
+      const url = `${this.opencodeUrl}${path}`;
+      console.log(`[PromptHandler] GET ${url} (SSE)`);
+      try {
+        const candidateRes = await fetch(url, {
+          headers: { Accept: "text/event-stream" },
+        });
+        console.log(
+          `[PromptHandler] Event stream response (${path}): ${candidateRes.status} (type: ${candidateRes.headers.get("content-type")})`
+        );
+        if (candidateRes.ok && candidateRes.body) {
+          res = candidateRes;
+          selectedPath = path;
+          break;
+        }
+        lastError = new Error(`Failed to connect to ${path}: ${candidateRes.status}`);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.warn(`[PromptHandler] Event stream connect error (${path}):`, err);
+      }
     }
+
+    if (!res || !res.body || !selectedPath) {
+      throw lastError ?? new Error("Failed to connect to event stream");
+    }
+
+    console.log(`[PromptHandler] Subscribed to ${selectedPath}`);
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -2184,23 +2240,25 @@ export class PromptHandler {
 
       buffer += decoder.decode(value, { stream: true });
 
-      // SSE format: "data: {...}\n\n" — split on double newline
-      const messages = buffer.split("\n\n");
+      // SSE frame delimiter is a blank line (supports both LF and CRLF).
+      const messages = buffer.split(/\r?\n\r?\n/);
       buffer = messages.pop() || "";
 
       for (const message of messages) {
-        const lines = message.split("\n");
-        let eventData = "";
+        const lines = message.split(/\r?\n/);
+        const dataLines: string[] = [];
 
         for (const line of lines) {
           if (line.startsWith("data: ")) {
-            eventData += line.slice(6);
+            dataLines.push(line.slice(6));
           } else if (line.startsWith("data:")) {
-            eventData += line.slice(5);
+            dataLines.push(line.slice(5));
           }
         }
 
+        const eventData = dataLines.join("\n").trim();
         if (!eventData) continue;
+        if (eventData === "[DONE]") continue;
 
         try {
           const raw = JSON.parse(eventData) as unknown;
@@ -2216,11 +2274,13 @@ export class PromptHandler {
           if (eventCount <= 10 || eventCount % 50 === 0) {
             console.log(`[PromptHandler] SSE event #${eventCount}: type=${event.type}`);
           }
+          this.logSseEventDebug(event, eventData);
 
           this.handleEvent(event);
         } catch (err) {
           // Log first few parse failures for debugging
-          if (eventCount < 10) {
+          this.sseParseWarnCount++;
+          if (this.sseParseWarnCount <= 20 || this.verboseSseDebug) {
             console.warn(`[PromptHandler] Failed to parse SSE: ${eventData.slice(0, 150)}`, err);
           }
         }
@@ -2241,8 +2301,9 @@ export class PromptHandler {
     const part = props.part as Record<string, unknown> | undefined;
     const info = props.info as Record<string, unknown> | undefined;
     const eventSessionId = (
-      props.sessionID ?? props.session_id ??
-      part?.sessionID ?? info?.sessionID
+      props.sessionID ?? props.sessionId ?? props.session_id ??
+      part?.sessionID ?? part?.sessionId ??
+      info?.sessionID ?? info?.sessionId
     ) as string | undefined;
     if (eventSessionId && this.ephemeralContent.has(eventSessionId)) {
       const mappedChannel = this.ocSessionToChannel.get(eventSessionId);
@@ -2322,12 +2383,26 @@ export class PromptHandler {
         if (this.activeChannel?.opencodeSessionId === eventSessionId) {
           eventChannel = this.activeChannel;
         } else {
+          this.sseDroppedEventCount++;
+          if (this.sseDroppedEventCount <= 20 || this.verboseSseDebug) {
+            console.warn(
+              `[PromptHandler] Dropping SSE event (unmapped session): type=${event.type} session=${eventSessionId} knownSessions=${this.ocSessionToChannel.size}`
+            );
+          }
           return;
         }
       }
     } else {
       // No session ID in event — use the active channel
       eventChannel = this.activeChannel ?? undefined;
+      if (!eventChannel) {
+        this.sseDroppedEventCount++;
+        if (this.sseDroppedEventCount <= 20 || this.verboseSseDebug) {
+          console.warn(
+            `[PromptHandler] Dropping SSE event (no active channel): type=${event.type}`
+          );
+        }
+      }
     }
 
     // Set activeChannel for the duration of event processing so delegate accessors work
@@ -2714,6 +2789,7 @@ export class PromptHandler {
     if (ocMessageId && role === "assistant") {
       this.activeAssistantMessageIds.add(ocMessageId);
       this.awaitingAssistantForAttempt = false;
+      this.clearFirstResponseTimeout();
     }
     if (ocMessageId && this.activeMessageId && role === "assistant") {
       if (!this.doToOcMessageId.has(this.activeMessageId)) {
@@ -2777,6 +2853,46 @@ export class PromptHandler {
     }
   }
 
+  private logSseEventDebug(event: OpenCodeEvent, rawData: string): void {
+    if (event.type === "server.heartbeat" || event.type === "server.connected") return;
+    if (!this.verboseSseDebug && this.sseDebugLogCount >= this.sseDebugLogLimit) return;
+
+    const props = event.properties ?? {};
+    const part = isRecord(props.part) ? props.part : undefined;
+    const info = isRecord(props.info) ? props.info : undefined;
+    const role = typeof info?.role === "string" ? info.role : undefined;
+    const partType = typeof part?.type === "string" ? part.type : undefined;
+    const msgId =
+      (typeof part?.messageID === "string" ? part.messageID : undefined) ??
+      (typeof part?.messageId === "string" ? part.messageId : undefined) ??
+      (typeof info?.id === "string" ? info.id : undefined);
+    const sessionId =
+      (typeof props.sessionID === "string" ? props.sessionID : undefined) ??
+      (typeof props.sessionId === "string" ? props.sessionId : undefined) ??
+      (typeof props.session_id === "string" ? props.session_id : undefined) ??
+      (typeof part?.sessionID === "string" ? part.sessionID : undefined) ??
+      (typeof part?.sessionId === "string" ? part.sessionId : undefined) ??
+      (typeof info?.sessionID === "string" ? info.sessionID : undefined) ??
+      (typeof info?.sessionId === "string" ? info.sessionId : undefined);
+    const deltaLen = typeof props.delta === "string" ? props.delta.length : 0;
+    const keys = Object.keys(props).join(",");
+    const summary = `[PromptHandler][SSE dbg] type=${event.type}` +
+      `${sessionId ? ` session=${sessionId}` : ""}` +
+      `${role ? ` role=${role}` : ""}` +
+      `${partType ? ` part=${partType}` : ""}` +
+      `${msgId ? ` msg=${msgId}` : ""}` +
+      `${deltaLen ? ` delta=${deltaLen}` : ""}` +
+      ` keys=[${keys}]`;
+
+    if (this.verboseSseDebug) {
+      const compactRaw = rawData.replace(/\s+/g, " ").slice(0, 600);
+      console.log(`${summary} raw=${compactRaw}`);
+    } else {
+      console.log(summary);
+    }
+    this.sseDebugLogCount++;
+  }
+
   private async finalizeResponse(force = false): Promise<void> {
     if (!this.activeMessageId || this.failoverInProgress) {
       return;
@@ -2788,8 +2904,9 @@ export class PromptHandler {
 
     try {
 
-      // Clear any pending timeout
+      // Clear any pending timeouts
       this.clearResponseTimeout();
+      this.clearFirstResponseTimeout();
 
       const messageId = this.activeMessageId;
       let content = this.streamedContent || this.latestAssistantTextSnapshot;
@@ -2950,6 +3067,66 @@ export class PromptHandler {
     if (this.responseTimeoutId) {
       clearTimeout(this.responseTimeoutId);
       this.responseTimeoutId = null;
+    }
+  }
+
+  /**
+   * Start a timeout for receiving the first assistant message after sending a prompt.
+   * If the model/provider never responds (hangs, free-tier timeout, etc.), this
+   * prevents the session from being stuck in "Thinking" forever by attempting
+   * model failover or erroring out.
+   */
+  private startFirstResponseTimeout(): void {
+    this.clearFirstResponseTimeout();
+    this.firstResponseTimeoutId = setTimeout(async () => {
+      this.firstResponseTimeoutId = null;
+      if (!this.awaitingAssistantForAttempt || !this.activeMessageId) return;
+
+      console.log(`[PromptHandler] First response timeout fired — no assistant message received within ${FIRST_RESPONSE_TIMEOUT_MS}ms`);
+
+      // Try model failover
+      this.failoverInProgress = true;
+      this.retryPending = true;
+      let didFailover = false;
+      try {
+        didFailover = await this.attemptModelFailover("Model did not respond (timeout waiting for first response)");
+        if (didFailover) {
+          console.log(`[PromptHandler] Failover initiated after first-response timeout`);
+          return;
+        }
+      } finally {
+        this.failoverInProgress = false;
+        if (!didFailover) {
+          this.retryPending = false;
+        }
+      }
+
+      // No more models — error out
+      console.log(`[PromptHandler] No failover available — sending timeout error`);
+      this.awaitingAssistantForAttempt = false;
+      const messageId = this.activeMessageId;
+      if (messageId) {
+        this.agentClient.sendError(messageId, "The model did not respond. Try again or switch to a different model.");
+        this.agentClient.sendComplete();
+        this.agentClient.sendAgentStatus("idle");
+        // Reset prompt state
+        this.activeMessageId = null;
+        this.streamedContent = "";
+        this.hasActivity = false;
+        this.lastError = null;
+        this.currentModelPreferences = undefined;
+        this.currentModelIndex = 0;
+        this.pendingRetryContent = null;
+        this.pendingRetryAttachments = [];
+        this.pendingRetryAuthor = undefined;
+      }
+    }, FIRST_RESPONSE_TIMEOUT_MS);
+  }
+
+  private clearFirstResponseTimeout(): void {
+    if (this.firstResponseTimeoutId) {
+      clearTimeout(this.firstResponseTimeoutId);
+      this.firstResponseTimeoutId = null;
     }
   }
 

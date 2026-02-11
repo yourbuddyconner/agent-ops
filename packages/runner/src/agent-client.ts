@@ -1118,6 +1118,11 @@ export class AgentClient {
               : undefined,
           );
           break;
+        default:
+          console.warn(
+            `[AgentClient] Unhandled DO message type: ${(msg as { type?: unknown }).type ?? "unknown"} keys=[${Object.keys(msg as Record<string, unknown>).join(",")}]`
+          );
+          break;
       }
     } catch (err) {
       console.error(`[AgentClient] Error handling ${msg.type} message:`, err);

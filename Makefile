@@ -12,7 +12,7 @@
         test test-unit test-integration test-e2e \
         test-workflow test-triggers test-webhooks test-schedule \
         lint typecheck \
-        logs logs-worker logs-opencode \
+        logs logs-worker logs-opencode logs-cloudflare logs-worker-prod \
         health health-worker health-opencode \
         workflow-create workflow-list workflow-run workflow-delete \
         trigger-create trigger-list trigger-run \
@@ -42,6 +42,11 @@ OPENCODE_SERVER_PASSWORD ?= $(shell grep OPENCODE_SERVER_PASSWORD .env 2>/dev/nu
 API_TOKEN ?= test-api-token-12345
 DOCKER_COMPOSE = docker compose
 PNPM = pnpm
+CF_ENV ?=
+CF_WORKER_NAME ?= agent-ops
+TAIL_FORMAT ?= pretty
+TAIL_SEARCH ?=
+TAIL_SAMPLING_RATE ?=
 
 # Colors for output
 GREEN = \033[0;32m
@@ -187,6 +192,16 @@ logs: ## Show all logs (worker + opencode)
 logs-worker: ## Show Worker logs
 	@echo "$(GREEN)Worker logs:$(NC)"
 	cd packages/worker && wrangler tail 2>/dev/null || echo "Use 'make dev-worker' to see logs"
+
+logs-cloudflare: ## Tail deployed Cloudflare Worker logs (optional: CF_ENV=prod TAIL_SEARCH=text TAIL_SAMPLING_RATE=1)
+	@echo "$(GREEN)Cloudflare Worker logs (remote tail):$(NC)"
+	wrangler tail $(CF_WORKER_NAME) \
+		$(if $(CF_ENV),--env $(CF_ENV),) \
+		--format $(TAIL_FORMAT) \
+		$(if $(TAIL_SEARCH),--search "$(TAIL_SEARCH)",) \
+		$(if $(TAIL_SAMPLING_RATE),--sampling-rate $(TAIL_SAMPLING_RATE),)
+
+logs-worker-prod: logs-cloudflare ## Alias for logs-cloudflare
 
 logs-opencode: ## Show OpenCode container logs
 	$(DOCKER_COMPOSE) logs -f opencode
@@ -647,4 +662,3 @@ image-push: image-build ## Build and push OpenCode image to GHCR
 	@docker push $(GHCR_REPO):$(VERSION)
 	@docker push $(GHCR_REPO):latest
 	@echo "$(GREEN)✓ Image pushed: $(GHCR_REPO):$(VERSION)$(NC)"
-
