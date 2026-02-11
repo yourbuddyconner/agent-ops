@@ -82,6 +82,8 @@ export type DOToRunnerMessage =
   | {
       type: "workflow-execute";
       executionId: string;
+      model?: string;
+      modelPreferences?: string[];
       payload: {
         kind: "run" | "resume";
         executionId: string;

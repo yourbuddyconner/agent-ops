@@ -537,6 +537,8 @@ export class PromptHandler {
   // OpenCode question requests (question tool)
   private pendingQuestionRequests = new Map<string, { answers: (string[] | null)[] }>();
   private promptToQuestion = new Map<string, { requestID: string; index: number }>();
+  private workflowExecutionModel: string | undefined;
+  private workflowExecutionModelPreferences: string[] | undefined;
 
   constructor(opencodeUrl: string, agentClient: AgentClient, runnerSessionId?: string) {
     this.opencodeUrl = opencodeUrl;
@@ -585,7 +587,7 @@ export class PromptHandler {
   private async handleWorkflowExecutionPrompt(
     messageId: string,
     request: WorkflowExecutionDispatchPayload,
-    options?: { emitChatError?: boolean },
+    options?: { emitChatError?: boolean; model?: string; modelPreferences?: string[] },
   ): Promise<void> {
     const executionId = request.executionId;
     const emitChatError = options?.emitChatError !== false;
@@ -607,6 +609,19 @@ export class PromptHandler {
       this.agentClient.sendAgentStatus("idle");
       this.agentClient.sendComplete();
     };
+
+    const previousWorkflowModel = this.workflowExecutionModel;
+    const previousWorkflowModelPrefs = this.workflowExecutionModelPreferences;
+    const normalizedDispatchModel = typeof options?.model === "string" && options.model.trim()
+      ? options.model.trim()
+      : undefined;
+    const normalizedDispatchPrefs = Array.isArray(options?.modelPreferences)
+      ? options.modelPreferences
+          .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+          .filter((entry) => entry.length > 0)
+      : [];
+    this.workflowExecutionModel = normalizedDispatchModel;
+    this.workflowExecutionModelPreferences = normalizedDispatchPrefs.length > 0 ? normalizedDispatchPrefs : undefined;
 
     try {
       const workflowValue = request.payload.workflow;
@@ -666,18 +681,27 @@ export class PromptHandler {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await fail(message);
+    } finally {
+      this.workflowExecutionModel = previousWorkflowModel;
+      this.workflowExecutionModelPreferences = previousWorkflowModelPrefs;
     }
   }
 
   async handleWorkflowExecutionDispatch(
     executionId: string,
     payload: WorkflowExecutionDispatchPayload,
+    model?: string,
+    modelPreferences?: string[],
   ): Promise<void> {
     const request: WorkflowExecutionDispatchPayload = {
       ...payload,
       executionId: payload.executionId || executionId,
     };
-    await this.handleWorkflowExecutionPrompt(`workflow:${executionId}`, request, { emitChatError: false });
+    await this.handleWorkflowExecutionPrompt(`workflow:${executionId}`, request, {
+      emitChatError: false,
+      model,
+      modelPreferences,
+    });
   }
 
   private async executeWorkflowToolStep(
@@ -815,6 +839,10 @@ export class PromptHandler {
           : 120_000;
     const awaitTimeoutMs = Math.max(1_000, Math.min(awaitTimeoutRaw, 900_000));
     const previousChannel = this.activeChannel;
+    const preferredModel = this.workflowExecutionModel
+      || (this.workflowExecutionModelPreferences && this.workflowExecutionModelPreferences.length > 0
+        ? this.workflowExecutionModelPreferences[0]
+        : undefined);
 
     try {
       const { channel, sessionId } = await this.ensureWorkflowOpenCodeSession();
@@ -831,7 +859,7 @@ export class PromptHandler {
       }
 
       if (!awaitResponse) {
-        await this.sendPromptAsync(sessionId, content);
+        await this.sendPromptAsync(sessionId, content, preferredModel);
         return {
           status: "completed",
           output: {
@@ -848,7 +876,7 @@ export class PromptHandler {
       this.ephemeralContent.set(sessionId, "");
       try {
         const idlePromise = this.pollUntilIdle(sessionId, awaitTimeoutMs);
-        await this.sendPromptAsync(sessionId, content);
+        await this.sendPromptAsync(sessionId, content, preferredModel);
         await idlePromise;
 
         const responseText = (this.ephemeralContent.get(sessionId) || "").trim();

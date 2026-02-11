@@ -5549,11 +5549,15 @@ export class SessionAgentDO {
     this.rescheduleIdleAlarm();
     this.setStateValue('runnerBusy', 'true');
     this.setStateValue('lastParentIdleNotice', '');
+    const dispatchOwnerId = this.getStateValue('userId');
+    const dispatchOwnerDetails = dispatchOwnerId ? await this.getUserDetails(dispatchOwnerId) : undefined;
+    const dispatchModelPrefs = await this.resolveModelPreferences(dispatchOwnerDetails);
 
     this.sendToRunner({
       type: 'workflow-execute',
       executionId,
       payload,
+      modelPreferences: dispatchModelPrefs,
     });
 
     this.appendAuditLog(
@@ -5598,10 +5602,14 @@ export class SessionAgentDO {
       this.pendingChannelReply = null;
       this.setStateValue('runnerBusy', 'true');
       this.setStateValue('lastParentIdleNotice', '');
+      const queueOwnerId = this.getStateValue('userId');
+      const queueOwnerDetails = queueOwnerId ? await this.getUserDetails(queueOwnerId) : undefined;
+      const queueModelPrefs = await this.resolveModelPreferences(queueOwnerDetails);
       this.sendToRunner({
         type: 'workflow-execute',
         executionId: queuedExecutionId,
         payload: queuedPayload,
+        modelPreferences: queueModelPrefs,
       });
       this.broadcastToClients({
         type: 'status',

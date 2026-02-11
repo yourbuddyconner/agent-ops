@@ -265,9 +265,9 @@ async function main() {
     await promptHandler.handleNewSession(channelType, channelId, requestId);
   });
 
-  agentClient.onWorkflowExecute(async (executionId, payload) => {
+  agentClient.onWorkflowExecute(async (executionId, payload, model, modelPreferences) => {
     console.log(`[Runner] Received workflow execution dispatch: ${executionId} (${payload.kind})`);
-    await promptHandler.handleWorkflowExecutionDispatch(executionId, payload);
+    await promptHandler.handleWorkflowExecutionDispatch(executionId, payload, model, modelPreferences);
   });
 
   agentClient.onTunnelDelete(async (name, actor) => {

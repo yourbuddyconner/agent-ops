@@ -64,7 +64,7 @@ export class AgentClient {
     resumeToken?: string;
     decision?: "approve" | "deny";
     payload: Record<string, unknown>;
-  }) => void | Promise<void>) | null = null;
+  }, model?: string, modelPreferences?: string[]) => void | Promise<void>) | null = null;
   private newSessionHandler: ((channelType: string, channelId: string, requestId: string) => void | Promise<void>) | null = null;
   private initHandler: (() => void | Promise<void>) | null = null;
 
@@ -754,7 +754,7 @@ export class AgentClient {
     resumeToken?: string;
     decision?: "approve" | "deny";
     payload: Record<string, unknown>;
-  }) => void | Promise<void>): void {
+  }, model?: string, modelPreferences?: string[]) => void | Promise<void>): void {
     this.workflowExecuteHandler = handler;
   }
 
@@ -1100,7 +1100,14 @@ export class AgentClient {
           });
           break;
         case "workflow-execute":
-          await this.workflowExecuteHandler?.(msg.executionId, msg.payload);
+          await this.workflowExecuteHandler?.(
+            msg.executionId,
+            msg.payload,
+            typeof msg.model === "string" ? msg.model : undefined,
+            Array.isArray(msg.modelPreferences)
+              ? msg.modelPreferences.filter((entry): entry is string => typeof entry === "string" && !!entry.trim())
+              : undefined,
+          );
           break;
       }
     } catch (err) {
