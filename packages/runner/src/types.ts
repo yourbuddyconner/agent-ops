@@ -62,6 +62,7 @@ export type DOToRunnerMessage =
   | { type: "memory-delete-result"; requestId: string; success?: boolean; error?: string }
   | { type: "list-repos-result"; requestId: string; repos?: unknown[]; error?: string }
   | { type: "list-personas-result"; requestId: string; personas?: unknown[]; error?: string }
+  | { type: "list-channels-result"; requestId: string; channels?: unknown[]; error?: string }
   | { type: "get-session-status-result"; requestId: string; sessionStatus?: unknown; error?: string }
   | { type: "list-child-sessions-result"; requestId: string; children?: unknown[]; error?: string }
   | { type: "forward-messages-result"; requestId: string; count?: number; sourceSessionId?: string; error?: string }
@@ -146,6 +147,7 @@ export type RunnerToDOMessage =
   | { type: "memory-delete"; requestId: string; memoryId: string }
   | { type: "list-repos"; requestId: string; source?: string }
   | { type: "list-personas"; requestId: string }
+  | { type: "list-channels"; requestId: string }
   | { type: "get-session-status"; requestId: string; targetSessionId: string }
   | { type: "list-child-sessions"; requestId: string }
   | { type: "forward-messages"; requestId: string; targetSessionId: string; limit?: number; after?: string }

@@ -119,6 +119,9 @@ async function main() {
     onListPersonas: async () => {
       return await agentClient.requestListPersonas();
     },
+    onListChannels: async () => {
+      return await agentClient.requestListChannels();
+    },
     onGetSessionStatus: async (targetSessionId) => {
       return await agentClient.requestGetSessionStatus(targetSessionId);
     },

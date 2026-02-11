@@ -17,10 +17,19 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # Bun
 RUN curl -fsSL https://bun.sh/install | bash
 ENV BUN_INSTALL="/root/.bun"
+ENV PLAYWRIGHT_BROWSERS_PATH="/ms-playwright"
 ENV PATH="$BUN_INSTALL/bin:$PATH"
 
 # OpenCode CLI
-RUN npm install -g @opencode-ai/cli
+RUN npm install -g @opencode-ai/cli agent-browser \
+    && mkdir -p /ms-playwright \
+    && AGENT_BROWSER_ROOT="$(npm root -g)/agent-browser" \
+    && if [ -f "$AGENT_BROWSER_ROOT/node_modules/playwright/cli.js" ]; then \
+      PLAYWRIGHT_BROWSERS_PATH=/ms-playwright node "$AGENT_BROWSER_ROOT/node_modules/playwright/cli.js" install chromium; \
+    else \
+      PLAYWRIGHT_BROWSERS_PATH=/ms-playwright npx --yes playwright install chromium; \
+    fi \
+    && chmod -R a+rX /ms-playwright
 
 # ─── Phase 2: Dev Environment Services ─────────────────────────────────
 

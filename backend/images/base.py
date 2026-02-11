@@ -49,6 +49,18 @@ def get_base_image() -> modal.Image:
         .run_commands(
             f"npm install -g opencode-ai@{OPENCODE_VERSION} agent-browser",
         )
+        # Preinstall Playwright Chromium that matches agent-browser's bundled
+        # Playwright version so browser tools work without runtime installs.
+        .run_commands(
+            "mkdir -p /ms-playwright",
+            "AGENT_BROWSER_ROOT=\"$(npm root -g)/agent-browser\"; "
+            "if [ -f \"$AGENT_BROWSER_ROOT/node_modules/playwright/cli.js\" ]; then "
+            "  PLAYWRIGHT_BROWSERS_PATH=/ms-playwright node \"$AGENT_BROWSER_ROOT/node_modules/playwright/cli.js\" install chromium; "
+            "else "
+            "  PLAYWRIGHT_BROWSERS_PATH=/ms-playwright npx --yes playwright install chromium; "
+            "fi",
+            "chmod -R a+rX /ms-playwright",
+        )
         # code-server (VS Code in browser)
         .run_commands(
             "curl -fsSL https://code-server.dev/install.sh | sh",
@@ -125,9 +137,10 @@ def get_base_image() -> modal.Image:
                 "DISPLAY": ":99",
                 "HOME": "/root",
                 # Force image rebuild on deploy (change this value to trigger rebuild)
-                "IMAGE_BUILD_VERSION": "2026-02-09-v107-browser-timeout",
+                "IMAGE_BUILD_VERSION": "2026-02-11-v108-playwright-chromium",
                 "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
                 "AGENT_BROWSER_PROFILE": "/root/.agent-browser-profile",
+                "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright",
             }
         )
     )

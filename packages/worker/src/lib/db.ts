@@ -3067,6 +3067,14 @@ export async function getSessionChannelBindings(db: D1Database, sessionId: strin
   return (result.results || []).map(mapChannelBinding);
 }
 
+export async function listUserChannelBindings(db: D1Database, userId: string): Promise<ChannelBinding[]> {
+  const result = await db
+    .prepare('SELECT * FROM channel_bindings WHERE user_id = ? ORDER BY created_at DESC')
+    .bind(userId)
+    .all();
+  return (result.results || []).map(mapChannelBinding);
+}
+
 export async function deleteChannelBinding(db: D1Database, id: string): Promise<void> {
   await db.prepare('DELETE FROM channel_bindings WHERE id = ?').bind(id).run();
 }

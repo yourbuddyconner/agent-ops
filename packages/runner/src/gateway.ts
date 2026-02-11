@@ -531,6 +531,7 @@ export interface GatewayCallbacks {
   onMemoryDelete?: (memoryId: string) => Promise<{ success: boolean }>;
   onListRepos?: (source?: string) => Promise<{ repos: unknown[] }>;
   onListPersonas?: () => Promise<{ personas: unknown[] }>;
+  onListChannels?: () => Promise<{ channels: unknown[] }>;
   onGetSessionStatus?: (targetSessionId: string) => Promise<{ sessionStatus: unknown }>;
   onListChildSessions?: () => Promise<{ children: unknown[] }>;
   onForwardMessages?: (targetSessionId: string, limit?: number, after?: string) => Promise<{ count: number; sourceSessionId: string }>;
@@ -966,6 +967,19 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] List personas error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.get("/api/channels", async (c) => {
+    if (!callbacks.onListChannels) {
+      return c.json({ error: "List channels handler not configured" }, 500);
+    }
+    try {
+      const result = await callbacks.onListChannels();
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] List channels error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });

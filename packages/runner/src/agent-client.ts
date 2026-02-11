@@ -409,6 +409,13 @@ export class AgentClient {
     });
   }
 
+  requestListChannels(): Promise<{ channels: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "list-channels", requestId });
+    });
+  }
+
   requestListChildSessions(): Promise<{ children: unknown[] }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
@@ -964,6 +971,14 @@ export class AgentClient {
             this.rejectPendingRequest(msg.requestId, msg.error);
           } else {
             this.resolvePendingRequest(msg.requestId, { personas: msg.personas ?? [] });
+          }
+          break;
+
+        case "list-channels-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { channels: msg.channels ?? [] });
           }
           break;
 
