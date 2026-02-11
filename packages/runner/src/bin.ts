@@ -265,6 +265,11 @@ async function main() {
     await promptHandler.handleNewSession(channelType, channelId, requestId);
   });
 
+  agentClient.onWorkflowExecute(async (executionId, payload) => {
+    console.log(`[Runner] Received workflow execution dispatch: ${executionId} (${payload.kind})`);
+    await promptHandler.handleWorkflowExecutionDispatch(executionId, payload);
+  });
+
   agentClient.onTunnelDelete(async (name, actor) => {
     console.log(`[Runner] Received tunnel delete: ${name} (actor=${actor?.name || actor?.email || actor?.id || "unknown"})`);
     try {

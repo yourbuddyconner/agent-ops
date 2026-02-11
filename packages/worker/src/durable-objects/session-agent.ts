@@ -14,8 +14,18 @@ interface PromptAttachment {
   filename?: string;
 }
 
+interface WorkflowExecutionDispatchPayload {
+  kind: 'run' | 'resume';
+  executionId: string;
+  workflowHash?: string;
+  resumeToken?: string;
+  decision?: 'approve' | 'deny';
+  payload: Record<string, unknown>;
+}
+
 const MAX_PROMPT_ATTACHMENTS = 8;
 const MAX_PROMPT_ATTACHMENT_URL_LENGTH = 12_000_000;
+const WORKFLOW_EXECUTE_PROMPT_PREFIX = '__AGENT_OPS_WORKFLOW_EXECUTE_V1__';
 
 function parseBase64DataUrl(url: string): string | null {
   const commaIndex = url.indexOf(',');
@@ -295,7 +305,7 @@ interface ClientOutbound {
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'opencode-command' | 'pong' | 'init' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'workflow-api-result' | 'trigger-api-result' | 'execution-api-result' | 'tunnel-delete' | 'channel-reply-result';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'opencode-command' | 'pong' | 'init' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'workflow-api-result' | 'trigger-api-result' | 'execution-api-result' | 'workflow-execute' | 'tunnel-delete' | 'channel-reply-result';
   command?: string;
   messageId?: string;
   content?: string;
@@ -337,6 +347,8 @@ interface RunnerOutbound {
   execution?: unknown;
   executions?: unknown[];
   steps?: unknown[];
+  executionId?: string;
+  payload?: WorkflowExecutionDispatchPayload;
   // Model failover
   modelPreferences?: string[];
   encoding?: string;
@@ -634,6 +646,16 @@ export class SessionAgentDO {
         }
         await this.handleSystemMessage(body.content, body.parts, body.wake);
         return Response.json({ success: true });
+      }
+      case '/workflow-execute': {
+        if (request.method !== 'POST') {
+          return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405 });
+        }
+        const body = await request.json() as {
+          executionId?: string;
+          payload?: WorkflowExecutionDispatchPayload;
+        };
+        return this.handleWorkflowExecuteDispatch(body.executionId, body.payload);
       }
       case '/tunnels': {
         if (request.method !== 'POST') {
@@ -3078,6 +3100,20 @@ export class SessionAgentDO {
     return match?.[1] || undefined;
   }
 
+  private deriveWorkerOriginFromSpawnRequest(): string | undefined {
+    const spawnRequestRaw = this.getStateValue('spawnRequest');
+    if (!spawnRequestRaw) return undefined;
+
+    try {
+      const parsed = JSON.parse(spawnRequestRaw) as { doWsUrl?: unknown };
+      const doWsUrl = typeof parsed?.doWsUrl === 'string' ? parsed.doWsUrl.trim() : '';
+      if (!doWsUrl) return undefined;
+      return new URL(doWsUrl).origin;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async handleWorkflowRun(
     requestId: string,
     workflowId: string,
@@ -3153,6 +3189,7 @@ export class SessionAgentDO {
       const repoUrl = repoContext?.repoUrl?.trim() || undefined;
       const branch = repoContext?.branch?.trim() || undefined;
       const ref = repoContext?.ref?.trim() || undefined;
+      const workerOrigin = this.deriveWorkerOriginFromSpawnRequest();
       const sourceRepoFullName = this.deriveRepoFullName(repoUrl, repoContext?.sourceRepoFullName);
       const sessionId = await createWorkflowSession(this.env.DB, {
         userId,
@@ -3194,6 +3231,7 @@ export class SessionAgentDO {
         userId,
         sessionId,
         triggerType: 'manual',
+        workerOrigin,
       });
 
       this.sendToRunner({
@@ -3822,6 +3860,7 @@ export class SessionAgentDO {
         const repoUrl = typeof payload?.repoUrl === 'string' ? payload.repoUrl.trim() || undefined : undefined;
         const branch = typeof payload?.branch === 'string' ? payload.branch.trim() || undefined : undefined;
         const ref = typeof payload?.ref === 'string' ? payload.ref.trim() || undefined : undefined;
+        const workerOrigin = this.deriveWorkerOriginFromSpawnRequest();
         const sourceRepoFullName = this.deriveRepoFullName(
           repoUrl,
           typeof payload?.sourceRepoFullName === 'string' ? payload.sourceRepoFullName : undefined,
@@ -3868,6 +3907,7 @@ export class SessionAgentDO {
           userId,
           sessionId,
           triggerType: 'manual',
+          workerOrigin,
         });
 
         this.sendToRunner({
@@ -5443,6 +5483,84 @@ export class SessionAgentDO {
         }
       }
     }
+  }
+
+  private async handleWorkflowExecuteDispatch(
+    executionIdRaw?: string,
+    payload?: WorkflowExecutionDispatchPayload,
+  ): Promise<Response> {
+    const executionId = (executionIdRaw || '').trim();
+    if (!executionId) {
+      return Response.json({ error: 'executionId is required' }, { status: 400 });
+    }
+    if (!payload || typeof payload !== 'object') {
+      return Response.json({ error: 'payload is required' }, { status: 400 });
+    }
+    if (payload.kind !== 'run' && payload.kind !== 'resume') {
+      return Response.json({ error: 'payload.kind must be run or resume' }, { status: 400 });
+    }
+    if (typeof payload.executionId !== 'string' || payload.executionId !== executionId) {
+      return Response.json({ error: 'payload.executionId must match executionId' }, { status: 400 });
+    }
+    if (!payload.payload || typeof payload.payload !== 'object' || Array.isArray(payload.payload)) {
+      return Response.json({ error: 'payload.payload must be an object' }, { status: 400 });
+    }
+
+    const status = this.getStateValue('status');
+    const controlPrompt = `${WORKFLOW_EXECUTE_PROMPT_PREFIX}\n${JSON.stringify(payload)}`;
+    const queueWorkflowDispatch = (reason: string) => {
+      const queueId = crypto.randomUUID();
+      this.ctx.storage.sql.exec(
+        "INSERT INTO prompt_queue (id, content, status) VALUES (?, ?, 'queued')",
+        queueId,
+        controlPrompt,
+      );
+      this.appendAuditLog(
+        'workflow.dispatch_queued',
+        `Workflow execution queued (${executionId.slice(0, 8)}): ${reason}`,
+        undefined,
+        { executionId, kind: payload.kind, reason },
+      );
+      return Response.json({ success: true, queued: true, reason }, { status: 202 });
+    };
+
+    if (status === 'hibernated') {
+      this.ctx.waitUntil(this.performWake());
+      return queueWorkflowDispatch('session_hibernated_waking');
+    }
+    if (status === 'restoring' || status === 'initializing' || status === 'hibernating') {
+      return queueWorkflowDispatch(`session_not_ready:${status}`);
+    }
+
+    const runnerSockets = this.ctx.getWebSockets('runner');
+    if (runnerSockets.length === 0) {
+      return queueWorkflowDispatch('runner_not_connected');
+    }
+
+    const runnerBusy = this.getStateValue('runnerBusy') === 'true';
+    if (runnerBusy) {
+      return queueWorkflowDispatch('runner_busy');
+    }
+
+    this.setStateValue('lastUserActivityAt', String(Date.now()));
+    this.rescheduleIdleAlarm();
+    this.setStateValue('runnerBusy', 'true');
+    this.setStateValue('lastParentIdleNotice', '');
+
+    this.sendToRunner({
+      type: 'workflow-execute',
+      executionId,
+      payload,
+    });
+
+    this.appendAuditLog(
+      'workflow.dispatch',
+      `Workflow execution dispatched (${executionId.slice(0, 8)})`,
+      undefined,
+      { executionId, kind: payload.kind },
+    );
+
+    return Response.json({ success: true });
   }
 
   private async sendNextQueuedPrompt(): Promise<boolean> {

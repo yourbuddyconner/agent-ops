@@ -58,7 +58,14 @@ interface EnsureSessionResult {
   error?: string;
 }
 
-const WORKFLOW_EXECUTE_PROMPT_PREFIX = '__AGENT_OPS_WORKFLOW_EXECUTE_V1__';
+interface WorkflowExecutionDispatchPayload {
+  kind: 'run' | 'resume';
+  executionId: string;
+  workflowHash?: string;
+  resumeToken?: string;
+  decision?: 'approve' | 'deny';
+  payload: Record<string, unknown>;
+}
 
 export class WorkflowExecutorDO implements DurableObject {
   private state: DurableObjectState;
@@ -156,8 +163,8 @@ export class WorkflowExecutorDO implements DurableObject {
           sessionStartedAt = ensured.startedAt;
         }
 
-        const prompt = await this.buildWorkflowRunPrompt(row);
-        const dispatched = await this.dispatchWorkflowPrompt(row.session_id, prompt);
+        const dispatchPayload = await this.buildWorkflowRunDispatchPayload(row);
+        const dispatched = await this.dispatchWorkflowExecution(row.session_id, row.id, dispatchPayload);
         if (dispatched.ok) {
           promptDispatchedAt = now;
           lastError = undefined;
@@ -408,39 +415,33 @@ export class WorkflowExecutorDO implements DurableObject {
     return envVars;
   }
 
-  private async buildWorkflowRunPrompt(row: ExecutionRow): Promise<string> {
+  private async buildWorkflowRunDispatchPayload(row: ExecutionRow): Promise<WorkflowExecutionDispatchPayload> {
     const payload = this.buildWorkflowRunPayload(row);
     const workflowHash = await this.computeCanonicalWorkflowHash(row.workflow_data);
-    return [
-      WORKFLOW_EXECUTE_PROMPT_PREFIX,
-      JSON.stringify({
-        kind: 'run',
-        executionId: row.id,
-        ...(workflowHash ? { workflowHash } : {}),
-        payload,
-      }),
-    ].join('\n');
+    return {
+      kind: 'run',
+      executionId: row.id,
+      ...(workflowHash ? { workflowHash } : {}),
+      payload,
+    };
   }
 
-  private async buildWorkflowResumePrompt(
+  private async buildWorkflowResumeDispatchPayload(
     row: ExecutionRow,
     resumeToken: string,
     approve: boolean,
-  ): Promise<string> {
+  ): Promise<WorkflowExecutionDispatchPayload> {
     const decision = approve ? 'approve' : 'deny';
     const payload = this.buildWorkflowRunPayload(row);
     const workflowHash = await this.computeCanonicalWorkflowHash(row.workflow_data);
-    return [
-      WORKFLOW_EXECUTE_PROMPT_PREFIX,
-      JSON.stringify({
-        kind: 'resume',
-        executionId: row.id,
-        resumeToken,
-        decision,
-        ...(workflowHash ? { workflowHash } : {}),
-        payload,
-      }),
-    ].join('\n');
+    return {
+      kind: 'resume',
+      executionId: row.id,
+      resumeToken,
+      decision,
+      ...(workflowHash ? { workflowHash } : {}),
+      payload,
+    };
   }
 
   private buildWorkflowRunPayload(row: ExecutionRow): Record<string, unknown> {
@@ -459,19 +460,23 @@ export class WorkflowExecutorDO implements DurableObject {
     };
   }
 
-  private async dispatchWorkflowPrompt(sessionId: string, content: string): Promise<{ ok: boolean; error?: string }> {
+  private async dispatchWorkflowExecution(
+    sessionId: string,
+    executionId: string,
+    payload: WorkflowExecutionDispatchPayload,
+  ): Promise<{ ok: boolean; error?: string }> {
     try {
       const doId = this.env.SESSIONS.idFromName(sessionId);
       const sessionDO = this.env.SESSIONS.get(doId);
-      const response = await sessionDO.fetch(new Request('http://do/prompt', {
+      const response = await sessionDO.fetch(new Request('http://do/workflow-execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ executionId, payload }),
       }));
 
       if (!response.ok) {
         const error = await response.text();
-        return { ok: false, error: `Prompt dispatch failed (${response.status}): ${error}` };
+        return { ok: false, error: `Workflow dispatch failed (${response.status}): ${error}` };
       }
 
       return { ok: true };
@@ -716,8 +721,8 @@ export class WorkflowExecutorDO implements DurableObject {
           return Response.json({ error: ensured.error || 'Failed to prepare workflow session for resume' }, { status: 502 });
         }
 
-        const prompt = await this.buildWorkflowResumePrompt(row, body.resumeToken, true);
-        const dispatched = await this.dispatchWorkflowPrompt(row.session_id, prompt);
+        const dispatchPayload = await this.buildWorkflowResumeDispatchPayload(row, body.resumeToken, true);
+        const dispatched = await this.dispatchWorkflowExecution(row.session_id, row.id, dispatchPayload);
         if (!dispatched.ok) {
           return Response.json({ error: dispatched.error || 'Failed to dispatch workflow resume prompt' }, { status: 502 });
         }

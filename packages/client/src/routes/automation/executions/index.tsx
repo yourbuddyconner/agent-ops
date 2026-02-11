@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, Link } from '@tanstack/react-router';
 import { useInfiniteExecutions } from '@/api/executions';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -80,6 +80,9 @@ function ExecutionsPage() {
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase text-neutral-500 dark:text-neutral-400">
                     Duration
                   </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase text-neutral-500 dark:text-neutral-400">
+                    Session
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-200 dark:divide-neutral-700">
@@ -116,6 +119,19 @@ function ExecutionsPage() {
                       {execution.completedAt
                         ? formatDuration(execution.startedAt, execution.completedAt)
                         : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-sm">
+                      {execution.sessionId ? (
+                        <Link
+                          to="/sessions/$sessionId"
+                          params={{ sessionId: execution.sessionId }}
+                          className="text-accent hover:underline"
+                        >
+                          {execution.sessionId.slice(0, 8)}...
+                        </Link>
+                      ) : (
+                        <span className="text-neutral-400 dark:text-neutral-500">—</span>
+                      )}
                     </td>
                   </tr>
                 ))}

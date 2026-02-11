@@ -585,8 +585,10 @@ export class PromptHandler {
   private async handleWorkflowExecutionPrompt(
     messageId: string,
     request: WorkflowExecutionDispatchPayload,
+    options?: { emitChatError?: boolean },
   ): Promise<void> {
     const executionId = request.executionId;
+    const emitChatError = options?.emitChatError !== false;
     this.agentClient.sendAgentStatus("thinking");
 
     const fail = async (error: string) => {
@@ -599,7 +601,9 @@ export class PromptHandler {
         requiresApproval: null,
         error,
       });
-      this.agentClient.sendError(messageId, error);
+      if (emitChatError) {
+        this.agentClient.sendError(messageId, error);
+      }
       this.agentClient.sendAgentStatus("idle");
       this.agentClient.sendComplete();
     };
@@ -663,6 +667,17 @@ export class PromptHandler {
       const message = error instanceof Error ? error.message : String(error);
       await fail(message);
     }
+  }
+
+  async handleWorkflowExecutionDispatch(
+    executionId: string,
+    payload: WorkflowExecutionDispatchPayload,
+  ): Promise<void> {
+    const request: WorkflowExecutionDispatchPayload = {
+      ...payload,
+      executionId: payload.executionId || executionId,
+    };
+    await this.handleWorkflowExecutionPrompt(`workflow:${executionId}`, request, { emitChatError: false });
   }
 
   private async executeWorkflowToolStep(
@@ -890,7 +905,7 @@ export class PromptHandler {
     console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length})` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}${channelType ? ` (channel: ${channelType})` : ''}`);
     const workflowExecutionRequest = this.parseWorkflowExecutionPrompt(content);
     if (workflowExecutionRequest) {
-      await this.handleWorkflowExecutionPrompt(messageId, workflowExecutionRequest);
+      await this.handleWorkflowExecutionPrompt(messageId, workflowExecutionRequest, { emitChatError: false });
       return;
     }
 

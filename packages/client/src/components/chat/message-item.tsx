@@ -14,6 +14,8 @@ interface MessageItemProps {
   connectedUsers?: ConnectedUser[];
 }
 
+const WORKFLOW_EXECUTE_PROMPT_PREFIX = '__AGENT_OPS_WORKFLOW_EXECUTE_V1__';
+
 export function MessageItem({ message, onRevert, connectedUsers }: MessageItemProps) {
   const isUser = message.role === 'user';
   const isTool = message.role === 'tool';
@@ -32,6 +34,20 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
 
   // Extract structured tool data from parts (for tool messages)
   const toolData = isTool ? getToolCallFromParts(message.parts) : null;
+  const workflowDispatchMeta = parseWorkflowDispatchMessage(message.content);
+
+  if (workflowDispatchMeta) {
+    return (
+      <div className="flex justify-center py-2 animate-fade-in">
+        <div className="rounded-full bg-blue-500/[0.08] px-3 py-1.5 dark:bg-blue-500/[0.12]">
+          <p className="font-mono text-[10px] text-blue-700 dark:text-blue-300">
+            Workflow run dispatched
+            {workflowDispatchMeta.executionId ? ` (${workflowDispatchMeta.executionId.slice(0, 8)}...)` : ''}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   // User messages: right-aligned bubble with author avatar
   if (isUser) {
@@ -247,6 +263,25 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
       </div>
     </div>
   );
+}
+
+function parseWorkflowDispatchMessage(content: string | undefined): { executionId?: string } | null {
+  const trimmed = (content || '').trim();
+  if (!trimmed.startsWith(WORKFLOW_EXECUTE_PROMPT_PREFIX)) return null;
+
+  const raw = trimmed.slice(WORKFLOW_EXECUTE_PROMPT_PREFIX.length).trim();
+  if (!raw) return {};
+
+  try {
+    const parsed = JSON.parse(raw) as { executionId?: unknown };
+    if (typeof parsed?.executionId === 'string') {
+      return { executionId: parsed.executionId };
+    }
+  } catch {
+    // Ignore JSON parse errors and still treat this as an internal workflow dispatch message.
+  }
+
+  return {};
 }
 
 /** Extract structured tool call data from parts. */

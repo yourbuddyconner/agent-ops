@@ -476,6 +476,15 @@ function ExecutionDetail({ execution }: { execution: Execution }) {
               <span>{formatRelativeTime(execution.startedAt)}</span>
               <span>{executionDuration(execution)}</span>
             </div>
+            {execution.sessionId && (
+              <Link
+                to="/sessions/$sessionId"
+                params={{ sessionId: execution.sessionId }}
+                className="mt-1 inline-block text-2xs text-accent hover:underline"
+              >
+                Open session chat
+              </Link>
+            )}
           </div>
         </div>
 
