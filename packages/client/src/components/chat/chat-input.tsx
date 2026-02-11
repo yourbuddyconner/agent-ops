@@ -8,6 +8,10 @@ import { SLASH_COMMANDS } from '@agent-ops/shared';
 
 interface ChatInputProps {
   onSend: (content: string, model?: string, attachments?: PromptAttachment[]) => void;
+  /** Called when Enter is pressed on an empty composer while a staged queued message exists. */
+  onSteerQueued?: () => void;
+  /** Whether there is at least one staged queued message waiting locally. */
+  hasQueuedDraft?: boolean;
   disabled?: boolean;
   /** Blocks sending but keeps textarea interactive (e.g. during hibernate transitions) */
   sendDisabled?: boolean;
@@ -93,6 +97,8 @@ function hasImageInDataTransfer(dataTransfer: DataTransfer | null): boolean {
 
 export function ChatInput({
   onSend,
+  onSteerQueued,
+  hasQueuedDraft = false,
   disabled = false,
   sendDisabled = false,
   placeholder = 'Ask or build anything...',
@@ -436,7 +442,13 @@ export function ChatInput({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const hasText = !!value.trim();
-    if ((!hasText && attachments.length === 0) || disabled || sendDisabled || isSendingFiles) return;
+    if (!hasText && attachments.length === 0) {
+      if (!disabled && !sendDisabled && !isSendingFiles && hasQueuedDraft && onSteerQueued) {
+        onSteerQueued();
+      }
+      return;
+    }
+    if (disabled || sendDisabled || isSendingFiles) return;
 
     // If in command picker, select the highlighted command
     if (isCommandPicker && filteredCommands.length > 0) {
@@ -948,6 +960,8 @@ export function ChatInput({
               ? 'hibernated — focus to restore'
                 : sessionStatus === 'hibernating'
                   ? 'hibernating...'
+                : hasQueuedDraft
+                  ? 'queued locally — enter again to steer latest · shift+enter for new line'
                 : isAgentActive
                   ? 'esc to stop · shift+enter for new line · @ files · / commands · drag images · mic'
                   : 'enter to send · shift+enter for new line · @ files · / commands · drag images · mic'}

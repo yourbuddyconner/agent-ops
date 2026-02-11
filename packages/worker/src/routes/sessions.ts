@@ -392,6 +392,7 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
   // Fetch user's idle timeout preference
   const userRow = await db.getUserById(c.env.DB, user.id);
   const idleTimeoutSeconds = userRow?.idleTimeoutSeconds ?? 900;
+  const uiQueueMode = userRow?.uiQueueMode ?? 'followup';
   const idleTimeoutMs = idleTimeoutSeconds * 1000;
 
   // Initialize SessionAgentDO — it will spawn the sandbox asynchronously
@@ -429,8 +430,9 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
         hibernateUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'hibernate-session'),
         restoreUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'restore-session'),
         idleTimeoutMs,
-    spawnRequest,
-    initialPrompt: body.initialPrompt,
+        queueMode: uiQueueMode,
+        spawnRequest,
+        initialPrompt: body.initialPrompt,
         initialModel,
       }),
     }));
@@ -455,7 +457,7 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
         scopeKey: webManualScopeKey(user.id, sessionId),
         userId: user.id,
         orgId: orgSettings.id,
-        queueMode: 'followup',
+        queueMode: uiQueueMode,
       });
     }
   } catch (err) {

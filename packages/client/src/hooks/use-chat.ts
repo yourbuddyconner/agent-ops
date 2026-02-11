@@ -6,7 +6,7 @@ import { api } from '@/api/client';
 import { toast } from './use-toast';
 import type { Message, SessionStatus } from '@/api/types';
 import { useAuthStore } from '@/stores/auth';
-import { SLASH_COMMANDS } from '@agent-ops/shared';
+import { SLASH_COMMANDS, type QueueMode } from '@agent-ops/shared';
 
 export interface PendingQuestion {
   questionId: string;
@@ -355,6 +355,7 @@ function createInitialState(): ChatState {
 export function useChat(sessionId: string) {
   const queryClient = useQueryClient();
   const userModelPreferences = useAuthStore((s) => s.user?.modelPreferences);
+  const userQueueMode = useAuthStore((s) => s.user?.uiQueueMode || 'followup');
   const orgModelPreferences = useAuthStore((s) => s.orgModelPreferences);
   const modelPreferences = (userModelPreferences && userModelPreferences.length > 0)
     ? userModelPreferences
@@ -933,7 +934,7 @@ export function useChat(sessionId: string) {
   });
 
   const sendMessage = useCallback(
-    (content: string, model?: string, attachments?: PromptAttachment[], channelType?: string, channelId?: string) => {
+    (content: string, model?: string, attachments?: PromptAttachment[], channelType?: string, channelId?: string, queueModeOverride?: QueueMode) => {
       if (!isConnected) return;
 
       send({
@@ -941,13 +942,14 @@ export function useChat(sessionId: string) {
         content,
         ...(model ? { model } : {}),
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
+        queueMode: queueModeOverride || userQueueMode,
         ...(channelType ? { channelType } : {}),
         ...(channelId ? { channelId } : {}),
       });
       // Start thinking indicator when user sends a message
       setState((prev) => ({ ...prev, isAgentThinking: true }));
     },
-    [isConnected, send]
+    [isConnected, send, userQueueMode]
   );
 
   const abort = useCallback((channelType?: string, channelId?: string) => {

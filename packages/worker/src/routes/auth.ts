@@ -57,6 +57,7 @@ const updateProfileSchema = z.object({
   onboardingCompleted: z.boolean().optional(),
   idleTimeoutSeconds: z.number().int().min(300).max(3600).optional(),
   modelPreferences: z.array(z.string().max(255)).max(20).optional(),
+  uiQueueMode: z.enum(['followup', 'collect', 'steer']).optional(),
 });
 
 /**

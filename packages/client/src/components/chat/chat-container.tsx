@@ -10,6 +10,7 @@ import { QuestionPrompt } from './question-prompt';
 import { ChannelSwitcher, deriveChannels } from './channel-switcher';
 import { SessionActionsMenu } from '@/components/sessions/session-actions-menu';
 import { ShareSessionDialog } from '@/components/sessions/share-session-dialog';
+import type { QueueMode } from '@agent-ops/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -29,6 +30,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   const { data: childSessions } = useSessionChildren(sessionId);
   const updateTitle = useUpdateSessionTitle();
   const drawer = useDrawer();
+  const authUser = useAuthStore((s) => s.user);
   const {
     messages,
     sessionStatus,
@@ -57,6 +59,22 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     connectedUsers,
     executeCommand,
   } = useChat(sessionId);
+  type QueuedAttachments = Parameters<typeof sendMessage>[2];
+  type QueuedPrompt = {
+    id: string;
+    content: string;
+    model?: string;
+    attachments?: QueuedAttachments;
+    channelType?: string;
+    channelId?: string;
+  };
+  const [stagedQueuedPrompts, setStagedQueuedPrompts] = useState<QueuedPrompt[]>([]);
+  const queueModePreference = (authUser?.uiQueueMode ?? 'followup') as QueueMode;
+  const isDispatchBusy = isAgentThinking
+    || agentStatus === 'thinking'
+    || agentStatus === 'tool_calling'
+    || agentStatus === 'streaming'
+    || agentStatus === 'queued';
 
   // Sync log entries to the editor drawer context
   useEffect(() => {
@@ -128,13 +146,27 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
 
   const handleSendMessage = useCallback(
     (content: string, model?: string, attachments?: Parameters<typeof sendMessage>[2]) => {
-      if (selectedChannelOption) {
-        sendMessage(content, model, attachments, selectedChannelOption.channelType, selectedChannelOption.channelId);
-      } else {
-        sendMessage(content, model, attachments);
+      const channelType = selectedChannelOption?.channelType;
+      const channelId = selectedChannelOption?.channelId;
+
+      if (queueModePreference === 'followup' && isDispatchBusy) {
+        setStagedQueuedPrompts((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            content,
+            model,
+            attachments,
+            channelType,
+            channelId,
+          },
+        ]);
+        return;
       }
+
+      sendMessage(content, model, attachments, channelType, channelId, queueModePreference);
     },
-    [sendMessage, selectedChannelOption]
+    [sendMessage, selectedChannelOption, queueModePreference, isDispatchBusy]
   );
 
   const handleAbort = useCallback(() => {
@@ -152,11 +184,41 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     [executeCommand, selectedChannelOption]
   );
 
+  const steerLatestQueuedPrompt = useCallback(() => {
+    if (!isConnected || stagedQueuedPrompts.length === 0) return;
+    const latest = stagedQueuedPrompts[stagedQueuedPrompts.length - 1];
+    setStagedQueuedPrompts((prev) => prev.slice(0, -1));
+    sendMessage(
+      latest.content,
+      latest.model,
+      latest.attachments,
+      latest.channelType,
+      latest.channelId,
+      'steer',
+    );
+  }, [isConnected, stagedQueuedPrompts, sendMessage]);
+
+  useEffect(() => {
+    if (!isConnected) return;
+    if (isDispatchBusy) return;
+    if (stagedQueuedPrompts.length === 0) return;
+
+    const nextPrompt = stagedQueuedPrompts[0];
+    setStagedQueuedPrompts((prev) => prev.slice(1));
+    sendMessage(
+      nextPrompt.content,
+      nextPrompt.model,
+      nextPrompt.attachments,
+      nextPrompt.channelType,
+      nextPrompt.channelId,
+      'followup',
+    );
+  }, [isConnected, isDispatchBusy, stagedQueuedPrompts, sendMessage]);
+
   // Share dialog state
   const [shareOpen, setShareOpen] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
-  const authUser = useAuthStore((s) => s.user);
   const isOwner = session?.userId === authUser?.id;
   const canShareSession = session?.isOrchestrator !== true;
 
@@ -386,8 +448,52 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
               </button>
             </div>
           )}
+          {stagedQueuedPrompts.length > 0 && (
+            <div className="border-t border-neutral-100 bg-surface-0 px-3 py-2 dark:border-neutral-800/50 dark:bg-surface-0">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="font-mono text-[10px] text-amber-700 dark:text-amber-300">
+                  {stagedQueuedPrompts.length} queued locally - Enter again to steer latest
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={steerLatestQueuedPrompt}
+                    className="rounded px-1.5 py-0.5 font-mono text-[10px] text-amber-700 transition-colors hover:bg-amber-100 dark:text-amber-300 dark:hover:bg-amber-900/30"
+                  >
+                    steer latest
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setStagedQueuedPrompts([])}
+                    className="rounded px-1.5 py-0.5 font-mono text-[10px] text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+                  >
+                    clear
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-1">
+                {stagedQueuedPrompts.slice(-3).map((queued) => (
+                  <div
+                    key={queued.id}
+                    className="rounded-md border border-amber-200 bg-amber-50/70 px-2 py-1 font-mono text-[11px] text-amber-900 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-100"
+                  >
+                    <div className="truncate">
+                      {queued.content || `[${queued.attachments?.length ?? 0} attachment(s)]`}
+                    </div>
+                  </div>
+                ))}
+                {stagedQueuedPrompts.length > 3 && (
+                  <div className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
+                    +{stagedQueuedPrompts.length - 3} more queued
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
           <ChatInput
             onSend={handleSendMessage}
+            onSteerQueued={steerLatestQueuedPrompt}
+            hasQueuedDraft={stagedQueuedPrompts.length > 0}
             disabled={isDisabled}
             sendDisabled={false}
 

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
 import { useAuthStore } from '@/stores/auth';
-import type { User, UserCredential } from '@agent-ops/shared';
+import type { QueueMode, User, UserCredential } from '@agent-ops/shared';
 
 export const authKeys = {
   credentials: () => ['auth', 'credentials'] as const,
@@ -24,7 +24,7 @@ export function useUpdateProfile() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: { name?: string; gitName?: string; gitEmail?: string; onboardingCompleted?: boolean; idleTimeoutSeconds?: number; modelPreferences?: string[] }) => {
+    mutationFn: async (data: { name?: string; gitName?: string; gitEmail?: string; onboardingCompleted?: boolean; idleTimeoutSeconds?: number; modelPreferences?: string[]; uiQueueMode?: QueueMode }) => {
       return api.patch<{ user: User }>('/auth/me', data);
     },
     onSuccess: (res) => {
