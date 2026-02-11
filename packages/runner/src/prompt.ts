@@ -348,6 +348,9 @@ function isRetriableProviderError(errorMsg: string): boolean {
 export class ChannelSession {
   readonly channelKey: string;
   opencodeSessionId: string | null = null;
+  // True when session id was injected from DO persistence rather than created
+  // in this runner process. We re-sync it before first prompt dispatch.
+  adoptedPersistedSession = false;
 
   // Track current prompt so we can route events back to the DO
   activeMessageId: string | null = null;
@@ -569,6 +572,29 @@ export class PromptHandler {
     }
     channel.opencodeSessionId = persisted;
     this.ocSessionToChannel.set(persisted, channel);
+    channel.adoptedPersistedSession = true;
+  }
+
+  private async resyncAdoptedSession(channel: ChannelSession, sessionId: string): Promise<string> {
+    if (!channel.adoptedPersistedSession) return sessionId;
+    channel.adoptedPersistedSession = false;
+
+    try {
+      // Clear any stale in-flight generation state carried across runner restarts.
+      const res = await fetch(`${this.opencodeUrl}/session/${sessionId}/abort`, { method: "POST" });
+      if (res.status === 404 || res.status === 410) {
+        console.warn("[PromptHandler] Persisted OpenCode session missing; recreating");
+        return this.recreateChannelOpenCodeSession(channel);
+      }
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        console.warn(`[PromptHandler] Persisted session abort returned ${res.status}: ${body.slice(0, 200)}`);
+      }
+    } catch (err) {
+      console.warn("[PromptHandler] Failed to resync adopted session:", err);
+    }
+
+    return channel.opencodeSessionId || sessionId;
   }
 
   private buildModelFailoverChain(primaryModel?: string, modelPreferences?: string[]): string[] {
@@ -622,7 +648,8 @@ export class PromptHandler {
       channelId?: string;
     },
   ): Promise<string> {
-    const currentSessionId = await this.ensureChannelOpenCodeSession(channel);
+    let currentSessionId = await this.ensureChannelOpenCodeSession(channel);
+    currentSessionId = await this.resyncAdoptedSession(channel, currentSessionId);
     try {
       await this.sendPromptAsync(
         currentSessionId,
