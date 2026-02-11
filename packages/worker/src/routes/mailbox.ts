@@ -1,69 +1,90 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
 
-export const mailboxRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
+export const notificationQueueRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // ─── Validation Schemas ──────────────────────────────────────────────────
 
-const sendMessageSchema = z.object({
+const emitNotificationSchema = z.object({
   fromSessionId: z.string().optional(),
   fromUserId: z.string().optional(),
   toSessionId: z.string().optional(),
   toUserId: z.string().optional(),
   toHandle: z.string().optional(),
-  messageType: z.enum(['message', 'notification', 'question', 'escalation']).optional(),
+  messageType: z.enum(['notification', 'question', 'escalation', 'approval']).optional(),
   content: z.string().min(1).max(10000),
   contextSessionId: z.string().optional(),
   contextTaskId: z.string().optional(),
   replyToId: z.string().optional(),
 });
 
-// ─── Mailbox Routes ─────────────────────────────────────────────────────
+async function resolveTargetUserId(
+  env: Env,
+  body: { toUserId?: string; toHandle?: string; toSessionId?: string },
+): Promise<{ toUserId?: string; error?: string }> {
+  let toUserId = body.toUserId;
+  if (body.toHandle && !toUserId && !body.toSessionId) {
+    const identity = await db.getOrchestratorIdentityByHandle(env.DB, body.toHandle);
+    if (!identity) {
+      return { error: `Handle @${body.toHandle} not found` };
+    }
+    toUserId = identity.userId;
+  }
+  return { toUserId };
+}
 
-/**
- * GET /api/sessions/:sessionId/mailbox
- * Get mailbox messages for a session.
- */
-mailboxRouter.get('/sessions/:sessionId/mailbox', async (c) => {
+async function listSessionNotifications(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const { sessionId } = c.req.param();
   const unreadOnly = c.req.query('unreadOnly') === 'true';
   const limitRaw = c.req.query('limit');
   const limit = limitRaw ? parseInt(limitRaw, 10) : undefined;
   const after = c.req.query('after') || undefined;
 
-  const messages = await db.getSessionMailbox(c.env.DB, sessionId, { unreadOnly, limit, after });
+  const messages = await db.getSessionNotificationQueue(c.env.DB, sessionId, {
+    unreadOnly,
+    limit,
+    after,
+  });
   return c.json({ messages });
-});
+}
+
+async function markSessionNotificationsRead(c: Context<{ Bindings: Env; Variables: Variables }>) {
+  const { sessionId } = c.req.param();
+  const count = await db.acknowledgeSessionNotificationQueue(c.env.DB, sessionId);
+  return c.json({ success: true, count });
+}
+
+// ─── Notification Queue Routes ──────────────────────────────────────────
 
 /**
- * POST /api/mailbox
- * Send a mailbox message (to session or user, with @handle resolution).
+ * GET /api/sessions/:sessionId/notifications
+ * Get queued notifications/messages for a session.
  */
-mailboxRouter.post('/mailbox', zValidator('json', sendMessageSchema), async (c) => {
-  const body = c.req.valid('json');
+notificationQueueRouter.get('/sessions/:sessionId/notifications', listSessionNotifications);
 
-  // Resolve @handle to userId if provided
-  let toUserId = body.toUserId;
-  if (body.toHandle && !toUserId && !body.toSessionId) {
-    const identity = await db.getOrchestratorIdentityByHandle(c.env.DB, body.toHandle);
-    if (!identity) {
-      return c.json({ error: `Handle @${body.toHandle} not found` }, 404);
-    }
-    toUserId = identity.userId;
+/**
+ * POST /api/notifications/emit
+ * Emit a notification into the persistent queue.
+ */
+notificationQueueRouter.post('/notifications/emit', zValidator('json', emitNotificationSchema), async (c) => {
+  const body = c.req.valid('json');
+  const resolved = await resolveTargetUserId(c.env, body);
+  if (resolved.error) {
+    return c.json({ error: resolved.error }, 404);
   }
 
-  if (!body.toSessionId && !toUserId) {
+  if (!body.toSessionId && !resolved.toUserId) {
     return c.json({ error: 'Must specify toSessionId, toUserId, or toHandle' }, 400);
   }
 
-  const message = await db.createMailboxMessage(c.env.DB, {
+  const notification = await db.enqueueNotification(c.env.DB, {
     fromSessionId: body.fromSessionId,
     fromUserId: body.fromUserId,
     toSessionId: body.toSessionId,
-    toUserId,
+    toUserId: resolved.toUserId,
     messageType: body.messageType,
     content: body.content,
     contextSessionId: body.contextSessionId,
@@ -71,15 +92,11 @@ mailboxRouter.post('/mailbox', zValidator('json', sendMessageSchema), async (c) 
     replyToId: body.replyToId,
   });
 
-  return c.json({ message }, 201);
+  return c.json({ notification }, 201);
 });
 
 /**
- * PUT /api/sessions/:sessionId/mailbox/read
- * Mark all session mailbox messages as read.
+ * PUT /api/sessions/:sessionId/notifications/read
+ * Mark all session queue items as read.
  */
-mailboxRouter.put('/sessions/:sessionId/mailbox/read', async (c) => {
-  const { sessionId } = c.req.param();
-  const count = await db.markSessionMailboxRead(c.env.DB, sessionId);
-  return c.json({ success: true, count });
-});
+notificationQueueRouter.put('/sessions/:sessionId/notifications/read', markSessionNotificationsRead);

@@ -2442,6 +2442,177 @@ export async function markInboxThreadRead(
   return result.meta.changes ?? 0;
 }
 
+// ─── Notification Queue Helpers (aliases over mailbox storage) ──────────────
+
+export type NotificationQueueItem = MailboxMessage;
+export type NotificationQueueType = MailboxMessage['messageType'];
+
+export async function enqueueNotification(
+  db: D1Database,
+  data: {
+    fromSessionId?: string;
+    fromUserId?: string;
+    toSessionId?: string;
+    toUserId?: string;
+    messageType?: NotificationQueueType;
+    content: string;
+    contextSessionId?: string;
+    contextTaskId?: string;
+    replyToId?: string;
+  },
+): Promise<NotificationQueueItem> {
+  return createMailboxMessage(db, {
+    ...data,
+    messageType: data.messageType || 'notification',
+  });
+}
+
+export async function enqueueWorkflowApprovalNotificationIfMissing(
+  db: D1Database,
+  data: {
+    toUserId: string;
+    executionId: string;
+    fromSessionId?: string;
+    contextSessionId?: string;
+    workflowName?: string | null;
+    approvalPrompt?: string | null;
+  },
+): Promise<boolean> {
+  const workflowName = data.workflowName?.trim();
+  const prompt = data.approvalPrompt?.trim();
+  const workflowLabel = workflowName ? `Workflow "${workflowName}"` : 'Workflow';
+  const content = prompt
+    ? `${workflowLabel} is waiting for approval: ${prompt}`
+    : `${workflowLabel} is waiting for approval.`;
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const result = await db.prepare(`
+    INSERT INTO mailbox_messages (
+      id,
+      from_session_id,
+      from_user_id,
+      to_session_id,
+      to_user_id,
+      message_type,
+      content,
+      context_session_id,
+      context_task_id,
+      reply_to_id,
+      read,
+      created_at,
+      updated_at
+    )
+    SELECT
+      ?, ?, NULL, NULL, ?, 'approval', ?, ?, ?, NULL, 0, ?, ?
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM mailbox_messages
+      WHERE to_user_id = ?
+        AND message_type = 'approval'
+        AND context_task_id = ?
+        AND read = 0
+    )
+  `).bind(
+    id,
+    data.fromSessionId || null,
+    data.toUserId,
+    content.slice(0, 10_000),
+    data.contextSessionId || null,
+    data.executionId,
+    now,
+    now,
+    data.toUserId,
+    data.executionId,
+  ).run();
+
+  return (result.meta.changes ?? 0) > 0;
+}
+
+export async function getSessionNotificationQueue(
+  db: D1Database,
+  sessionId: string,
+  opts?: { unreadOnly?: boolean; limit?: number; after?: string },
+): Promise<NotificationQueueItem[]> {
+  return getSessionMailbox(db, sessionId, opts);
+}
+
+export async function acknowledgeSessionNotificationQueue(
+  db: D1Database,
+  sessionId: string,
+): Promise<number> {
+  return markSessionMailboxRead(db, sessionId);
+}
+
+export async function getUserNotifications(
+  db: D1Database,
+  userId: string,
+  opts?: { unreadOnly?: boolean; messageType?: string; limit?: number; cursor?: string },
+): Promise<{ messages: NotificationQueueItem[]; cursor?: string; hasMore: boolean }> {
+  return getUserInbox(db, userId, opts);
+}
+
+export async function getUserNotificationCount(db: D1Database, userId: string): Promise<number> {
+  return getUserInboxCount(db, userId);
+}
+
+export async function getNotificationThread(
+  db: D1Database,
+  threadId: string,
+  userId: string,
+): Promise<{ rootMessage: NotificationQueueItem | null; replies: NotificationQueueItem[] }> {
+  return getInboxThread(db, threadId, userId);
+}
+
+export async function markNotificationRead(
+  db: D1Database,
+  messageId: string,
+  userId: string,
+): Promise<boolean> {
+  return markInboxMessageRead(db, messageId, userId);
+}
+
+export async function markNonActionableNotificationsRead(
+  db: D1Database,
+  userId: string,
+): Promise<number> {
+  const result = await db
+    .prepare(
+      `UPDATE mailbox_messages
+       SET read = 1, updated_at = datetime('now')
+       WHERE to_user_id = ?
+         AND read = 0
+         AND message_type IN ('message', 'notification')`,
+    )
+    .bind(userId)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
+export async function markWorkflowApprovalNotificationsRead(
+  db: D1Database,
+  userId: string,
+  executionId: string,
+): Promise<number> {
+  const result = await db.prepare(`
+    UPDATE mailbox_messages
+    SET read = 1, updated_at = datetime('now')
+    WHERE to_user_id = ?
+      AND read = 0
+      AND message_type = 'approval'
+      AND context_task_id = ?
+  `).bind(userId, executionId).run();
+  return result.meta.changes ?? 0;
+}
+
+export async function markNotificationThreadRead(
+  db: D1Database,
+  threadId: string,
+  userId: string,
+): Promise<number> {
+  return markInboxThreadRead(db, threadId, userId);
+}
+
 // ─── Phase C: Session Task Helpers ───────────────────────────────────────────
 
 function mapSessionTask(row: any): SessionTask {

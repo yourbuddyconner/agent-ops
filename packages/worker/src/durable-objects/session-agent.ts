@@ -1,5 +1,5 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramToken, getOrgSettings } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramToken, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead } from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 import { sendTelegramMessage, sendTelegramPhoto } from '../routes/telegram.js';
@@ -314,7 +314,7 @@ interface RunnerMessage {
 
 /** Messages sent from DO to clients */
 interface ClientOutbound {
-  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'review-result' | 'command-result' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'audit_log' | 'model-switched';
+  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'question' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'review-result' | 'command-result' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'audit_log' | 'model-switched' | 'toast';
   [key: string]: unknown;
 }
 
@@ -1956,6 +1956,23 @@ export class SessionAgentDO {
           data: { questionId: qId, text: msg.text || '' },
           timestamp: new Date().toISOString(),
         });
+        const ownerUserId = this.getStateValue('userId') || undefined;
+        const questionSummary = msg.text?.trim()
+          ? `Agent question: ${msg.text.trim()}`
+          : 'Agent requested a decision.';
+        if (ownerUserId && this.isUserConnected(ownerUserId)) {
+          this.sendToastToUser(ownerUserId, {
+            title: 'Agent question',
+            description: questionSummary.slice(0, 240),
+            variant: 'warning',
+          });
+        } else {
+          await this.enqueueOwnerNotification({
+            messageType: 'question',
+            content: questionSummary,
+            contextSessionId: this.getStateValue('sessionId') || undefined,
+          });
+        }
         break;
       }
 
@@ -2044,6 +2061,11 @@ export class SessionAgentDO {
           userId: this.getStateValue('userId') || undefined,
           data: { error: errorText, messageId: errId },
           timestamp: new Date().toISOString(),
+        });
+        await this.enqueueOwnerNotification({
+          messageType: 'escalation',
+          content: `Session error: ${errorText}`,
+          contextSessionId: this.getStateValue('sessionId') || undefined,
         });
         break;
       }
@@ -4202,11 +4224,23 @@ export class SessionAgentDO {
     }
 
     const execution = await this.env.DB.prepare(`
-      SELECT id, user_id, workflow_id, session_id
-      FROM workflow_executions
-      WHERE id = ?
+      SELECT
+        e.id,
+        e.user_id,
+        e.workflow_id,
+        e.session_id,
+        w.name AS workflow_name
+      FROM workflow_executions e
+      LEFT JOIN workflows w ON w.id = e.workflow_id
+      WHERE e.id = ?
       LIMIT 1
-    `).bind(executionId).first<{ id: string; user_id: string; workflow_id: string; session_id: string | null }>();
+    `).bind(executionId).first<{
+      id: string;
+      user_id: string;
+      workflow_id: string | null;
+      session_id: string | null;
+      workflow_name: string | null;
+    }>();
 
     if (!execution) {
       console.warn(`[SessionAgentDO] Received workflow result for unknown execution ${executionId}`);
@@ -4295,6 +4329,27 @@ export class SessionAgentDO {
           step.startedAt || null,
           step.completedAt || null,
         ).run();
+      }
+    }
+
+    if (nextStatus === 'waiting_approval') {
+      try {
+        await enqueueWorkflowApprovalNotificationIfMissing(this.env.DB, {
+          toUserId: execution.user_id,
+          executionId,
+          fromSessionId: execution.session_id || currentSessionId || undefined,
+          contextSessionId: execution.session_id || currentSessionId || undefined,
+          workflowName: execution.workflow_name,
+          approvalPrompt: envelope.requiresApproval?.prompt,
+        });
+      } catch (notifyError) {
+        console.error('[SessionAgentDO] Failed to enqueue workflow approval notification:', notifyError);
+      }
+    } else {
+      try {
+        await markWorkflowApprovalNotificationsRead(this.env.DB, execution.user_id, executionId);
+      } catch (notifyError) {
+        console.error('[SessionAgentDO] Failed to clear workflow approval notifications:', notifyError);
       }
     }
 
@@ -5103,6 +5158,11 @@ export class SessionAgentDO {
     });
 
     this.appendAuditLog('session.started', `Session started for ${body.workspace}`, body.userId);
+    await this.enqueueOwnerNotification({
+      messageType: 'notification',
+      content: `Session started: ${body.workspace}`,
+      contextSessionId: body.sessionId,
+    });
 
     return Response.json({
       success: true,
@@ -5192,6 +5252,11 @@ export class SessionAgentDO {
         userId: this.getStateValue('userId') || undefined,
         data: { error: err instanceof Error ? err.message : String(err) },
         timestamp: new Date().toISOString(),
+      });
+      await this.enqueueOwnerNotification({
+        messageType: 'escalation',
+        content: `Session failed to start: ${errorText}`,
+        contextSessionId: sessionId || undefined,
       });
     }
   }
@@ -5299,6 +5364,11 @@ export class SessionAgentDO {
       userId: this.getStateValue('userId') || undefined,
       data: { sandboxId: sandboxId || null, reason },
       timestamp: new Date().toISOString(),
+    });
+    await this.enqueueOwnerNotification({
+      messageType: 'notification',
+      content: `Session completed (${reason}).`,
+      contextSessionId: sessionId || undefined,
     });
 
     await this.notifyParentEvent(`Child session event: ${sessionId} completed (reason: ${reason}).`, { wake: true });
@@ -6486,6 +6556,35 @@ export class SessionAgentDO {
       .map((row) => row.user_id as string);
   }
 
+  private isUserConnected(userId: string): boolean {
+    return this.getConnectedUserIds().includes(userId);
+  }
+
+  private sendToastToUser(userId: string, toast: {
+    title: string;
+    description?: string;
+    variant?: 'default' | 'success' | 'error' | 'warning';
+    duration?: number;
+  }): void {
+    const sockets = this.ctx.getWebSockets(`client:${userId}`);
+    if (sockets.length === 0) return;
+
+    const payload = JSON.stringify({
+      type: 'toast',
+      title: toast.title,
+      description: toast.description,
+      variant: toast.variant,
+      duration: toast.duration,
+    });
+    for (const ws of sockets) {
+      try {
+        ws.send(payload);
+      } catch {
+        // Socket may be closed
+      }
+    }
+  }
+
   private async getConnectedUsersWithDetails(): Promise<Array<{ id: string; name?: string; email?: string; avatarUrl?: string }>> {
     const userIds = this.getConnectedUserIds();
 
@@ -6547,6 +6646,34 @@ export class SessionAgentDO {
       });
     } catch {
       // EventBus not available
+    }
+  }
+
+  private async enqueueOwnerNotification(params: {
+    messageType?: 'notification' | 'question' | 'escalation' | 'approval';
+    content: string;
+    contextSessionId?: string;
+    contextTaskId?: string;
+    replyToId?: string;
+  }): Promise<void> {
+    const toUserId = this.getStateValue('userId');
+    if (!toUserId) return;
+
+    const normalizedContent = params.content.trim();
+    if (!normalizedContent) return;
+
+    try {
+      await createMailboxMessage(this.env.DB, {
+        fromSessionId: this.getStateValue('sessionId') || undefined,
+        toUserId,
+        messageType: params.messageType || 'notification',
+        content: normalizedContent.slice(0, 10_000),
+        contextSessionId: params.contextSessionId,
+        contextTaskId: params.contextTaskId,
+        replyToId: params.replyToId,
+      });
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to enqueue owner notification:', err);
     }
   }
 

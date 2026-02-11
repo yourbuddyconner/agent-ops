@@ -1301,18 +1301,18 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
     }
   });
 
-  // ─── Phase C: Mailbox API ──────────────────────────────────────────
+  // ─── Phase C: Notification Queue API ───────────────────────────────
 
-  app.post("/api/mailbox/send", async (c) => {
+  app.post("/api/notifications/emit", async (c) => {
     if (!callbacks.onMailboxSend) {
-      return c.json({ error: "Mailbox send handler not configured" }, 500);
+      return c.json({ error: "Notification emit handler not configured" }, 500);
     }
     try {
       const body = await c.req.json() as {
         to_session_id?: string;
         to_user_id?: string;
         to_handle?: string;
-        message_type?: string;
+        message_type?: "notification" | "question" | "escalation" | "approval";
         content?: string;
         context_session_id?: string;
         context_task_id?: string;
@@ -1328,31 +1328,31 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
         toSessionId: body.to_session_id,
         toUserId: body.to_user_id,
         toHandle: body.to_handle,
-        messageType: body.message_type,
+        messageType: body.message_type || "notification",
         content: body.content,
         contextSessionId: body.context_session_id,
         contextTaskId: body.context_task_id,
         replyToId: body.reply_to_id,
       });
-      return c.json(result);
+      return c.json({ notificationId: result.messageId, messageId: result.messageId });
     } catch (err) {
-      console.error("[Gateway] Mailbox send error:", err);
+      console.error("[Gateway] Notification emit error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });
 
-  app.get("/api/mailbox", async (c) => {
+  app.get("/api/notifications", async (c) => {
     if (!callbacks.onMailboxCheck) {
-      return c.json({ error: "Mailbox check handler not configured" }, 500);
+      return c.json({ error: "Notification queue handler not configured" }, 500);
     }
     try {
       const limitRaw = c.req.query("limit");
       const limit = limitRaw ? parseInt(limitRaw, 10) : undefined;
       const after = c.req.query("after") || undefined;
       const result = await callbacks.onMailboxCheck(limit, after);
-      return c.json(result);
+      return c.json({ notifications: result.messages ?? [] });
     } catch (err) {
-      console.error("[Gateway] Mailbox check error:", err);
+      console.error("[Gateway] Notification queue check error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });

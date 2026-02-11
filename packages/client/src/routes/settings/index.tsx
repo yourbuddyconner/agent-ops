@@ -666,6 +666,7 @@ function OrchestratorIdentitySection() {
 const NOTIFICATION_TYPES = [
   { type: 'message', label: 'Messages', description: 'Direct messages from agents or other users' },
   { type: 'notification', label: 'Notifications', description: 'Status updates and informational alerts' },
+  { type: 'approval', label: 'Approvals', description: 'Approval requests that need your response' },
   { type: 'question', label: 'Questions', description: 'Questions that require your response' },
   { type: 'escalation', label: 'Escalations', description: 'Urgent items that need your attention' },
 ] as const;

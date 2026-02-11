@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { ValidationError } from '@agent-ops/shared';
@@ -343,13 +343,9 @@ orchestratorRouter.delete('/memories/:id', async (c) => {
   return c.json({ success: true });
 });
 
-// ─── Inbox Routes (Phase C) ────────────────────────────────────────────
+// ─── Notification Queue Routes (Phase C) ────────────────────────────────
 
-/**
- * GET /api/me/inbox
- * User inbox — paginated, filterable by messageType/unreadOnly.
- */
-orchestratorRouter.get('/inbox', async (c) => {
+async function listNotifications(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const user = c.get('user');
   const unreadOnly = c.req.query('unreadOnly') === 'true';
   const messageType = c.req.query('messageType') || undefined;
@@ -357,63 +353,51 @@ orchestratorRouter.get('/inbox', async (c) => {
   const limit = limitRaw ? parseInt(limitRaw, 10) : undefined;
   const cursor = c.req.query('cursor') || undefined;
 
-  const result = await db.getUserInbox(c.env.DB, user.id, { unreadOnly, messageType, limit, cursor });
+  const result = await db.getUserNotifications(c.env.DB, user.id, {
+    unreadOnly,
+    messageType,
+    limit,
+    cursor,
+  });
   return c.json(result);
-});
+}
 
-/**
- * GET /api/me/inbox/count
- * Unread count (for badge).
- */
-orchestratorRouter.get('/inbox/count', async (c) => {
+async function getNotificationCount(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const user = c.get('user');
-  const count = await db.getUserInboxCount(c.env.DB, user.id);
+  const count = await db.getUserNotificationCount(c.env.DB, user.id);
   return c.json({ count });
-});
+}
 
-/**
- * GET /api/me/inbox/threads/:threadId
- * Fetch full thread (root + replies) and auto-mark read.
- */
-orchestratorRouter.get('/inbox/threads/:threadId', async (c) => {
+async function getNotificationThread(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const user = c.get('user');
   const { threadId } = c.req.param();
 
-  const thread = await db.getInboxThread(c.env.DB, threadId, user.id);
+  const thread = await db.getNotificationThread(c.env.DB, threadId, user.id);
   if (!thread.rootMessage) {
     return c.json({ error: 'Thread not found' }, 404);
   }
 
-  // Auto-mark all thread messages as read
-  await db.markInboxThreadRead(c.env.DB, threadId, user.id);
+  await db.markNotificationThreadRead(c.env.DB, threadId, user.id);
 
   return c.json({
     rootMessage: thread.rootMessage,
     replies: thread.replies,
     totalCount: 1 + thread.replies.length,
   });
-});
+}
 
-/**
- * PUT /api/me/inbox/:messageId/read
- * Mark single message read.
- */
-orchestratorRouter.put('/inbox/:messageId/read', async (c) => {
+async function markNotificationRead(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const user = c.get('user');
   const { messageId } = c.req.param();
 
-  const success = await db.markInboxMessageRead(c.env.DB, messageId, user.id);
+  const success = await db.markNotificationRead(c.env.DB, messageId, user.id);
   if (!success) {
     return c.json({ error: 'Message not found or already read' }, 404);
   }
   return c.json({ success: true });
-});
+}
 
-/**
- * POST /api/me/inbox/:messageId/reply
- * Reply to an inbox message (creates reverse mailbox message).
- */
-orchestratorRouter.post('/inbox/:messageId/reply', async (c) => {
+async function replyToNotification(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const user = c.get('user');
   const { messageId } = c.req.param();
   const body = await c.req.json<{ content: string }>();
@@ -422,13 +406,11 @@ orchestratorRouter.post('/inbox/:messageId/reply', async (c) => {
     return c.json({ error: 'content is required' }, 400);
   }
 
-  // Fetch the original message to determine reply routing
   const original = await db.getMailboxMessage(c.env.DB, messageId);
   if (!original) {
     return c.json({ error: 'Message not found' }, 404);
   }
 
-  // Resolve thread root — always point reply_to_id at the root message
   const threadRootId = original.replyToId || original.id;
   const rootMessage = original.replyToId
     ? await db.getMailboxMessage(c.env.DB, threadRootId)
@@ -437,14 +419,12 @@ orchestratorRouter.post('/inbox/:messageId/reply', async (c) => {
     return c.json({ error: 'Thread not found' }, 404);
   }
 
-  // Security: user must be participant in the thread
   if (rootMessage.toUserId !== user.id && rootMessage.fromUserId !== user.id) {
     return c.json({ error: 'Message not found' }, 404);
   }
 
-  // Route reply to the other party based on user's role
   const isRecipient = rootMessage.toUserId === user.id;
-  const reply = await db.createMailboxMessage(c.env.DB, {
+  const reply = await db.enqueueNotification(c.env.DB, {
     fromUserId: user.id,
     toSessionId: isRecipient ? rootMessage.fromSessionId : rootMessage.toSessionId,
     toUserId: isRecipient ? rootMessage.fromUserId : rootMessage.toUserId,
@@ -456,7 +436,47 @@ orchestratorRouter.post('/inbox/:messageId/reply', async (c) => {
   });
 
   return c.json({ message: reply }, 201);
+}
+
+/**
+ * GET /api/me/notifications
+ * User notification queue — paginated and filterable.
+ */
+orchestratorRouter.get('/notifications', listNotifications);
+
+/**
+ * GET /api/me/notifications/count
+ * Unread count (for badge).
+ */
+orchestratorRouter.get('/notifications/count', getNotificationCount);
+
+/**
+ * GET /api/me/notifications/threads/:threadId
+ * Fetch full thread (root + replies) and auto-mark read.
+ */
+orchestratorRouter.get('/notifications/threads/:threadId', getNotificationThread);
+
+/**
+ * PUT /api/me/notifications/:messageId/read
+ * Mark single notification as read.
+ */
+orchestratorRouter.put('/notifications/:messageId/read', markNotificationRead);
+
+/**
+ * PUT /api/me/notifications/read-non-actionable
+ * Mark non-actionable unread notifications as read.
+ */
+orchestratorRouter.put('/notifications/read-non-actionable', async (c) => {
+  const user = c.get('user');
+  const count = await db.markNonActionableNotificationsRead(c.env.DB, user.id);
+  return c.json({ success: true, count });
 });
+
+/**
+ * POST /api/me/notifications/:messageId/reply
+ * Reply to a notification thread.
+ */
+orchestratorRouter.post('/notifications/:messageId/reply', replyToNotification);
 
 // ─── Notification Preferences Routes (Phase C) ─────────────────────────
 

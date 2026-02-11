@@ -3,11 +3,11 @@ import { api } from './client';
 import type { MailboxMessage } from './types';
 
 export const mailboxKeys = {
-  all: ['mailbox'] as const,
+  all: ['notifications'] as const,
   session: (sessionId: string) => [...mailboxKeys.all, 'session', sessionId] as const,
 };
 
-export function useSessionMailbox(
+export function useSessionNotifications(
   sessionId: string,
   opts?: { unreadOnly?: boolean; limit?: number }
 ) {
@@ -19,7 +19,7 @@ export function useSessionMailbox(
       if (opts?.limit) params.set('limit', String(opts.limit));
       const qs = params.toString();
       return api.get<{ messages: MailboxMessage[] }>(
-        `/sessions/${sessionId}/mailbox${qs ? `?${qs}` : ''}`
+        `/sessions/${sessionId}/notifications${qs ? `?${qs}` : ''}`
       );
     },
     select: (data) => data.messages,
@@ -28,7 +28,7 @@ export function useSessionMailbox(
   });
 }
 
-export function useSendMailboxMessage() {
+export function useEmitNotification() {
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -43,20 +43,20 @@ export function useSendMailboxMessage() {
       contextSessionId?: string;
       contextTaskId?: string;
       replyToId?: string;
-    }) => api.post<{ message: MailboxMessage }>('/mailbox', data),
+    }) => api.post<{ notification: MailboxMessage }>('/notifications/emit', data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: mailboxKeys.all });
     },
   });
 }
 
-export function useMarkMailboxRead(sessionId: string) {
+export function useMarkNotificationsRead(sessionId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: () =>
       api.put<{ success: boolean; count: number }>(
-        `/sessions/${sessionId}/mailbox/read`
+        `/sessions/${sessionId}/notifications/read`
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: mailboxKeys.session(sessionId) });

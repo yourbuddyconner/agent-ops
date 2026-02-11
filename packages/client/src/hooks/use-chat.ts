@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useWebSocket } from './use-websocket';
 import { sessionKeys } from '@/api/sessions';
 import { api } from '@/api/client';
+import { toast } from './use-toast';
 import type { Message, SessionStatus } from '@/api/types';
 import { useAuthStore } from '@/stores/auth';
 import { SLASH_COMMANDS } from '@agent-ops/shared';
@@ -292,6 +293,14 @@ interface WebSocketCommandResultMessage {
   error?: string;
 }
 
+interface WebSocketToastMessage {
+  type: 'toast';
+  title: string;
+  description?: string;
+  variant?: 'default' | 'success' | 'error' | 'warning';
+  duration?: number;
+}
+
 type WebSocketChatMessage =
   | WebSocketInitMessage
   | WebSocketMessageMessage
@@ -312,6 +321,7 @@ type WebSocketChatMessage =
   | WebSocketTitleMessage
   | WebSocketAuditLogMessage
   | WebSocketCommandResultMessage
+  | WebSocketToastMessage
   | { type: 'pong' }
   | { type: 'user.joined'; userId: string }
   | { type: 'user.left'; userId: string };
@@ -883,6 +893,17 @@ export function useChat(sessionId: string) {
 
       case 'pong':
         break;
+
+      case 'toast': {
+        const toastMsg = message as WebSocketToastMessage;
+        toast({
+          title: toastMsg.title,
+          description: toastMsg.description,
+          variant: toastMsg.variant,
+          duration: toastMsg.duration,
+        });
+        break;
+      }
 
       case 'user.joined':
       case 'user.left': {

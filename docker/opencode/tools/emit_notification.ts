@@ -2,42 +2,40 @@ import { tool } from "@opencode-ai/plugin"
 
 export default tool({
   description:
-    "Send a persistent message to another session or user via the notification queue. " +
-    "Unlike send_message (which injects a real-time prompt), notifications are stored durably and " +
-    "appear even if recipients are offline. Use this for escalations, questions, and async coordination. " +
-    "You can address by session ID, user ID, or @handle.",
+    "Emit a persistent notification into the notification queue for a session or user. " +
+    "Use this for important async updates such as completions, escalations, or decisions needed while recipients may be offline.",
   args: {
     to_session_id: tool.schema
       .string()
       .optional()
-      .describe("Target session ID to send the message to"),
+      .describe("Target session ID"),
     to_user_id: tool.schema
       .string()
       .optional()
-      .describe("Target user ID to send the message to"),
+      .describe("Target user ID"),
     to_handle: tool.schema
       .string()
       .optional()
-      .describe("Target @handle to send the message to (resolved to user ID)"),
+      .describe("Target orchestrator handle (resolved to a user)"),
     message_type: tool.schema
-      .enum(["message", "notification", "question", "escalation", "approval"])
+      .enum(["notification", "question", "escalation", "approval"])
       .optional()
-      .describe("Type of message (default: 'message'). Use 'escalation' for urgent items, 'question' for things needing a human decision."),
+      .describe("Notification type (default: notification)"),
     content: tool.schema
       .string()
-      .describe("The message content"),
+      .describe("Notification body"),
     context_session_id: tool.schema
       .string()
       .optional()
-      .describe("Session ID for context (e.g. the session this message is about)"),
+      .describe("Optional related session ID"),
     context_task_id: tool.schema
       .string()
       .optional()
-      .describe("Task ID for context (e.g. the task this message relates to)"),
+      .describe("Optional related task ID"),
     reply_to_id: tool.schema
       .string()
       .optional()
-      .describe("Message ID this is a reply to"),
+      .describe("Optional root notification/thread ID"),
   },
   async execute(args) {
     if (!args.to_session_id && !args.to_user_id && !args.to_handle) {
@@ -65,17 +63,17 @@ export default tool({
 
       if (!res.ok) {
         const errText = await res.text()
-        return `Failed to send notification: ${errText}`
+        return `Failed to emit notification: ${errText}`
       }
 
       const data = (await res.json()) as { notificationId?: string; messageId?: string }
       const id = data.notificationId || data.messageId
       return id
-        ? `Notification sent (id: ${id})`
-        : "Notification sent."
+        ? `Notification emitted (id: ${id})`
+        : "Notification emitted."
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      return `Failed to send notification: ${msg}`
+      return `Failed to emit notification: ${msg}`
     }
   },
 })

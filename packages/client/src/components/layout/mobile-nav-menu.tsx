@@ -6,7 +6,7 @@ import { cn } from '@/lib/cn';
 const navItems = [
   { href: '/', label: 'Dashboard', icon: DashboardIcon },
   { href: '/orchestrator', label: 'Orchestrator', icon: OrchestratorIcon },
-  { href: '/inbox', label: 'Inbox', icon: InboxIcon },
+  { href: '/inbox', label: 'Notifications', icon: InboxIcon },
   { href: '/automation', label: 'Automation', icon: AutomationIcon },
   { href: '/sessions', label: 'Sessions', icon: SessionsIcon },
   { href: '/integrations', label: 'Integrations', icon: IntegrationsIcon },

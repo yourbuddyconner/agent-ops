@@ -5,10 +5,10 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import {
-  useInbox,
-  useInboxCount,
-  useInboxThread,
-  useReplyToInbox,
+  useNotifications,
+  useNotificationCount,
+  useNotificationThread,
+  useReplyToNotification,
 } from '@/api/orchestrator';
 import { useAuthStore } from '@/stores/auth';
 import { formatRelativeTime } from '@/lib/format';
@@ -22,6 +22,7 @@ const MESSAGE_TYPE_FILTERS: { value: MailboxMessageType | 'all'; label: string }
   { value: 'all', label: 'All' },
   { value: 'message', label: 'Messages' },
   { value: 'notification', label: 'Notifications' },
+  { value: 'approval', label: 'Approvals' },
   { value: 'question', label: 'Questions' },
   { value: 'escalation', label: 'Escalations' },
 ];
@@ -29,6 +30,7 @@ const MESSAGE_TYPE_FILTERS: { value: MailboxMessageType | 'all'; label: string }
 const MESSAGE_TYPE_STYLES: Record<string, string> = {
   message: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
   notification: 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400',
+  approval: 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400',
   question: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
   escalation: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
 };
@@ -37,23 +39,23 @@ function InboxPage() {
   const [typeFilter, setTypeFilter] = React.useState<MailboxMessageType | 'all'>('all');
   const [selectedThreadId, setSelectedThreadId] = React.useState<string | null>(null);
 
-  const { data: inboxData, isLoading } = useInbox({
+  const { data: inboxData, isLoading } = useNotifications({
     messageType: typeFilter === 'all' ? undefined : typeFilter,
     unreadOnly: false,
     limit: 50,
   });
-  const { data: unreadCount } = useInboxCount();
+  const { data: unreadCount } = useNotificationCount();
 
   const messages = inboxData?.messages ?? [];
 
   return (
     <PageContainer>
       <PageHeader
-        title="Inbox"
+        title="Notifications"
         description={
           unreadCount && unreadCount > 0
-            ? `${unreadCount} unread message${unreadCount !== 1 ? 's' : ''}`
-            : 'Messages from your agents'
+            ? `${unreadCount} unread notification${unreadCount !== 1 ? 's' : ''}`
+            : 'Updates from your agents'
         }
       />
 
@@ -83,7 +85,7 @@ function InboxPage() {
         <div className="rounded-lg border border-neutral-200 bg-white p-8 text-center dark:border-neutral-700 dark:bg-neutral-800">
           <InboxEmptyIcon className="mx-auto mb-3 h-10 w-10 text-neutral-300 dark:text-neutral-600" />
           <p className="text-sm text-neutral-500 dark:text-neutral-400">
-            {typeFilter === 'all' ? 'No messages yet' : `No ${typeFilter} messages`}
+            {typeFilter === 'all' ? 'No notifications yet' : `No ${typeFilter} notifications`}
           </p>
         </div>
       ) : (
@@ -107,7 +109,7 @@ function InboxPage() {
             ) : (
               <div className="rounded-lg border border-neutral-200 bg-white p-8 text-center dark:border-neutral-700 dark:bg-neutral-800">
                 <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                  Select a message to view details
+                  Select a notification to view details
                 </p>
               </div>
             )}
@@ -189,8 +191,8 @@ function InboxMessageItem({
 // ---------------------------------------------------------------------------
 
 function InboxThreadDetail({ threadId }: { threadId: string }) {
-  const { data: threadData, isLoading } = useInboxThread(threadId);
-  const replyMutation = useReplyToInbox();
+  const { data: threadData, isLoading } = useNotificationThread(threadId);
+  const replyMutation = useReplyToNotification();
   const [replyText, setReplyText] = React.useState('');
   const currentUserId = useAuthStore((s) => s.user?.id);
 
@@ -250,7 +252,7 @@ function InboxThreadDetail({ threadId }: { threadId: string }) {
               variant={
                 rootMessage.messageType === 'escalation'
                   ? 'error'
-                  : rootMessage.messageType === 'question'
+                  : rootMessage.messageType === 'question' || rootMessage.messageType === 'approval'
                     ? 'warning'
                     : 'default'
               }
@@ -259,7 +261,7 @@ function InboxThreadDetail({ threadId }: { threadId: string }) {
             </Badge>
             {totalCount > 1 && (
               <span className="text-xs text-neutral-400 dark:text-neutral-500">
-                {totalCount} messages
+                {totalCount} items
               </span>
             )}
           </div>

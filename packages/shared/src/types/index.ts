@@ -722,7 +722,7 @@ export interface OrchestratorInfo {
 // ─── Phase C: Messaging + Coordination Types ─────────────────────────────
 
 // Mailbox types (cross-session/cross-user persistent messaging)
-export type MailboxMessageType = 'message' | 'notification' | 'question' | 'escalation';
+export type MailboxMessageType = 'message' | 'notification' | 'question' | 'escalation' | 'approval';
 
 export interface MailboxMessage {
   id: string;

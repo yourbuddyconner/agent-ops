@@ -8,9 +8,9 @@ export const orchestratorKeys = {
   identity: () => [...orchestratorKeys.all, 'identity'] as const,
   checkHandle: (handle: string) => [...orchestratorKeys.all, 'check-handle', handle] as const,
   memories: (filters?: { category?: string }) => [...orchestratorKeys.all, 'memories', filters] as const,
-  inbox: (filters?: { messageType?: string; unreadOnly?: boolean }) => [...orchestratorKeys.all, 'inbox', filters] as const,
-  inboxCount: () => [...orchestratorKeys.all, 'inbox-count'] as const,
-  inboxThread: (threadId: string) => [...orchestratorKeys.all, 'inbox-thread', threadId] as const,
+  notifications: (filters?: { messageType?: string; unreadOnly?: boolean }) => [...orchestratorKeys.all, 'notifications', filters] as const,
+  notificationCount: () => [...orchestratorKeys.all, 'notifications-count'] as const,
+  notificationThread: (threadId: string) => [...orchestratorKeys.all, 'notifications-thread', threadId] as const,
   notificationPreferences: () => [...orchestratorKeys.all, 'notification-prefs'] as const,
   orgAgents: () => [...orchestratorKeys.all, 'org-agents'] as const,
   identityLinks: () => [...orchestratorKeys.all, 'identity-links'] as const,
@@ -139,11 +139,11 @@ export function useDeleteMemory() {
   });
 }
 
-// ─── Inbox Hooks (Phase C) ──────────────────────────────────────────────
+// ─── Notification Queue Hooks (Phase C) ─────────────────────────────────
 
-export function useInbox(opts?: { messageType?: string; unreadOnly?: boolean; limit?: number }) {
+export function useNotifications(opts?: { messageType?: string; unreadOnly?: boolean; limit?: number }) {
   return useQuery({
-    queryKey: orchestratorKeys.inbox({ messageType: opts?.messageType, unreadOnly: opts?.unreadOnly }),
+    queryKey: orchestratorKeys.notifications({ messageType: opts?.messageType, unreadOnly: opts?.unreadOnly }),
     queryFn: () => {
       const params = new URLSearchParams();
       if (opts?.messageType) params.set('messageType', opts.messageType);
@@ -151,60 +151,73 @@ export function useInbox(opts?: { messageType?: string; unreadOnly?: boolean; li
       if (opts?.limit) params.set('limit', String(opts.limit));
       const qs = params.toString();
       return api.get<{ messages: MailboxMessage[]; cursor?: string; hasMore: boolean }>(
-        `/me/inbox${qs ? `?${qs}` : ''}`
+        `/me/notifications${qs ? `?${qs}` : ''}`
       );
     },
     staleTime: 15_000,
   });
 }
 
-export function useInboxCount() {
+export function useNotificationCount() {
   return useQuery({
-    queryKey: orchestratorKeys.inboxCount(),
-    queryFn: () => api.get<{ count: number }>('/me/inbox/count'),
+    queryKey: orchestratorKeys.notificationCount(),
+    queryFn: () => api.get<{ count: number }>('/me/notifications/count'),
     select: (data) => data.count,
     staleTime: 30_000,
     refetchInterval: 30_000,
   });
 }
 
-export function useInboxThread(threadId: string | null) {
+export function useNotificationThread(threadId: string | null) {
   return useQuery({
-    queryKey: orchestratorKeys.inboxThread(threadId!),
+    queryKey: orchestratorKeys.notificationThread(threadId!),
     queryFn: () =>
       api.get<{ rootMessage: MailboxMessage; replies: MailboxMessage[]; totalCount: number }>(
-        `/me/inbox/threads/${threadId}`
+        `/me/notifications/threads/${threadId}`
       ),
     enabled: !!threadId,
     staleTime: 10_000,
   });
 }
 
-export function useMarkInboxRead() {
+export function useMarkNotificationRead() {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (messageId: string) =>
-      api.put<{ success: boolean }>(`/me/inbox/${messageId}/read`),
+      api.put<{ success: boolean }>(`/me/notifications/${messageId}/read`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [...orchestratorKeys.all, 'inbox'] });
-      queryClient.invalidateQueries({ queryKey: orchestratorKeys.inboxCount() });
+      queryClient.invalidateQueries({ queryKey: [...orchestratorKeys.all, 'notifications'] });
+      queryClient.invalidateQueries({ queryKey: orchestratorKeys.notificationCount() });
     },
   });
 }
 
-export function useReplyToInbox() {
+export function useMarkNonActionableNotificationsRead() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () =>
+      api.put<{ success: boolean; count: number }>('/me/notifications/read-non-actionable'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [...orchestratorKeys.all, 'notifications'] });
+      queryClient.invalidateQueries({ queryKey: orchestratorKeys.notificationCount() });
+    },
+  });
+}
+
+export function useReplyToNotification() {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (data: { messageId: string; content: string }) =>
-      api.post<{ message: MailboxMessage }>(`/me/inbox/${data.messageId}/reply`, {
+      api.post<{ message: MailboxMessage }>(`/me/notifications/${data.messageId}/reply`, {
         content: data.content,
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [...orchestratorKeys.all, 'inbox'] });
-      queryClient.invalidateQueries({ queryKey: [...orchestratorKeys.all, 'inbox-thread'] });
-      queryClient.invalidateQueries({ queryKey: orchestratorKeys.inboxCount() });
+      queryClient.invalidateQueries({ queryKey: [...orchestratorKeys.all, 'notifications'] });
+      queryClient.invalidateQueries({ queryKey: [...orchestratorKeys.all, 'notifications-thread'] });
+      queryClient.invalidateQueries({ queryKey: orchestratorKeys.notificationCount() });
     },
   });
 }

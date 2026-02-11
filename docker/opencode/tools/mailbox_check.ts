@@ -2,10 +2,10 @@ import { tool } from "@opencode-ai/plugin"
 
 export default tool({
   description:
-    "Check for unread mailbox messages sent to this session. " +
-    "Returns persistent cross-session messages (distinct from session chat history). " +
-    "Messages are automatically marked as read after retrieval. " +
-    "Use this to check for messages from other agents, the orchestrator, or users.",
+    "Check unread notifications sent to this session. " +
+    "Returns persistent cross-session queue items (distinct from session chat history). " +
+    "Items are automatically marked as read after retrieval. " +
+    "Use this to check for async updates from other agents, the orchestrator, or users.",
   args: {
     limit: tool.schema
       .number()
@@ -23,21 +23,21 @@ export default tool({
       if (args.after) params.set("after", args.after)
       const qs = params.toString()
 
-      const res = await fetch(`http://localhost:9000/api/mailbox${qs ? `?${qs}` : ""}`)
+      const res = await fetch(`http://localhost:9000/api/notifications${qs ? `?${qs}` : ""}`)
 
       if (!res.ok) {
         const errText = await res.text()
-        return `Failed to check mailbox: ${errText}`
+        return `Failed to check notifications: ${errText}`
       }
 
-      const data = (await res.json()) as { messages: unknown[] }
-      if (!data.messages || data.messages.length === 0) {
-        return "No unread mailbox messages."
+      const data = (await res.json()) as { notifications: unknown[] }
+      if (!data.notifications || data.notifications.length === 0) {
+        return "No unread notifications."
       }
-      return JSON.stringify(data.messages, null, 2)
+      return JSON.stringify(data.notifications, null, 2)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      return `Failed to check mailbox: ${msg}`
+      return `Failed to check notifications: ${msg}`
     }
   },
 })

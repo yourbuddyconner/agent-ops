@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { NotFoundError, UnauthorizedError, ValidationError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
+import { markWorkflowApprovalNotificationsRead } from '../lib/db.js';
 
 export const executionsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -438,6 +439,7 @@ executionsRouter.post('/:id/approve', zValidator('json', approvalSchema), async 
   }
 
   const result = await response.json<{ ok: boolean; status: string }>();
+  await markWorkflowApprovalNotificationsRead(c.env.DB, user.id, id);
   return c.json({ success: true, status: result.status });
 });
 

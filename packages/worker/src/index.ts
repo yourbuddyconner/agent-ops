@@ -29,9 +29,13 @@ import { orgReposAdminRouter, orgReposReadRouter } from './routes/org-repos.js';
 import { personasRouter } from './routes/personas.js';
 import { orchestratorRouter } from './routes/orchestrator.js';
 import { tasksRouter } from './routes/tasks.js';
-import { mailboxRouter } from './routes/mailbox.js';
+import { notificationQueueRouter } from './routes/mailbox.js';
 import { channelsRouter } from './routes/channels.js';
 import { telegramRouter, telegramApiRouter } from './routes/telegram.js';
+import {
+  enqueueWorkflowApprovalNotificationIfMissing,
+  markWorkflowApprovalNotificationsRead,
+} from './lib/db.js';
 import {
   checkWorkflowConcurrency,
   createWorkflowSession,
@@ -115,7 +119,7 @@ app.route('/api/repos/org', orgReposReadRouter);
 app.route('/api/personas', personasRouter);
 app.route('/api/me', orchestratorRouter);
 app.route('/api/sessions', tasksRouter);
-app.route('/api', mailboxRouter);
+app.route('/api', notificationQueueRouter);
 app.route('/api', channelsRouter);
 app.route('/api/me/telegram', telegramApiRouter);
 app.route('/api/invites', invitesApiRouter);
@@ -332,11 +336,11 @@ async function expireWaitingApprovalExecutions(env: Env): Promise<number> {
   const nowIso = now.toISOString();
 
   const result = await env.DB.prepare(`
-    SELECT id
+    SELECT id, user_id
     FROM workflow_executions
     WHERE status = 'waiting_approval'
       AND started_at <= ?
-  `).bind(cutoff).all<{ id: string }>();
+  `).bind(cutoff).all<{ id: string; user_id: string }>();
 
   let expired = 0;
   for (const row of result.results || []) {
@@ -348,6 +352,7 @@ async function expireWaitingApprovalExecutions(env: Env): Promise<number> {
           completed_at = ?
       WHERE id = ?
     `).bind(nowIso, row.id).run();
+    await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
     expired++;
   }
 
@@ -360,20 +365,27 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
   const result = await env.DB.prepare(`
     SELECT
       e.id,
+      e.user_id,
       e.status,
       e.runtime_state,
       e.session_id,
+      e.workflow_id,
+      w.name AS workflow_name,
       s.status AS session_status
     FROM workflow_executions e
+    LEFT JOIN workflows w ON w.id = e.workflow_id
     JOIN sessions s ON s.id = e.session_id
     WHERE e.status IN ('pending', 'running', 'waiting_approval')
       AND COALESCE(s.purpose, 'interactive') = 'workflow'
       AND s.status IN ('terminated', 'error', 'hibernated')
   `).all<{
     id: string;
+    user_id: string;
     status: string;
     runtime_state: string | null;
     session_id: string | null;
+    workflow_id: string | null;
+    workflow_name: string | null;
     session_status: string;
   }>();
 
@@ -391,6 +403,7 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
             completed_at = ?
         WHERE id = ?
       `).bind('workflow_session_error', now, row.id).run();
+      await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
       failed++;
       continue;
     }
@@ -403,6 +416,7 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
             completed_at = ?
         WHERE id = ?
       `).bind('workflow_session_hibernated', now, row.id).run();
+      await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
       failed++;
       continue;
     }
@@ -416,6 +430,7 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
             completed_at = ?
         WHERE id = ?
       `).bind('workflow_session_terminated_before_dispatch', now, row.id).run();
+      await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
       failed++;
       continue;
     }
@@ -432,6 +447,7 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
             completed_at = ?
         WHERE id = ?
       `).bind(now, row.id).run();
+      await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
       completed++;
       continue;
     }
@@ -455,6 +471,7 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
               completed_at = ?
           WHERE id = ?
         `).bind(outputsJson, stepsJson, 'approval_resume_token_missing', now, row.id).run();
+        await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
         failed++;
         continue;
       }
@@ -469,6 +486,14 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
             completed_at = NULL
         WHERE id = ?
       `).bind(outputsJson, stepsJson, resumeToken, row.id).run();
+      await enqueueWorkflowApprovalNotificationIfMissing(env.DB, {
+        toUserId: row.user_id,
+        executionId: row.id,
+        fromSessionId: row.session_id || undefined,
+        contextSessionId: row.session_id || undefined,
+        workflowName: row.workflow_name,
+        approvalPrompt: envelope.requiresApproval?.prompt,
+      });
       waitingApproval++;
       continue;
     }
@@ -483,6 +508,7 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
             completed_at = ?
         WHERE id = ?
       `).bind(outputsJson, stepsJson, envelope.error || 'workflow_cancelled', now, row.id).run();
+      await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
       cancelled++;
       continue;
     }
@@ -497,6 +523,7 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
             completed_at = ?
         WHERE id = ?
       `).bind(outputsJson, stepsJson, envelope.error || 'workflow_failed', now, row.id).run();
+      await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
       failed++;
       continue;
     }
@@ -510,6 +537,7 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
           completed_at = ?
       WHERE id = ?
     `).bind(outputsJson, stepsJson, now, row.id).run();
+    await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
     completed++;
   }
 

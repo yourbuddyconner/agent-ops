@@ -1,12 +1,12 @@
 import { Link, useRouterState } from '@tanstack/react-router';
 import { cn } from '@/lib/cn';
 import { useUIStore } from '@/stores/ui';
-import { useInboxCount } from '@/api/orchestrator';
+import { useNotificationCount } from '@/api/orchestrator';
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: DashboardIcon },
   { href: '/orchestrator', label: 'Orchestrator', icon: OrchestratorIcon },
-  { href: '/inbox', label: 'Inbox', icon: InboxIcon, showBadge: true },
+  { href: '/inbox', label: 'Notifications', icon: InboxIcon, showBadge: true },
   { href: '/automation', label: 'Automation', icon: AutomationIcon },
   { href: '/sessions', label: 'Sessions', icon: SessionsIcon },
   { href: '/integrations', label: 'Integrations', icon: IntegrationsIcon },
@@ -17,7 +17,7 @@ export function Sidebar() {
   const { sidebarCollapsed, toggleSidebar } = useUIStore();
   const router = useRouterState();
   const currentPath = router.location.pathname;
-  const { data: inboxCount } = useInboxCount();
+  const { data: inboxCount } = useNotificationCount();
 
   return (
     <aside
