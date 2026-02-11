@@ -2057,9 +2057,17 @@ export class PromptHandler {
       part?.sessionID ?? info?.sessionID
     ) as string | undefined;
     if (eventSessionId && this.ephemeralContent.has(eventSessionId)) {
+      const mappedChannel = this.ocSessionToChannel.get(eventSessionId);
       // Capture text deltas from ephemeral session SSE events
       if (event.type === "message.part.updated") {
         if (part?.type === "text") {
+          const partMessageId = typeof part.messageID === "string" ? part.messageID : undefined;
+          const partRole = partMessageId && mappedChannel ? mappedChannel.messageRoles.get(partMessageId) : undefined;
+          const allowTextDeltaCapture = !mappedChannel || partRole === "assistant";
+          if (!allowTextDeltaCapture) {
+            // For normal workflow session prompts, ignore non-assistant deltas.
+            // Assistant text is captured from message.updated snapshots below.
+          } else {
           const delta = props.delta as string | undefined;
           if (delta) {
             const prev = this.ephemeralContent.get(eventSessionId) || "";
@@ -2071,12 +2079,22 @@ export class PromptHandler {
               this.ephemeralContent.set(eventSessionId, prev + suffix);
             }
           }
+          }
         }
       }
-      if (event.type === "message.updated" && info?.role === "assistant") {
-        const snapshot = this.extractAssistantTextFromMessageInfo(info);
-        if (snapshot) {
-          this.ephemeralContent.set(eventSessionId, snapshot);
+      if (event.type === "message.updated") {
+        if (mappedChannel) {
+          const role = typeof info?.role === "string" ? info.role : undefined;
+          const id = typeof info?.id === "string" ? info.id : undefined;
+          if (id && role) {
+            mappedChannel.messageRoles.set(id, role);
+          }
+        }
+        if (info?.role === "assistant") {
+          const snapshot = this.extractAssistantTextFromMessageInfo(info);
+          if (snapshot) {
+            this.ephemeralContent.set(eventSessionId, snapshot);
+          }
         }
       }
 
