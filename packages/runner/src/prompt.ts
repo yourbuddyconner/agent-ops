@@ -766,9 +766,22 @@ export class PromptHandler {
     return;
   }
 
+  private async ensureWorkflowOpenCodeSession(): Promise<{ channel: ChannelSession; sessionId: string }> {
+    const channel = this.getOrCreateChannel();
+    if (!channel.opencodeSessionId) {
+      channel.opencodeSessionId = await this.createSession();
+      this.ocSessionToChannel.set(channel.opencodeSessionId, channel);
+      this.agentClient.sendChannelSessionCreated(channel.channelKey, channel.opencodeSessionId);
+    }
+    if (!this.eventStreamActive) {
+      await this.startEventStream();
+    }
+    return { channel, sessionId: channel.opencodeSessionId };
+  }
+
   private async executeWorkflowAgentStep(
     step: NormalizedWorkflowStep,
-    _context: WorkflowStepExecutionContext,
+    context: WorkflowStepExecutionContext,
   ): Promise<WorkflowStepExecutionResult | void> {
     if (step.type !== "agent_message") {
       return;
@@ -801,16 +814,44 @@ export class PromptHandler {
           ? step.awaitTimeoutMs
           : 120_000;
     const awaitTimeoutMs = Math.max(1_000, Math.min(awaitTimeoutRaw, 900_000));
+    const previousChannel = this.activeChannel;
 
-    if (awaitResponse) {
-      const ephemeralId = await this.createEphemeralSession();
-      this.ephemeralContent.set(ephemeralId, "");
+    try {
+      const { channel, sessionId } = await this.ensureWorkflowOpenCodeSession();
+      this.activeChannel = channel;
+
+      this.agentClient.sendWorkflowChatMessage("user", content, {
+        workflowExecutionId: context.executionId,
+        workflowStepId: step.id,
+        kind: "agent_message",
+      });
+
+      if (interrupt) {
+        await fetch(`${this.opencodeUrl}/session/${sessionId}/abort`, { method: "POST" }).catch(() => undefined);
+      }
+
+      if (!awaitResponse) {
+        await this.sendPromptAsync(sessionId, content);
+        return {
+          status: "completed",
+          output: {
+            type: "agent_message",
+            targetSessionId: this.runnerSessionId,
+            content,
+            interrupt,
+            awaitResponse: false,
+            success: true,
+          },
+        };
+      }
+
+      this.ephemeralContent.set(sessionId, "");
       try {
-        const idlePromise = this.pollUntilIdle(ephemeralId, awaitTimeoutMs);
-        await this.sendPromptAsync(ephemeralId, content);
+        const idlePromise = this.pollUntilIdle(sessionId, awaitTimeoutMs);
+        await this.sendPromptAsync(sessionId, content);
         await idlePromise;
 
-        const responseText = (this.ephemeralContent.get(ephemeralId) || "").trim();
+        const responseText = (this.ephemeralContent.get(sessionId) || "").trim();
         if (!responseText) {
           return {
             status: "failed",
@@ -826,6 +867,12 @@ export class PromptHandler {
           };
         }
 
+        this.agentClient.sendWorkflowChatMessage("assistant", responseText, {
+          workflowExecutionId: context.executionId,
+          workflowStepId: step.id,
+          kind: "agent_message_response",
+        });
+
         return {
           status: "completed",
           output: {
@@ -838,39 +885,10 @@ export class PromptHandler {
             response: responseText,
           },
         };
-      } catch (error) {
-        return {
-          status: "failed",
-          error: error instanceof Error ? error.message : String(error),
-          output: {
-            type: "agent_message",
-            targetSessionId: this.runnerSessionId,
-            content,
-            interrupt,
-            awaitResponse: true,
-            awaitTimeoutMs,
-          },
-        };
       } finally {
-        this.ephemeralContent.delete(ephemeralId);
-        this.idleWaiters.delete(ephemeralId);
-        await this.deleteSession(ephemeralId).catch(() => undefined);
+        this.ephemeralContent.delete(sessionId);
+        this.idleWaiters.delete(sessionId);
       }
-    }
-
-    try {
-      const result = await this.agentClient.requestSendMessage(this.runnerSessionId, content, interrupt);
-      return {
-        status: result.success ? "completed" : "failed",
-        ...(result.success ? {} : { error: "agent_message_send_failed" }),
-        output: {
-          type: "agent_message",
-          targetSessionId: this.runnerSessionId,
-          content,
-          interrupt,
-          success: result.success,
-        },
-      };
     } catch (error) {
       return {
         status: "failed",
@@ -882,6 +900,8 @@ export class PromptHandler {
           interrupt,
         },
       };
+    } finally {
+      this.activeChannel = previousChannel;
     }
   }
 
@@ -2044,7 +2064,19 @@ export class PromptHandler {
           if (delta) {
             const prev = this.ephemeralContent.get(eventSessionId) || "";
             this.ephemeralContent.set(eventSessionId, prev + delta);
+          } else if (typeof part.text === "string" && part.text) {
+            const prev = this.ephemeralContent.get(eventSessionId) || "";
+            const suffix = this.computeNonOverlappingSuffix(prev, part.text);
+            if (suffix) {
+              this.ephemeralContent.set(eventSessionId, prev + suffix);
+            }
           }
+        }
+      }
+      if (event.type === "message.updated" && info?.role === "assistant") {
+        const snapshot = this.extractAssistantTextFromMessageInfo(info);
+        if (snapshot) {
+          this.ephemeralContent.set(eventSessionId, snapshot);
         }
       }
 

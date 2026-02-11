@@ -25,7 +25,6 @@ interface WorkflowExecutionDispatchPayload {
 
 const MAX_PROMPT_ATTACHMENTS = 8;
 const MAX_PROMPT_ATTACHMENT_URL_LENGTH = 12_000_000;
-const WORKFLOW_EXECUTE_PROMPT_PREFIX = '__AGENT_OPS_WORKFLOW_EXECUTE_V1__';
 
 function parseBase64DataUrl(url: string): string | null {
   const commaIndex = url.indexOf(',');
@@ -89,6 +88,20 @@ function parseQueuedPromptAttachments(raw: unknown): PromptAttachment[] {
     return sanitizePromptAttachments(JSON.parse(raw));
   } catch {
     return [];
+  }
+}
+
+function parseQueuedWorkflowPayload(raw: unknown): WorkflowExecutionDispatchPayload | null {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as WorkflowExecutionDispatchPayload;
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (parsed.kind !== 'run' && parsed.kind !== 'resume') return null;
+    if (typeof parsed.executionId !== 'string' || !parsed.executionId) return null;
+    if (!parsed.payload || typeof parsed.payload !== 'object' || Array.isArray(parsed.payload)) return null;
+    return parsed;
+  } catch {
+    return null;
   }
 }
 
@@ -178,7 +191,7 @@ function deriveRuntimeStates(args: {
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'command-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply' | 'audio-transcript' | 'channel-session-created' | 'session-reset';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'command-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'workflow-chat-message' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply' | 'audio-transcript' | 'channel-session-created' | 'session-reset';
   transcript?: string;
   prNumber?: number;
   targetSessionId?: string;
@@ -295,6 +308,8 @@ interface RunnerMessage {
   // Per-channel session tracking
   channelKey?: string;
   opencodeSessionId?: string;
+  role?: 'user' | 'assistant' | 'system';
+  parts?: Record<string, unknown>;
 }
 
 /** Messages sent from DO to clients */
@@ -395,6 +410,9 @@ const SCHEMA_SQL = `
     content TEXT NOT NULL,
     attachments TEXT, -- JSON array of prompt attachments
     model TEXT, -- user-selected model override
+    queue_type TEXT NOT NULL DEFAULT 'prompt' CHECK(queue_type IN ('prompt', 'workflow_execute')),
+    workflow_execution_id TEXT,
+    workflow_payload TEXT,
     status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'processing', 'completed')),
     author_id TEXT,
     author_email TEXT,
@@ -507,6 +525,10 @@ export class SessionAgentDO {
 
       // Migrate existing DOs: add model column to prompt_queue
       try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN model TEXT'); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec("ALTER TABLE prompt_queue ADD COLUMN queue_type TEXT NOT NULL DEFAULT 'prompt'"); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN workflow_execution_id TEXT'); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN workflow_payload TEXT'); } catch { /* already exists */ }
+      this.ctx.storage.sql.exec("UPDATE prompt_queue SET queue_type = 'prompt' WHERE queue_type IS NULL OR queue_type = ''");
 
       this.initialized = true;
     });
@@ -865,55 +887,9 @@ export class SessionAgentDO {
     // Send init message to runner
     server.send(JSON.stringify({ type: 'init' }));
 
-    // Check if there's a queued prompt to send immediately
-    const queued = this.ctx.storage.sql
-      .exec("SELECT id, content, attachments, model, author_id, author_email, author_name, channel_type, channel_id FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
-      .toArray();
-
-    if (queued.length > 0) {
-      const prompt = queued[0];
-      this.ctx.storage.sql.exec(
-        "UPDATE prompt_queue SET status = 'processing' WHERE id = ?",
-        prompt.id as string
-      );
-      const authorId = prompt.author_id as string | null;
-      const authorDetails = authorId ? this.userDetailsCache.get(authorId) : undefined;
-      const attachments = parseQueuedPromptAttachments(prompt.attachments);
-      if (authorId) {
-        this.setStateValue('currentPromptAuthorId', authorId);
-      }
-
-      // Track channel context for auto-reply on completion
-      const queuedChannelType = (prompt.channel_type as string) || undefined;
-      const queuedChannelId = (prompt.channel_id as string) || undefined;
-      if (queuedChannelType && queuedChannelId) {
-        this.pendingChannelReply = { channelType: queuedChannelType, channelId: queuedChannelId, resultContent: null, resultMessageId: null, handled: false };
-        this.insertChannelFollowup(queuedChannelType, queuedChannelId, prompt.content as string);
-      } else {
-        this.pendingChannelReply = null;
-      }
-
-      // Resolve model preferences from session owner (with org fallback)
-      const initOwnerId = this.getStateValue('userId');
-      const initOwnerDetails = initOwnerId ? await this.getUserDetails(initOwnerId) : undefined;
-      const initModelPrefs = await this.resolveModelPreferences(initOwnerDetails);
-      server.send(JSON.stringify({
-        type: 'prompt',
-        messageId: prompt.id,
-        content: prompt.content,
-        model: (prompt.model as string) || undefined,
-        attachments: attachments.length > 0 ? attachments : undefined,
-        channelType: queuedChannelType,
-        channelId: queuedChannelId,
-        authorId: authorId || undefined,
-        authorEmail: prompt.author_email || undefined,
-        authorName: prompt.author_name || undefined,
-        gitName: authorDetails?.gitName,
-        gitEmail: authorDetails?.gitEmail,
-        modelPreferences: initModelPrefs,
-      }));
-      this.setStateValue('runnerBusy', 'true');
-      console.log('[SessionAgentDO] Runner connected: dispatched queued prompt', prompt.id);
+    // Check if there's queued work (prompt/workflow dispatch) to send immediately.
+    if (await this.sendNextQueuedPrompt()) {
+      console.log('[SessionAgentDO] Runner connected: dispatched queued work item');
     } else {
       // Check for initial prompt (from create-from-PR/Issue)
       const initialPrompt = this.getStateValue('initialPrompt');
@@ -1839,6 +1815,33 @@ export class SessionAgentDO {
           this.pendingChannelReply.resultContent = msg.content;
           this.pendingChannelReply.resultMessageId = resultId;
         }
+        break;
+      }
+
+      case 'workflow-chat-message': {
+        const role = msg.role === 'assistant' || msg.role === 'system' ? msg.role : 'user';
+        const content = (msg.content || '').trim();
+        if (!content) break;
+
+        const workflowMsgId = crypto.randomUUID();
+        const partsJson = msg.parts && typeof msg.parts === 'object' ? JSON.stringify(msg.parts) : null;
+        this.ctx.storage.sql.exec(
+          'INSERT INTO messages (id, role, content, parts) VALUES (?, ?, ?, ?)',
+          workflowMsgId,
+          role,
+          content,
+          partsJson,
+        );
+        this.broadcastToClients({
+          type: 'message',
+          data: {
+            id: workflowMsgId,
+            role,
+            content,
+            ...(partsJson ? { parts: JSON.parse(partsJson) } : {}),
+            createdAt: Math.floor(Date.now() / 1000),
+          },
+        });
         break;
       }
 
@@ -5507,13 +5510,13 @@ export class SessionAgentDO {
     }
 
     const status = this.getStateValue('status');
-    const controlPrompt = `${WORKFLOW_EXECUTE_PROMPT_PREFIX}\n${JSON.stringify(payload)}`;
     const queueWorkflowDispatch = (reason: string) => {
       const queueId = crypto.randomUUID();
       this.ctx.storage.sql.exec(
-        "INSERT INTO prompt_queue (id, content, status) VALUES (?, ?, 'queued')",
+        "INSERT INTO prompt_queue (id, content, queue_type, workflow_execution_id, workflow_payload, status) VALUES (?, '', 'workflow_execute', ?, ?, 'queued')",
         queueId,
-        controlPrompt,
+        executionId,
+        JSON.stringify(payload),
       );
       this.appendAuditLog(
         'workflow.dispatch_queued',
@@ -5568,7 +5571,7 @@ export class SessionAgentDO {
     if (runnerSockets.length === 0) return false;
 
     const next = this.ctx.storage.sql
-      .exec("SELECT id, content, attachments, model, author_id, author_email, author_name, channel_type, channel_id FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
+      .exec("SELECT id, content, attachments, model, author_id, author_email, author_name, channel_type, channel_id, queue_type, workflow_execution_id, workflow_payload FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
       .toArray();
 
     if (next.length === 0) return false;
@@ -5578,6 +5581,40 @@ export class SessionAgentDO {
       "UPDATE prompt_queue SET status = 'processing' WHERE id = ?",
       prompt.id as string
     );
+
+    const queueType = ((prompt.queue_type as string) || 'prompt').trim() || 'prompt';
+    if (queueType === 'workflow_execute') {
+      const queuedExecutionId = ((prompt.workflow_execution_id as string) || '').trim();
+      const queuedPayload = parseQueuedWorkflowPayload(prompt.workflow_payload);
+      if (!queuedExecutionId || !queuedPayload) {
+        this.ctx.storage.sql.exec(
+          "UPDATE prompt_queue SET status = 'completed' WHERE id = ?",
+          prompt.id as string
+        );
+        console.warn(`[SessionAgentDO] Dropping malformed queued workflow dispatch id=${String(prompt.id)}`);
+        return this.sendNextQueuedPrompt();
+      }
+
+      this.pendingChannelReply = null;
+      this.setStateValue('runnerBusy', 'true');
+      this.setStateValue('lastParentIdleNotice', '');
+      this.sendToRunner({
+        type: 'workflow-execute',
+        executionId: queuedExecutionId,
+        payload: queuedPayload,
+      });
+      this.broadcastToClients({
+        type: 'status',
+        data: { promptDequeued: true, remaining: this.getQueueLength() },
+      });
+      this.appendAuditLog(
+        'workflow.dispatch',
+        `Workflow execution dispatched (${queuedExecutionId.slice(0, 8)})`,
+        undefined,
+        { executionId: queuedExecutionId, kind: queuedPayload.kind, queued: true },
+      );
+      return true;
+    }
 
     // Look up git details from cache for the prompt author
     const authorId = prompt.author_id as string | null;

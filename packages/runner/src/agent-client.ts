@@ -199,6 +199,14 @@ export class AgentClient {
     this.send({ type: "result", messageId, content });
   }
 
+  sendWorkflowChatMessage(
+    role: "user" | "assistant" | "system",
+    content: string,
+    parts?: Record<string, unknown>,
+  ): void {
+    this.send({ type: "workflow-chat-message", role, content, ...(parts ? { parts } : {}) });
+  }
+
   sendQuestion(questionId: string, text: string, options?: string[]): void {
     this.send({ type: "question", questionId, text, options });
   }

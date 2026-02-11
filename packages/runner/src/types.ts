@@ -106,6 +106,7 @@ export type AgentStatus = "idle" | "thinking" | "tool_calling" | "streaming" | "
 export type RunnerToDOMessage =
   | { type: "stream"; messageId: string; content: string }
   | { type: "result"; messageId: string; content: string }
+  | { type: "workflow-chat-message"; role: "user" | "assistant" | "system"; content: string; parts?: Record<string, unknown> }
   | { type: "tool"; callID: string; toolName: string; status: ToolCallStatus; args: unknown; result: unknown; content?: string }
   | { type: "question"; questionId: string; text: string; options?: string[] }
   | { type: "screenshot"; data: string; description: string }
