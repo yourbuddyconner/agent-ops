@@ -7,6 +7,7 @@ import {
   useNotifications,
   useNotificationCount,
   useMarkNotificationRead,
+  useMarkNonActionableNotificationsRead,
 } from '@/api/orchestrator';
 import { formatRelativeTime } from '@/lib/format';
 import type { MailboxMessage, MailboxMessageType } from '@/api/types';
@@ -26,6 +27,8 @@ const MESSAGE_TYPE_FILTERS: { value: MailboxMessageType | 'all'; label: string }
 function InboxPage() {
   const [typeFilter, setTypeFilter] = React.useState<MailboxMessageType | 'all'>('all');
   const markReadMutation = useMarkNotificationRead();
+  const markNonActionableRead = useMarkNonActionableNotificationsRead();
+  const clearAttemptedRef = React.useRef(false);
 
   const { data: inboxData, isLoading } = useNotifications({
     messageType: typeFilter === 'all' ? undefined : typeFilter,
@@ -33,6 +36,14 @@ function InboxPage() {
     limit: 50,
   });
   const { data: unreadCount } = useNotificationCount();
+  const unreadTotal = unreadCount ?? 0;
+
+  React.useEffect(() => {
+    if (clearAttemptedRef.current) return;
+    if (unreadTotal <= 0) return;
+    clearAttemptedRef.current = true;
+    markNonActionableRead.mutate();
+  }, [unreadTotal, markNonActionableRead]);
 
   const messages = inboxData?.messages ?? [];
 
@@ -41,8 +52,8 @@ function InboxPage() {
       <PageHeader
         title="Notifications"
         description={
-          unreadCount && unreadCount > 0
-            ? `${unreadCount} unread notification${unreadCount !== 1 ? 's' : ''}`
+          unreadTotal > 0
+            ? `${unreadTotal} unread notification${unreadTotal !== 1 ? 's' : ''}`
             : 'Updates from your agents'
         }
       />

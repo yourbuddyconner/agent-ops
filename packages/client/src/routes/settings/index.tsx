@@ -753,14 +753,19 @@ const NOTIFICATION_TYPES = [
   { type: 'escalation', label: 'Escalations', description: 'Urgent items that need your attention' },
 ] as const;
 
-const NOTIFICATION_EVENT_TYPES = [
-  {
-    messageType: 'notification',
-    eventType: 'session.lifecycle',
-    label: 'Session lifecycle',
-    description: 'Session started/completed status updates',
-  },
-] as const;
+const NOTIFICATION_EVENT_TYPES_BY_MESSAGE_TYPE: Record<string, Array<{
+  eventType: string;
+  label: string;
+  description: string;
+}>> = {
+  notification: [
+    {
+      eventType: 'session.lifecycle',
+      label: 'Session lifecycle',
+      description: 'Session started/completed status updates',
+    },
+  ],
+};
 
 function NotificationPreferencesSection() {
   const { data: orchInfo, isLoading: orchLoading } = useOrchestratorInfo();
@@ -812,83 +817,72 @@ function NotificationPreferencesSection() {
               {NOTIFICATION_TYPES.map((nt) => {
                 const pref = getPreference(nt.type);
                 const webEnabled = pref?.webEnabled ?? true;
+                const eventTypes = NOTIFICATION_EVENT_TYPES_BY_MESSAGE_TYPE[nt.type] ?? [];
 
                 return (
-                  <tr
-                    key={nt.type}
-                    className="bg-white dark:bg-neutral-900"
-                  >
-                    <td className="px-4 py-3">
-                      <div className="font-medium text-neutral-900 dark:text-neutral-100">
-                        {nt.label}
-                      </div>
-                      <div className="text-xs text-neutral-400 dark:text-neutral-500">
-                        {nt.description}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <ToggleSwitch
-                        checked={webEnabled}
-                        onChange={(v) => handleToggle(nt.type, 'webEnabled', v)}
-                      />
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <ToggleSwitch checked={false} onChange={() => {}} disabled />
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <ToggleSwitch checked={false} onChange={() => {}} disabled />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="space-y-2">
-          <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            Notification Event Types
-          </p>
-          <div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800/50">
-                  <th className="px-4 py-2.5 text-left font-medium text-neutral-500 dark:text-neutral-400">
-                    Event
-                  </th>
-                  <th className="px-4 py-2.5 text-center font-medium text-neutral-500 dark:text-neutral-400">
-                    Web
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-neutral-200 dark:divide-neutral-700">
-                {NOTIFICATION_EVENT_TYPES.map((eventPref) => {
-                  const pref = getPreference(eventPref.messageType, eventPref.eventType);
-                  const fallbackPref = getPreference(eventPref.messageType);
-                  const webEnabled = pref?.webEnabled ?? fallbackPref?.webEnabled ?? true;
-
-                  return (
-                    <tr key={`${eventPref.messageType}:${eventPref.eventType}`} className="bg-white dark:bg-neutral-900">
+                  <React.Fragment key={nt.type}>
+                    <tr className="bg-white dark:bg-neutral-900">
                       <td className="px-4 py-3">
                         <div className="font-medium text-neutral-900 dark:text-neutral-100">
-                          {eventPref.label}
+                          {nt.label}
                         </div>
                         <div className="text-xs text-neutral-400 dark:text-neutral-500">
-                          {eventPref.description}
+                          {nt.description}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-center">
                         <ToggleSwitch
                           checked={webEnabled}
-                          onChange={(v) => handleToggle(eventPref.messageType, 'webEnabled', v, eventPref.eventType)}
+                          onChange={(v) => handleToggle(nt.type, 'webEnabled', v)}
                         />
                       </td>
+                      <td className="px-4 py-3 text-center">
+                        <ToggleSwitch checked={false} onChange={() => {}} disabled />
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <ToggleSwitch checked={false} onChange={() => {}} disabled />
+                      </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+
+                    {eventTypes.map((eventPref) => {
+                      const eventTypePref = getPreference(nt.type, eventPref.eventType);
+                      const eventWebEnabled = eventTypePref?.webEnabled ?? pref?.webEnabled ?? true;
+
+                      return (
+                        <tr
+                          key={`${nt.type}:${eventPref.eventType}`}
+                          className="bg-neutral-50/60 dark:bg-neutral-800/30"
+                        >
+                          <td className="px-4 py-3">
+                            <div className="pl-5">
+                              <div className="font-medium text-neutral-800 dark:text-neutral-200">
+                                {eventPref.label}
+                              </div>
+                              <div className="text-xs text-neutral-400 dark:text-neutral-500">
+                                {eventPref.description}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <ToggleSwitch
+                              checked={eventWebEnabled}
+                              onChange={(v) => handleToggle(nt.type, 'webEnabled', v, eventPref.eventType)}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <ToggleSwitch checked={false} onChange={() => {}} disabled />
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <ToggleSwitch checked={false} onChange={() => {}} disabled />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
 
         <p className="text-xs text-neutral-400 dark:text-neutral-500">
