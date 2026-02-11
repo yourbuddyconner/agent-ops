@@ -564,11 +564,41 @@ sessionsRouter.get('/:id', async (c) => {
   const sessionDO = c.env.SESSIONS.get(doId);
 
   const statusRes = await sessionDO.fetch(new Request('http://do/status'));
-  const doStatus = await statusRes.json() as {
-    tunnelUrls?: Record<string, string>;
-    tunnels?: Array<{ name: string; url?: string; path?: string; port?: number; protocol?: string }>;
+  let doStatus = await statusRes.json() as {
+    status?: string;
+    lifecycleStatus?: string;
+    sandboxId?: string | null;
+    tunnelUrls?: Record<string, string> | null;
+    tunnels?: Array<{ name: string; url?: string; path?: string; port?: number; protocol?: string }> | null;
+    runnerConnected?: boolean;
+    runnerBusy?: boolean;
+    queuedPrompts?: number;
+    agentState?: string;
+    sandboxState?: string;
+    jointState?: string;
     [key: string]: unknown;
   };
+
+  // Session DB status is authoritative for terminal states.
+  // Prevent stale runtime fields from rendering non-terminal states like "restoring".
+  if (session.status === 'terminated' || session.status === 'archived' || session.status === 'error') {
+    const terminalStatus = session.status;
+    const terminalRuntimeState = terminalStatus === 'error' ? 'error' : 'stopped';
+    doStatus = {
+      ...doStatus,
+      status: terminalStatus,
+      lifecycleStatus: terminalStatus,
+      sandboxId: null,
+      tunnelUrls: null,
+      tunnels: null,
+      runnerConnected: false,
+      runnerBusy: false,
+      queuedPrompts: 0,
+      agentState: terminalRuntimeState,
+      sandboxState: terminalRuntimeState,
+      jointState: terminalRuntimeState,
+    };
+  }
 
   // Populate gatewayUrl from DO status for frontend consumption
   const gatewayUrl = doStatus.tunnelUrls?.gateway;

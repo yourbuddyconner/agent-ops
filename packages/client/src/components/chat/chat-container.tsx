@@ -21,6 +21,10 @@ interface ChatContainerProps {
   sessionId: string;
 }
 
+function isFinalSessionStatus(status: string) {
+  return status === 'terminated' || status === 'archived';
+}
+
 export function ChatContainer({ sessionId }: ChatContainerProps) {
   const router = useRouter();
   const navigate = useNavigate();
@@ -244,10 +248,12 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   }, [editTitleValue, sessionTitle, session?.title, sessionId, updateTitle]);
 
   const isLoading = connectionStatus === 'connecting';
-  const isTerminated = sessionStatus === 'terminated' || sessionStatus === 'archived';
+  const isTerminated = isFinalSessionStatus(sessionStatus);
   const isDisabled = !isConnected || isTerminated;
   const isAgentActive = (isAgentThinking && agentStatus !== 'queued') || agentStatus === 'thinking' || agentStatus === 'tool_calling' || agentStatus === 'streaming';
-  const displaySessionStatus = agentStatus === 'queued' && !runnerConnected ? 'restoring' : sessionStatus;
+  const displaySessionStatus = !isTerminated && agentStatus === 'queued' && !runnerConnected
+    ? 'restoring'
+    : sessionStatus;
   const hideChrome = isMobile && composerFocused;
 
   // Clear any stale overlay (no longer using layout-level transition overlays)

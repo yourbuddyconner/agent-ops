@@ -237,6 +237,10 @@ interface WebSocketGitStateMessage {
     branch?: string;
     baseBranch?: string;
     commitCount?: number;
+    prState?: string;
+    prTitle?: string;
+    prUrl?: string;
+    prMergedAt?: string | null;
   };
 }
 
@@ -350,6 +354,10 @@ function createInitialState(): ChatState {
     reviewLoading: false,
     reviewDiffFiles: null,
   };
+}
+
+function isTerminalSessionStatus(status: SessionStatus | undefined) {
+  return status === 'terminated' || status === 'archived' || status === 'error';
 }
 
 export function useChat(sessionId: string) {
@@ -505,6 +513,10 @@ export function useChat(sessionId: string) {
         const hasQueuedWork = (message.data?.promptsQueued ?? 0) > 0;
         const isRunnerBusy = !!message.data?.runnerBusy;
         const agentWorking = hasQueuedWork || isRunnerBusy;
+        const terminalSession = isTerminalSessionStatus(message.session.status);
+        const initialAgentStatus: AgentStatus = terminalSession
+          ? (message.session.status === 'error' ? 'error' : 'idle')
+          : hasQueuedWork ? 'queued' : isRunnerBusy ? 'thinking' : 'idle';
 
         // Seed log entries from server-side audit log
         const rawAuditLog = message.data?.auditLog ?? [];
@@ -536,9 +548,9 @@ export function useChat(sessionId: string) {
           pendingQuestions: [],
           connectedUsers: normalizedUsers,
           logEntries: seededLogEntries,
-          isAgentThinking: agentWorking,
-          agentStatus: hasQueuedWork ? 'queued' : isRunnerBusy ? 'thinking' : 'idle',
-          agentStatusDetail: hasQueuedWork ? 'Message queued — waking session...' : undefined,
+          isAgentThinking: terminalSession ? false : agentWorking,
+          agentStatus: initialAgentStatus,
+          agentStatusDetail: initialAgentStatus === 'queued' ? 'Message queued — waking session...' : undefined,
           availableModels: initModels,
           diffData: null,
           diffLoading: false,
@@ -639,10 +651,16 @@ export function useChat(sessionId: string) {
           const runnerConnected = typeof data.runnerConnected === 'boolean'
             ? data.runnerConnected
             : prev.runnerConnected;
+          const effectiveStatus = newStatus ?? prev.status;
+          const terminalSession = isTerminalSessionStatus(effectiveStatus);
 
           // When a prompt is queued (runner not ready), show queued indicator
           let { isAgentThinking, agentStatus, agentStatusDetail } = prev;
-          if (data.promptQueued) {
+          if (terminalSession) {
+            isAgentThinking = false;
+            agentStatus = effectiveStatus === 'error' ? 'error' : 'idle';
+            agentStatusDetail = undefined;
+          } else if (data.promptQueued) {
             isAgentThinking = true;
             agentStatus = 'queued';
             agentStatusDetail = 'Message queued — waking session...';
@@ -650,7 +668,7 @@ export function useChat(sessionId: string) {
 
           return {
             ...prev,
-            status: newStatus ?? prev.status,
+            status: effectiveStatus,
             pendingQuestions: nextQuestions,
             connectedUsers: nextUsers,
             runnerConnected,
@@ -700,17 +718,22 @@ export function useChat(sessionId: string) {
 
       case 'agentStatus': {
         const statusMsg = message as WebSocketAgentStatusMessage;
-        setState((prev) => ({
-          ...prev,
-          agentStatus: statusMsg.status,
-          agentStatusDetail: statusMsg.detail,
-          agentStatusChannelType: statusMsg.channelType,
-          agentStatusChannelId: statusMsg.channelId,
-          // Also update isAgentThinking for backward compatibility
-          isAgentThinking: statusMsg.status !== 'idle',
-          // Clear streaming channel metadata when agent goes idle
-          ...(statusMsg.status === 'idle' ? { streamingChannelType: undefined, streamingChannelId: undefined } : {}),
-        }));
+        setState((prev) => {
+          if (isTerminalSessionStatus(prev.status) && statusMsg.status !== 'error') {
+            return prev;
+          }
+          return {
+            ...prev,
+            agentStatus: statusMsg.status,
+            agentStatusDetail: statusMsg.detail,
+            agentStatusChannelType: statusMsg.channelType,
+            agentStatusChannelId: statusMsg.channelId,
+            // Also update isAgentThinking for backward compatibility
+            isAgentThinking: statusMsg.status !== 'idle' && !isTerminalSessionStatus(prev.status),
+            // Clear streaming channel metadata when agent goes idle
+            ...(statusMsg.status === 'idle' ? { streamingChannelType: undefined, streamingChannelId: undefined } : {}),
+          };
+        });
         break;
       }
 
@@ -784,6 +807,10 @@ export function useChat(sessionId: string) {
                 ...(gitMsg.data.branch !== undefined ? { branch: gitMsg.data.branch } : {}),
                 ...(gitMsg.data.baseBranch !== undefined ? { baseBranch: gitMsg.data.baseBranch } : {}),
                 ...(gitMsg.data.commitCount !== undefined ? { commitCount: gitMsg.data.commitCount } : {}),
+                ...(gitMsg.data.prState !== undefined ? { prState: gitMsg.data.prState } : {}),
+                ...(gitMsg.data.prTitle !== undefined ? { prTitle: gitMsg.data.prTitle } : {}),
+                ...(gitMsg.data.prUrl !== undefined ? { prUrl: gitMsg.data.prUrl } : {}),
+                ...(gitMsg.data.prMergedAt !== undefined ? { prMergedAt: gitMsg.data.prMergedAt } : {}),
               },
             };
           }

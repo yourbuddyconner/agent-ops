@@ -297,11 +297,12 @@ async function handlePullRequestWebhook(env: Env, payload: any): Promise<void> {
 
   if (!repoFullName || !prNumber) return;
 
-  // Find sessions linked to this PR (by source_repo_full_name + pr_number)
+  // Find sessions linked to this PR (by source_repo_full_name + tracked PR number)
   const rows = await env.DB.prepare(
     `SELECT session_id FROM session_git_state
-     WHERE source_repo_full_name = ? AND pr_number = ?`
-  ).bind(repoFullName, prNumber).all<{ session_id: string }>();
+     WHERE source_repo_full_name = ?
+       AND (pr_number = ? OR source_pr_number = ?)`
+  ).bind(repoFullName, prNumber, prNumber).all<{ session_id: string }>();
 
   if (!rows.results || rows.results.length === 0) return;
 
@@ -324,6 +325,7 @@ async function handlePullRequestWebhook(env: Env, payload: any): Promise<void> {
     await db.updateSessionGitState(env.DB, sessionId, {
       prState: prState as any,
       prTitle: pr.title,
+      prUrl: pr.html_url,
       prMergedAt: pr.merged_at || undefined,
     });
 
@@ -338,6 +340,7 @@ async function handlePullRequestWebhook(env: Env, payload: any): Promise<void> {
           type: 'git-state-update',
           prState,
           prTitle: pr.title,
+          prUrl: pr.html_url,
           prMergedAt: pr.merged_at || null,
         }),
       }));

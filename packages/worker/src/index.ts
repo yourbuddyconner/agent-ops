@@ -32,9 +32,12 @@ import { tasksRouter } from './routes/tasks.js';
 import { notificationQueueRouter } from './routes/mailbox.js';
 import { channelsRouter } from './routes/channels.js';
 import { telegramRouter, telegramApiRouter } from './routes/telegram.js';
+import { decryptString } from './lib/crypto.js';
 import {
   enqueueWorkflowApprovalNotificationIfMissing,
+  getOAuthToken,
   markWorkflowApprovalNotificationsRead,
+  updateSessionGitState,
 } from './lib/db.js';
 import {
   checkWorkflowConcurrency,
@@ -178,6 +181,12 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (event, env, ctx) 
     console.error('Scheduled workflow dispatch error:', error);
   }
 
+  try {
+    await reconcileGitHubResources(env);
+  } catch (error) {
+    console.error('GitHub reconciliation error:', error);
+  }
+
   // Nightly: archive terminated sessions older than 7 days
   if (event.cron === '0 3 * * *') {
     try {
@@ -187,6 +196,285 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (event, env, ctx) 
     }
   }
 };
+
+const MAX_GITHUB_RESOURCES_PER_RUN = 100;
+const LIVE_NOTIFY_SESSION_STATUSES = new Set(['initializing', 'running', 'idle', 'restoring', 'hibernating']);
+
+interface TrackedGitHubResourceRow {
+  session_id: string;
+  user_id: string;
+  session_status: string;
+  source_repo_full_name: string | null;
+  source_repo_url: string | null;
+  tracked_pr_number: number | string;
+  pr_state: string | null;
+  pr_title: string | null;
+  pr_url: string | null;
+  pr_merged_at: string | null;
+}
+
+interface TrackedGitHubResource {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  links: Array<{
+    sessionId: string;
+    userId: string;
+    sessionStatus: string;
+    prState: string | null;
+    prTitle: string | null;
+    prUrl: string | null;
+    prMergedAt: string | null;
+  }>;
+}
+
+function extractOwnerRepoFromGitState(sourceRepoFullName: string | null, sourceRepoUrl: string | null): {
+  owner: string;
+  repo: string;
+} | null {
+  if (sourceRepoFullName) {
+    const [owner, repo] = sourceRepoFullName.split('/');
+    if (owner && repo) return { owner, repo };
+  }
+  if (sourceRepoUrl) {
+    const match = sourceRepoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/i);
+    if (match) return { owner: match[1], repo: match[2] };
+  }
+  return null;
+}
+
+function mapGitHubPullRequestState(
+  state: string | undefined,
+  draft: boolean,
+  mergedAt: string | null | undefined,
+): 'draft' | 'open' | 'closed' | 'merged' | null {
+  if (mergedAt) return 'merged';
+  if (state === 'open') return draft ? 'draft' : 'open';
+  if (state === 'closed') return 'closed';
+  return null;
+}
+
+async function reconcileGitHubResources(env: Env): Promise<void> {
+  const rowsRes = await env.DB.prepare(
+    `SELECT
+       g.session_id,
+       s.user_id,
+       s.status as session_status,
+       g.source_repo_full_name,
+       g.source_repo_url,
+       COALESCE(g.pr_number, g.source_pr_number) as tracked_pr_number,
+       g.pr_state,
+       g.pr_title,
+       g.pr_url,
+       g.pr_merged_at
+     FROM session_git_state g
+     JOIN sessions s ON s.id = g.session_id
+     WHERE s.status != 'archived'
+       AND COALESCE(g.pr_number, g.source_pr_number) IS NOT NULL
+       AND (g.pr_state IS NULL OR g.pr_state IN ('open', 'draft'))
+     ORDER BY g.updated_at DESC`
+  ).all<TrackedGitHubResourceRow>();
+
+  const rows = rowsRes.results || [];
+  if (rows.length === 0) return;
+
+  const resourceMap = new Map<string, TrackedGitHubResource>();
+  for (const row of rows) {
+    const ownerRepo = extractOwnerRepoFromGitState(row.source_repo_full_name, row.source_repo_url);
+    if (!ownerRepo) continue;
+
+    const prNumber = typeof row.tracked_pr_number === 'number'
+      ? row.tracked_pr_number
+      : Number.parseInt(String(row.tracked_pr_number), 10);
+    if (!Number.isInteger(prNumber) || prNumber <= 0) continue;
+
+    const key = `${ownerRepo.owner}/${ownerRepo.repo}#${prNumber}`;
+    const existing = resourceMap.get(key);
+    const link = {
+      sessionId: row.session_id,
+      userId: row.user_id,
+      sessionStatus: row.session_status,
+      prState: row.pr_state,
+      prTitle: row.pr_title,
+      prUrl: row.pr_url,
+      prMergedAt: row.pr_merged_at,
+    };
+
+    if (existing) {
+      existing.links.push(link);
+    } else {
+      resourceMap.set(key, {
+        owner: ownerRepo.owner,
+        repo: ownerRepo.repo,
+        prNumber,
+        links: [link],
+      });
+    }
+  }
+
+  const resources = Array.from(resourceMap.values()).slice(0, MAX_GITHUB_RESOURCES_PER_RUN);
+  if (resources.length === 0) return;
+
+  const tokenCache = new Map<string, string | null>();
+  const getTokenForUser = async (userId: string): Promise<string | null> => {
+    if (tokenCache.has(userId)) return tokenCache.get(userId) ?? null;
+    try {
+      const tokenRow = await getOAuthToken(env.DB, userId, 'github');
+      if (!tokenRow) {
+        tokenCache.set(userId, null);
+        return null;
+      }
+      const token = await decryptString(tokenRow.encryptedAccessToken, env.ENCRYPTION_KEY);
+      tokenCache.set(userId, token);
+      return token;
+    } catch (error) {
+      console.warn(`GitHub reconcile: failed to decrypt token for user ${userId}`, error);
+      tokenCache.set(userId, null);
+      return null;
+    }
+  };
+
+  let checked = 0;
+  let updated = 0;
+  let notified = 0;
+  let skippedNoToken = 0;
+  let rateLimited = false;
+
+  for (const resource of resources) {
+    if (rateLimited) break;
+    checked++;
+
+    const url = `https://api.github.com/repos/${encodeURIComponent(resource.owner)}/${encodeURIComponent(resource.repo)}/pulls/${resource.prNumber}`;
+    const candidateUserIds = Array.from(new Set(resource.links.map((link) => link.userId)));
+
+    let prPayload: {
+      state?: string;
+      draft?: boolean;
+      merged_at?: string | null;
+      title?: string;
+      html_url?: string;
+    } | null = null;
+
+    let hadTokenCandidate = false;
+    for (const userId of candidateUserIds) {
+      const token = await getTokenForUser(userId);
+      if (!token) continue;
+      hadTokenCandidate = true;
+
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'User-Agent': 'Agent-Ops-Reconciler',
+          },
+        });
+      } catch (error) {
+        console.warn(`GitHub reconcile: request failed for ${resource.owner}/${resource.repo}#${resource.prNumber}`, error);
+        continue;
+      }
+
+      if (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0') {
+        rateLimited = true;
+        const resetAt = response.headers.get('x-ratelimit-reset');
+        console.warn(
+          `GitHub reconcile: rate limit reached while checking ${resource.owner}/${resource.repo}#${resource.prNumber}`
+          + (resetAt ? ` (reset at ${resetAt})` : ''),
+        );
+        break;
+      }
+
+      if (!response.ok) {
+        // Permission errors are token-specific; try another linked user's token.
+        if (response.status === 401 || response.status === 403 || response.status === 404) {
+          continue;
+        }
+        const body = await response.text();
+        console.warn(
+          `GitHub reconcile: unexpected ${response.status} for ${resource.owner}/${resource.repo}#${resource.prNumber}: ${body.slice(0, 200)}`,
+        );
+        continue;
+      }
+
+      prPayload = await response.json() as {
+        state?: string;
+        draft?: boolean;
+        merged_at?: string | null;
+        title?: string;
+        html_url?: string;
+      };
+      break;
+    }
+
+    if (!prPayload) {
+      if (!hadTokenCandidate) skippedNoToken++;
+      continue;
+    }
+
+    const nextState = mapGitHubPullRequestState(prPayload.state, Boolean(prPayload.draft), prPayload.merged_at ?? null);
+    if (!nextState || typeof prPayload.title !== 'string' || typeof prPayload.html_url !== 'string') {
+      continue;
+    }
+
+    const nextMergedAt = prPayload.merged_at ?? null;
+    for (const link of resource.links) {
+      const changed =
+        link.prState !== nextState
+        || link.prTitle !== prPayload.title
+        || link.prUrl !== prPayload.html_url
+        || link.prMergedAt !== nextMergedAt;
+
+      if (!changed) continue;
+
+      try {
+        await updateSessionGitState(env.DB, link.sessionId, {
+          prState: nextState as any,
+          prTitle: prPayload.title,
+          prUrl: prPayload.html_url,
+          prMergedAt: nextMergedAt as any,
+        });
+        updated++;
+      } catch (error) {
+        console.error(`GitHub reconcile: failed to update git state for session ${link.sessionId}`, error);
+        continue;
+      }
+
+      if (!LIVE_NOTIFY_SESSION_STATUSES.has(link.sessionStatus)) {
+        continue;
+      }
+
+      try {
+        const doId = env.SESSIONS.idFromName(link.sessionId);
+        const stub = env.SESSIONS.get(doId);
+        await stub.fetch(new Request('http://do/webhook-update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'git-state-update',
+            prState: nextState,
+            prTitle: prPayload.title,
+            prUrl: prPayload.html_url,
+            prMergedAt: nextMergedAt,
+          }),
+        }));
+        notified++;
+      } catch (error) {
+        console.warn(`GitHub reconcile: failed to notify session DO ${link.sessionId}`, error);
+      }
+    }
+  }
+
+  if (resourceMap.size > MAX_GITHUB_RESOURCES_PER_RUN) {
+    console.log(
+      `GitHub reconcile processed ${MAX_GITHUB_RESOURCES_PER_RUN}/${resourceMap.size} tracked resources (truncated this run)`,
+    );
+  }
+
+  console.log(
+    `GitHub reconcile summary: checked=${checked}, updated=${updated}, notified=${notified}, missingTokenResources=${skippedNoToken}, rateLimited=${rateLimited}`,
+  );
+}
 
 function hasPromptDispatch(runtimeStateRaw: string | null): boolean {
   if (!runtimeStateRaw) return false;

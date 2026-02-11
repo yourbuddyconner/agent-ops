@@ -1,10 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useSession, useSessionGitState, useSessionChildren, useSessionFilesChanged, useSessionDoStatus, useDeleteSessionTunnel, useSessionToken } from '@/api/sessions';
 import { useDrawer } from '@/routes/sessions/$sessionId';
 import { Badge } from '@/components/ui/badge';
 import type { PRState, SessionFileChanged } from '@/api/types';
 import type { ConnectedUser } from '@/hooks/use-chat';
+import {
+  deriveRuntimeStates,
+  isAgentRuntimeState,
+  isSandboxRuntimeState,
+  isJointRuntimeState,
+} from '@/lib/runtime-state';
 
 interface SessionMetadataSidebarProps {
   sessionId: string;
@@ -48,6 +54,154 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
   const tunnels = Array.isArray((doStatus as { tunnels?: unknown })?.tunnels)
     ? ((doStatus as { tunnels: Array<{ name: string; url?: string; path?: string; port?: number; protocol?: string }> }).tunnels || [])
     : [];
+  const sandboxId = typeof doStatus?.sandboxId === 'string' && doStatus.sandboxId.length > 0
+    ? doStatus.sandboxId
+    : null;
+  const runnerConnected = doStatus?.runnerConnected === true;
+  const runnerBusy = doStatus?.runnerBusy === true;
+  const queuedPrompts = typeof doStatus?.queuedPrompts === 'number' ? doStatus.queuedPrompts : 0;
+  const lifecycleStatusInput = typeof doStatus?.lifecycleStatus === 'string'
+    ? doStatus.lifecycleStatus
+    : (typeof doStatus?.status === 'string' ? doStatus.status : session?.status ?? 'terminated');
+  const derivedRuntime = useMemo(
+    () =>
+      deriveRuntimeStates({
+        lifecycleStatus: lifecycleStatusInput,
+        sandboxId,
+        runnerConnected,
+        runnerBusy,
+        queuedPrompts,
+      }),
+    [lifecycleStatusInput, sandboxId, runnerConnected, runnerBusy, queuedPrompts],
+  );
+  const lifecycleRuntimeState = derivedRuntime.lifecycleStatus;
+  const agentRuntimeState = isAgentRuntimeState(doStatus?.agentState)
+    ? doStatus.agentState
+    : derivedRuntime.agentState;
+  const sandboxRuntimeState = isSandboxRuntimeState(doStatus?.sandboxState)
+    ? doStatus.sandboxState
+    : derivedRuntime.sandboxState;
+  const jointRuntimeState = isJointRuntimeState(doStatus?.jointState)
+    ? doStatus.jointState
+    : derivedRuntime.jointState;
+
+  const lifecycleStatusRaw = (() => {
+    switch (lifecycleRuntimeState) {
+      case 'running':
+        return 'running';
+      case 'idle':
+        return 'idle';
+      case 'hibernated':
+        return 'hibernated';
+      case 'terminated':
+      case 'archived':
+        return 'terminated';
+      case 'error':
+        return 'error';
+      case 'initializing':
+      case 'hibernating':
+      case 'restoring':
+        return 'initializing';
+    }
+  })();
+  const lifecycleStatusLabel = (() => {
+    switch (lifecycleRuntimeState) {
+      case 'initializing':
+        return 'Initializing';
+      case 'running':
+        return 'Running';
+      case 'idle':
+        return 'Idle';
+      case 'hibernating':
+        return 'Hibernating';
+      case 'hibernated':
+        return 'Sleeping';
+      case 'restoring':
+        return 'Restoring';
+      case 'terminated':
+        return 'Terminated';
+      case 'archived':
+        return 'Archived';
+      case 'error':
+        return 'Error';
+    }
+  })();
+
+  const agentStatusRaw = (() => {
+    switch (agentRuntimeState) {
+      case 'busy':
+      case 'idle':
+        return 'running';
+      case 'queued':
+      case 'starting':
+        return 'initializing';
+      case 'sleeping':
+        return 'hibernated';
+      case 'standby':
+      case 'stopped':
+        return 'terminated';
+      case 'error':
+        return 'error';
+    }
+  })();
+  const agentStatusLabel = (() => {
+    if (jointRuntimeState === 'waking') return 'Waking';
+    switch (agentRuntimeState) {
+      case 'busy':
+        return 'Running (busy)';
+      case 'idle':
+        return 'Running (idle)';
+      case 'queued':
+        return sandboxRuntimeState === 'running' ? 'Queued' : 'Waking (queued)';
+      case 'starting':
+        return 'Starting';
+      case 'sleeping':
+        return 'Sleeping';
+      case 'standby':
+        return sandboxRuntimeState === 'running'
+          ? 'Standby (runner offline)'
+          : 'Standby (no sandbox)';
+      case 'stopped':
+        return 'Stopped';
+      case 'error':
+        return 'Error';
+    }
+  })();
+
+  const sandboxStatusRaw = (() => {
+    switch (sandboxRuntimeState) {
+      case 'running':
+        return 'running';
+      case 'starting':
+      case 'restoring':
+      case 'hibernating':
+        return 'initializing';
+      case 'hibernated':
+        return 'hibernated';
+      case 'stopped':
+        return 'terminated';
+      case 'error':
+        return 'error';
+    }
+  })();
+  const sandboxStatusLabel = (() => {
+    switch (sandboxRuntimeState) {
+      case 'running':
+        return 'Running';
+      case 'starting':
+        return 'Starting';
+      case 'restoring':
+        return 'Restoring';
+      case 'hibernating':
+        return 'Hibernating';
+      case 'hibernated':
+        return 'Sleeping';
+      case 'stopped':
+        return 'Not running';
+      case 'error':
+        return 'Error';
+    }
+  })();
 
   return (
     <div className={`metadata-sidebar flex h-full flex-col bg-surface-0 dark:bg-surface-0 ${embedded ? 'w-full' : `border-l border-border ${compact ? 'w-[200px]' : 'w-[240px]'}`}`}>
@@ -79,6 +233,30 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
             </div>
           </SidebarSection>
         )}
+
+        {/* Runtime */}
+        <SidebarSection label="Runtime">
+          <div className="space-y-1">
+            <div className="flex items-center gap-1.5">
+              <StatusDot status={lifecycleStatusRaw} />
+              <span className="font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
+                Lifecycle: {lifecycleStatusLabel}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <StatusDot status={agentStatusRaw} />
+              <span className="font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
+                Agent: {agentStatusLabel}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <StatusDot status={sandboxStatusRaw} />
+              <span className="font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
+                Sandbox: {sandboxStatusLabel}
+              </span>
+            </div>
+          </div>
+        </SidebarSection>
 
         {/* Duration */}
         <SidebarSection label="Duration">
@@ -314,8 +492,11 @@ export function StatusDot({ status }: { status: string }) {
   const colors: Record<string, string> = {
     running: 'bg-emerald-400',
     initializing: 'bg-amber-400',
+    restoring: 'bg-amber-400',
+    hibernating: 'bg-amber-400',
     idle: 'bg-neutral-400',
     terminated: 'bg-neutral-300 dark:bg-neutral-600',
+    stopped: 'bg-neutral-300 dark:bg-neutral-600',
     archived: 'bg-neutral-300 dark:bg-neutral-600',
     error: 'bg-red-400',
     hibernated: 'bg-neutral-300 dark:bg-neutral-600',

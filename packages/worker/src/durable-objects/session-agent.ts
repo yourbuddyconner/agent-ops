@@ -5461,6 +5461,7 @@ export class SessionAgentDO {
     this.setStateValue('tunnels', '');
     this.setStateValue('snapshotImageId', '');
     this.setStateValue('runnerBusy', 'false');
+    this.ctx.storage.sql.exec('DELETE FROM prompt_queue');
 
     // Sync status to D1
     if (sessionId) {
@@ -5992,6 +5993,7 @@ export class SessionAgentDO {
         type: string;
         prState?: string;
         prTitle?: string;
+        prUrl?: string;
         prMergedAt?: string | null;
         commitCount?: number;
         branch?: string;
@@ -6003,6 +6005,7 @@ export class SessionAgentDO {
         data: {
           ...(body.prState !== undefined && { prState: body.prState }),
           ...(body.prTitle !== undefined && { prTitle: body.prTitle }),
+          ...(body.prUrl !== undefined && { prUrl: body.prUrl }),
           ...(body.prMergedAt !== undefined && { prMergedAt: body.prMergedAt }),
           ...(body.commitCount !== undefined && { commitCount: body.commitCount }),
           ...(body.branch !== undefined && { branch: body.branch }),
