@@ -5170,11 +5170,15 @@ export class SessionAgentDO {
     });
 
     this.appendAuditLog('session.started', `Session started for ${body.workspace}`, body.userId);
-    await this.enqueueOwnerNotification({
-      messageType: 'notification',
-      content: `Session started: ${body.workspace}`,
-      contextSessionId: body.sessionId,
-    });
+    // Skip lifecycle notifications for orchestrator sessions — they restart
+    // frequently and the noise isn't useful since the user explicitly triggers refreshes.
+    if (!body.sessionId?.startsWith('orchestrator:')) {
+      await this.enqueueOwnerNotification({
+        messageType: 'notification',
+        content: `Session started: ${body.workspace}`,
+        contextSessionId: body.sessionId,
+      });
+    }
 
     return Response.json({
       success: true,
@@ -5377,11 +5381,13 @@ export class SessionAgentDO {
       data: { sandboxId: sandboxId || null, reason },
       timestamp: new Date().toISOString(),
     });
-    await this.enqueueOwnerNotification({
-      messageType: 'notification',
-      content: `Session completed (${reason}).`,
-      contextSessionId: sessionId || undefined,
-    });
+    if (!sessionId?.startsWith('orchestrator:')) {
+      await this.enqueueOwnerNotification({
+        messageType: 'notification',
+        content: `Session completed (${reason}).`,
+        contextSessionId: sessionId || undefined,
+      });
+    }
 
     await this.notifyParentEvent(`Child session event: ${sessionId} completed (reason: ${reason}).`, { wake: true });
 
