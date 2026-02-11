@@ -6,6 +6,7 @@ import { useLogout, useUpdateProfile } from '@/api/auth';
 import { useOrchestratorInfo, useUpdateOrchestratorIdentity, useCheckHandle, useNotificationPreferences, useUpdateNotificationPreferences, useIdentityLinks, useCreateIdentityLink, useDeleteIdentityLink } from '@/api/orchestrator';
 import { useAvailableModels } from '@/api/sessions';
 import type { ProviderModels } from '@/api/sessions';
+import type { QueueMode } from '@agent-ops/shared';
 import { Button } from '@/components/ui/button';
 import { APIKeyList } from '@/components/settings/api-key-list';
 import { useTheme } from '@/hooks/use-theme';
@@ -159,6 +160,7 @@ function AgentTab() {
 
       <ModelPreferencesSection />
       <IdleTimeoutSection />
+      <UiQueueModeSection />
     </div>
   );
 }
@@ -481,6 +483,24 @@ const IDLE_TIMEOUT_OPTIONS = [
   { label: '1 hour', value: 3600 },
 ];
 
+const UI_QUEUE_MODE_OPTIONS: Array<{ value: QueueMode; label: string; description: string }> = [
+  {
+    value: 'followup',
+    label: 'Queue (Follow-up)',
+    description: 'Keep current work running and queue your new message.',
+  },
+  {
+    value: 'collect',
+    label: 'Collect',
+    description: 'Briefly collect rapid messages, then send them as one prompt.',
+  },
+  {
+    value: 'steer',
+    label: 'Steer (Interrupt)',
+    description: 'Abort current work and immediately redirect to your latest message.',
+  },
+];
+
 function IdleTimeoutSection() {
   const user = useAuthStore((s) => s.user);
   const updateProfile = useUpdateProfile();
@@ -528,6 +548,68 @@ function IdleTimeoutSection() {
           </select>
           <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
             Time before an idle session is hibernated. New sessions will use this setting.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {saved && (
+            <span className="text-sm text-green-600 dark:text-green-400">Saved</span>
+          )}
+          {updateProfile.isError && (
+            <span className="text-sm text-red-600 dark:text-red-400">Failed to save.</span>
+          )}
+        </div>
+      </div>
+    </SettingsSection>
+  );
+}
+
+function UiQueueModeSection() {
+  const user = useAuthStore((s) => s.user);
+  const updateProfile = useUpdateProfile();
+  const [saved, setSaved] = React.useState(false);
+  const currentValue = (user?.uiQueueMode ?? 'followup') as QueueMode;
+
+  function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const value = e.target.value as QueueMode;
+    updateProfile.mutate(
+      { uiQueueMode: value },
+      {
+        onSuccess: () => {
+          setSaved(true);
+          setTimeout(() => setSaved(false), 2000);
+        },
+      },
+    );
+  }
+
+  return (
+    <SettingsSection title="UI Message Dispatch">
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Choose how new chat messages behave when the agent is already working.
+        </p>
+        <div>
+          <label
+            htmlFor="ui-queue-mode"
+            className="text-sm font-medium text-neutral-700 dark:text-neutral-300"
+          >
+            Busy-message behavior
+          </label>
+          <select
+            id="ui-queue-mode"
+            value={currentValue}
+            onChange={handleChange}
+            disabled={updateProfile.isPending}
+            className="mt-1 block w-full max-w-md rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
+          >
+            {UI_QUEUE_MODE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+            {UI_QUEUE_MODE_OPTIONS.find((opt) => opt.value === currentValue)?.description}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -671,6 +753,15 @@ const NOTIFICATION_TYPES = [
   { type: 'escalation', label: 'Escalations', description: 'Urgent items that need your attention' },
 ] as const;
 
+const NOTIFICATION_EVENT_TYPES = [
+  {
+    messageType: 'notification',
+    eventType: 'session.lifecycle',
+    label: 'Session lifecycle',
+    description: 'Session started/completed status updates',
+  },
+] as const;
+
 function NotificationPreferencesSection() {
   const { data: orchInfo, isLoading: orchLoading } = useOrchestratorInfo();
   const { data: preferences } = useNotificationPreferences();
@@ -678,13 +769,16 @@ function NotificationPreferencesSection() {
 
   if (orchLoading || !orchInfo?.exists) return null;
 
-  function getPreference(messageType: string) {
-    return preferences?.find((p) => p.messageType === messageType);
+  function getPreference(messageType: string, eventType: string = '*') {
+    return preferences?.find(
+      (p) => p.messageType === messageType && (p.eventType ?? '*') === eventType,
+    );
   }
 
-  function handleToggle(messageType: string, field: 'webEnabled', value: boolean) {
+  function handleToggle(messageType: string, field: 'webEnabled', value: boolean, eventType?: string) {
     updatePrefs.mutate({
       messageType,
+      eventType,
       [field]: value,
     });
   }
@@ -693,7 +787,7 @@ function NotificationPreferencesSection() {
     <SettingsSection title="Notification Preferences">
       <div className="space-y-4">
         <p className="text-sm text-neutral-500 dark:text-neutral-400">
-          Choose how you receive notifications for each message type.
+          Choose how you receive notifications by message type and event category.
         </p>
 
         <div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700">
@@ -749,6 +843,52 @@ function NotificationPreferencesSection() {
               })}
             </tbody>
           </table>
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+            Notification Event Types
+          </p>
+          <div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800/50">
+                  <th className="px-4 py-2.5 text-left font-medium text-neutral-500 dark:text-neutral-400">
+                    Event
+                  </th>
+                  <th className="px-4 py-2.5 text-center font-medium text-neutral-500 dark:text-neutral-400">
+                    Web
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-200 dark:divide-neutral-700">
+                {NOTIFICATION_EVENT_TYPES.map((eventPref) => {
+                  const pref = getPreference(eventPref.messageType, eventPref.eventType);
+                  const fallbackPref = getPreference(eventPref.messageType);
+                  const webEnabled = pref?.webEnabled ?? fallbackPref?.webEnabled ?? true;
+
+                  return (
+                    <tr key={`${eventPref.messageType}:${eventPref.eventType}`} className="bg-white dark:bg-neutral-900">
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-neutral-900 dark:text-neutral-100">
+                          {eventPref.label}
+                        </div>
+                        <div className="text-xs text-neutral-400 dark:text-neutral-500">
+                          {eventPref.description}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <ToggleSwitch
+                          checked={webEnabled}
+                          onChange={(v) => handleToggle(eventPref.messageType, 'webEnabled', v, eventPref.eventType)}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <p className="text-xs text-neutral-400 dark:text-neutral-500">

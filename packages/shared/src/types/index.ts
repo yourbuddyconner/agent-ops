@@ -239,6 +239,7 @@ export interface User {
   onboardingCompleted?: boolean;
   idleTimeoutSeconds?: number;
   modelPreferences?: string[];
+  uiQueueMode?: QueueMode;
   role: UserRole;
   createdAt: Date;
   updatedAt: Date;
@@ -773,6 +774,8 @@ export interface UserNotificationPreference {
   id: string;
   userId: string;
   messageType: MailboxMessageType;
+  // Event-specific key within messageType, '*' means "all events in this type".
+  eventType: string;
   webEnabled: boolean;
   slackEnabled: boolean;
   emailEnabled: boolean;

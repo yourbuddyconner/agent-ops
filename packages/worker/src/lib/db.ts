@@ -561,13 +561,30 @@ export async function getUserById(db: D1Database, userId: string): Promise<User 
 export async function updateUserProfile(
   db: D1Database,
   userId: string,
-  data: { name?: string; gitName?: string; gitEmail?: string; onboardingCompleted?: boolean; idleTimeoutSeconds?: number; modelPreferences?: string[] }
+  data: {
+    name?: string;
+    gitName?: string;
+    gitEmail?: string;
+    onboardingCompleted?: boolean;
+    idleTimeoutSeconds?: number;
+    modelPreferences?: string[];
+    uiQueueMode?: QueueMode;
+  },
 ): Promise<User | null> {
   await db
     .prepare(
-      "UPDATE users SET name = COALESCE(?, name), git_name = ?, git_email = ?, onboarding_completed = COALESCE(?, onboarding_completed), idle_timeout_seconds = COALESCE(?, idle_timeout_seconds), model_preferences = COALESCE(?, model_preferences), updated_at = datetime('now') WHERE id = ?"
+      "UPDATE users SET name = COALESCE(?, name), git_name = ?, git_email = ?, onboarding_completed = COALESCE(?, onboarding_completed), idle_timeout_seconds = COALESCE(?, idle_timeout_seconds), model_preferences = COALESCE(?, model_preferences), ui_queue_mode = COALESCE(?, ui_queue_mode), updated_at = datetime('now') WHERE id = ?"
     )
-    .bind(data.name ?? null, data.gitName ?? null, data.gitEmail ?? null, data.onboardingCompleted !== undefined ? (data.onboardingCompleted ? 1 : 0) : null, data.idleTimeoutSeconds ?? null, data.modelPreferences !== undefined ? JSON.stringify(data.modelPreferences) : null, userId)
+    .bind(
+      data.name ?? null,
+      data.gitName ?? null,
+      data.gitEmail ?? null,
+      data.onboardingCompleted !== undefined ? (data.onboardingCompleted ? 1 : 0) : null,
+      data.idleTimeoutSeconds ?? null,
+      data.modelPreferences !== undefined ? JSON.stringify(data.modelPreferences) : null,
+      data.uiQueueMode ?? null,
+      userId,
+    )
     .run();
 
   return getUserById(db, userId);
@@ -2138,6 +2155,7 @@ function mapUser(row: any): User {
     onboardingCompleted: !!row.onboarding_completed,
     idleTimeoutSeconds: row.idle_timeout_seconds ?? 900,
     modelPreferences: row.model_preferences ? JSON.parse(row.model_preferences) : undefined,
+    uiQueueMode: row.ui_queue_mode || 'followup',
     role: row.role || 'member',
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
@@ -2447,6 +2465,36 @@ export async function markInboxThreadRead(
 export type NotificationQueueItem = MailboxMessage;
 export type NotificationQueueType = MailboxMessage['messageType'];
 
+function normalizeNotificationEventType(eventType?: string | null): string {
+  const trimmed = eventType?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : '*';
+}
+
+export async function isNotificationWebEnabled(
+  db: D1Database,
+  userId: string,
+  messageType: string,
+  eventType?: string,
+): Promise<boolean> {
+  const normalizedEventType = normalizeNotificationEventType(eventType);
+
+  const row = await db
+    .prepare(
+      `SELECT web_enabled
+       FROM user_notification_preferences
+       WHERE user_id = ?
+         AND message_type = ?
+         AND event_type IN (?, '*')
+       ORDER BY CASE WHEN event_type = ? THEN 0 ELSE 1 END
+       LIMIT 1`,
+    )
+    .bind(userId, messageType, normalizedEventType, normalizedEventType)
+    .first<{ web_enabled: number }>();
+
+  // Default to enabled when no explicit preference exists.
+  return row ? !!row.web_enabled : true;
+}
+
 export async function enqueueNotification(
   db: D1Database,
   data: {
@@ -2478,6 +2526,11 @@ export async function enqueueWorkflowApprovalNotificationIfMissing(
     approvalPrompt?: string | null;
   },
 ): Promise<boolean> {
+  const approvalEnabled = await isNotificationWebEnabled(db, data.toUserId, 'approval');
+  if (!approvalEnabled) {
+    return false;
+  }
+
   const workflowName = data.workflowName?.trim();
   const prompt = data.approvalPrompt?.trim();
   const workflowLabel = workflowName ? `Workflow "${workflowName}"` : 'Workflow';
@@ -2824,6 +2877,7 @@ function mapNotificationPreference(row: any): UserNotificationPreference {
     id: row.id,
     userId: row.user_id,
     messageType: row.message_type,
+    eventType: row.event_type || '*',
     webEnabled: !!row.web_enabled,
     slackEnabled: !!row.slack_enabled,
     emailEnabled: !!row.email_enabled,
@@ -2837,7 +2891,11 @@ export async function getNotificationPreferences(
   userId: string,
 ): Promise<UserNotificationPreference[]> {
   const result = await db
-    .prepare('SELECT * FROM user_notification_preferences WHERE user_id = ? ORDER BY message_type')
+    .prepare(
+      `SELECT * FROM user_notification_preferences
+       WHERE user_id = ?
+       ORDER BY message_type, CASE WHEN event_type = '*' THEN 0 ELSE 1 END, event_type`,
+    )
     .bind(userId)
     .all();
   return (result.results || []).map(mapNotificationPreference);
@@ -2847,16 +2905,18 @@ export async function upsertNotificationPreference(
   db: D1Database,
   userId: string,
   messageType: string,
+  eventType: string | undefined,
   prefs: { webEnabled?: boolean; slackEnabled?: boolean; emailEnabled?: boolean },
 ): Promise<UserNotificationPreference> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+  const normalizedEventType = normalizeNotificationEventType(eventType);
 
   await db
     .prepare(
-      `INSERT INTO user_notification_preferences (id, user_id, message_type, web_enabled, slack_enabled, email_enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(user_id, message_type) DO UPDATE SET
+      `INSERT INTO user_notification_preferences (id, user_id, message_type, event_type, web_enabled, slack_enabled, email_enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, message_type, event_type) DO UPDATE SET
          web_enabled = COALESCE(excluded.web_enabled, user_notification_preferences.web_enabled),
          slack_enabled = COALESCE(excluded.slack_enabled, user_notification_preferences.slack_enabled),
          email_enabled = COALESCE(excluded.email_enabled, user_notification_preferences.email_enabled),
@@ -2866,6 +2926,7 @@ export async function upsertNotificationPreference(
       id,
       userId,
       messageType,
+      normalizedEventType,
       prefs.webEnabled !== undefined ? (prefs.webEnabled ? 1 : 0) : 1,
       prefs.slackEnabled !== undefined ? (prefs.slackEnabled ? 1 : 0) : 0,
       prefs.emailEnabled !== undefined ? (prefs.emailEnabled ? 1 : 0) : 0,
@@ -2875,8 +2936,8 @@ export async function upsertNotificationPreference(
     .run();
 
   const row = await db
-    .prepare('SELECT * FROM user_notification_preferences WHERE user_id = ? AND message_type = ?')
-    .bind(userId, messageType)
+    .prepare('SELECT * FROM user_notification_preferences WHERE user_id = ? AND message_type = ? AND event_type = ?')
+    .bind(userId, messageType, normalizedEventType)
     .first();
 
   return mapNotificationPreference(row);

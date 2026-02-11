@@ -1,5 +1,5 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramToken, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramToken, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled } from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 import { sendTelegramMessage, sendTelegramPhoto } from '../routes/telegram.js';
@@ -110,6 +110,7 @@ interface ClientMessage {
   type: 'prompt' | 'answer' | 'ping' | 'abort' | 'revert' | 'diff' | 'review' | 'command';
   content?: string;
   model?: string;
+  queueMode?: 'followup' | 'collect' | 'steer';
   attachments?: PromptAttachment[];
   questionId?: string;
   answer?: string | boolean;
@@ -639,9 +640,8 @@ export class SessionAgentDO {
         if (!content && attachments.length === 0) {
           return new Response(JSON.stringify({ error: 'Missing content or attachments' }), { status: 400 });
         }
-        // Channel messages use 'followup' mode — each message is dispatched
-        // individually via handlePrompt which queues if the runner is busy.
-        // No debouncing needed since prompt_async handles sequential delivery.
+        // Route prompts through the selected queue mode. If none is provided,
+        // fall back to the DO's configured default.
         const effectiveMode = body.interrupt ? 'steer' : (body.queueMode || this.getStateValue('queueMode') || 'followup');
 
         const author = (body.authorId || body.authorEmail) ? {
@@ -5278,6 +5278,7 @@ export class SessionAgentDO {
     if (!body.sessionId?.startsWith('orchestrator:')) {
       await this.enqueueOwnerNotification({
         messageType: 'notification',
+        eventType: 'session.lifecycle',
         content: `Session started: ${body.workspace}`,
         contextSessionId: body.sessionId,
       });
@@ -5487,6 +5488,7 @@ export class SessionAgentDO {
     if (!sessionId?.startsWith('orchestrator:')) {
       await this.enqueueOwnerNotification({
         messageType: 'notification',
+        eventType: 'session.lifecycle',
         content: `Session completed (${reason}).`,
         contextSessionId: sessionId || undefined,
       });
@@ -6778,6 +6780,7 @@ export class SessionAgentDO {
 
   private async enqueueOwnerNotification(params: {
     messageType?: 'notification' | 'question' | 'escalation' | 'approval';
+    eventType?: string;
     content: string;
     contextSessionId?: string;
     contextTaskId?: string;
@@ -6790,10 +6793,19 @@ export class SessionAgentDO {
     if (!normalizedContent) return;
 
     try {
+      const messageType = params.messageType || 'notification';
+      const webEnabled = await isNotificationWebEnabled(
+        this.env.DB,
+        toUserId,
+        messageType,
+        params.eventType,
+      );
+      if (!webEnabled) return;
+
       await createMailboxMessage(this.env.DB, {
         fromSessionId: this.getStateValue('sessionId') || undefined,
         toUserId,
-        messageType: params.messageType || 'notification',
+        messageType,
         content: normalizedContent.slice(0, 10_000),
         contextSessionId: params.contextSessionId,
         contextTaskId: params.contextTaskId,

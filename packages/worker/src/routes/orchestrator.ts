@@ -189,6 +189,7 @@ orchestratorRouter.post('/orchestrator', zValidator('json', createOrchestratorSc
   // Fetch user's idle timeout preference
   const userRow = await db.getUserById(c.env.DB, user.id);
   const idleTimeoutSeconds = userRow?.idleTimeoutSeconds ?? 900;
+  const uiQueueMode = userRow?.uiQueueMode ?? 'followup';
   const idleTimeoutMs = idleTimeoutSeconds * 1000;
 
   const spawnRequest = {
@@ -222,6 +223,7 @@ orchestratorRouter.post('/orchestrator', zValidator('json', createOrchestratorSc
         hibernateUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'hibernate-session'),
         restoreUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'restore-session'),
         idleTimeoutMs,
+        queueMode: uiQueueMode,
         spawnRequest,
       }),
     }));
@@ -496,6 +498,7 @@ orchestratorRouter.put('/notification-preferences', async (c) => {
   const user = c.get('user');
   const body = await c.req.json<{
     messageType: string;
+    eventType?: string;
     webEnabled?: boolean;
     slackEnabled?: boolean;
     emailEnabled?: boolean;
@@ -505,7 +508,7 @@ orchestratorRouter.put('/notification-preferences', async (c) => {
     return c.json({ error: 'messageType is required' }, 400);
   }
 
-  const pref = await db.upsertNotificationPreference(c.env.DB, user.id, body.messageType, {
+  const pref = await db.upsertNotificationPreference(c.env.DB, user.id, body.messageType, body.eventType, {
     webEnabled: body.webEnabled,
     slackEnabled: body.slackEnabled,
     emailEnabled: body.emailEnabled,

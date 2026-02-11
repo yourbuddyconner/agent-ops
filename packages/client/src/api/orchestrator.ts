@@ -240,6 +240,7 @@ export function useUpdateNotificationPreferences() {
   return useMutation({
     mutationFn: (data: {
       messageType: string;
+      eventType?: string;
       webEnabled?: boolean;
       slackEnabled?: boolean;
       emailEnabled?: boolean;
