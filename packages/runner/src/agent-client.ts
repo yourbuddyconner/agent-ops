@@ -203,8 +203,17 @@ export class AgentClient {
     role: "user" | "assistant" | "system",
     content: string,
     parts?: Record<string, unknown>,
+    context?: { channelType?: string; channelId?: string; opencodeSessionId?: string },
   ): void {
-    this.send({ type: "workflow-chat-message", role, content, ...(parts ? { parts } : {}) });
+    this.send({
+      type: "workflow-chat-message",
+      role,
+      content,
+      ...(parts ? { parts } : {}),
+      ...(context?.channelType ? { channelType: context.channelType } : {}),
+      ...(context?.channelId ? { channelId: context.channelId } : {}),
+      ...(context?.opencodeSessionId ? { opencodeSessionId: context.opencodeSessionId } : {}),
+    });
   }
 
   sendQuestion(questionId: string, text: string, options?: string[]): void {

@@ -1824,13 +1824,26 @@ export class SessionAgentDO {
         if (!content) break;
 
         const workflowMsgId = crypto.randomUUID();
-        const partsJson = msg.parts && typeof msg.parts === 'object' ? JSON.stringify(msg.parts) : null;
+        const partsObj = msg.parts && typeof msg.parts === 'object' ? msg.parts as Record<string, unknown> : null;
+        const partsJson = partsObj ? JSON.stringify(partsObj) : null;
+        const workflowChannelType = typeof msg.channelType === 'string'
+          ? msg.channelType
+          : (partsObj && typeof partsObj.channelType === 'string' ? partsObj.channelType : null);
+        const workflowChannelId = typeof msg.channelId === 'string'
+          ? msg.channelId
+          : (partsObj && typeof partsObj.channelId === 'string' ? partsObj.channelId : null);
+        const workflowOcSessionId = typeof msg.opencodeSessionId === 'string'
+          ? msg.opencodeSessionId
+          : (partsObj && typeof partsObj.opencodeSessionId === 'string' ? partsObj.opencodeSessionId : null);
         this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content, parts) VALUES (?, ?, ?, ?)',
+          'INSERT INTO messages (id, role, content, parts, channel_type, channel_id, opencode_session_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
           workflowMsgId,
           role,
           content,
           partsJson,
+          workflowChannelType,
+          workflowChannelId,
+          workflowOcSessionId,
         );
         this.broadcastToClients({
           type: 'message',
@@ -1839,6 +1852,7 @@ export class SessionAgentDO {
             role,
             content,
             ...(partsJson ? { parts: JSON.parse(partsJson) } : {}),
+            ...(workflowChannelType && workflowChannelId ? { channelType: workflowChannelType, channelId: workflowChannelId } : {}),
             createdAt: Math.floor(Date.now() / 1000),
           },
         });

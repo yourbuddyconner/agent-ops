@@ -184,7 +184,6 @@ function openCodeErrorToMessage(raw: unknown): string | null {
 
 // Emergency fallback timeout — only fires if no idle/completion event arrives
 const EMERGENCY_TIMEOUT_MS = 60_000;
-const WORKFLOW_EXECUTE_PROMPT_PREFIX = "__AGENT_OPS_WORKFLOW_EXECUTE_V1__";
 
 // Review polling configuration
 const REVIEW_POLL_INTERVAL_MS = 500;
@@ -560,31 +559,104 @@ export class PromptHandler {
     return ch;
   }
 
+  private buildModelFailoverChain(primaryModel?: string, modelPreferences?: string[]): string[] {
+    const chain: string[] = [];
+    const pushModel = (candidate: string | undefined) => {
+      const normalized = typeof candidate === "string" ? candidate.trim() : "";
+      if (!normalized) return;
+      if (!chain.includes(normalized)) chain.push(normalized);
+    };
+    pushModel(primaryModel);
+    for (const candidate of modelPreferences ?? []) {
+      pushModel(candidate);
+    }
+    return chain;
+  }
+
+  private async ensureChannelOpenCodeSession(channel: ChannelSession): Promise<string> {
+    if (!channel.opencodeSessionId) {
+      channel.opencodeSessionId = await this.createSession();
+      this.ocSessionToChannel.set(channel.opencodeSessionId, channel);
+      this.agentClient.sendChannelSessionCreated(channel.channelKey, channel.opencodeSessionId);
+    }
+    if (!this.eventStreamActive) {
+      await this.startEventStream();
+    }
+    return channel.opencodeSessionId;
+  }
+
+  private async recreateChannelOpenCodeSession(channel: ChannelSession): Promise<string> {
+    const oldId = channel.opencodeSessionId;
+    if (oldId) {
+      this.ocSessionToChannel.delete(oldId);
+    }
+    channel.opencodeSessionId = await this.createSession();
+    this.ocSessionToChannel.set(channel.opencodeSessionId, channel);
+    this.agentClient.sendChannelSessionCreated(channel.channelKey, channel.opencodeSessionId);
+    if (!this.eventStreamActive) {
+      await this.startEventStream();
+    }
+    return channel.opencodeSessionId;
+  }
+
+  private async sendPromptToChannelWithRecovery(
+    channel: ChannelSession,
+    content: string,
+    options?: {
+      model?: string;
+      attachments?: PromptAttachment[];
+      author?: PromptAuthor;
+      channelType?: string;
+      channelId?: string;
+    },
+  ): Promise<string> {
+    const currentSessionId = await this.ensureChannelOpenCodeSession(channel);
+    try {
+      await this.sendPromptAsync(
+        currentSessionId,
+        content,
+        options?.model,
+        options?.attachments,
+        options?.author,
+        options?.channelType,
+        options?.channelId,
+      );
+      return currentSessionId;
+    } catch (err) {
+      if (!this.isSessionGone(err)) {
+        throw err;
+      }
+      console.warn("[PromptHandler] OpenCode session missing; recreating session and retrying prompt");
+      const recreatedSessionId = await this.recreateChannelOpenCodeSession(channel);
+      await this.sendPromptAsync(
+        recreatedSessionId,
+        content,
+        options?.model,
+        options?.attachments,
+        options?.author,
+        options?.channelType,
+        options?.channelId,
+      );
+      return recreatedSessionId;
+    }
+  }
+
+  private extractChannelContext(channel: ChannelSession): { channelType?: string; channelId?: string } {
+    const idx = channel.channelKey.indexOf(":");
+    if (idx <= 0 || idx >= channel.channelKey.length - 1) {
+      return {};
+    }
+    return {
+      channelType: channel.channelKey.slice(0, idx),
+      channelId: channel.channelKey.slice(idx + 1),
+    };
+  }
+
 
   private normalizeWorkflowHash(hash: string | undefined): string {
     const cleaned = (hash || "").trim();
     if (!cleaned) return "";
     return cleaned.startsWith("sha256:") ? cleaned : `sha256:${cleaned}`;
-  }
-
-  private parseWorkflowExecutionPrompt(content: string): WorkflowExecutionDispatchPayload | null {
-    if (!content.startsWith(WORKFLOW_EXECUTE_PROMPT_PREFIX)) {
-      return null;
-    }
-
-    const raw = content.slice(WORKFLOW_EXECUTE_PROMPT_PREFIX.length).trim();
-    if (!raw) return null;
-
-    try {
-      const parsed = JSON.parse(raw) as WorkflowExecutionDispatchPayload;
-      if (!parsed || typeof parsed !== "object") return null;
-      if (parsed.kind !== "run" && parsed.kind !== "resume") return null;
-      if (typeof parsed.executionId !== "string" || !parsed.executionId) return null;
-      if (!parsed.payload || typeof parsed.payload !== "object" || Array.isArray(parsed.payload)) return null;
-      return parsed;
-    } catch {
-      return null;
-    }
   }
 
   private async handleWorkflowExecutionPrompt(
@@ -793,19 +865,6 @@ export class PromptHandler {
     return;
   }
 
-  private async ensureWorkflowOpenCodeSession(): Promise<{ channel: ChannelSession; sessionId: string }> {
-    const channel = this.getOrCreateChannel();
-    if (!channel.opencodeSessionId) {
-      channel.opencodeSessionId = await this.createSession();
-      this.ocSessionToChannel.set(channel.opencodeSessionId, channel);
-      this.agentClient.sendChannelSessionCreated(channel.channelKey, channel.opencodeSessionId);
-    }
-    if (!this.eventStreamActive) {
-      await this.startEventStream();
-    }
-    return { channel, sessionId: channel.opencodeSessionId };
-  }
-
   private async executeWorkflowAgentStep(
     step: NormalizedWorkflowStep,
     context: WorkflowStepExecutionContext,
@@ -842,32 +901,42 @@ export class PromptHandler {
           : 120_000;
     const awaitTimeoutMs = Math.max(1_000, Math.min(awaitTimeoutRaw, 900_000));
     const previousChannel = this.activeChannel;
-    const preferredModel = this.workflowExecutionModel
-      || (this.workflowExecutionModelPreferences && this.workflowExecutionModelPreferences.length > 0
-        ? this.workflowExecutionModelPreferences[0]
-        : undefined);
-    const modelChain: string[] = [];
-    if (preferredModel) modelChain.push(preferredModel);
-    for (const pref of this.workflowExecutionModelPreferences ?? []) {
-      if (pref && !modelChain.includes(pref)) modelChain.push(pref);
-    }
+    const modelChain = this.buildModelFailoverChain(
+      this.workflowExecutionModel,
+      this.workflowExecutionModelPreferences,
+    );
+    const preferredModel = modelChain[0];
 
     try {
-      const { channel, sessionId } = await this.ensureWorkflowOpenCodeSession();
+      const workflowChannelType = "workflow";
+      const workflowChannelId = context.executionId;
+      const channel = this.getOrCreateChannel(workflowChannelType, workflowChannelId);
       this.activeChannel = channel;
+      await this.ensureChannelOpenCodeSession(channel);
 
       this.agentClient.sendWorkflowChatMessage("user", content, {
         workflowExecutionId: context.executionId,
         workflowStepId: step.id,
         kind: "agent_message",
+      }, {
+        channelType: workflowChannelType,
+        channelId: workflowChannelId,
+        opencodeSessionId: channel.opencodeSessionId ?? undefined,
       });
 
       if (interrupt) {
-        await fetch(`${this.opencodeUrl}/session/${sessionId}/abort`, { method: "POST" }).catch(() => undefined);
+        const sessionId = channel.opencodeSessionId;
+        if (sessionId) {
+          await fetch(`${this.opencodeUrl}/session/${sessionId}/abort`, { method: "POST" }).catch(() => undefined);
+        }
       }
 
       if (!awaitResponse) {
-        await this.sendPromptAsync(sessionId, content, preferredModel);
+        await this.sendPromptToChannelWithRecovery(channel, content, {
+          model: preferredModel,
+          channelType: workflowChannelType,
+          channelId: workflowChannelId,
+        });
         return {
           status: "completed",
           output: {
@@ -881,27 +950,63 @@ export class PromptHandler {
         };
       }
 
-      this.ephemeralContent.set(sessionId, "");
+      const attemptSessionIds = new Set<string>();
       try {
         let lastFailure: string | null = null;
         const candidates = modelChain.length > 0 ? modelChain : [undefined];
 
         for (const modelCandidate of candidates) {
+          channel.resetPromptState();
           channel.lastError = null;
+          let sessionId = await this.ensureChannelOpenCodeSession(channel);
           this.ephemeralContent.set(sessionId, "");
+          attemptSessionIds.add(sessionId);
+          let idlePromise = this.pollUntilIdle(sessionId, awaitTimeoutMs);
 
-          const idlePromise = this.pollUntilIdle(sessionId, awaitTimeoutMs);
-          await this.sendPromptAsync(sessionId, content, modelCandidate);
+          const sentSessionId = await this.sendPromptToChannelWithRecovery(channel, content, {
+            model: modelCandidate,
+            channelType: workflowChannelType,
+            channelId: workflowChannelId,
+          });
+          if (sentSessionId !== sessionId) {
+            this.ephemeralContent.delete(sessionId);
+            this.idleWaiters.delete(sessionId);
+            sessionId = sentSessionId;
+            this.ephemeralContent.set(sessionId, "");
+            attemptSessionIds.add(sessionId);
+            idlePromise = this.pollUntilIdle(sessionId, awaitTimeoutMs);
+          }
+
           await idlePromise;
 
           const responseText = (this.ephemeralContent.get(sessionId) || "").trim();
           const stepError = channel.lastError || null;
 
-          if (responseText) {
-            this.agentClient.sendWorkflowChatMessage("assistant", responseText, {
+          let recoveredResponse = responseText;
+          if (!recoveredResponse) {
+            const recovered = await this.recoverAssistantTextOrError();
+            if (recovered.text) {
+              recoveredResponse = recovered.text;
+            } else if (recovered.error) {
+              lastFailure = recovered.error;
+              channel.lastError = recovered.error;
+              this.lastError = recovered.error;
+              if (!isRetriableProviderError(recovered.error)) {
+                break;
+              }
+              continue;
+            }
+          }
+
+          if (recoveredResponse) {
+            this.agentClient.sendWorkflowChatMessage("assistant", recoveredResponse, {
               workflowExecutionId: context.executionId,
               workflowStepId: step.id,
               kind: "agent_message_response",
+            }, {
+              channelType: workflowChannelType,
+              channelId: workflowChannelId,
+              opencodeSessionId: channel.opencodeSessionId ?? undefined,
             });
 
             return {
@@ -913,7 +1018,7 @@ export class PromptHandler {
                 interrupt,
                 awaitResponse: true,
                 awaitTimeoutMs,
-                response: responseText,
+                response: recoveredResponse,
                 model: modelCandidate || null,
               },
             };
@@ -942,8 +1047,10 @@ export class PromptHandler {
           },
         };
       } finally {
-        this.ephemeralContent.delete(sessionId);
-        this.idleWaiters.delete(sessionId);
+        for (const sessionId of attemptSessionIds) {
+          this.ephemeralContent.delete(sessionId);
+          this.idleWaiters.delete(sessionId);
+        }
       }
     } catch (error) {
       return {
@@ -979,11 +1086,6 @@ export class PromptHandler {
 
   async handlePrompt(messageId: string, content: string, model?: string, author?: { authorId?: string; gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string): Promise<void> {
     console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length})` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}${channelType ? ` (channel: ${channelType})` : ''}`);
-    const workflowExecutionRequest = this.parseWorkflowExecutionPrompt(content);
-    if (workflowExecutionRequest) {
-      await this.handleWorkflowExecutionPrompt(messageId, workflowExecutionRequest, { emitChatError: false });
-      return;
-    }
 
     // Resolve per-channel session
     const channel = this.getOrCreateChannel(channelType, channelId);
@@ -1015,32 +1117,15 @@ export class PromptHandler {
       // Clear any pending timeout from previous prompt
       this.clearResponseTimeout();
 
-      // Create OpenCode session for this channel if needed
-      if (!channel.opencodeSessionId) {
-        channel.opencodeSessionId = await this.createSession();
-        this.ocSessionToChannel.set(channel.opencodeSessionId, channel);
-        // Report the new OC session ID back to the DO for reconnection tracking
-        this.agentClient.sendChannelSessionCreated(channel.channelKey, channel.opencodeSessionId);
-      }
-
-      // Ensure event stream is active — it may not have been started if this
-      // channel's OC session was restored from init rather than freshly created.
-      if (!this.eventStreamActive) {
-        await this.startEventStream();
-      }
+      // Ensure this channel has an OpenCode session and active SSE stream.
+      await this.ensureChannelOpenCodeSession(channel);
 
       channel.activeMessageId = messageId;
       channel.resetPromptState();
 
       // Build failover chain with explicit model first (if provided), then
       // user preferences. This keeps failover anchored to the actual selected model.
-      const failoverChain: string[] = [];
-      if (model) failoverChain.push(model);
-      for (const pref of modelPreferences ?? []) {
-        if (!failoverChain.includes(pref)) {
-          failoverChain.push(pref);
-        }
-      }
+      const failoverChain = this.buildModelFailoverChain(model, modelPreferences);
 
       // Transcribe audio attachments before sending to OpenCode
       let effectiveContent = content;
@@ -1079,10 +1164,7 @@ export class PromptHandler {
       this.pendingRetryAuthor = author;
 
       // Determine which model to use: explicit model takes priority, then first preference
-      let effectiveModel = model;
-      if (!effectiveModel && failoverChain.length > 0) {
-        effectiveModel = failoverChain[0];
-      }
+      const effectiveModel = failoverChain[0];
       this.currentModelIndex = 0;
 
       // Notify client that agent is thinking
@@ -1090,21 +1172,13 @@ export class PromptHandler {
       this.awaitingAssistantForAttempt = true;
 
       // Send message async (fire-and-forget)
-      try {
-        await this.sendPromptAsync(channel.opencodeSessionId!, effectiveContent, effectiveModel, effectiveAttachments, author, channelType, channelId);
-      } catch (err) {
-        if (this.isSessionGone(err)) {
-          console.warn("[PromptHandler] OpenCode session missing; recreating session and retrying prompt");
-          const oldId = channel.opencodeSessionId;
-          if (oldId) this.ocSessionToChannel.delete(oldId);
-          channel.opencodeSessionId = await this.createSession();
-          this.ocSessionToChannel.set(channel.opencodeSessionId, channel);
-          this.agentClient.sendChannelSessionCreated(channel.channelKey, channel.opencodeSessionId);
-          await this.sendPromptAsync(channel.opencodeSessionId!, effectiveContent, effectiveModel, effectiveAttachments, author, channelType, channelId);
-        } else {
-          throw err;
-        }
-      }
+      await this.sendPromptToChannelWithRecovery(channel, effectiveContent, {
+        model: effectiveModel,
+        attachments: effectiveAttachments,
+        author,
+        channelType,
+        channelId,
+      });
       console.log(`[PromptHandler] Prompt ${messageId} sent to OpenCode (channel: ${channel.channelKey})${effectiveModel ? ` (model: ${effectiveModel})` : ''}`);
 
       // Response will arrive via SSE events — don't block here
@@ -1149,9 +1223,16 @@ export class PromptHandler {
     try {
       this.agentClient.sendAgentStatus("thinking");
       this.awaitingAssistantForAttempt = true;
-      const ocSessionId = this.activeChannel?.opencodeSessionId;
-      if (!ocSessionId) throw new Error("No OpenCode session for active channel");
-      await this.sendPromptAsync(ocSessionId, this.pendingRetryContent!, toModel, this.pendingRetryAttachments, this.pendingRetryAuthor);
+      const activeChannel = this.activeChannel;
+      if (!activeChannel) throw new Error("No active channel for failover retry");
+      const channelContext = this.extractChannelContext(activeChannel);
+      await this.sendPromptToChannelWithRecovery(activeChannel, this.pendingRetryContent!, {
+        model: toModel,
+        attachments: this.pendingRetryAttachments,
+        author: this.pendingRetryAuthor,
+        channelType: channelContext.channelType,
+        channelId: channelContext.channelId,
+      });
       console.log(`[PromptHandler] Retry sent with model ${toModel}`);
       return true;
     } catch (err) {
@@ -1758,6 +1839,17 @@ export class PromptHandler {
       if (result.text || result.error) return result;
     }
     return null;
+  }
+
+  private async recoverAssistantTextOrError(): Promise<{ text: string | null; error: string | null }> {
+    const recovered = await this.recoverAssistantOutcomeFromApi();
+    if (!recovered) {
+      return { text: null, error: null };
+    }
+    return {
+      text: recovered.text ? recovered.text.trim() : null,
+      error: recovered.error || null,
+    };
   }
 
   private async deleteSession(sessionId: string): Promise<void> {
@@ -2691,11 +2783,11 @@ export class PromptHandler {
         // Tools ran but no text was produced — this is normal for tool-only turns
         console.log(`[PromptHandler] Tools-only response for ${messageId} (${this.toolStates.size} tools ran)`);
       } else {
-        const recovered = await this.recoverAssistantOutcomeFromApi();
-        if (recovered?.error) {
+        const recovered = await this.recoverAssistantTextOrError();
+        if (recovered.error) {
           this.lastError = recovered.error;
         }
-        if (recovered?.text) {
+        if (recovered.text) {
           content = recovered.text;
           console.log(
             `[PromptHandler] Recovered assistant text for ${messageId} from message API (${recovered.text.length} chars)`
