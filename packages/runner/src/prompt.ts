@@ -329,6 +329,9 @@ const RETRIABLE_ERROR_PATTERNS = [
   /unauthorized/i,
   /api key.*invalid/i,
   /permission.*denied/i,
+  // Model availability mismatches (fallback to next preferred model)
+  /model.*not.*supported/i,
+  /copilot settings/i,
   // Provider/model returned an empty completion with no tokens
   /returned an empty completion/i,
   /outputtokens=0/i,
@@ -843,6 +846,11 @@ export class PromptHandler {
       || (this.workflowExecutionModelPreferences && this.workflowExecutionModelPreferences.length > 0
         ? this.workflowExecutionModelPreferences[0]
         : undefined);
+    const modelChain: string[] = [];
+    if (preferredModel) modelChain.push(preferredModel);
+    for (const pref of this.workflowExecutionModelPreferences ?? []) {
+      if (pref && !modelChain.includes(pref)) modelChain.push(pref);
+    }
 
     try {
       const { channel, sessionId } = await this.ensureWorkflowOpenCodeSession();
@@ -875,34 +883,55 @@ export class PromptHandler {
 
       this.ephemeralContent.set(sessionId, "");
       try {
-        const idlePromise = this.pollUntilIdle(sessionId, awaitTimeoutMs);
-        await this.sendPromptAsync(sessionId, content, preferredModel);
-        await idlePromise;
+        let lastFailure: string | null = null;
+        const candidates = modelChain.length > 0 ? modelChain : [undefined];
 
-        const responseText = (this.ephemeralContent.get(sessionId) || "").trim();
-        if (!responseText) {
-          return {
-            status: "failed",
-            error: "agent_message_empty_response",
-            output: {
-              type: "agent_message",
-              targetSessionId: this.runnerSessionId,
-              content,
-              interrupt,
-              awaitResponse: true,
-              awaitTimeoutMs,
-            },
-          };
+        for (const modelCandidate of candidates) {
+          channel.lastError = null;
+          this.ephemeralContent.set(sessionId, "");
+
+          const idlePromise = this.pollUntilIdle(sessionId, awaitTimeoutMs);
+          await this.sendPromptAsync(sessionId, content, modelCandidate);
+          await idlePromise;
+
+          const responseText = (this.ephemeralContent.get(sessionId) || "").trim();
+          const stepError = channel.lastError || null;
+
+          if (responseText) {
+            this.agentClient.sendWorkflowChatMessage("assistant", responseText, {
+              workflowExecutionId: context.executionId,
+              workflowStepId: step.id,
+              kind: "agent_message_response",
+            });
+
+            return {
+              status: "completed",
+              output: {
+                type: "agent_message",
+                targetSessionId: this.runnerSessionId,
+                content,
+                interrupt,
+                awaitResponse: true,
+                awaitTimeoutMs,
+                response: responseText,
+                model: modelCandidate || null,
+              },
+            };
+          }
+
+          if (stepError) {
+            lastFailure = stepError;
+            if (!isRetriableProviderError(stepError)) {
+              break;
+            }
+          } else {
+            lastFailure = "agent_message_empty_response";
+          }
         }
 
-        this.agentClient.sendWorkflowChatMessage("assistant", responseText, {
-          workflowExecutionId: context.executionId,
-          workflowStepId: step.id,
-          kind: "agent_message_response",
-        });
-
         return {
-          status: "completed",
+          status: "failed",
+          error: lastFailure || "agent_message_empty_response",
           output: {
             type: "agent_message",
             targetSessionId: this.runnerSessionId,
@@ -910,7 +939,6 @@ export class PromptHandler {
             interrupt,
             awaitResponse: true,
             awaitTimeoutMs,
-            response: responseText,
           },
         };
       } finally {
