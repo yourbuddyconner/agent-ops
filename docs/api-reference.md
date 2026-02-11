@@ -47,9 +47,16 @@
 | `/api/workflows` | GET/POST | List/create workflows |
 | `/api/workflows/:id` | GET/PUT/DELETE | Manage workflow |
 | `/api/triggers` | GET/POST | List/create triggers |
+| `/api/triggers/:id` | GET/PATCH/DELETE | Get/update/delete trigger |
+| `/api/triggers/:id/enable` | POST | Enable trigger |
+| `/api/triggers/:id/disable` | POST | Disable trigger |
+| `/api/triggers/:id/run` | POST | Manually run trigger |
+| `/api/triggers/manual/run` | POST | Run workflow without trigger |
 | `/api/executions` | GET | Execution history |
 | `/webhooks/:path` | POST | Webhook trigger endpoint |
 
 Schedule trigger notes:
 - `config.target = "workflow"` (default) enqueues a workflow execution on cron tick.
 - `config.target = "orchestrator"` requires `config.prompt` and delivers that prompt to the user's orchestrator session.
+- `POST /api/triggers` creates a new trigger row. Use `PATCH /api/triggers/:id` to update an existing trigger.
+- Agent integrations should resolve the target trigger ID first (`GET /api/triggers`), then call `PATCH` for edits.

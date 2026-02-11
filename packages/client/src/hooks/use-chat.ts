@@ -406,18 +406,18 @@ export function useChat(sessionId: string) {
     return null;
   }
 
-  // Auto-select model using user preferences first.
+  // Auto-select model with precedence:
+  // current session selection > persisted session selection > preferences > first available.
   const autoSelectModel = useCallback((models: ProviderModels[]) => {
     const allIds = models.flatMap((p) => p.models.map((m) => m.id));
     if (allIds.length === 0) return;
 
-    const preferred = findModelFromPreferences(models, modelPreferences);
-    if (preferred) {
-      if (selectedModel !== preferred) handleModelChange(preferred);
+    // Preserve an in-session user choice when it is still available.
+    if (selectedModel && allIds.includes(selectedModel)) {
       return;
     }
 
-    // If no preference matches, keep persisted session choice when valid.
+    // If we have a persisted valid choice for this session, keep it.
     try {
       const persisted = localStorage.getItem(`agent-ops:model:${sessionId}`) || '';
       if (persisted && allIds.includes(persisted)) {
@@ -426,6 +426,12 @@ export function useChat(sessionId: string) {
       }
     } catch {
       // ignore
+    }
+
+    const preferred = findModelFromPreferences(models, modelPreferences);
+    if (preferred) {
+      if (selectedModel !== preferred) handleModelChange(preferred);
+      return;
     }
 
     // Last resort: use the first discovered model to avoid implicit server defaults.

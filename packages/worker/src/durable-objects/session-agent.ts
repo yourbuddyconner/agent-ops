@@ -3615,8 +3615,10 @@ export class SessionAgentDO {
       if (action === 'create' || action === 'update') {
         const triggerId = typeof payload?.triggerId === 'string' ? payload.triggerId.trim() : '';
         const isUpdate = action === 'update';
+        const hasWorkflowIdPayload = Object.prototype.hasOwnProperty.call(payload || {}, 'workflowId');
+        let fallbackToUpdate = false;
 
-        const existing = isUpdate
+        let existing = isUpdate
           ? await this.env.DB.prepare(`
               SELECT *
               FROM triggers
@@ -3647,12 +3649,6 @@ export class SessionAgentDO {
           return;
         }
 
-        const nextEnabled = typeof payload?.enabled === 'boolean'
-          ? payload.enabled
-          : existing
-            ? Boolean(existing.enabled)
-            : true;
-
         const workflowIdPayload = Object.prototype.hasOwnProperty.call(payload || {}, 'workflowId')
           ? payload?.workflowId
           : existing?.workflow_id;
@@ -3675,10 +3671,78 @@ export class SessionAgentDO {
             return;
           }
         }
+
+        // Fallback upsert path for schedule triggers when a create call omits triggerId.
+        // This prevents accidental duplicate schedules from repeated "update" attempts.
+        if (!isUpdate && rawConfig.type === 'schedule') {
+          if (hasWorkflowIdPayload) {
+            const sameName = await this.env.DB.prepare(`
+              SELECT *
+              FROM triggers
+              WHERE user_id = ?
+                AND type = 'schedule'
+                AND ((? IS NULL AND workflow_id IS NULL) OR workflow_id = ?)
+                AND lower(name) = lower(?)
+              ORDER BY datetime(updated_at) DESC
+              LIMIT 1
+            `).bind(userId, workflowId, workflowId, nextName).first<Record<string, unknown>>();
+
+            if (sameName) {
+              existing = sameName;
+              fallbackToUpdate = true;
+            } else {
+              const workflowMatches = await this.env.DB.prepare(`
+                SELECT *
+                FROM triggers
+                WHERE user_id = ?
+                  AND type = 'schedule'
+                  AND ((? IS NULL AND workflow_id IS NULL) OR workflow_id = ?)
+                ORDER BY datetime(updated_at) DESC
+                LIMIT 2
+              `).bind(userId, workflowId, workflowId).all<Record<string, unknown>>();
+              const candidates = workflowMatches.results || [];
+              if (candidates.length === 1) {
+                existing = candidates[0];
+                fallbackToUpdate = true;
+              }
+            }
+          } else {
+            const sameName = await this.env.DB.prepare(`
+              SELECT *
+              FROM triggers
+              WHERE user_id = ?
+                AND type = 'schedule'
+                AND lower(name) = lower(?)
+              ORDER BY datetime(updated_at) DESC
+              LIMIT 2
+            `).bind(userId, nextName).all<Record<string, unknown>>();
+            const candidates = sameName.results || [];
+            if (candidates.length === 1) {
+              existing = candidates[0];
+              fallbackToUpdate = true;
+              workflowId = typeof existing.workflow_id === 'string' && existing.workflow_id.trim()
+                ? existing.workflow_id
+                : null;
+            }
+          }
+        }
+
+        if (fallbackToUpdate && !hasWorkflowIdPayload) {
+          workflowId = typeof existing?.workflow_id === 'string' && existing.workflow_id.trim()
+            ? existing.workflow_id
+            : null;
+        }
+
         if (this.requiresWorkflowForTriggerConfig(rawConfig) && !workflowId) {
           this.sendToRunner({ type: 'trigger-api-result', requestId, error: 'workflowId is required for this trigger type' } as any);
           return;
         }
+
+        const nextEnabled = typeof payload?.enabled === 'boolean'
+          ? payload.enabled
+          : existing
+            ? Boolean(existing.enabled)
+            : true;
 
         const variableMapping = payload?.variableMapping && typeof payload.variableMapping === 'object' && !Array.isArray(payload.variableMapping)
           ? payload.variableMapping as Record<string, unknown>
@@ -3696,8 +3760,11 @@ export class SessionAgentDO {
         }
 
         const now = new Date().toISOString();
-        const targetTriggerId = isUpdate ? triggerId : crypto.randomUUID();
-        if (isUpdate) {
+        const shouldUpdate = isUpdate || fallbackToUpdate;
+        const targetTriggerId = shouldUpdate
+          ? (typeof existing?.id === 'string' ? existing.id : triggerId)
+          : crypto.randomUUID();
+        if (shouldUpdate) {
           await this.env.DB.prepare(`
             UPDATE triggers
             SET workflow_id = ?,
