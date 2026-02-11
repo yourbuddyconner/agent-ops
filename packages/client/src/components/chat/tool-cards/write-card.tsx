@@ -1,12 +1,12 @@
 import { ToolCardShell, ToolCardSection } from './tool-card-shell';
 import { FilePlusIcon } from './icons';
 import type { ToolCallData, WriteArgs } from './types';
+import { formatToolPath } from './path-display';
 
 export function WriteCard({ tool }: { tool: ToolCallData }) {
   const args = (tool.args ?? {}) as WriteArgs;
   const filePath = args.file_path ?? args.filePath ?? '';
-  const fileName = filePath.split('/').pop() ?? filePath;
-  const dirPath = filePath.slice(0, filePath.length - fileName.length);
+  const { fileName, dirPath } = formatToolPath(filePath);
   const content = args.content ?? '';
   const lineCount = content ? content.split('\n').length : 0;
 

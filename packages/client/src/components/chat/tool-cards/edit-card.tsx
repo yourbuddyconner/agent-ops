@@ -3,6 +3,7 @@ import { diffLines } from 'diff';
 import { ToolCardShell, ToolCardSection } from './tool-card-shell';
 import { FileEditIcon } from './icons';
 import type { ToolCallData, EditArgs } from './types';
+import { formatToolPath } from './path-display';
 
 function parseArgs(raw: unknown): EditArgs {
   if (!raw) return {};
@@ -16,8 +17,7 @@ function parseArgs(raw: unknown): EditArgs {
 export function EditCard({ tool }: { tool: ToolCallData }) {
   const args = parseArgs(tool.args);
   const filePath = args.file_path ?? args.filePath ?? '';
-  const fileName = filePath.split('/').pop() ?? filePath;
-  const dirPath = filePath.slice(0, filePath.length - fileName.length);
+  const { fileName, dirPath } = formatToolPath(filePath);
 
   const oldStr = args.old_string ?? args.oldString ?? '';
   const newStr = args.new_string ?? args.newString ?? '';

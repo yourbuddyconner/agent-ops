@@ -1,12 +1,12 @@
 import { ToolCardShell, ToolCardSection } from './tool-card-shell';
 import { PatchIcon } from './icons';
 import type { ToolCallData, PatchArgs } from './types';
+import { formatToolPath } from './path-display';
 
 export function PatchCard({ tool }: { tool: ToolCallData }) {
   const args = (tool.args ?? {}) as PatchArgs;
   const filePath = args.file_path ?? args.filePath ?? '';
-  const fileName = filePath.split('/').pop() ?? filePath;
-  const dirPath = filePath.slice(0, filePath.length - fileName.length);
+  const { fileName, dirPath } = formatToolPath(filePath);
   const patchContent = args.patch ?? args.diff ?? args.content ?? '';
 
   const resultStr = typeof tool.result === 'string' ? tool.result : null;

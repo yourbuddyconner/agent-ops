@@ -1,12 +1,12 @@
 import { ToolCardShell, ToolCardSection } from './tool-card-shell';
 import { FileIcon } from './icons';
 import type { ToolCallData, ReadArgs } from './types';
+import { formatToolPath } from './path-display';
 
 export function ReadCard({ tool }: { tool: ToolCallData }) {
   const args = (tool.args ?? {}) as ReadArgs;
   const filePath = args.file_path ?? args.filePath ?? '';
-  const fileName = filePath.split('/').pop() ?? filePath;
-  const dirPath = filePath.slice(0, filePath.length - fileName.length);
+  const { fileName, dirPath } = formatToolPath(filePath);
 
   const resultStr = typeof tool.result === 'string' ? tool.result : null;
   const lineCount = resultStr ? resultStr.split('\n').length : 0;

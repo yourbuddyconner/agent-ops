@@ -1,6 +1,7 @@
 import { ToolCardShell, ToolCardSection, ToolCodeBlock } from './tool-card-shell';
 import { LspIcon } from './icons';
 import type { ToolCallData, LspArgs } from './types';
+import { formatToolPath } from './path-display';
 
 const OP_LABELS: Record<string, string> = {
   goToDefinition: 'Go to Definition',
@@ -18,7 +19,7 @@ export function LspCard({ tool }: { tool: ToolCallData }) {
   const args = (tool.args ?? {}) as LspArgs;
   const operation = args.operation ?? '';
   const filePath = args.file_path ?? args.filePath ?? '';
-  const fileName = filePath.split('/').pop() ?? filePath;
+  const { fileName, dirPath } = formatToolPath(filePath);
   const line = args.line;
   const character = args.character;
   const symbol = args.symbol ?? args.query;
@@ -40,6 +41,9 @@ export function LspCard({ tool }: { tool: ToolCallData }) {
             <span className="rounded bg-violet-100 px-1 py-px text-[9px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-400">
               {opLabel}
             </span>
+          )}
+          {dirPath && (
+            <span className="text-neutral-500 dark:text-neutral-400">{dirPath}</span>
           )}
           {fileName && (
             <span className="font-semibold text-neutral-600 dark:text-neutral-300">{fileName}</span>
