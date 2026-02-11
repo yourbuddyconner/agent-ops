@@ -39,6 +39,7 @@ export type DOToRunnerMessage =
       attachments?: PromptAttachment[];
       modelPreferences?: string[];
       channelType?: string; channelId?: string;
+      opencodeSessionId?: string;
       authorId?: string; authorEmail?: string; authorName?: string;
       gitName?: string; gitEmail?: string }
   | { type: "answer"; questionId: string; answer: string | boolean }

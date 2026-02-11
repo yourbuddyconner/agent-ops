@@ -346,6 +346,7 @@ interface RunnerOutbound {
   // Channel metadata
   channelType?: string;
   channelId?: string;
+  opencodeSessionId?: string;
   // Orchestrator result fields
   memories?: unknown[];
   memory?: unknown;
@@ -927,6 +928,7 @@ export class SessionAgentDO {
           messageId,
           content: initialPrompt,
           model: initialModel || undefined,
+          opencodeSessionId: this.getChannelOcSessionId(this.channelKeyFrom(undefined, undefined)),
           modelPreferences: ipModelPrefs,
         }));
         this.setStateValue('runnerBusy', 'true');
@@ -1442,6 +1444,7 @@ export class SessionAgentDO {
     const ownerId = this.getStateValue('userId');
     const ownerDetails = ownerId ? await this.getUserDetails(ownerId) : undefined;
     const resolvedModelPrefs = await this.resolveModelPreferences(ownerDetails);
+    const channelOcSessionId = this.getChannelOcSessionId(channelKey);
     this.sendToRunner({
       type: 'prompt',
       messageId,
@@ -1455,6 +1458,7 @@ export class SessionAgentDO {
       authorName: author?.name,
       gitName: author?.gitName,
       gitEmail: author?.gitEmail,
+      opencodeSessionId: channelOcSessionId,
       modelPreferences: resolvedModelPrefs,
     });
   }
@@ -4999,6 +5003,14 @@ export class SessionAgentDO {
     );
   }
 
+  private getChannelOcSessionId(channelKey: string): string | undefined {
+    const row = this.ctx.storage.sql
+      .exec('SELECT opencode_session_id FROM channel_state WHERE channel_key = ?', channelKey)
+      .toArray();
+    const value = row[0]?.opencode_session_id as string | null | undefined;
+    return value || undefined;
+  }
+
 
   private async handlePromptComplete() {
     this.appendAuditLog('agent.turn_complete', 'Agent turn completed');
@@ -5555,10 +5567,13 @@ export class SessionAgentDO {
           const ownerId = this.getStateValue('userId');
           const ownerDetails = ownerId ? await this.getUserDetails(ownerId) : undefined;
           const sysModelPrefs = await this.resolveModelPreferences(ownerDetails);
+          const sysChannelKey = this.channelKeyFrom(undefined, undefined);
+          const sysOcSessionId = this.getChannelOcSessionId(sysChannelKey);
           this.sendToRunner({
             type: 'prompt',
             messageId,
             content,
+            opencodeSessionId: sysOcSessionId,
             modelPreferences: sysModelPrefs,
           });
         } else {
@@ -5734,6 +5749,8 @@ export class SessionAgentDO {
     const queueOwnerId = this.getStateValue('userId');
     const queueOwnerDetails = queueOwnerId ? await this.getUserDetails(queueOwnerId) : undefined;
     const queueModelPrefs = await this.resolveModelPreferences(queueOwnerDetails);
+    const queueChannelKey = this.channelKeyFrom(queueChannelType, queueChannelId);
+    const queueOcSessionId = this.getChannelOcSessionId(queueChannelKey);
     this.sendToRunner({
       type: 'prompt',
       messageId: prompt.id as string,
@@ -5747,6 +5764,7 @@ export class SessionAgentDO {
       authorName: (prompt.author_name as string) || undefined,
       gitName: authorDetails?.gitName,
       gitEmail: authorDetails?.gitEmail,
+      opencodeSessionId: queueOcSessionId,
       modelPreferences: queueModelPrefs,
     });
     this.setStateValue('runnerBusy', 'true');

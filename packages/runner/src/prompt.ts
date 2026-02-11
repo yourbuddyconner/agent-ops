@@ -559,6 +559,18 @@ export class PromptHandler {
     return ch;
   }
 
+  private applyPersistedOpenCodeSessionId(channel: ChannelSession, opencodeSessionId?: string): void {
+    const persisted = typeof opencodeSessionId === "string" ? opencodeSessionId.trim() : "";
+    if (!persisted) return;
+    if (channel.opencodeSessionId === persisted) return;
+
+    if (channel.opencodeSessionId) {
+      this.ocSessionToChannel.delete(channel.opencodeSessionId);
+    }
+    channel.opencodeSessionId = persisted;
+    this.ocSessionToChannel.set(persisted, channel);
+  }
+
   private buildModelFailoverChain(primaryModel?: string, modelPreferences?: string[]): string[] {
     const chain: string[] = [];
     const pushModel = (candidate: string | undefined) => {
@@ -1084,12 +1096,13 @@ export class PromptHandler {
     });
   }
 
-  async handlePrompt(messageId: string, content: string, model?: string, author?: { authorId?: string; gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string): Promise<void> {
+  async handlePrompt(messageId: string, content: string, model?: string, author?: { authorId?: string; gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string, opencodeSessionId?: string): Promise<void> {
     console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length})` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}${channelType ? ` (channel: ${channelType})` : ''}`);
 
     // Resolve per-channel session
     const channel = this.getOrCreateChannel(channelType, channelId);
     this.activeChannel = channel;
+    this.applyPersistedOpenCodeSessionId(channel, opencodeSessionId);
 
     try {
       // Set git config for author attribution before processing

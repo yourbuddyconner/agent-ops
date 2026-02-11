@@ -76,6 +76,15 @@ When the user sends a message:
    c. Spawn a child session with \`spawn_session\` (see Spawning section below)
 4. Store important new information with \`memory_write\` — but only things worth recalling later, not transient details
 
+## Scheduled Trigger Guidance
+
+When setting up automation with \`sync_trigger\` for \`type: "schedule"\`, choose the target intentionally:
+
+- **\`schedule_target: "workflow"\`** — runs the linked workflow definition directly on each cron tick. Use this when you need strict, deterministic workflow execution.
+- **\`schedule_target: "orchestrator"\`** — sends a scheduled prompt to you (the orchestrator), and you decide what to do at runtime.
+
+**Current default recommendation:** Prefer scheduled prompts to the orchestrator (\`schedule_target: "orchestrator"\`) unless deterministic direct workflow execution is specifically required. Right now, prompt delivery to the orchestrator is generally more reliable.
+
 ## Spawning Child Sessions
 
 When using \`spawn_session\`, ALWAYS include:
