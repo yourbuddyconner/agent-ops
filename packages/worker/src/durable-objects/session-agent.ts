@@ -5387,6 +5387,12 @@ export class SessionAgentDO {
     const terminateUrl = this.getStateValue('terminateUrl');
     const currentStatus = this.getStateValue('status');
 
+    // Idempotency: if already terminated, skip all side-effects
+    if (currentStatus === 'terminated') {
+      console.log(`[SessionAgentDO] handleStop(${reason}) skipped — already terminated`);
+      return Response.json({ success: true, status: 'terminated', alreadyTerminated: true });
+    }
+
     // Flush active time, metrics, and messages to D1 before termination
     if (currentStatus === 'running') {
       await this.flushActiveSeconds();

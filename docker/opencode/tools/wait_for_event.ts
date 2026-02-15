@@ -76,15 +76,11 @@ export default tool({
           if (notifyOn === "started") {
             for (const [id, status] of current) {
               if (!lastSnapshot.has(id)) {
-                const message = terminalStatuses.has(status)
+                const event = terminalStatuses.has(status)
                   ? `Child session event: ${id} is ${status}.`
                   : `Child session event: ${id} started.`
-                await fetch("http://localhost:9000/api/session-message", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ sessionId, content: message }),
-                })
                 return (
+                  `${event} ` +
                   `Yielding control.${args.reason ? " Reason: " + args.reason : ""} ` +
                   "Your turn is now over — do NOT call any more tools or generate further output."
                 )
@@ -98,13 +94,9 @@ export default tool({
               const prev = lastSnapshot.get(id)
               if (prev && prev !== status) {
                 if (statusFilter && !statusFilter.has(status)) continue
-                const message = `Child session event: ${id} changed status from ${prev} to ${status}.`
-                await fetch("http://localhost:9000/api/session-message", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ sessionId, content: message }),
-                })
+                const event = `Child session event: ${id} changed status from ${prev} to ${status}.`
                 return (
+                  `${event} ` +
                   `Yielding control.${args.reason ? " Reason: " + args.reason : ""} ` +
                   "Your turn is now over — do NOT call any more tools or generate further output."
                 )
@@ -118,13 +110,9 @@ export default tool({
             const isTerminal = terminalStatuses.has(status)
             const matchesFilter = statusFilter ? statusFilter.has(status) : false
             if (prev && prev !== status && (matchesFilter || (notifyOn === "terminal" && !terminalStatuses.has(prev) && isTerminal))) {
-              const message = `Child session event: ${id} is ${status}.`
-              await fetch("http://localhost:9000/api/session-message", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sessionId, content: message }),
-              })
+              const event = `Child session event: ${id} is ${status}.`
               return (
+                `${event} ` +
                 `Yielding control.${args.reason ? " Reason: " + args.reason : ""} ` +
                 "Your turn is now over — do NOT call any more tools or generate further output."
               )
