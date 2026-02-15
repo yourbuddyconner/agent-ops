@@ -14,12 +14,16 @@ Give your AI coding agent its own sandbox — complete with VS Code, a browser, 
 - **Repo-aware** — Connect your GitHub repos. The agent clones, branches, codes, and opens PRs — using your OAuth credentials, scoped to each sandbox.
 - **Team-ready** — Invite your team, manage roles, share sessions. Built for collaborative use from day one.
 - **Self-hosted** — Deploy on your own Cloudflare + Modal infrastructure. Your code and API keys stay on your accounts.
+- **Workflow automation** — Create deterministic workflows with triggers (schedule, webhook, manual) for recurring tasks.
+- **Secret management** — Built-in 1Password integration for secure credential storage and injection.
+- **Multi-channel** — Interact via web UI, Telegram, or Slack — stay connected wherever you are.
 
 ## Quick Start
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) 18+ and [pnpm](https://pnpm.io/)
+- [Node.js](https://nodejs.org/) 22+ and [pnpm](https://pnpm.io/)
+- [uv](https://docs.astral.sh/uv/) (Python package manager for Modal)
 - A [Cloudflare](https://dash.cloudflare.com/) account (Workers, D1, R2, Pages)
 - A [Modal](https://modal.com/) account (sandbox compute)
 - A [GitHub OAuth App](https://github.com/settings/developers) (authentication)
@@ -35,7 +39,7 @@ cp .env.deploy.example .env.deploy    # Deployment config (Cloudflare IDs, Modal
 cp .env.example .env                  # Secrets (API keys)
 
 # Configure OAuth — create packages/worker/.dev.vars with your GitHub OAuth credentials
-# See the wiki for detailed OAuth setup instructions
+# See docs/oauth-setup.md for detailed OAuth setup instructions
 
 # Set up the database
 make db-setup
@@ -44,7 +48,7 @@ make db-setup
 ### Run locally
 
 ```bash
-make dev-all    # Starts worker (:8787), client (:5173), and OpenCode container
+make dev-all    # Starts worker (:8787), client (:5173), and OpenCode container (:4096)
 ```
 
 The first user to sign in is automatically promoted to admin.
@@ -118,7 +122,7 @@ flowchart TB
 | `packages/runner` | Bun/TS process inside each sandbox — bridges the DO and OpenCode agent |
 | `packages/shared` | Shared TypeScript types and error classes |
 | `backend` | Python/Modal — sandbox lifecycle, image builds, compute management |
-| `docker` | Sandbox container image — code-server, VNC, TTYD, auth gateway |
+| `docker` | Sandbox container image — code-server, VNC, TTYD, auth gateway, Playwright |
 
 ## Development
 
@@ -135,21 +139,32 @@ make db-reset             # Drop and recreate
 
 # Code quality
 make typecheck            # TypeScript check (all packages)
+make lint                 # Run linter
+
+# Testing
+make test                 # Run all tests
+make test-integration     # Integration tests
+make test-e2e             # End-to-end tests
 
 # Deploy individually
 make deploy-worker        # Cloudflare Worker
 make deploy-modal         # Modal backend
 make deploy-client        # Cloudflare Pages
+
+# Docker image management
+make image-build          # Build sandbox Docker image
+make image-push           # Push to GHCR
 ```
 
 ## Documentation
 
+- **[Deployment Guide](docs/deployment.md)** — Production deployment, secrets management, image rebuilds
 - **[OAuth Setup](docs/oauth-setup.md)** — GitHub and Google OAuth configuration for dev and production
 - **[Environment Variables](docs/environment-variables.md)** — Full reference for all config vars across packages
 - **[API Reference](docs/api-reference.md)** — Complete endpoint documentation
 - **[Architecture Deep Dive](docs/architecture.md)** — Request flows, auth model, sandbox internals
-- **[Deployment Guide](docs/deployment.md)** — Production deployment, secrets management, image rebuilds
 - **[Project Structure](docs/project-structure.md)** — Detailed source tree walkthrough
+- **[Workflow Runtime RFC](docs/rfc-deterministic-workflow-runtime.md)** — Workflow engine specification
 
 ## Contributing
 
