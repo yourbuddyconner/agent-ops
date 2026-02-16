@@ -962,7 +962,15 @@ export function useChat(sessionId: string) {
 
   const sendMessage = useCallback(
     (content: string, model?: string, attachments?: PromptAttachment[], channelType?: string, channelId?: string, queueModeOverride?: QueueMode) => {
-      if (!isConnected) return;
+      if (!isConnected) {
+        toast({
+          title: 'Disconnected',
+          description: 'Reconnecting to session. Please try again in a moment.',
+          variant: 'warning',
+          duration: 4000,
+        });
+        return;
+      }
 
       send({
         type: 'prompt',

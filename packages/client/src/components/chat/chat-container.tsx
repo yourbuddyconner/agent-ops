@@ -501,7 +501,7 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
             onSteerQueued={steerLatestQueuedPrompt}
             hasQueuedDraft={stagedQueuedPrompts.length > 0}
             disabled={isDisabled}
-            sendDisabled={false}
+            sendDisabled={!isConnected}
 
             placeholder={
               isDisabled
