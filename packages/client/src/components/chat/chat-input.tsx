@@ -127,6 +127,7 @@ export function ChatInput({
   const [commandHighlightIndex, setCommandHighlightIndex] = useState(0);
   const [isSendingFiles, setIsSendingFiles] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isLoadingAttachments, setIsLoadingAttachments] = useState(false);
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
@@ -361,8 +362,12 @@ export function ChatInput({
   const handleImageSelect = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files || []);
     if (files.length === 0) return;
-    await appendImageAttachments(files);
-
+    setIsLoadingAttachments(true);
+    try {
+      await appendImageAttachments(files);
+    } finally {
+      setIsLoadingAttachments(false);
+    }
     // Allow selecting the same file again later.
     event.target.value = '';
   }, [appendImageAttachments]);
@@ -942,7 +947,7 @@ export function ChatInput({
             ) : (
               <button
                 type="submit"
-                disabled={(!value.trim() && attachments.length === 0) || disabled || sendDisabled || isSendingFiles}
+                disabled={(!value.trim() && attachments.length === 0) || disabled || sendDisabled || isSendingFiles || isLoadingAttachments}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-white transition-colors hover:bg-neutral-800 disabled:bg-neutral-300 disabled:text-neutral-500 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500"
                 aria-label="Send"
               >
