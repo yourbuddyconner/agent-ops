@@ -6400,7 +6400,11 @@ export class SessionAgentDO {
       });
 
       if (response.status === 409) {
-        // Sandbox already exited (idle timeout) — can't snapshot, treat as stopped
+        // Sandbox already exited (idle timeout) — can't snapshot, treat as stopped.
+        // TODO: Setting status to 'terminated' here bypasses handleStop(), so parent
+        // notification, child cascade, and audit logging are all skipped. Consider
+        // calling handleStop() instead, or using an 'error' status to distinguish
+        // infrastructure-caused termination from intentional stops.
         console.log(`[SessionAgentDO] Session ${sessionId} sandbox already finished, marking as terminated`);
         this.sendToRunner({ type: 'stop' });
         const runnerSockets409 = this.ctx.getWebSockets('runner');
