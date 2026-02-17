@@ -42,6 +42,10 @@ async function parseStateJWT(state: string, env: Env): Promise<{ valid: boolean;
 async function isEmailAllowed(env: Env, email: string, inviteCode?: string): Promise<boolean> {
   const emailLower = email.toLowerCase();
 
+  // Existing users always bypass signup gating
+  const existingUser = await db.findUserByEmail(env.DB, emailLower);
+  if (existingUser) return true;
+
   // If a valid invite code is provided, always allow
   if (inviteCode) {
     try {
