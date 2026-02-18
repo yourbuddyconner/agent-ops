@@ -1325,6 +1325,9 @@ export class SessionAgentDO {
       // Fire wake in background — prompt will be queued since runner won't be connected yet
       this.ctx.waitUntil(this.performWake());
     }
+    // Note: if status is 'hibernating', the prompt will be queued below (runner
+    // is disconnecting). performHibernate() checks the queue after completing
+    // and auto-wakes if needed.
 
     const normalizedAttachments = sanitizePromptAttachments(attachments);
     const attachmentParts = attachmentPartsForMessage(normalizedAttachments);
@@ -6463,6 +6466,21 @@ export class SessionAgentDO {
 
       this.appendAuditLog('session.hibernated', 'Session hibernated');
       console.log(`[SessionAgentDO] Session ${sessionId} hibernated, snapshot: ${result.snapshotImageId}`);
+
+      // Revert any in-flight prompts (don't rely on webSocketClose timing)
+      this.ctx.storage.sql.exec(
+        "UPDATE prompt_queue SET status = 'queued' WHERE status = 'processing'"
+      );
+
+      // If prompts were queued during the hibernation transition (e.g. scheduled
+      // tasks arriving while we were snapshotting), auto-wake to process them.
+      const queuedDuringHibernate = this.getQueueLength();
+      if (queuedDuringHibernate > 0) {
+        console.log(
+          `[SessionAgentDO] ${queuedDuringHibernate} prompt(s) queued during hibernation — auto-waking`
+        );
+        this.ctx.waitUntil(this.performWake());
+      }
     } catch (err) {
       console.error(`[SessionAgentDO] Failed to hibernate session ${sessionId}:`, err);
       const errorText = `Failed to hibernate: ${err instanceof Error ? err.message : String(err)}`;
