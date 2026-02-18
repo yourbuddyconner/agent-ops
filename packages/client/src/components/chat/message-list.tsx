@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import { Link } from '@tanstack/react-router';
 import type { Message } from '@/api/types';
 import { MessageItem } from './message-item';
@@ -69,63 +69,115 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
   const { activePanel } = useDrawer();
   const compact = activePanel !== null;
 
-  // Auto-scroll to bottom on new messages or streaming content
+  // Scroll tracking — ref for auto-scroll logic, state for button visibility
+  const isAtBottomRef = useRef(true);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const didInitialScrollRef = useRef(false);
+
+  // Track scroll position via scroll listener
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    // Only auto-scroll if user is near the bottom
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    if (isNearBottom) {
-      el.scrollTop = el.scrollHeight;
+
+    function handleScroll() {
+      if (!el) return;
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      isAtBottomRef.current = atBottom;
+      setIsAtBottom(atBottom);
+    }
+
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Initial load: scroll to bottom when messages first appear
+  useEffect(() => {
+    if (didInitialScrollRef.current) return;
+    if (messages.length > 0 && scrollRef.current) {
+      didInitialScrollRef.current = true;
+      // Use requestAnimationFrame to ensure DOM has rendered the messages
+      requestAnimationFrame(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+          isAtBottomRef.current = true;
+          setIsAtBottom(true);
+        }
+      });
+    }
+  }, [messages.length]);
+
+  // Auto-scroll on new messages / streaming content (only when already at bottom)
+  useEffect(() => {
+    if (isAtBottomRef.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages.length, streamingContent]);
 
-  if (messages.length === 0 && !streamingContent) {
-    return (
-      <div className="flex h-full flex-1 items-center justify-center">
-        <div className="flex flex-col items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-surface-2/80 dark:bg-surface-2">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-neutral-300 dark:text-neutral-600">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            </svg>
-          </div>
-          <p className="font-mono text-[11px] tracking-wide text-neutral-400 dark:text-neutral-500">
-            Ask or build anything
-          </p>
-        </div>
-      </div>
-    );
-  }
+  const scrollToBottom = useCallback(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    }
+  }, []);
 
-  const turns = groupIntoTurns(messages);
+  const isEmpty = messages.length === 0 && !streamingContent;
+  const turns = isEmpty ? [] : groupIntoTurns(messages);
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden scroll-smooth">
-      <div className={`space-y-0.5 ${compact ? 'px-3 py-3' : 'mx-auto max-w-3xl px-5 py-5'}`}>
-        {turns.map((turn) => {
-          if (turn.type === 'standalone') {
-            const msg = turn.messages[0];
-            return <MessageItem key={msg.id} message={msg} onRevert={onRevert} connectedUsers={connectedUsers} />;
-          }
+    <div className="relative flex-1 overflow-hidden">
+      <div ref={scrollRef} className="h-full overflow-y-auto overflow-x-hidden scroll-smooth">
+        {isEmpty ? (
+          <div className="flex h-full items-center justify-center">
+            <div className="flex flex-col items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-md bg-surface-2/80 dark:bg-surface-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-neutral-300 dark:text-neutral-600">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                </svg>
+              </div>
+              <p className="font-mono text-[11px] tracking-wide text-neutral-400 dark:text-neutral-500">
+                Ask or build anything
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className={`space-y-0.5 ${compact ? 'px-3 py-3' : 'mx-auto max-w-3xl px-5 py-5'}`}>
+            {turns.map((turn) => {
+              if (turn.type === 'standalone') {
+                const msg = turn.messages[0];
+                return <MessageItem key={msg.id} message={msg} onRevert={onRevert} connectedUsers={connectedUsers} />;
+              }
 
-          // Assistant turn: render all tool + assistant messages in order within one block
-          return (
-            <AssistantTurn
-              key={turn.messages[0].id}
-              messages={turn.messages}
-            />
-          );
-        })}
-        {/* Child session cards */}
-        {childSessionEvents && childSessionEvents.length > 0 && (
-          <ChildSessionInlineList
-            events={childSessionEvents}
-            children={childSessions}
-          />
+              // Assistant turn: render all tool + assistant messages in order within one block
+              return (
+                <AssistantTurn
+                  key={turn.messages[0].id}
+                  messages={turn.messages}
+                />
+              );
+            })}
+            {/* Child session cards */}
+            {childSessionEvents && childSessionEvents.length > 0 && (
+              <ChildSessionInlineList
+                events={childSessionEvents}
+                children={childSessions}
+              />
+            )}
+            {streamingContent && <StreamingMessage content={streamingContent} />}
+            {isAgentThinking && !streamingContent && <ThinkingIndicator status={agentStatus} detail={agentStatusDetail} />}
+          </div>
         )}
-        {streamingContent && <StreamingMessage content={streamingContent} />}
-        {isAgentThinking && !streamingContent && <ThinkingIndicator status={agentStatus} detail={agentStatusDetail} />}
       </div>
+
+      {/* Scroll to bottom button */}
+      {!isEmpty && (
+        <button
+          type="button"
+          onClick={scrollToBottom}
+          className={`absolute bottom-3 left-1/2 z-10 -translate-x-1/2 flex items-center gap-1 rounded-full border border-neutral-200 bg-white/90 px-2.5 py-1 font-mono text-[10px] font-medium text-neutral-500 shadow-sm backdrop-blur transition-all hover:bg-white hover:text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800/90 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200 ${isAtBottom ? 'pointer-events-none translate-y-2 opacity-0' : 'translate-y-0 opacity-100'}`}
+        >
+          <ChevronDownIcon className="h-3 w-3" />
+          Bottom
+        </button>
+      )}
     </div>
   );
 }
@@ -345,6 +397,14 @@ function SendIcon({ className }: { className?: string }) {
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" />
       <path d="m21.854 2.147-10.94 10.939" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="m6 9 6 6 6-6" />
     </svg>
   );
 }
