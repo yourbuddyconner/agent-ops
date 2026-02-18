@@ -573,7 +573,7 @@ export async function updateUserProfile(
 ): Promise<User | null> {
   await db
     .prepare(
-      "UPDATE users SET name = COALESCE(?, name), git_name = ?, git_email = ?, onboarding_completed = COALESCE(?, onboarding_completed), idle_timeout_seconds = COALESCE(?, idle_timeout_seconds), model_preferences = COALESCE(?, model_preferences), ui_queue_mode = COALESCE(?, ui_queue_mode), updated_at = datetime('now') WHERE id = ?"
+      "UPDATE users SET name = COALESCE(?, name), git_name = COALESCE(?, git_name), git_email = COALESCE(?, git_email), onboarding_completed = COALESCE(?, onboarding_completed), idle_timeout_seconds = COALESCE(?, idle_timeout_seconds), model_preferences = COALESCE(?, model_preferences), ui_queue_mode = COALESCE(?, ui_queue_mode), updated_at = datetime('now') WHERE id = ?"
     )
     .bind(
       data.name ?? null,

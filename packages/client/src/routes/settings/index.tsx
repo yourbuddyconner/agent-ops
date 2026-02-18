@@ -264,7 +264,7 @@ function GitConfigSection() {
                     if (checked) {
                       setGitEmail(noReplyAddr);
                     } else {
-                      setGitEmail(user.gitEmail?.endsWith('@users.noreply.github.com') ? '' : user.gitEmail ?? '');
+                      setGitEmail(user.gitEmail?.endsWith('@users.noreply.github.com') ? (user.email ?? '') : user.gitEmail ?? '');
                     }
                   }}
                   className="h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-100 dark:focus:ring-neutral-400"
