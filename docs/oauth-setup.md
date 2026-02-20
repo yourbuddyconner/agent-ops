@@ -18,9 +18,66 @@ Scopes requested: `repo read:user user:email` (needed for repo cloning and PR cr
 
 ## Google OAuth (Optional)
 
-1. In [Google Cloud Console](https://console.cloud.google.com/), create OAuth credentials
-2. Add scopes: `openid`, `email`, `profile`
-3. Add redirect URI: `http://localhost:8787/auth/google/callback` (dev)
+Google OAuth in Agent Ops is handled by the Worker routes:
+- `GET /auth/google`
+- `GET /auth/google/callback`
+
+The app currently requests these scopes:
+- `openid`
+- `email`
+- `profile`
+
+### 1. Configure OAuth Consent Screen
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/).
+2. Select or create a Google Cloud project for Agent Ops.
+3. Go to `APIs & Services` -> `OAuth consent screen`.
+4. Choose your user type:
+   - `Internal` for Google Workspace org-only use.
+   - `External` for non-Workspace/public users.
+5. Fill required app info (app name, support email, developer contact email).
+6. In `Scopes`, add:
+   - `openid`
+   - `email`
+   - `profile`
+7. If app type is `External` and publishing status is `Testing`, add test users who are allowed to sign in.
+
+### 2. Create OAuth Client Credentials
+
+1. Go to `APIs & Services` -> `Credentials`.
+2. Click `Create Credentials` -> `OAuth client ID`.
+3. Application type: `Web application`.
+4. Add authorized redirect URIs:
+   - Dev: `http://localhost:8787/auth/google/callback`
+   - Production: `https://<your-worker>.workers.dev/auth/google/callback`
+5. Save and copy:
+   - `Client ID`
+   - `Client Secret`
+
+### 3. Set Worker Credentials
+
+Local dev (`packages/worker/.dev.vars`):
+
+```bash
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+```
+
+Production secrets:
+
+```bash
+cd packages/worker
+npx wrangler secret put GOOGLE_CLIENT_ID
+npx wrangler secret put GOOGLE_CLIENT_SECRET
+```
+
+### 4. Verify Locally
+
+1. Start the worker (`make dev-worker` or `make dev-all`).
+2. Visit `http://localhost:8787/auth/google`.
+3. Complete Google sign-in and confirm redirect back through:
+   - `http://localhost:8787/auth/google/callback`
+   - then to frontend `/auth/callback?...&provider=google`
 
 ## Local Credentials
 
@@ -42,4 +99,6 @@ npx wrangler secret put ENCRYPTION_KEY
 npx wrangler secret put GITHUB_CLIENT_ID
 npx wrangler secret put GITHUB_CLIENT_SECRET
 npx wrangler secret put FRONTEND_URL
+npx wrangler secret put GOOGLE_CLIENT_ID      # optional
+npx wrangler secret put GOOGLE_CLIENT_SECRET  # optional
 ```
