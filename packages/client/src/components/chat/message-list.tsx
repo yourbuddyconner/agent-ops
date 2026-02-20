@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { Link } from '@tanstack/react-router';
 import type { Message } from '@/api/types';
+import type { MessagePart } from '@agent-ops/shared';
 import { MessageItem } from './message-item';
 import { StreamingMessage } from './streaming-message';
 import { ThinkingIndicator } from './thinking-indicator';
@@ -34,8 +35,12 @@ interface MessageListProps {
  * in a single visual block, maintaining the order they were received.
  */
 interface MessageTurn {
-  type: 'standalone' | 'assistant-turn';
+  type: 'standalone' | 'assistant-turn' | 'v2-turn';
   messages: Message[];
+}
+
+function isV2Message(msg: Message): boolean {
+  return msg.messageFormat === 'v2';
 }
 
 function groupIntoTurns(messages: Message[]): MessageTurn[] {
@@ -46,19 +51,28 @@ function groupIntoTurns(messages: Message[]): MessageTurn[] {
     if (msg.role === 'user' || msg.role === 'system') {
       // Flush any pending assistant turn
       if (currentTurn.length > 0) {
-        turns.push({ type: 'assistant-turn', messages: currentTurn });
+        const isV2 = currentTurn.some(isV2Message);
+        turns.push({ type: isV2 ? 'v2-turn' : 'assistant-turn', messages: currentTurn });
         currentTurn = [];
       }
       turns.push({ type: 'standalone', messages: [msg] });
+    } else if (isV2Message(msg)) {
+      // V2 assistant message — each is its own turn (self-contained with parts)
+      if (currentTurn.length > 0) {
+        turns.push({ type: 'assistant-turn', messages: currentTurn });
+        currentTurn = [];
+      }
+      turns.push({ type: 'v2-turn', messages: [msg] });
     } else {
-      // tool or assistant — part of the current turn
+      // V1 tool or assistant — part of the current turn
       currentTurn.push(msg);
     }
   }
 
   // Flush remaining
   if (currentTurn.length > 0) {
-    turns.push({ type: 'assistant-turn', messages: currentTurn });
+    const isV2 = currentTurn.some(isV2Message);
+    turns.push({ type: isV2 ? 'v2-turn' : 'assistant-turn', messages: currentTurn });
   }
 
   return turns;
@@ -106,12 +120,16 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
     }
   }, [messages.length]);
 
+  // V2 streaming updates messages in-place (no length change, no streamingContent),
+  // so we track the last message's content length to trigger auto-scroll during v2 streaming.
+  const lastMsgLen = messages.length > 0 ? (messages[messages.length - 1].content?.length ?? 0) : 0;
+
   // Auto-scroll on new messages / streaming content (only when already at bottom)
   useEffect(() => {
     if (isAtBottomRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages.length, streamingContent]);
+  }, [messages.length, streamingContent, lastMsgLen]);
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -146,7 +164,16 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
                 return <MessageItem key={msg.id} message={msg} onRevert={onRevert} connectedUsers={connectedUsers} />;
               }
 
-              // Assistant turn: render all tool + assistant messages in order within one block
+              if (turn.type === 'v2-turn') {
+                return (
+                  <V2AssistantTurn
+                    key={turn.messages[0].id}
+                    message={turn.messages[0]}
+                  />
+                );
+              }
+
+              // V1 assistant turn: render all tool + assistant messages in order within one block
               return (
                 <AssistantTurn
                   key={turn.messages[0].id}
@@ -183,9 +210,10 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
 }
 
 /**
- * Merge consecutive assistant text messages into single content blocks.
- * Tool messages stay as-is. This prevents fragmented text rendering
- * (e.g. "Looks" in one block and "like beans isn't..." in the next).
+ * Build segments from an assistant turn's messages.
+ * Consecutive text messages that overlap (streaming snapshots) are merged
+ * to avoid fragmented rendering. Genuinely separate messages (no overlap)
+ * are kept as distinct segments with visual dividers between them.
  */
 type TurnSegment =
   | { kind: 'text'; content: string; id: string }
@@ -198,7 +226,12 @@ function isForwardedMessage(msg: Message): boolean {
   return (msg.parts as Record<string, unknown>).forwarded === true;
 }
 
-function mergeWithOverlap(base: string, incoming: string): string {
+/**
+ * Try to merge two strings as streaming snapshots.
+ * Returns the merged string if overlap is detected (streaming update),
+ * or null if they appear to be genuinely separate messages.
+ */
+function tryMergeSnapshot(base: string, incoming: string): string | null {
   if (!incoming) return base;
   if (!base) return incoming;
   if (base === incoming) return base;
@@ -211,7 +244,8 @@ function mergeWithOverlap(base: string, incoming: string): string {
       return base + incoming.slice(overlap);
     }
   }
-  return base + incoming;
+  // No overlap — these are separate messages, don't merge
+  return null;
 }
 
 function mergeAssistantSegments(messages: Message[]): TurnSegment[] {
@@ -232,8 +266,14 @@ function mergeAssistantSegments(messages: Message[]): TurnSegment[] {
     } else if (msg.content) {
       const last = segments[segments.length - 1];
       if (last && last.kind === 'text') {
-        // Merge incrementally with overlap-aware dedupe to avoid replayed snapshots.
-        last.content = mergeWithOverlap(last.content, msg.content);
+        // Only merge if overlap detected (streaming snapshot dedupe).
+        // Separate messages (no overlap) stay as distinct segments.
+        const merged = tryMergeSnapshot(last.content, msg.content);
+        if (merged !== null) {
+          last.content = merged;
+        } else {
+          segments.push({ kind: 'text', content: msg.content, id: msg.id });
+        }
       } else {
         segments.push({ kind: 'text', content: msg.content, id: msg.id });
       }
@@ -281,8 +321,11 @@ function AssistantTurn({ messages }: { messages: Message[] }) {
         </div>
 
         <div className="space-y-1.5 border-l-[1.5px] border-accent/15 pl-3 dark:border-accent/10">
-          {segments.map((seg) =>
-            seg.kind === 'tool' ? (
+          {segments.map((seg, i) => {
+            const prevSeg = i > 0 ? segments[i - 1] : null;
+            const showDivider = seg.kind === 'text' && prevSeg?.kind === 'text';
+
+            return seg.kind === 'tool' ? (
               <InlineToolCard key={seg.message.id} message={seg.message} />
             ) : seg.kind === 'forwarded' ? (
               <ForwardedMessage
@@ -293,13 +336,96 @@ function AssistantTurn({ messages }: { messages: Message[] }) {
                 originalRole={seg.originalRole}
               />
             ) : (
-              <MarkdownContent key={seg.id} content={seg.content} />
-            )
-          )}
+              <div key={seg.id}>
+                {showDivider && (
+                  <hr className="my-2.5 border-neutral-200/60 dark:border-neutral-700/40" />
+                )}
+                <MarkdownContent content={seg.content} />
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
   );
+}
+
+/** Renders a V2 assistant turn: a single message with structured parts[]. */
+function V2AssistantTurn({ message }: { message: Message }) {
+  const parts = (Array.isArray(message.parts) ? message.parts : []) as MessagePart[];
+  const copyText = parts
+    .filter((p): p is MessagePart & { type: 'text' } => p.type === 'text')
+    .map((p) => (p as { text: string }).text?.trim())
+    .filter(Boolean)
+    .join('\n\n');
+
+  const sentToChannel = message.channelType ? message : undefined;
+
+  return (
+    <div className="group relative flex gap-3 py-3 animate-fade-in">
+      <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-accent/8 text-accent mt-0.5">
+        <BotIcon className="h-3 w-3" />
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <div className="mb-1.5 flex items-baseline gap-2">
+          <span className="font-mono text-[11px] font-semibold tracking-tight text-neutral-800 dark:text-neutral-200">
+            Agent
+          </span>
+          <span className="font-mono text-[10px] tabular-nums text-neutral-300 dark:text-neutral-600">
+            {formatTime(message.createdAt)}
+          </span>
+          {copyText.length > 0 && (
+            <MessageCopyButton text={copyText} className="text-[10px]" />
+          )}
+          {sentToChannel && <ChannelSentBadge channelType={sentToChannel.channelType!} />}
+        </div>
+
+        <div className="space-y-1.5 border-l-[1.5px] border-accent/15 pl-3 dark:border-accent/10">
+          {parts.map((part, i) => (
+            <V2PartRenderer key={i} part={part} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Renders a single V2 message part. */
+function V2PartRenderer({ part }: { part: MessagePart }) {
+  switch (part.type) {
+    case 'text': {
+      if (!part.text) return null;
+      return (
+        <div>
+          <MarkdownContent content={part.text} />
+          {part.streaming && (
+            <span className="inline-block h-3.5 w-1.5 animate-pulse bg-accent/60 ml-0.5 align-text-bottom rounded-sm" />
+          )}
+        </div>
+      );
+    }
+    case 'tool-call': {
+      const toolData: ToolCallData = {
+        toolName: part.toolName,
+        status: part.status as ToolCallStatus,
+        args: part.args ?? null,
+        result: part.result ?? null,
+      };
+      return <ToolCard tool={toolData} />;
+    }
+    case 'error':
+      return (
+        <div className="rounded-md border border-red-200/60 bg-red-50/50 px-3 py-2 font-mono text-[12px] text-red-600 dark:border-red-800/40 dark:bg-red-900/20 dark:text-red-400">
+          {part.message}
+        </div>
+      );
+    case 'finish':
+      // Finish parts are metadata — nothing to render
+      return null;
+    default:
+      return null;
+  }
 }
 
 /** Inline tool card for rendering within an assistant turn — delegates to specialized ToolCard. */

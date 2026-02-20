@@ -120,6 +120,7 @@ interface WebSocketInitMessage {
       role: 'user' | 'assistant' | 'system' | 'tool';
       content: string;
       parts?: unknown;
+      messageFormat?: 'v1' | 'v2';
       authorId?: string;
       authorEmail?: string;
       authorName?: string;
@@ -152,6 +153,7 @@ interface WebSocketMessageMessage {
     role: 'user' | 'assistant' | 'system' | 'tool';
     content: string;
     parts?: unknown;
+    messageFormat?: 'v1' | 'v2';
     authorId?: string;
     authorEmail?: string;
     authorName?: string;
@@ -171,6 +173,7 @@ interface WebSocketStatusMessage {
 interface WebSocketChunkMessage {
   type: 'chunk';
   content: string;
+  messageId?: string;
   channelType?: string;
   channelId?: string;
 }
@@ -200,6 +203,7 @@ interface WebSocketMessageUpdatedMessage {
     role: 'user' | 'assistant' | 'system' | 'tool';
     content: string;
     parts?: unknown;
+    messageFormat?: 'v1' | 'v2';
     channelType?: string;
     channelId?: string;
     createdAt: number;
@@ -535,6 +539,7 @@ export function useChat(sessionId: string) {
             role: m.role,
             content: m.content,
             parts: m.parts,
+            messageFormat: m.messageFormat,
             authorId: m.authorId,
             authorEmail: m.authorEmail,
             authorName: m.authorName,
@@ -574,6 +579,7 @@ export function useChat(sessionId: string) {
           role: d.role,
           content: d.content,
           parts: d.parts,
+          messageFormat: d.messageFormat,
           authorId: d.authorId,
           authorEmail: d.authorEmail,
           authorName: d.authorName,
@@ -582,6 +588,7 @@ export function useChat(sessionId: string) {
           channelId: d.channelId,
           createdAt: new Date(d.createdAt * 1000),
         };
+        const isV2 = d.messageFormat === 'v2';
         setState((prev) => {
           if (prev.messages.some((existing) => existing.id === msg.id)) {
             return prev;
@@ -592,11 +599,10 @@ export function useChat(sessionId: string) {
           return {
             ...prev,
             messages: newMessages,
-            // Clear streaming content when an assistant message arrives
-            // (the text is now persisted as a stored message segment)
-            streamingContent: d.role === 'assistant' ? '' : prev.streamingContent,
-            // Clear streaming channel metadata when assistant message arrives
-            ...(d.role === 'assistant' ? { streamingChannelType: undefined, streamingChannelId: undefined } : {}),
+            // V2 messages don't use streamingContent — text is in parts[].
+            // V1: clear streaming content when an assistant message arrives.
+            streamingContent: (!isV2 && d.role === 'assistant') ? '' : prev.streamingContent,
+            ...((!isV2 && d.role === 'assistant') ? { streamingChannelType: undefined, streamingChannelId: undefined } : {}),
             // Stop thinking when assistant responds; reset status after tool results
             isAgentThinking: d.role === 'assistant' ? false : prev.isAgentThinking,
             ...(d.role === 'tool'
@@ -611,11 +617,22 @@ export function useChat(sessionId: string) {
         const u = (message as WebSocketMessageUpdatedMessage).data;
         setState((prev) => ({
           ...prev,
-          messages: prev.messages.map((m) =>
-            m.id === u.id
-              ? { ...m, content: u.content, parts: u.parts, channelType: u.channelType ?? m.channelType, channelId: u.channelId ?? m.channelId }
-              : m
-          ),
+          messages: prev.messages.map((m) => {
+            if (m.id !== u.id) return m;
+            // Content-wins rule: keep the longer content during streaming to prevent
+            // tool-update broadcasts from clobbering chunk-accumulated text
+            const newContent = (u.content?.length ?? 0) >= (m.content?.length ?? 0)
+              ? u.content
+              : m.content;
+            return {
+              ...m,
+              content: newContent,
+              parts: u.parts ?? m.parts,
+              messageFormat: u.messageFormat ?? m.messageFormat,
+              channelType: u.channelType ?? m.channelType,
+              channelId: u.channelId ?? m.channelId,
+            };
+          }),
         }));
         break;
       }
@@ -682,18 +699,39 @@ export function useChat(sessionId: string) {
 
       case 'chunk': {
         const chunkMsg = message as WebSocketChunkMessage;
-        setState((prev) => {
-          // Ignore trailing chunks after abort (agent is idle)
-          if (prev.agentStatus === 'idle') return prev;
-          return {
-            ...prev,
-            streamingContent: prev.streamingContent + chunkMsg.content,
-            streamingChannelType: chunkMsg.channelType ?? prev.streamingChannelType,
-            streamingChannelId: chunkMsg.channelId ?? prev.streamingChannelId,
-            // Stop thinking when streaming starts
-            isAgentThinking: false,
-          };
-        });
+        if (chunkMsg.messageId) {
+          // V2: update the message's text part in-place
+          setState((prev) => {
+            if (prev.agentStatus === 'idle') return prev;
+            const idx = prev.messages.findIndex((m) => m.id === chunkMsg.messageId);
+            if (idx === -1) return prev;
+            const msg = prev.messages[idx];
+            const parts = Array.isArray(msg.parts) ? [...msg.parts] : [];
+            const lastPart = parts[parts.length - 1];
+            if (lastPart && typeof lastPart === 'object' && (lastPart as Record<string, unknown>).type === 'text') {
+              const textPart = { ...lastPart as Record<string, unknown> };
+              textPart.text = ((textPart.text as string) || '') + chunkMsg.content;
+              parts[parts.length - 1] = textPart;
+            } else {
+              parts.push({ type: 'text', text: chunkMsg.content, streaming: true });
+            }
+            const updated = [...prev.messages];
+            updated[idx] = { ...msg, content: (msg.content || '') + chunkMsg.content, parts };
+            return { ...prev, messages: updated, isAgentThinking: false };
+          });
+        } else {
+          // V1: accumulate streaming content separately
+          setState((prev) => {
+            if (prev.agentStatus === 'idle') return prev;
+            return {
+              ...prev,
+              streamingContent: prev.streamingContent + chunkMsg.content,
+              streamingChannelType: chunkMsg.channelType ?? prev.streamingChannelType,
+              streamingChannelId: chunkMsg.channelId ?? prev.streamingChannelId,
+              isAgentThinking: false,
+            };
+          });
+        }
         break;
       }
 

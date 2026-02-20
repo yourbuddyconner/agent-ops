@@ -38,6 +38,7 @@ export type DOToRunnerMessage =
   | { type: "prompt"; messageId: string; content: string; model?: string;
       attachments?: PromptAttachment[];
       modelPreferences?: string[];
+      messageFormat?: "v1" | "v2";
       channelType?: string; channelId?: string;
       opencodeSessionId?: string;
       authorId?: string; authorEmail?: string; authorName?: string;
@@ -181,7 +182,12 @@ export type RunnerToDOMessage =
   | { type: "audio-transcript"; messageId: string; transcript: string }
   | { type: "command-result"; requestId: string; command: string; result?: unknown; error?: string }
   | { type: "channel-session-created"; channelKey: string; opencodeSessionId: string }
-  | { type: "session-reset"; channelType: string; channelId: string; requestId: string };
+  | { type: "session-reset"; channelType: string; channelId: string; requestId: string }
+  // ─── V2 parts-based message protocol ───
+  | { type: "message.create"; turnId: string; channelType?: string; channelId?: string; opencodeSessionId?: string }
+  | { type: "message.part.text-delta"; turnId: string; delta: string }
+  | { type: "message.part.tool-update"; turnId: string; callId: string; toolName: string; status: ToolCallStatus; args?: unknown; result?: unknown; error?: string }
+  | { type: "message.finalize"; turnId: string; reason: "end_turn" | "error" | "canceled"; finalText?: string; error?: string };
 
 /** Structured review result data */
 export interface ReviewFinding {

@@ -1,3 +1,5 @@
+import type { MessagePart } from './message-parts.js';
+
 // Integration types
 export type IntegrationService =
   | 'github'
@@ -195,7 +197,8 @@ export interface Message {
   sessionId: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
-  parts?: unknown;
+  parts?: MessagePart[] | unknown;
+  messageFormat?: 'v1' | 'v2';
   toolCalls?: ToolCall[];
   authorId?: string;
   authorEmail?: string;
