@@ -55,7 +55,15 @@ class SandboxManager:
 
     @staticmethod
     def workspace_volume_name(session_id: str) -> str:
-        """Return the Modal volume name used for a session workspace."""
+        """Return the Modal volume name used for a session workspace.
+
+        For orchestrator sessions with rotated IDs (orchestrator:<userId>:<uuid>),
+        strip the rotation suffix so the volume is stable across refreshes.
+        """
+        # orchestrator:<userId>:<rotationUuid> → orchestrator:<userId>
+        parts = session_id.split(":")
+        if len(parts) >= 3 and parts[0] == "orchestrator":
+            session_id = f"{parts[0]}:{parts[1]}"
         return f"workspace-{session_id.replace(':', '-')}"
 
     async def create_sandbox(self, config: SandboxConfig) -> SandboxResult:

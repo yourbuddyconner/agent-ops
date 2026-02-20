@@ -238,16 +238,17 @@ export async function dispatchOrchestratorPrompt(
     attachments?: Array<{ type: string; mime: string; url: string; filename?: string }>;
   }
 ): Promise<OrchestratorPromptDispatchResult> {
-  const sessionId = `orchestrator:${params.userId}`;
   const content = params.content.trim();
   if (!content && (!params.attachments || params.attachments.length === 0)) {
-    return { dispatched: false, sessionId, reason: 'empty_prompt' };
+    return { dispatched: false, sessionId: `orchestrator:${params.userId}`, reason: 'empty_prompt' };
   }
 
-  const session = await db.getSession(env.DB, sessionId);
+  // Resolve the current orchestrator session (supports rotated IDs)
+  const session = await db.getOrchestratorSession(env.DB, params.userId);
   if (!session || session.purpose !== 'orchestrator') {
-    return { dispatched: false, sessionId, reason: 'orchestrator_not_configured' };
+    return { dispatched: false, sessionId: `orchestrator:${params.userId}`, reason: 'orchestrator_not_configured' };
   }
+  const sessionId = session.id;
   if (ORCHESTRATOR_UNAVAILABLE_STATUSES.has(session.status)) {
     return { dispatched: false, sessionId, reason: `orchestrator_unavailable:${session.status}` };
   }

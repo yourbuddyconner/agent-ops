@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
 import { useDashboardStats } from '@/api/dashboard';
-import { useOrchestratorInfo, useCreateOrchestrator } from '@/api/orchestrator';
+import { useOrchestratorInfo } from '@/api/orchestrator';
+import { useAutoRestartOrchestrator } from '@/hooks/use-auto-restart-orchestrator';
 import { PeriodSelector } from '@/components/dashboard/period-selector';
 import { LiveSessionsBanner } from '@/components/dashboard/live-sessions-banner';
 import { HeroMetrics } from '@/components/dashboard/hero-metrics';
@@ -60,7 +61,7 @@ function DashboardPage() {
 
 function OrchestratorBanner() {
   const { data, isLoading } = useOrchestratorInfo();
-  const createOrchestrator = useCreateOrchestrator();
+  const autoRestart = useAutoRestartOrchestrator();
 
   if (isLoading) return null;
 
@@ -86,7 +87,7 @@ function OrchestratorBanner() {
     );
   }
 
-  // Identity exists but session is dead — show restart
+  // Identity exists but session is dead — auto-restart in progress
   if (data.needsRestart) {
     return (
       <div className="mb-6 flex items-center justify-between rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-950/30">
@@ -99,21 +100,22 @@ function OrchestratorBanner() {
               {data.identity.name} is offline
             </p>
             <p className="text-xs text-neutral-500 dark:text-neutral-400">
-              @{data.identity.handle} &middot; Session ended
+              @{data.identity.handle} &middot; {autoRestart.isRestarting ? 'Restarting...' : autoRestart.restartFailed ? 'Restart failed' : 'Session ended'}
             </p>
           </div>
         </div>
-        <button
-          onClick={() => createOrchestrator.mutate({
-            name: data.identity!.name,
-            handle: data.identity!.handle,
-            customInstructions: data.identity!.customInstructions ?? undefined,
-          })}
-          disabled={createOrchestrator.isPending}
-          className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
-        >
-          {createOrchestrator.isPending ? 'Restarting...' : 'Restart'}
-        </button>
+        {autoRestart.restartFailed ? (
+          <button
+            onClick={autoRestart.retry}
+            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
+          >
+            Retry
+          </button>
+        ) : (
+          <span className="text-sm text-amber-600 dark:text-amber-400">
+            {autoRestart.isRestarting ? 'Restarting...' : 'Restarting...'}
+          </span>
+        )}
       </div>
     );
   }

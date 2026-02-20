@@ -52,6 +52,137 @@ function generateRunnerToken(): string {
 const TERMINAL_STATUSES = new Set(['terminated', 'archived', 'error']);
 
 /**
+ * Core orchestrator session creation logic.
+ * Used by both the POST route and the cron auto-restart handler.
+ */
+export async function restartOrchestratorSession(
+  env: Env,
+  userId: string,
+  userEmail: string,
+  identity: { id: string; name: string; handle: string; customInstructions?: string | null },
+  requestUrl?: string
+): Promise<{ sessionId: string }> {
+  const personaFiles = buildOrchestratorPersonaFiles(identity as any);
+
+  const sessionId = `orchestrator:${userId}:${crypto.randomUUID()}`;
+  const runnerToken = generateRunnerToken();
+
+  await db.createSession(env.DB, {
+    id: sessionId,
+    userId,
+    workspace: 'orchestrator',
+    title: `${identity.name} (Orchestrator)`,
+    isOrchestrator: true,
+    purpose: 'orchestrator',
+  });
+
+  // Build env vars (LLM keys + orchestrator flag)
+  const envVars: Record<string, string> = {
+    IS_ORCHESTRATOR: 'true',
+  };
+  const providerEnvMap = [
+    { provider: 'anthropic', envKey: 'ANTHROPIC_API_KEY' },
+    { provider: 'openai', envKey: 'OPENAI_API_KEY' },
+    { provider: 'google', envKey: 'GOOGLE_API_KEY' },
+  ] as const;
+
+  for (const { provider, envKey } of providerEnvMap) {
+    try {
+      const orgKey = await db.getOrgApiKey(env.DB, provider);
+      if (orgKey) {
+        envVars[envKey] = await decryptApiKey(orgKey.encryptedKey, env.ENCRYPTION_KEY);
+        continue;
+      }
+    } catch {
+      // fall through
+    }
+    if (env[envKey]) envVars[envKey] = env[envKey]!;
+  }
+
+  // User-level credentials (1Password, etc.)
+  const credentialEnvMap = [
+    { provider: '1password', envKey: 'OP_SERVICE_ACCOUNT_TOKEN' },
+  ] as const;
+
+  for (const { provider, envKey } of credentialEnvMap) {
+    try {
+      const cred = await db.getUserCredential(env.DB, userId, provider);
+      if (cred) {
+        envVars[envKey] = await decryptApiKey(cred.encryptedKey, env.ENCRYPTION_KEY);
+      }
+    } catch {
+      // Table may not exist yet — skip
+    }
+  }
+
+  // Construct DO WebSocket URL
+  // For cron-triggered restarts, we use the FRONTEND_URL-derived host as a fallback
+  let wsHost: string;
+  let wsProtocol: string;
+  if (requestUrl) {
+    wsProtocol = requestUrl.startsWith('https') ? 'wss' : 'ws';
+    wsHost = new URL(requestUrl).host;
+  } else {
+    // Cron context: derive from worker's own URL pattern
+    wsProtocol = 'wss';
+    // Use FRONTEND_URL to derive the worker host (same domain)
+    const frontendUrl = env.FRONTEND_URL || '';
+    wsHost = frontendUrl ? new URL(frontendUrl).host.replace(/^app\./, 'api.') : 'localhost';
+  }
+  const doWsUrl = `${wsProtocol}://${wsHost}/api/sessions/${sessionId}/ws`;
+
+  // Fetch user's idle timeout preference
+  const userRow = await db.getUserById(env.DB, userId);
+  const idleTimeoutSeconds = userRow?.idleTimeoutSeconds ?? 900;
+  const uiQueueMode = userRow?.uiQueueMode ?? 'followup';
+  const idleTimeoutMs = idleTimeoutSeconds * 1000;
+
+  const spawnRequest = {
+    sessionId,
+    userId,
+    workspace: 'orchestrator',
+    imageType: 'base',
+    doWsUrl,
+    runnerToken,
+    jwtSecret: env.ENCRYPTION_KEY,
+    idleTimeoutSeconds,
+    envVars,
+    personaFiles,
+  };
+
+  // Initialize SessionAgent DO
+  const doId = env.SESSIONS.idFromName(sessionId);
+  const sessionDO = env.SESSIONS.get(doId);
+
+  try {
+    await sessionDO.fetch(new Request('http://do/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId,
+        userId,
+        workspace: 'orchestrator',
+        runnerToken,
+        backendUrl: env.MODAL_BACKEND_URL.replace('{label}', 'create-session'),
+        terminateUrl: env.MODAL_BACKEND_URL.replace('{label}', 'terminate-session'),
+        hibernateUrl: env.MODAL_BACKEND_URL.replace('{label}', 'hibernate-session'),
+        restoreUrl: env.MODAL_BACKEND_URL.replace('{label}', 'restore-session'),
+        idleTimeoutMs,
+        queueMode: uiQueueMode,
+        spawnRequest,
+      }),
+    }));
+  } catch (err) {
+    console.error('Failed to initialize orchestrator DO:', err);
+    await db.updateSessionStatus(env.DB, sessionId, 'error', undefined,
+      `Failed to initialize orchestrator: ${err instanceof Error ? err.message : String(err)}`);
+    throw err;
+  }
+
+  return { sessionId };
+}
+
+/**
  * GET /api/me/orchestrator
  * Returns orchestrator info for the current user.
  */
@@ -60,7 +191,8 @@ orchestratorRouter.get('/orchestrator', async (c) => {
 
   const identity = await db.getOrchestratorIdentity(c.env.DB, user.id);
   const session = await db.getOrchestratorSession(c.env.DB, user.id);
-  const sessionId = `orchestrator:${user.id}`;
+  // Use the actual session ID from DB (supports rotated IDs), fall back to legacy format
+  const sessionId = session?.id ?? `orchestrator:${user.id}`;
   const needsRestart = !!identity && (!session || TERMINAL_STATUSES.has(session.status));
 
   return c.json({
@@ -119,125 +251,23 @@ orchestratorRouter.post('/orchestrator', zValidator('json', createOrchestratorSc
     identity = (await db.getOrchestratorIdentity(c.env.DB, user.id))!;
   }
 
-  // Build persona files
-  const personaFiles = buildOrchestratorPersonaFiles(identity);
-
-  // Create session with well-known ID (resets the old terminated session)
-  const sessionId = `orchestrator:${user.id}`;
-  const runnerToken = generateRunnerToken();
-
-  // If old session exists in terminal state, update it back to initializing
-  if (existingSession && TERMINAL_STATUSES.has(existingSession.status)) {
-    await db.updateSessionStatus(c.env.DB, sessionId, 'initializing');
-  }
-
-  const session = existingSession && TERMINAL_STATUSES.has(existingSession.status)
-    ? { ...existingSession, status: 'initializing' as const }
-    : await db.createSession(c.env.DB, {
-        id: sessionId,
-        userId: user.id,
-        workspace: 'orchestrator',
-        title: `${identity.name} (Orchestrator)`,
-        isOrchestrator: true,
-        purpose: 'orchestrator',
-      });
-
-  // Build env vars (LLM keys + orchestrator flag — no repo for orchestrator)
-  const envVars: Record<string, string> = {
-    IS_ORCHESTRATOR: 'true',
-  };
-  const providerEnvMap = [
-    { provider: 'anthropic', envKey: 'ANTHROPIC_API_KEY' },
-    { provider: 'openai', envKey: 'OPENAI_API_KEY' },
-    { provider: 'google', envKey: 'GOOGLE_API_KEY' },
-  ] as const;
-
-  for (const { provider, envKey } of providerEnvMap) {
-    try {
-      const orgKey = await db.getOrgApiKey(c.env.DB, provider);
-      if (orgKey) {
-        envVars[envKey] = await decryptApiKey(orgKey.encryptedKey, c.env.ENCRYPTION_KEY);
-        continue;
-      }
-    } catch {
-      // fall through
-    }
-    if (c.env[envKey]) envVars[envKey] = c.env[envKey]!;
-  }
-
-  // User-level credentials (1Password, etc.)
-  const credentialEnvMap = [
-    { provider: '1password', envKey: 'OP_SERVICE_ACCOUNT_TOKEN' },
-  ] as const;
-
-  for (const { provider, envKey } of credentialEnvMap) {
-    try {
-      const cred = await db.getUserCredential(c.env.DB, user.id, provider);
-      if (cred) {
-        envVars[envKey] = await decryptApiKey(cred.encryptedKey, c.env.ENCRYPTION_KEY);
-      }
-    } catch {
-      // Table may not exist yet — skip
-    }
-  }
-
-  // Construct DO WebSocket URL
-  const wsProtocol = c.req.url.startsWith('https') ? 'wss' : 'ws';
-  const host = c.req.header('host') || 'localhost';
-  const doWsUrl = `${wsProtocol}://${host}/api/sessions/${sessionId}/ws`;
-
-  // Fetch user's idle timeout preference
-  const userRow = await db.getUserById(c.env.DB, user.id);
-  const idleTimeoutSeconds = userRow?.idleTimeoutSeconds ?? 900;
-  const uiQueueMode = userRow?.uiQueueMode ?? 'followup';
-  const idleTimeoutMs = idleTimeoutSeconds * 1000;
-
-  const spawnRequest = {
-    sessionId,
-    userId: user.id,
-    workspace: 'orchestrator',
-    imageType: 'base',
-    doWsUrl,
-    runnerToken,
-    jwtSecret: c.env.ENCRYPTION_KEY,
-    idleTimeoutSeconds,
-    envVars,
-    personaFiles,
-  };
-
-  // Initialize SessionAgent DO
-  const doId = c.env.SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.SESSIONS.get(doId);
-
+  // Delegate to shared creation logic
   try {
-    await sessionDO.fetch(new Request('http://do/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sessionId,
-        userId: user.id,
-        workspace: 'orchestrator',
-        runnerToken,
-        backendUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'create-session'),
-        terminateUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'terminate-session'),
-        hibernateUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'hibernate-session'),
-        restoreUrl: c.env.MODAL_BACKEND_URL.replace('{label}', 'restore-session'),
-        idleTimeoutMs,
-        queueMode: uiQueueMode,
-        spawnRequest,
-      }),
-    }));
+    const result = await restartOrchestratorSession(
+      c.env,
+      user.id,
+      user.email,
+      identity,
+      c.req.url
+    );
+    const session = await db.getSession(c.env.DB, result.sessionId);
+    return c.json({ sessionId: result.sessionId, identity, session }, 201);
   } catch (err) {
-    console.error('Failed to initialize orchestrator DO:', err);
-    await db.updateSessionStatus(c.env.DB, sessionId, 'error', undefined,
-      `Failed to initialize orchestrator: ${err instanceof Error ? err.message : String(err)}`);
     return c.json({
       error: 'Failed to initialize orchestrator session',
       details: err instanceof Error ? err.message : String(err),
     }, 500);
   }
-
-  return c.json({ sessionId, identity, session }, 201);
 });
 
 /**

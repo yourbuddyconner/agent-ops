@@ -484,7 +484,8 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
  */
 sessionsRouter.get('/available-models', async (c) => {
   const user = c.get('user');
-  const orchestratorId = `orchestrator:${user.id}`;
+  const orchSession = await db.getOrchestratorSession(c.env.DB, user.id);
+  const orchestratorId = orchSession?.id ?? `orchestrator:${user.id}`;
 
   try {
     const doId = c.env.SESSIONS.idFromName(orchestratorId);

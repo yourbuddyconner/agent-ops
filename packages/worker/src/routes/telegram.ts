@@ -76,6 +76,10 @@ telegramRouter.post('/webhook/:userId', async (c) => {
 
   const { config, botToken } = telegramData;
 
+  // Resolve the current orchestrator session ID (supports rotated IDs)
+  const orchSession = await db.getOrchestratorSession(c.env.DB, userId);
+  const orchestratorSessionId = orchSession?.id ?? `orchestrator:${userId}`;
+
   const bot = new Bot(botToken, {
     botInfo: JSON.parse(config.botInfo),
   });
@@ -95,7 +99,6 @@ telegramRouter.post('/webhook/:userId', async (c) => {
 
   bot.command('status', async (ctx) => {
     try {
-      const orchestratorSessionId = `orchestrator:${userId}`;
       const doId = c.env.SESSIONS.idFromName(orchestratorSessionId);
       const sessionDO = c.env.SESSIONS.get(doId);
       const resp = await sessionDO.fetch(new Request('http://do/status'));
@@ -115,7 +118,6 @@ telegramRouter.post('/webhook/:userId', async (c) => {
 
   bot.command('stop', async (ctx) => {
     try {
-      const orchestratorSessionId = `orchestrator:${userId}`;
       const doId = c.env.SESSIONS.idFromName(orchestratorSessionId);
       const sessionDO = c.env.SESSIONS.get(doId);
       await sessionDO.fetch(new Request('http://do/prompt', {
@@ -132,7 +134,6 @@ telegramRouter.post('/webhook/:userId', async (c) => {
 
   bot.command('clear', async (ctx) => {
     try {
-      const orchestratorSessionId = `orchestrator:${userId}`;
       const doId = c.env.SESSIONS.idFromName(orchestratorSessionId);
       const sessionDO = c.env.SESSIONS.get(doId);
       await sessionDO.fetch(new Request('http://do/clear-queue', { method: 'POST' }));
@@ -144,7 +145,6 @@ telegramRouter.post('/webhook/:userId', async (c) => {
 
   bot.command('refresh', async (ctx) => {
     try {
-      const orchestratorSessionId = `orchestrator:${userId}`;
       const doId = c.env.SESSIONS.idFromName(orchestratorSessionId);
       const sessionDO = c.env.SESSIONS.get(doId);
       await sessionDO.fetch(new Request('http://do/stop', { method: 'POST' }));
@@ -157,7 +157,6 @@ telegramRouter.post('/webhook/:userId', async (c) => {
 
   bot.command('sessions', async (ctx) => {
     try {
-      const orchestratorSessionId = `orchestrator:${userId}`;
       const doId = c.env.SESSIONS.idFromName(orchestratorSessionId);
       const sessionDO = c.env.SESSIONS.get(doId);
       const resp = await sessionDO.fetch(new Request('http://do/children'));

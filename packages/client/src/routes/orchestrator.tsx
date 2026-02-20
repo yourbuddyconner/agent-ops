@@ -12,6 +12,7 @@ import {
   useOrchestratorMemories,
   useDeleteMemory,
 } from '@/api/orchestrator';
+import { useAutoRestartOrchestrator } from '@/hooks/use-auto-restart-orchestrator';
 import { useInfiniteSessionChildren, useSessionDoStatus } from '@/api/sessions';
 import { formatRelativeTime } from '@/lib/format';
 import type { OrchestratorMemory, OrchestratorMemoryCategory } from '@/api/types';
@@ -224,10 +225,10 @@ function OrchestratorDashboard() {
   const childrenQuery = useInfiniteSessionChildren(orchInfo?.sessionId ?? '', { hideTerminated });
   const [memoryCategory, setMemoryCategory] = React.useState<string | undefined>();
   const { data: memories } = useOrchestratorMemories(memoryCategory);
+  const autoRestart = useAutoRestartOrchestrator();
 
   const identity = orchInfo!.identity!;
   const session = orchInfo?.session;
-  const needsRestart = orchInfo?.needsRestart;
   const sessionId = orchInfo!.sessionId;
 
   const children = childrenQuery.data?.children ?? [];
@@ -302,8 +303,19 @@ function OrchestratorDashboard() {
         description={`@${identity.handle}`}
         actions={
           <div className="flex items-center gap-2">
-            {needsRestart && (
-              <RestartButton identity={identity} />
+            {autoRestart.needsRestart && (
+              autoRestart.isRestarting ? (
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-700 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-400">
+                  Restarting...
+                </span>
+              ) : autoRestart.restartFailed ? (
+                <button
+                  onClick={autoRestart.retry}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-red-300 bg-red-50 px-3 py-1.5 text-sm font-medium text-red-700 transition-colors hover:bg-red-100 dark:border-red-700 dark:bg-red-950/30 dark:text-red-400 dark:hover:bg-red-950/50"
+                >
+                  Restart failed — Retry
+                </button>
+              ) : null
             )}
             <Link
               to="/sessions/$sessionId"
@@ -421,26 +433,6 @@ function OrchestratorDashboard() {
         </section>
       </div>
     </PageContainer>
-  );
-}
-
-function RestartButton({ identity }: { identity: { name: string; handle: string; customInstructions?: string | null } }) {
-  const createOrchestrator = useCreateOrchestrator();
-
-  return (
-    <button
-      onClick={() =>
-        createOrchestrator.mutate({
-          name: identity.name,
-          handle: identity.handle,
-          customInstructions: identity.customInstructions ?? undefined,
-        })
-      }
-      disabled={createOrchestrator.isPending}
-      className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-400 dark:hover:bg-amber-950/50"
-    >
-      {createOrchestrator.isPending ? 'Restarting...' : 'Restart'}
-    </button>
   );
 }
 

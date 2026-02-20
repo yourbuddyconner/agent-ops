@@ -36,15 +36,14 @@ export function RefreshOrchestratorDialog({
       await terminateSession.mutateAsync(sessionId);
 
       // Re-create with the same identity
-      await createOrchestrator.mutateAsync({
+      const result = await createOrchestrator.mutateAsync({
         name: orchInfo.identity.name,
         handle: orchInfo.identity.handle,
         customInstructions: orchInfo.identity.customInstructions ?? undefined,
       });
 
-      // Full page reload to clear all stale chat state, WebSocket connections,
-      // and ensure a fresh init from the newly reset DO
-      window.location.reload();
+      // Navigate to the new session (full reload to clear stale WS connections & chat state)
+      window.location.href = `/sessions/${result.sessionId}`;
     } catch {
       // Errors are handled by the mutations
     }

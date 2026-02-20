@@ -98,7 +98,7 @@ export function SessionActionsMenu({
               Terminate Session
             </DropdownMenuItem>
           )}
-          {canDelete && (
+          {canDelete && !isOrchestrator && (
             <DropdownMenuItem
               onClick={() => setDialog('delete')}
               className="text-red-600 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"

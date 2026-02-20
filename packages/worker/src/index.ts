@@ -36,6 +36,7 @@ import { decryptString } from './lib/crypto.js';
 import {
   enqueueWorkflowApprovalNotificationIfMissing,
   getOAuthToken,
+  getTerminatedOrchestratorSessions,
   markWorkflowApprovalNotificationsRead,
   updateSessionGitState,
 } from './lib/db.js';
@@ -46,6 +47,7 @@ import {
   enqueueWorkflowExecution,
   sha256Hex,
 } from './lib/workflow-runtime.js';
+import { restartOrchestratorSession } from './routes/orchestrator.js';
 
 // Durable Object exports
 export { APIKeysDurableObject } from './durable-objects/api-keys.js';
@@ -194,6 +196,13 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (event, env, ctx) 
     } catch (error) {
       console.error('Session archive error:', error);
     }
+  }
+
+  // Auto-restart dead orchestrators (runs every tick, only acts on sessions dead >2 min)
+  try {
+    await autoRestartDeadOrchestrators(env);
+  } catch (error) {
+    console.error('Orchestrator auto-restart error:', error);
   }
 };
 
@@ -1129,6 +1138,7 @@ async function archiveTerminatedSessions(env: Env): Promise<void> {
   const rows = await env.DB.prepare(
     `SELECT id FROM sessions
      WHERE status IN ('terminated', 'error')
+       AND is_orchestrator = 0
        AND last_active_at < ?
      LIMIT 50`
   )
@@ -1208,6 +1218,48 @@ async function archiveTerminatedSessions(env: Env): Promise<void> {
     .run();
 
   console.log(`Archived ${archivedIds.length} sessions (workspace volumes deleted: ${deletedCount})`);
+}
+
+/**
+ * Auto-restart orchestrator sessions that have been in a terminal state for >2 minutes.
+ * The 2-minute threshold prevents racing with the refresh dialog's terminate→create flow.
+ * Safe against duplicates: restartOrchestratorSession will fail with a 409-equivalent
+ * if another restart already succeeded (the DB query excludes users with healthy sessions).
+ */
+async function autoRestartDeadOrchestrators(env: Env): Promise<void> {
+  const deadOrchestrators = await getTerminatedOrchestratorSessions(env.DB, 2);
+  if (deadOrchestrators.length === 0) return;
+
+  console.log(`Auto-restarting ${deadOrchestrators.length} dead orchestrator(s)`);
+
+  const results = await Promise.allSettled(
+    deadOrchestrators.map(async (orch) => {
+      try {
+        const result = await restartOrchestratorSession(
+          env,
+          orch.userId,
+          '', // email not needed for restart
+          {
+            id: orch.identityId,
+            name: orch.name,
+            handle: orch.handle,
+            customInstructions: orch.customInstructions,
+          }
+        );
+        console.log(`Auto-restarted orchestrator for user ${orch.userId}: ${result.sessionId}`);
+        return result;
+      } catch (err) {
+        console.error(`Failed to auto-restart orchestrator for user ${orch.userId}:`, err);
+        throw err;
+      }
+    })
+  );
+
+  const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+  const failed = results.filter((r) => r.status === 'rejected').length;
+  if (failed > 0) {
+    console.warn(`Auto-restart: ${succeeded} succeeded, ${failed} failed`);
+  }
 }
 
 export default {

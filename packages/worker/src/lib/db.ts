@@ -2030,8 +2030,60 @@ function mapOrchestratorMemory(row: any): OrchestratorMemory {
 // ─── Orchestrator Session Helpers ───────────────────────────────────────
 
 export async function getOrchestratorSession(db: D1Database, userId: string): Promise<AgentSession | null> {
-  const sessionId = `orchestrator:${userId}`;
-  return getSession(db, sessionId);
+  // Look up the active orchestrator session by flag, not by fixed ID.
+  // This supports session ID rotation on refresh (new DO instance = fresh code).
+  const row = await db.prepare(
+    `SELECT * FROM sessions WHERE user_id = ? AND is_orchestrator = 1 AND status NOT IN ('terminated', 'archived', 'error') ORDER BY created_at DESC LIMIT 1`
+  ).bind(userId).first();
+  if (row) return mapSession(row);
+  // Fallback: check for legacy fixed-ID session (may be in terminal state for restart detection)
+  const legacyId = `orchestrator:${userId}`;
+  return getSession(db, legacyId);
+}
+
+/**
+ * Find orchestrator sessions stuck in terminal state for longer than `minAgeMinutes`.
+ * Only returns one per user, and only if no newer healthy session exists.
+ */
+export async function getTerminatedOrchestratorSessions(
+  db: D1Database,
+  minAgeMinutes: number
+): Promise<{ userId: string; sessionId: string; identityId: string; name: string; handle: string; customInstructions: string | null }[]> {
+  const cutoff = new Date(Date.now() - minAgeMinutes * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+
+  const rows = await db.prepare(`
+    SELECT s.id as session_id, s.user_id, oi.id as identity_id, oi.name, oi.handle, oi.custom_instructions
+    FROM sessions s
+    JOIN orchestrator_identities oi ON oi.user_id = s.user_id
+    WHERE s.is_orchestrator = 1
+      AND s.status IN ('terminated', 'error')
+      AND s.last_active_at < ?
+      AND NOT EXISTS (
+        SELECT 1 FROM sessions s2
+        WHERE s2.user_id = s.user_id
+          AND s2.is_orchestrator = 1
+          AND s2.status NOT IN ('terminated', 'archived', 'error')
+      )
+    ORDER BY s.created_at DESC
+  `).bind(cutoff).all();
+
+  // Deduplicate by user_id (keep the most recent session per user)
+  const seen = new Set<string>();
+  const result: { userId: string; sessionId: string; identityId: string; name: string; handle: string; customInstructions: string | null }[] = [];
+  for (const row of rows.results ?? []) {
+    const r = row as any;
+    if (seen.has(r.user_id)) continue;
+    seen.add(r.user_id);
+    result.push({
+      userId: r.user_id,
+      sessionId: r.session_id,
+      identityId: r.identity_id,
+      name: r.name,
+      handle: r.handle,
+      customInstructions: r.custom_instructions,
+    });
+  }
+  return result;
 }
 
 // Mapping helpers
