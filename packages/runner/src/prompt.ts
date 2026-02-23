@@ -407,6 +407,7 @@ export class ChannelSession {
   awaitingAssistantForAttempt = false;
   messageFormat: "v1" | "v2" = "v1";
   v2TurnCreated = false;
+  v2TurnId: string | null = null;
 
   constructor(channelKey: string) {
     this.channelKey = channelKey;
@@ -430,6 +431,7 @@ export class ChannelSession {
     this.waitForEventForced = false;
     this.awaitingAssistantForAttempt = false;
     this.v2TurnCreated = false;
+    this.v2TurnId = null;
   }
 
   /** Reset state for model failover retry (keep activeMessageId). */
@@ -449,6 +451,7 @@ export class ChannelSession {
     this.recentEventTrace = [];
     this.awaitingAssistantForAttempt = false;
     this.v2TurnCreated = false;
+    this.v2TurnId = null;
   }
 
   /** Reset state on abort. */
@@ -469,6 +472,7 @@ export class ChannelSession {
     this.recentEventTrace = [];
     this.awaitingAssistantForAttempt = false;
     this.v2TurnCreated = false;
+    this.v2TurnId = null;
   }
 
   static channelKeyFrom(channelType?: string, channelId?: string): string {
@@ -556,6 +560,8 @@ export class PromptHandler {
   private set messageFormat(val: "v1" | "v2") { if (this.activeChannel) this.activeChannel.messageFormat = val; }
   private get v2TurnCreated(): boolean { return this.activeChannel?.v2TurnCreated ?? false; }
   private set v2TurnCreated(val: boolean) { if (this.activeChannel) this.activeChannel.v2TurnCreated = val; }
+  private get v2TurnId(): string | null { return this.activeChannel?.v2TurnId ?? null; }
+  private set v2TurnId(val: string | null) { if (this.activeChannel) this.activeChannel.v2TurnId = val; }
 
   // Ephemeral session tracking — resolved when the session becomes idle via SSE
   private idleWaiters = new Map<string, () => void>();
@@ -1273,6 +1279,7 @@ export class PromptHandler {
       console.error("[PromptHandler] Error processing prompt:", errorMsg);
       this.agentClient.sendError(messageId, errorMsg);
       this.agentClient.sendComplete();
+      this.agentClient.sendAgentStatus("idle");
     }
   }
 
@@ -1804,8 +1811,12 @@ export class PromptHandler {
   private ensureV2TurnCreated(): void {
     if (this.v2TurnCreated || !this.activeMessageId) return;
     this.v2TurnCreated = true;
+    // Generate a NEW turn ID for the assistant message so it doesn't collide
+    // with the user/prompt message ID (activeMessageId).
+    const turnId = crypto.randomUUID();
+    this.v2TurnId = turnId;
     const channel = this.activeChannel;
-    this.agentClient.sendTurnCreate(this.activeMessageId, {
+    this.agentClient.sendTurnCreate(turnId, {
       channelType: channel?.channelKey.split(":")[0],
       channelId: channel?.channelKey.split(":").slice(1).join(":"),
       opencodeSessionId: channel?.opencodeSessionId ?? undefined,
@@ -2463,12 +2474,20 @@ export class PromptHandler {
       case "session.idle": {
         // Dedicated idle event — finalize response (even if no activity, to handle empty responses)
         console.log(`[PromptHandler] session.idle (channel: ${eventChannel?.channelKey ?? 'unknown'}, activeMessageId: ${this.activeMessageId ? 'yes' : 'no'}, hasActivity: ${this.hasActivity})`);
-        if (this.activeMessageId && !this.retryPending && !this.awaitingAssistantForAttempt) {
+        if (this.activeMessageId && !this.retryPending && this.awaitingAssistantForAttempt) {
+          // OpenCode went idle without ever producing an assistant message — the model
+          // silently failed. Clear the flag and finalize so finalizeResponse() can
+          // attempt model failover for the empty response.
+          console.log(`[PromptHandler] session.idle: model produced no assistant message — clearing awaitingAssistant, finalizing for failover`);
+          this.awaitingAssistantForAttempt = false;
+          this.clearFirstResponseTimeout();
+          this.finalizeResponse();
+        } else if (this.activeMessageId && !this.retryPending) {
           console.log(`[PromptHandler] Session idle, finalizing response`);
           this.finalizeResponse();
-        } else if (this.retryPending || this.awaitingAssistantForAttempt) {
+        } else if (this.retryPending) {
           console.log(
-            `[PromptHandler] session.idle ignored (retryPending=${this.retryPending}, awaitingAssistant=${this.awaitingAssistantForAttempt})`
+            `[PromptHandler] session.idle ignored (retryPending=${this.retryPending})`
           );
         }
         if (!this.idleNotified) {
@@ -2670,7 +2689,7 @@ export class PromptHandler {
         if (this.messageFormat === "v2") {
           this.ensureV2TurnCreated();
           console.log(`[PromptHandler] V2 text-delta: ${chunk.length} chars (total: ${this.streamedContent.length})`);
-          this.agentClient.sendTextDelta(this.activeMessageId, chunk);
+          this.agentClient.sendTextDelta(this.v2TurnId!, chunk);
         } else {
           console.log(`[PromptHandler] V1 stream-chunk: ${chunk.length} chars (total: ${this.streamedContent.length})`);
           this.agentClient.sendStreamChunk(this.activeMessageId, chunk);
@@ -2771,7 +2790,7 @@ export class PromptHandler {
       }
       if (this.messageFormat === "v2") {
         this.ensureV2TurnCreated();
-        this.agentClient.sendToolUpdate(this.activeMessageId!, callID, toolName, currentStatus, state.input ?? undefined);
+        this.agentClient.sendToolUpdate(this.v2TurnId!, callID, toolName, currentStatus, state.input ?? undefined);
       } else {
         this.agentClient.sendToolCall(
           callID,
@@ -2786,7 +2805,7 @@ export class PromptHandler {
       console.log(`[PromptHandler] Tool "${toolName}" completed (output: ${typeof toolResult === "string" ? toolResult.length + " chars" : "null"})`);
 
       if (this.messageFormat === "v2") {
-        this.agentClient.sendToolUpdate(this.activeMessageId!, callID, toolName, "completed", state.input ?? undefined, toolResult ?? undefined);
+        this.agentClient.sendToolUpdate(this.v2TurnId!, callID, toolName, "completed", state.input ?? undefined, toolResult ?? undefined);
       } else {
         this.agentClient.sendToolCall(
           callID,
@@ -2814,7 +2833,7 @@ export class PromptHandler {
     } else if (currentStatus === "error") {
       console.log(`[PromptHandler] Tool "${toolName}" error: ${state.error}`);
       if (this.messageFormat === "v2") {
-        this.agentClient.sendToolUpdate(this.activeMessageId!, callID, toolName, "error", state.input ?? undefined, undefined, state.error ?? undefined);
+        this.agentClient.sendToolUpdate(this.v2TurnId!, callID, toolName, "error", state.input ?? undefined, undefined, state.error ?? undefined);
       } else {
         this.agentClient.sendToolCall(
           callID,
@@ -2887,12 +2906,19 @@ export class PromptHandler {
     console.log(`[PromptHandler] session.status: "${statusType}" (active: ${this.activeMessageId ? 'yes' : 'no'}, content: ${this.streamedContent.length} chars, activity: ${this.hasActivity})`);
 
     if (statusType === "idle") {
-      if (this.activeMessageId && !this.retryPending && !this.awaitingAssistantForAttempt) {
+      if (this.activeMessageId && !this.retryPending && this.awaitingAssistantForAttempt) {
+        // Model silently failed — OpenCode idle without assistant message.
+        // Clear flag and finalize to trigger model failover.
+        console.log(`[PromptHandler] session.status=idle: model produced no assistant message — clearing awaitingAssistant, finalizing for failover`);
+        this.awaitingAssistantForAttempt = false;
+        this.clearFirstResponseTimeout();
+        this.finalizeResponse();
+      } else if (this.activeMessageId && !this.retryPending) {
         console.log(`[PromptHandler] Session idle, finalizing response`);
         this.finalizeResponse();
-      } else if (this.retryPending || this.awaitingAssistantForAttempt) {
+      } else if (this.retryPending) {
         console.log(
-          `[PromptHandler] session.status=idle ignored (retryPending=${this.retryPending}, awaitingAssistant=${this.awaitingAssistantForAttempt})`
+          `[PromptHandler] session.status=idle ignored (retryPending=${this.retryPending})`
         );
       }
       if (!this.idleNotified) {
@@ -2963,6 +2989,8 @@ export class PromptHandler {
       this.clearFirstResponseTimeout();
 
       const messageId = this.activeMessageId;
+      // v2TurnId is set by ensureV2TurnCreated() before any v2 sends
+      const turnId = this.v2TurnId;
       let content = this.streamedContent || this.latestAssistantTextSnapshot;
 
       // Send result, error, or fallback depending on what happened
@@ -2971,7 +2999,7 @@ export class PromptHandler {
         if (this.messageFormat === "v2") {
           this.ensureV2TurnCreated();
           console.log(`[PromptHandler] V2 finalize: end_turn (${content.length} chars)`);
-          this.agentClient.sendTurnFinalize(messageId, "end_turn", content);
+          this.agentClient.sendTurnFinalize(turnId!, "end_turn", content);
         } else {
           this.sendAssistantResultSegment(messageId, content, "finalize");
         }
@@ -2997,7 +3025,7 @@ export class PromptHandler {
         console.log(`[PromptHandler] Sending error for ${messageId}: ${this.lastError}`);
         if (this.messageFormat === "v2") {
           this.ensureV2TurnCreated();
-          this.agentClient.sendTurnFinalize(messageId, "error", undefined, this.lastError || undefined);
+          this.agentClient.sendTurnFinalize(turnId!, "error", undefined, this.lastError || undefined);
         } else {
           this.agentClient.sendError(messageId, this.lastError);
         }
@@ -3006,7 +3034,7 @@ export class PromptHandler {
         console.log(`[PromptHandler] Tools-only response for ${messageId} (${this.toolStates.size} tools ran)`);
         if (this.messageFormat === "v2") {
           this.ensureV2TurnCreated();
-          this.agentClient.sendTurnFinalize(messageId, "end_turn");
+          this.agentClient.sendTurnFinalize(turnId!, "end_turn");
         }
       } else {
         const recovered = await this.recoverAssistantTextOrError();
@@ -3020,7 +3048,7 @@ export class PromptHandler {
           );
           if (this.messageFormat === "v2") {
             this.ensureV2TurnCreated();
-            this.agentClient.sendTurnFinalize(messageId, "end_turn", recovered.text);
+            this.agentClient.sendTurnFinalize(turnId!, "end_turn", recovered.text);
           } else {
             this.sendAssistantResultSegment(messageId, recovered.text, "recovery");
           }
@@ -3046,7 +3074,7 @@ export class PromptHandler {
           console.log(`[PromptHandler] Sending recovered error for ${messageId}: ${this.lastError}`);
           if (this.messageFormat === "v2") {
             this.ensureV2TurnCreated();
-            this.agentClient.sendTurnFinalize(messageId, "error", undefined, this.lastError || undefined);
+            this.agentClient.sendTurnFinalize(turnId!, "error", undefined, this.lastError || undefined);
           } else {
             this.agentClient.sendError(messageId, this.lastError);
           }
@@ -3079,7 +3107,7 @@ export class PromptHandler {
           console.log(`[PromptHandler] No failover available for ${messageId} — sending empty response error`);
           if (this.messageFormat === "v2") {
             this.ensureV2TurnCreated();
-            this.agentClient.sendTurnFinalize(messageId, "error", undefined, this.lastError || undefined);
+            this.agentClient.sendTurnFinalize(turnId!, "error", undefined, this.lastError || undefined);
           } else {
             this.agentClient.sendError(messageId, "The model returned an empty response. Try again or switch to a different model.");
           }
@@ -3092,7 +3120,7 @@ export class PromptHandler {
         if (status === "pending" || status === "running") {
           console.log(`[PromptHandler] Flushing stuck tool "${toolName}" [${callID}] as completed (was: ${status})`);
           if (this.messageFormat === "v2") {
-            this.agentClient.sendToolUpdate(this.activeMessageId!, callID, toolName, "completed");
+            this.agentClient.sendToolUpdate(turnId!, callID, toolName, "completed");
           } else {
             this.agentClient.sendToolCall(callID, toolName, "completed", null, null);
           }
@@ -3126,6 +3154,7 @@ export class PromptHandler {
       this.recentEventTrace = [];
       this.awaitingAssistantForAttempt = false;
       this.v2TurnCreated = false;
+      this.v2TurnId = null;
       // Clear failover state
       this.currentModelPreferences = undefined;
       this.currentModelIndex = 0;

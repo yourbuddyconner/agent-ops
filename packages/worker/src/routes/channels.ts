@@ -64,6 +64,8 @@ channelsRouter.post('/prompt', zValidator('json', promptSchema), async (c) => {
               content: body.content,
               queueMode: body.queueMode || binding.queueMode,
               attachments: body.attachments,
+              channelType: body.channelType,
+              channelId: body.channelId,
             }),
           }),
         );

@@ -244,15 +244,19 @@ export async function dispatchOrchestratorPrompt(
   }
 
   // Resolve the current orchestrator session (supports rotated IDs)
+  console.log(`[OrchestratorDispatch] Looking up orchestrator for userId=${params.userId} channelType=${params.channelType} channelId=${params.channelId}`);
   const session = await db.getOrchestratorSession(env.DB, params.userId);
   if (!session || session.purpose !== 'orchestrator') {
+    console.log(`[OrchestratorDispatch] No orchestrator found for userId=${params.userId} session=${session?.id || 'null'} purpose=${session?.purpose || 'null'}`);
     return { dispatched: false, sessionId: `orchestrator:${params.userId}`, reason: 'orchestrator_not_configured' };
   }
   const sessionId = session.id;
   if (ORCHESTRATOR_UNAVAILABLE_STATUSES.has(session.status)) {
+    console.log(`[OrchestratorDispatch] Orchestrator unavailable: session=${sessionId} status=${session.status}`);
     return { dispatched: false, sessionId, reason: `orchestrator_unavailable:${session.status}` };
   }
 
+  console.log(`[OrchestratorDispatch] Dispatching to session=${sessionId} status=${session.status}`);
   const messageId = crypto.randomUUID();
   await db.saveMessage(env.DB, {
     id: messageId,
@@ -284,6 +288,7 @@ export async function dispatchOrchestratorPrompt(
 
   if (!doRes.ok) {
     const errText = (await doRes.text().catch(() => '')).slice(0, 200);
+    console.log(`[OrchestratorDispatch] DO dispatch failed: status=${doRes.status} body=${errText}`);
     return {
       dispatched: false,
       sessionId,
@@ -291,5 +296,6 @@ export async function dispatchOrchestratorPrompt(
     };
   }
 
+  console.log(`[OrchestratorDispatch] Success: session=${sessionId} messageId=${messageId}`);
   return { dispatched: true, sessionId };
 }

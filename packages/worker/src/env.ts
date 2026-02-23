@@ -34,6 +34,13 @@ export interface Env {
   // Frontend URL (for OAuth redirects)
   FRONTEND_URL: string;
 
+  // Optional public API origin for runner/DO websocket URLs.
+  // Example: https://api.example.com
+  API_PUBLIC_URL?: string;
+
+  // Optional Worker name fallback (used when FRONTEND_URL is a Pages domain).
+  WORKER_NAME?: string;
+
   // Slack integration (Phase D prep)
   SLACK_SIGNING_SECRET?: string;
   SLACK_BOT_TOKEN?: string;

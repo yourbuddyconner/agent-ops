@@ -191,6 +191,7 @@ telegramRouter.post('/webhook/:userId', async (c) => {
     const binding = await db.getChannelBindingByScopeKey(c.env.DB, scopeKey);
 
     if (binding) {
+      console.log(`[Telegram] Bound session dispatch: session=${binding.sessionId} chatId=${chatId} queueMode=${binding.queueMode}`);
       const doId = c.env.SESSIONS.idFromName(binding.sessionId);
       const sessionDO = c.env.SESSIONS.get(doId);
       try {
@@ -198,16 +199,26 @@ telegramRouter.post('/webhook/:userId', async (c) => {
           new Request('http://do/prompt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content, queueMode: binding.queueMode }),
+            body: JSON.stringify({
+              content,
+              queueMode: binding.queueMode,
+              channelType: 'telegram',
+              channelId: chatId,
+              authorName: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '),
+            }),
           }),
         );
+        console.log(`[Telegram] Bound session response: status=${resp.status} ok=${resp.ok}`);
         if (resp.ok) return;
       } catch (err) {
         console.error(`Telegram: failed to route to session ${binding.sessionId}:`, err);
       }
+    } else {
+      console.log(`[Telegram] No binding found for scopeKey=${scopeKey}, falling through to orchestrator`);
     }
 
     // Dispatch to orchestrator with structured channel metadata
+    console.log(`[Telegram] Orchestrator dispatch: userId=${userId} chatId=${chatId}`);
     const result = await dispatchOrchestratorPrompt(c.env, {
       userId,
       content,
@@ -272,6 +283,9 @@ telegramRouter.post('/webhook/:userId', async (c) => {
               content: caption,
               attachments: [attachment],
               queueMode: binding.queueMode,
+              channelType: 'telegram',
+              channelId: chatId,
+              authorName: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '),
             }),
           }),
         );
@@ -345,6 +359,9 @@ telegramRouter.post('/webhook/:userId', async (c) => {
               content,
               attachments: [attachment],
               queueMode: binding.queueMode,
+              channelType: 'telegram',
+              channelId: chatId,
+              authorName: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '),
             }),
           }),
         );
@@ -418,6 +435,9 @@ telegramRouter.post('/webhook/:userId', async (c) => {
               content,
               attachments: [attachment],
               queueMode: binding.queueMode,
+              channelType: 'telegram',
+              channelId: chatId,
+              authorName: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '),
             }),
           }),
         );

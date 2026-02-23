@@ -4,6 +4,7 @@ import { zValidator } from '@hono/zod-validator';
 import { ValidationError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
+import { buildDoWebSocketUrl } from '../lib/do-ws-url.js';
 import { buildOrchestratorPersonaFiles } from '../lib/orchestrator-persona.js';
 import { decryptApiKey } from './admin.js';
 
@@ -115,27 +116,33 @@ export async function restartOrchestratorSession(
     }
   }
 
-  // Construct DO WebSocket URL
-  // For cron-triggered restarts, we use the FRONTEND_URL-derived host as a fallback
-  let wsHost: string;
-  let wsProtocol: string;
-  if (requestUrl) {
-    wsProtocol = requestUrl.startsWith('https') ? 'wss' : 'ws';
-    wsHost = new URL(requestUrl).host;
-  } else {
-    // Cron context: derive from worker's own URL pattern
-    wsProtocol = 'wss';
-    // Use FRONTEND_URL to derive the worker host (same domain)
-    const frontendUrl = env.FRONTEND_URL || '';
-    wsHost = frontendUrl ? new URL(frontendUrl).host.replace(/^app\./, 'api.') : 'localhost';
-  }
-  const doWsUrl = `${wsProtocol}://${wsHost}/api/sessions/${sessionId}/ws`;
+  const doWsUrl = buildDoWebSocketUrl({
+    env,
+    sessionId,
+    requestUrl,
+  });
 
-  // Fetch user's idle timeout preference
+  // Fetch user preferences (idle timeout, queue mode, model preferences)
   const userRow = await db.getUserById(env.DB, userId);
   const idleTimeoutSeconds = userRow?.idleTimeoutSeconds ?? 900;
   const uiQueueMode = userRow?.uiQueueMode ?? 'followup';
   const idleTimeoutMs = idleTimeoutSeconds * 1000;
+
+  // Resolve default model: user prefs first, then org prefs as fallback.
+  // This ensures the orchestrator always uses the globally-configured model.
+  let initialModel: string | undefined;
+  if (userRow?.modelPreferences && userRow.modelPreferences.length > 0) {
+    initialModel = userRow.modelPreferences[0];
+  } else {
+    try {
+      const orgSettings = await db.getOrgSettings(env.DB);
+      if (orgSettings.modelPreferences && orgSettings.modelPreferences.length > 0) {
+        initialModel = orgSettings.modelPreferences[0];
+      }
+    } catch {
+      // org settings unavailable — no default model
+    }
+  }
 
   const spawnRequest = {
     sessionId,
@@ -170,6 +177,7 @@ export async function restartOrchestratorSession(
         idleTimeoutMs,
         queueMode: uiQueueMode,
         spawnRequest,
+        initialModel,
       }),
     }));
   } catch (err) {

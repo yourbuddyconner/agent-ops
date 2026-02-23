@@ -49,6 +49,7 @@ const doUrl = values["do-url"];
 const runnerToken = values["runner-token"];
 const sessionId = values["session-id"];
 const gatewayPort = parseInt(values["gateway-port"] || "9000", 10);
+const INITIAL_CONNECT_MAX_DELAY_MS = 30_000;
 
 if (!opencodeUrl || !doUrl || !runnerToken || !sessionId) {
   console.error("Error: --opencode-url, --do-url, --runner-token, and --session-id are required");
@@ -218,9 +219,9 @@ async function main() {
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient, sessionId!);
 
   // Register handlers
-  agentClient.onPrompt(async (messageId, content, model, author, modelPreferences, attachments, channelType, channelId, opencodeSessionId) => {
+  agentClient.onPrompt(async (messageId, content, model, author, modelPreferences, attachments, channelType, channelId, opencodeSessionId, messageFormat) => {
     console.log(`[Runner] Received prompt: ${messageId}${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length} models)` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}${channelType ? ` (channel: ${channelType})` : ''}`);
-    await promptHandler.handlePrompt(messageId, content, model, author, modelPreferences, attachments, channelType, channelId, opencodeSessionId);
+    await promptHandler.handlePrompt(messageId, content, model, author, modelPreferences, attachments, channelType, channelId, opencodeSessionId, messageFormat);
   });
 
   agentClient.onAnswer(async (questionId, answer) => {
@@ -293,8 +294,24 @@ async function main() {
   console.log("[Runner] Waiting 3s for DO initialization...");
   await new Promise((resolve) => setTimeout(resolve, 3000));
 
-  // Connect (will auto-reconnect on failure)
-  await agentClient.connect();
+  // Initial connect must be resilient too. If the first websocket upgrade fails
+  // (cold start/race/network blip), keep retrying instead of exiting the runner.
+  let initialConnectAttempt = 0;
+  while (true) {
+    initialConnectAttempt++;
+    try {
+      await agentClient.connect();
+      break;
+    } catch (err) {
+      const delayMs = Math.min(1000 * 2 ** (initialConnectAttempt - 1), INITIAL_CONNECT_MAX_DELAY_MS);
+      console.error(
+        `[Runner] Initial DO connection failed (attempt ${initialConnectAttempt}). Retrying in ${delayMs}ms:`,
+        err,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
   console.log("[Runner] Ready and waiting for prompts");
 
   // Discover available models from OpenCode and send to DO
@@ -303,6 +320,12 @@ async function main() {
     agentClient.sendModels(models);
     console.log(`[Runner] Sent ${models.length} provider(s) to DO`);
   }
+
+  // Signal readiness to the DO so it can drain any queued prompts.
+  // OpenCode doesn't emit session.status:idle on fresh start (idle is the
+  // implicit default), so the Runner must send this explicitly.
+  agentClient.sendAgentStatus("idle");
+  console.log("[Runner] Sent initial agentStatus: idle to DO");
 }
 
 main().catch((err) => {

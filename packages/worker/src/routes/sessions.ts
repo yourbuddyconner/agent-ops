@@ -6,6 +6,7 @@ import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
 import { signJWT } from '../lib/jwt.js';
 import { decryptString } from '../lib/crypto.js';
+import { buildDoWebSocketUrl } from '../lib/do-ws-url.js';
 import { decryptApiKey } from './admin.js';
 
 export const sessionsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -320,10 +321,14 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     ref: body.ref,
   });
 
-  // Construct WebSocket URL for the DO (used by Runner inside sandbox)
-  const wsProtocol = c.req.url.startsWith('https') ? 'wss' : 'ws';
-  const host = c.req.header('host') || 'localhost';
-  const doWsUrl = `${wsProtocol}://${host}/api/sessions/${sessionId}/ws`;
+  // Construct WebSocket URL for the DO (used by Runner inside sandbox).
+  // Prefer API origins over Pages hostnames so runner websocket upgrades work.
+  const doWsUrl = buildDoWebSocketUrl({
+    env: c.env,
+    sessionId,
+    requestUrl: c.req.url,
+    requestHost: c.req.header('host') || undefined,
+  });
 
   // Build environment variables for the sandbox
   const envVars: Record<string, string> = {};
@@ -466,7 +471,10 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
   }
 
   // Build client WebSocket URL
-  const websocketUrl = `${wsProtocol}://${host}/api/sessions/${sessionId}/ws?role=client&userId=${user.id}`;
+  const requestUrl = new URL(c.req.url);
+  const clientWsProtocol = requestUrl.protocol === 'https:' ? 'wss' : 'ws';
+  const clientWsHost = c.req.header('host') || requestUrl.host || 'localhost';
+  const websocketUrl = `${clientWsProtocol}://${clientWsHost}/api/sessions/${sessionId}/ws?role=client&userId=${user.id}`;
 
   return c.json(
     {

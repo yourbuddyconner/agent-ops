@@ -94,7 +94,7 @@ def get_base_image() -> modal.Image:
             "rm -rf /tmp/whisper-build",
         )
         # Cache-bust: place version BEFORE runner copy so bumping it invalidates the runner layer
-        .run_commands("echo 'RUNNER_VERSION=2026-02-19-v110-v2-message-pipeline'")
+        .run_commands("echo 'RUNNER_VERSION=2026-02-22-v113-v2-turn-id-fix'")
         # Runner package (Bun/TS — runs inside sandbox)
         # Exclude node_modules - it contains symlinks to monorepo root that cause timeouts
         # We run bun install inside the container anyway
@@ -139,7 +139,7 @@ def get_base_image() -> modal.Image:
                 "DISPLAY": ":99",
                 "HOME": "/root",
                 # Force image rebuild on deploy (change this value to trigger rebuild)
-                "IMAGE_BUILD_VERSION": "2026-02-19-v110-v2-message-pipeline",
+                "IMAGE_BUILD_VERSION": "2026-02-22-v113-v2-turn-id-fix",
                 "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
                 "AGENT_BROWSER_PROFILE": "/root/.agent-browser-profile",
                 "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright",
