@@ -25,6 +25,8 @@ interface WorkflowExecutionDispatchPayload {
 
 const MAX_PROMPT_ATTACHMENTS = 8;
 const MAX_PROMPT_ATTACHMENT_URL_LENGTH = 12_000_000;
+/** Total base64 across all attachments — safety cap below 32 MiB WS limit. */
+const MAX_TOTAL_ATTACHMENT_BYTES = 25_000_000;
 const MAX_CHANNEL_FOLLOWUP_REMINDERS = 3;
 
 function parseBase64DataUrl(url: string): string | null {
@@ -55,7 +57,15 @@ function sanitizePromptAttachments(input: unknown): PromptAttachment[] {
     if (result.length >= MAX_PROMPT_ATTACHMENTS) break;
   }
 
-  return result;
+  // Cap total attachment size to stay safely under the 32 MiB WS limit
+  let totalLen = 0;
+  const capped: PromptAttachment[] = [];
+  for (const att of result) {
+    totalLen += att.url.length;
+    if (totalLen > MAX_TOTAL_ATTACHMENT_BYTES) break;
+    capped.push(att);
+  }
+  return capped;
 }
 
 function attachmentPartsForMessage(attachments: PromptAttachment[]): Array<Record<string, unknown>> {

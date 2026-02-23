@@ -22,6 +22,7 @@
     "@tanstack/react-router": "^1.151.0",
     "clsx": "^2.1.1",
     "diff": "^8.0.3",
+    "heic-to": "^1.4.2",
     "mermaid": "^11.12.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

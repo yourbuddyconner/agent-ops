@@ -5,6 +5,8 @@ import { useWakeSession } from '@/api/sessions';
 import type { PromptAttachment, ProviderModels } from '@/hooks/use-chat';
 import { useAudioRecorder } from '@/hooks/use-audio-recorder';
 import { SLASH_COMMANDS } from '@agent-ops/shared';
+import { isImageFile, needsProcessing, needsCompression, processImage, perImageBudget } from '@/lib/image-compression';
+import { toastError } from '@/hooks/use-toast';
 
 interface ChatInputProps {
   onSend: (content: string, model?: string, attachments?: PromptAttachment[]) => void;
@@ -85,11 +87,11 @@ function truncatePath(path: string, maxLen = 60): string {
 function hasImageInDataTransfer(dataTransfer: DataTransfer | null): boolean {
   if (!dataTransfer) return false;
   if (dataTransfer.files && dataTransfer.files.length > 0) {
-    return Array.from(dataTransfer.files).some((file) => file.type.startsWith('image/'));
+    return Array.from(dataTransfer.files).some((file) => isImageFile(file));
   }
   if (dataTransfer.items && dataTransfer.items.length > 0) {
     return Array.from(dataTransfer.items).some(
-      (item) => item.kind === 'file' && item.type.startsWith('image/')
+      (item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type === '')
     );
   }
   return false;
@@ -126,7 +128,9 @@ export function ChatInput({
   const [commandDismissed, setCommandDismissed] = useState(false);
   const [commandHighlightIndex, setCommandHighlightIndex] = useState(0);
   const [isSendingFiles, setIsSendingFiles] = useState(false);
+  const [isCompressing, setIsCompressing] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const originalFilesRef = useRef<File[]>([]);
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
@@ -335,26 +339,56 @@ export function ChatInput({
   }, []);
 
   const appendImageAttachments = useCallback(async (files: File[]) => {
-    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+    // Log all incoming files for debugging format issues (especially HEIC)
+    for (const f of files) {
+      console.log(`[image] input file: name=${f.name} type="${f.type}" size=${f.size} isImage=${isImageFile(f)}`);
+    }
+    const imageFiles = files.filter((file) => isImageFile(file));
     if (imageFiles.length === 0) return;
 
-    const next: PromptAttachment[] = [];
-    for (const file of imageFiles) {
-      try {
-        const url = await readFileAsDataUrl(file);
-        next.push({
-          type: 'file',
-          mime: file.type || 'image/png',
-          url,
-          filename: file.name,
-        });
-      } catch {
-        // Ignore unreadable files and continue.
-      }
-    }
+    // Merge with existing original files, enforce limit
+    const mergedFiles = [...originalFilesRef.current, ...imageFiles].slice(0, MAX_IMAGE_ATTACHMENTS);
+    const budget = perImageBudget(mergedFiles.length);
 
-    if (next.length > 0) {
-      setAttachments((prev) => [...prev, ...next].slice(0, MAX_IMAGE_ATTACHMENTS));
+    setIsCompressing(true);
+    try {
+      const results = await Promise.all(
+        mergedFiles.map(async (file) => {
+          try {
+            // Process if format needs conversion or file needs compression
+            if (needsProcessing(file) || needsCompression(file, budget)) {
+              const url = await processImage(file, budget);
+              // processImage returns JPEG from canvas, but falls back to raw
+              // data URL if canvas fails — detect MIME from the data URL prefix
+              const mime = url.startsWith('data:image/jpeg') ? 'image/jpeg' : (file.type || 'image/jpeg');
+              return {
+                type: 'file' as const,
+                mime,
+                url,
+                filename: file.name,
+              };
+            }
+            // Supported format, small enough — read as-is
+            const url = await readFileAsDataUrl(file);
+            return {
+              type: 'file' as const,
+              mime: file.type || 'image/jpeg',
+              url,
+              filename: file.name,
+            };
+          } catch (err) {
+            console.error('[image] failed to process:', file.name, err);
+            toastError(`Failed to process image: ${file.name}`);
+            return null;
+          }
+        })
+      );
+
+      const next: PromptAttachment[] = results.filter((r) => r !== null);
+      originalFilesRef.current = mergedFiles.slice(0, next.length);
+      setAttachments(next);
+    } finally {
+      setIsCompressing(false);
     }
   }, [readFileAsDataUrl]);
 
@@ -410,6 +444,7 @@ export function ChatInput({
 
   const removeAttachment = useCallback((index: number) => {
     setAttachments((prev) => prev.filter((_, i) => i !== index));
+    originalFilesRef.current = originalFilesRef.current.filter((_, i) => i !== index);
   }, []);
 
   // Audio recording
@@ -448,7 +483,7 @@ export function ChatInput({
       }
       return;
     }
-    if (disabled || sendDisabled || isSendingFiles) return;
+    if (disabled || sendDisabled || isSendingFiles || isCompressing) return;
 
     // If in command picker, select the highlighted command
     if (isCommandPicker && filteredCommands.length > 0) {
@@ -518,6 +553,7 @@ export function ChatInput({
 
     setValue('');
     setAttachments([]);
+    originalFilesRef.current = [];
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -942,7 +978,7 @@ export function ChatInput({
             ) : (
               <button
                 type="submit"
-                disabled={(!value.trim() && attachments.length === 0) || disabled || sendDisabled || isSendingFiles}
+                disabled={(!value.trim() && attachments.length === 0) || disabled || sendDisabled || isSendingFiles || isCompressing}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-white transition-colors hover:bg-neutral-800 disabled:bg-neutral-300 disabled:text-neutral-500 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500"
                 aria-label="Send"
               >

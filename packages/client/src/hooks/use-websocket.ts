@@ -122,7 +122,15 @@ export function useWebSocket(url: string | null, options: UseWebSocketOptions = 
 
   const send = useCallback((message: WebSocketMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
+      const payload = JSON.stringify(message);
+      if (payload.length > 30_000_000) {
+        console.warn(`[ws] payload very large: ${(payload.length / 1_000_000).toFixed(1)} MB`);
+      }
+      try {
+        wsRef.current.send(payload);
+      } catch (err) {
+        console.error('[ws] send failed:', err);
+      }
     }
   }, []);
 
