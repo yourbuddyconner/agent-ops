@@ -481,6 +481,7 @@ export class PromptHandler {
   private agentClient: AgentClient;
   private runnerSessionId: string | null;
   private eventStreamActive = false;
+  private eventStreamAbort: AbortController | null = null;
   private responseTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private firstResponseTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
@@ -1147,10 +1148,20 @@ export class PromptHandler {
    */
   async startEventStream(): Promise<void> {
     if (this.eventStreamActive) return;
+
+    // Abort any lingering previous stream reader
+    if (this.eventStreamAbort) {
+      this.eventStreamAbort.abort();
+      this.eventStreamAbort = null;
+    }
+
     this.eventStreamActive = true;
+    const abort = new AbortController();
+    this.eventStreamAbort = abort;
 
     console.log("[PromptHandler] Subscribing to OpenCode event stream");
-    this.consumeEventStream().catch((err) => {
+    this.consumeEventStream(abort.signal).catch((err) => {
+      if (abort.signal.aborted) return; // intentional teardown
       console.error("[PromptHandler] Event stream failed:", err);
       this.eventStreamActive = false;
       // Retry after delay
@@ -2006,8 +2017,12 @@ export class PromptHandler {
     // Clear reverse-lookup map
     this.ocSessionToChannel.clear();
 
-    // Stop SSE stream (it will die when the process exits)
+    // Stop SSE stream — abort the reader so it doesn't linger
     this.eventStreamActive = false;
+    if (this.eventStreamAbort) {
+      this.eventStreamAbort.abort();
+      this.eventStreamAbort = null;
+    }
   }
 
   /**
@@ -2266,18 +2281,20 @@ export class PromptHandler {
 
   // ─── SSE Event Stream ─────────────────────────────────────────────────
 
-  private async consumeEventStream(): Promise<void> {
+  private async consumeEventStream(signal: AbortSignal): Promise<void> {
     const streamCandidates = ["/global/event", "/event"];
     let res: Response | null = null;
     let selectedPath: string | null = null;
     let lastError: Error | null = null;
 
     for (const path of streamCandidates) {
+      if (signal.aborted) return;
       const url = `${this.opencodeUrl}${path}`;
       console.log(`[PromptHandler] GET ${url} (SSE)`);
       try {
         const candidateRes = await fetch(url, {
           headers: { Accept: "text/event-stream" },
+          signal,
         });
         console.log(
           `[PromptHandler] Event stream response (${path}): ${candidateRes.status} (type: ${candidateRes.headers.get("content-type")})`
@@ -2306,9 +2323,15 @@ export class PromptHandler {
     let eventCount = 0;
 
     while (true) {
+      if (signal.aborted) {
+        reader.cancel().catch(() => {});
+        return;
+      }
       const { done, value } = await reader.read();
-      if (done) {
-        console.log(`[PromptHandler] Event stream ended after ${eventCount} events`);
+      if (done || signal.aborted) {
+        if (!signal.aborted) {
+          console.log(`[PromptHandler] Event stream ended after ${eventCount} events`);
+        }
         break;
       }
 
@@ -2361,9 +2384,11 @@ export class PromptHandler {
       }
     }
 
-    // Stream ended — restart it
-    this.eventStreamActive = false;
-    setTimeout(() => this.startEventStream(), 1000);
+    // Stream ended — restart unless we were intentionally aborted
+    if (!signal.aborted) {
+      this.eventStreamActive = false;
+      setTimeout(() => this.startEventStream(), 1000);
+    }
   }
 
   private handleEvent(event: OpenCodeEvent): void {
