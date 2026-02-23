@@ -18,6 +18,7 @@ export interface Env {
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY?: string;
   GOOGLE_API_KEY?: string;
+  PARALLEL_API_KEY?: string;
 
   // GitHub OAuth
   GITHUB_CLIENT_ID: string;

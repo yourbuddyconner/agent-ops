@@ -338,6 +338,7 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     { provider: 'anthropic', envKey: 'ANTHROPIC_API_KEY' },
     { provider: 'openai', envKey: 'OPENAI_API_KEY' },
     { provider: 'google', envKey: 'GOOGLE_API_KEY' },
+    { provider: 'parallel', envKey: 'PARALLEL_API_KEY' },
   ] as const;
 
   for (const { provider, envKey } of providerEnvMap) {

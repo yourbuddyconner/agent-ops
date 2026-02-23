@@ -153,6 +153,7 @@ dashboardRouter.get('/stats', async (c) => {
       FROM sessions
       WHERE created_at >= ?
         AND COALESCE(purpose, 'interactive') != 'workflow'
+        AND is_orchestrator = 0
       GROUP BY workspace
       ORDER BY session_count DESC
       LIMIT 8
@@ -168,6 +169,7 @@ dashboardRouter.get('/stats', async (c) => {
       LEFT JOIN session_participants sp ON sp.session_id = s.id AND sp.user_id = ?
       WHERE (s.user_id = ? OR sp.user_id IS NOT NULL)
         AND COALESCE(s.purpose, 'interactive') != 'workflow'
+        AND s.is_orchestrator = 0
       ORDER BY s.created_at DESC
       LIMIT 10
     `).bind(user.id, user.id).all(),

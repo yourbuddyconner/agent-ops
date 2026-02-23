@@ -57,7 +57,7 @@ adminRouter.put('/', async (c) => {
 
 // --- LLM API Keys ---
 
-const VALID_PROVIDERS = ['anthropic', 'openai', 'google'] as const;
+const VALID_PROVIDERS = ['anthropic', 'openai', 'google', 'parallel'] as const;
 
 adminRouter.get('/llm-keys', async (c) => {
   const keys = await listOrgApiKeys(c.env.DB);

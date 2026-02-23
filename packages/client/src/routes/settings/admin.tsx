@@ -534,6 +534,7 @@ const LLM_PROVIDERS = [
   { id: 'anthropic', label: 'Anthropic' },
   { id: 'openai', label: 'OpenAI' },
   { id: 'google', label: 'Google' },
+  { id: 'parallel', label: 'Parallel' },
 ] as const;
 
 function LLMKeysSection() {
