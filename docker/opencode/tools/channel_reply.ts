@@ -24,8 +24,12 @@ export default tool({
       .boolean()
       .optional()
       .describe(
-        "Set to false if this is just an acknowledgment and you plan to follow up later with a substantive reply. " +
-        "The system will remind you to send a substantive reply. Defaults to true (substantive reply that clears the reminder timer)."
+        "Controls whether this reply clears the follow-up reminder timer. Defaults to true. " +
+        "IMPORTANT: For most replies, you do NOT need to set this — just omit it and the default (true) " +
+        "will mark the conversation as handled. Only set follow_up=false when you are sending a brief " +
+        "acknowledgment AND you plan to do async/deferred work (spawning a child session, long research, etc.) " +
+        "before sending a real answer later. If your reply IS the answer (even a short one like 'Hey, how can I help?'), " +
+        "leave follow_up unset or set it to true so the reminder timer is cleared."
       ),
   },
   async execute(args) {
