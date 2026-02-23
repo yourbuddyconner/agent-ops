@@ -197,9 +197,7 @@ export interface Message {
   sessionId: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
-  parts?: MessagePart[] | unknown;
-  messageFormat?: 'v1' | 'v2';
-  toolCalls?: ToolCall[];
+  parts?: MessagePart[];
   authorId?: string;
   authorEmail?: string;
   authorName?: string;
@@ -208,13 +206,6 @@ export interface Message {
   channelId?: string;
   opencodeSessionId?: string;
   createdAt: Date;
-}
-
-export interface ToolCall {
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
-  result?: unknown;
 }
 
 // Diff types

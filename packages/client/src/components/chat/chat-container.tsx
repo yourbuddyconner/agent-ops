@@ -38,7 +38,6 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
   const {
     messages,
     sessionStatus,
-    streamingContent,
     pendingQuestions,
     connectionStatus,
     isConnected,
@@ -46,8 +45,6 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     isAgentThinking,
     agentStatus,
     agentStatusDetail,
-    streamingChannelType,
-    streamingChannelId,
     agentStatusChannelType,
     agentStatusChannelId,
     availableModels,
@@ -115,16 +112,6 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
     () => (selectedChannel ? channels.find((c) => `${c.channelType}:${c.channelId}` === selectedChannel) : null),
     [channels, selectedChannel]
   );
-
-  // Determine if streaming content belongs to the selected channel
-  const showStreamingForChannel = useMemo(() => {
-    if (!selectedChannel) return true; // "All channels" shows everything
-    const streamCt = streamingChannelType || 'web';
-    const streamCi = streamingChannelId || 'default';
-    const [filterType, ...rest] = selectedChannel.split(':');
-    const filterId = rest.join(':') || 'default';
-    return streamCt === filterType && streamCi === filterId;
-  }, [selectedChannel, streamingChannelType, streamingChannelId]);
 
   // Determine if agent status belongs to the selected channel
   const showAgentStatusForChannel = useMemo(() => {
@@ -420,7 +407,6 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
           <div className="relative flex min-h-0 flex-1 flex-col">
             <MessageList
               messages={filteredMessages}
-              streamingContent={showStreamingForChannel ? streamingContent : ''}
               isAgentThinking={showAgentStatusForChannel ? isAgentThinking : false}
               agentStatus={showAgentStatusForChannel ? agentStatus : 'idle'}
               agentStatusDetail={showAgentStatusForChannel ? agentStatusDetail : undefined}

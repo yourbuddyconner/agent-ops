@@ -2182,7 +2182,6 @@ function mapMessage(row: any): Message {
     role: row.role,
     content: row.content,
     parts: row.parts ? JSON.parse(row.parts) : undefined,
-    toolCalls: row.tool_calls ? JSON.parse(row.tool_calls) : undefined,
     authorId: row.author_id || undefined,
     authorEmail: row.author_email || undefined,
     authorName: row.author_name || undefined,

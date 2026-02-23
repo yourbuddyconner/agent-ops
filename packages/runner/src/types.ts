@@ -38,7 +38,6 @@ export type DOToRunnerMessage =
   | { type: "prompt"; messageId: string; content: string; model?: string;
       attachments?: PromptAttachment[];
       modelPreferences?: string[];
-      messageFormat?: "v1" | "v2";
       channelType?: string; channelId?: string;
       opencodeSessionId?: string;
       authorId?: string; authorEmail?: string; authorName?: string;
@@ -109,8 +108,6 @@ export type AgentStatus = "idle" | "thinking" | "tool_calling" | "streaming" | "
 
 /** Messages sent from Runner to DO */
 export type RunnerToDOMessage =
-  | { type: "stream"; messageId: string; content: string }
-  | { type: "result"; messageId: string; content: string }
   | {
       type: "workflow-chat-message";
       role: "user" | "assistant" | "system";
@@ -120,7 +117,6 @@ export type RunnerToDOMessage =
       channelId?: string;
       opencodeSessionId?: string;
     }
-  | { type: "tool"; callID: string; toolName: string; status: ToolCallStatus; args: unknown; result: unknown; content?: string }
   | { type: "question"; questionId: string; text: string; options?: string[] }
   | { type: "screenshot"; data: string; description: string }
   | { type: "error"; messageId: string; error: string }

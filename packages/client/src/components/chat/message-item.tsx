@@ -23,7 +23,7 @@ export function MessageItem({ message, onRevert, connectedUsers }: MessageItemPr
   const { activePanel } = useDrawer();
   const compact = activePanel !== null;
   const systemParts = isSystem && message.parts && typeof message.parts === 'object'
-    ? (message.parts as Record<string, unknown>)
+    ? (message.parts as unknown as Record<string, unknown>)
     : null;
 
   // Extract base64 screenshot parts if present

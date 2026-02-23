@@ -374,8 +374,6 @@ interface RunnerOutbound {
   payload?: WorkflowExecutionDispatchPayload;
   // Model failover
   modelPreferences?: string[];
-  // V2 message format
-  messageFormat?: 'v1' | 'v2';
   encoding?: string;
   truncated?: boolean;
   path?: string;
@@ -553,7 +551,7 @@ export class SessionAgentDO {
       this.ctx.storage.sql.exec("UPDATE prompt_queue SET queue_type = 'prompt' WHERE queue_type IS NULL OR queue_type = ''");
 
       // Migrate: add message_format column for v2 parts-based messages
-      try { this.ctx.storage.sql.exec("ALTER TABLE messages ADD COLUMN message_format TEXT NOT NULL DEFAULT 'v1'"); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec("ALTER TABLE messages ADD COLUMN message_format TEXT NOT NULL DEFAULT 'v2'"); } catch { /* already exists */ }
 
       this.initialized = true;
     });
@@ -818,7 +816,6 @@ export class SessionAgentDO {
           role: msg.role,
           content: msg.content,
           parts: msg.parts ? JSON.parse(msg.parts as string) : undefined,
-          messageFormat: (msg as Record<string, unknown>).message_format || undefined,
           authorId: msg.author_id || undefined,
           authorEmail: msg.author_email || undefined,
           authorName: msg.author_name || undefined,
@@ -1518,7 +1515,6 @@ export class SessionAgentDO {
       gitEmail: author?.gitEmail,
       opencodeSessionId: channelOcSessionId,
       modelPreferences: resolvedModelPrefs,
-      messageFormat: 'v2',
     });
     if (!dispatched) {
       // Runner disappeared between the check and send — revert to queued for recovery
@@ -1831,7 +1827,7 @@ export class SessionAgentDO {
     console.log(`[SessionAgentDO] Runner message: type=${msg.type}`);
 
     // Reset idle timer on any runner activity — agent work counts as session activity
-    if (msg.type === 'tool' || msg.type === 'result' || msg.type === 'stream' || msg.type === 'agentStatus' || msg.type === 'message.create' || msg.type === 'message.part.text-delta' || msg.type === 'message.part.tool-update' || msg.type === 'message.finalize') {
+    if (msg.type === 'agentStatus' || msg.type === 'message.create' || msg.type === 'message.part.text-delta' || msg.type === 'message.part.tool-update' || msg.type === 'message.finalize') {
       this.setStateValue('lastUserActivityAt', String(Date.now()));
       this.rescheduleIdleAlarm();
     }
@@ -1842,48 +1838,6 @@ export class SessionAgentDO {
           this.setStateValue('tunnels', JSON.stringify(msg.tunnels));
         } else {
           this.setStateValue('tunnels', '');
-        }
-        break;
-      }
-
-      case 'stream': {
-        // Forward stream chunks to all clients (don't store)
-        // Client expects 'chunk' type for streaming content
-        const streamCh = this.activeChannel;
-        this.broadcastToClients({
-          type: 'chunk',
-          content: msg.content,
-          ...(streamCh ? { channelType: streamCh.channelType, channelId: streamCh.channelId } : {}),
-        });
-        break;
-      }
-
-      case 'result': {
-        // Store final assistant message and broadcast
-        // Always generate a new ID - msg.messageId is the prompt ID which is already used for the user message
-        const resultId = crypto.randomUUID();
-        const resultCh = this.activeChannel;
-        console.log(`[SessionAgentDO] Storing assistant result: id=${resultId}, content length=${(msg.content || '').length}`);
-        this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content, channel_type, channel_id) VALUES (?, ?, ?, ?, ?)',
-          resultId, 'assistant', msg.content || '', resultCh?.channelType ?? null, resultCh?.channelId ?? null
-        );
-        this.broadcastToClients({
-          type: 'message',
-          data: {
-            id: resultId,
-            role: 'assistant',
-            content: msg.content,
-            createdAt: Math.floor(Date.now() / 1000),
-            ...(resultCh ? { channelType: resultCh.channelType, channelId: resultCh.channelId } : {}),
-          },
-        });
-        console.log(`[SessionAgentDO] Assistant result stored and broadcast`);
-
-        // Track result content for auto channel reply
-        if (this.pendingChannelReply && !this.pendingChannelReply.handled && msg.content) {
-          this.pendingChannelReply.resultContent = msg.content;
-          this.pendingChannelReply.resultMessageId = resultId;
         }
         break;
       }
@@ -1926,74 +1880,6 @@ export class SessionAgentDO {
             createdAt: Math.floor(Date.now() / 1000),
           },
         });
-        break;
-      }
-
-      case 'tool': {
-        // Upsert tool call by callID — each tool gets one row that updates in place
-        const toolId = msg.callID || crypto.randomUUID();
-        const toolStatus = (msg.status as ToolCallStatus) || 'completed';
-        const toolCh = this.activeChannel;
-        const parts = JSON.stringify({
-          toolName: msg.toolName,
-          status: toolStatus,
-          args: msg.args,
-          result: msg.result,
-        });
-        const content = msg.content || `Tool: ${msg.toolName}`;
-
-        // Check if this tool message already exists
-        const existing = this.ctx.storage.sql
-          .exec('SELECT id FROM messages WHERE id = ?', toolId)
-          .toArray();
-
-        if (existing.length === 0) {
-          // First time seeing this callID — insert and broadcast as new message
-          this.ctx.storage.sql.exec(
-            'INSERT INTO messages (id, role, content, parts, channel_type, channel_id) VALUES (?, ?, ?, ?, ?, ?)',
-            toolId, 'tool', content, parts, toolCh?.channelType ?? null, toolCh?.channelId ?? null
-          );
-          this.broadcastToClients({
-            type: 'message',
-            data: {
-              id: toolId,
-              role: 'tool',
-              content,
-              parts: { toolName: msg.toolName, status: toolStatus, args: msg.args, result: msg.result },
-              createdAt: Math.floor(Date.now() / 1000),
-              ...(toolCh ? { channelType: toolCh.channelType, channelId: toolCh.channelId } : {}),
-            },
-          });
-          this.appendAuditLog('agent.tool_call', `${msg.toolName || 'unknown'}`, undefined, { toolId, toolName: msg.toolName });
-        } else {
-          // Update existing row and broadcast as message.updated
-          this.ctx.storage.sql.exec(
-            'UPDATE messages SET content = ?, parts = ?, channel_type = COALESCE(channel_type, ?), channel_id = COALESCE(channel_id, ?) WHERE id = ?',
-            content, parts, toolCh?.channelType ?? null, toolCh?.channelId ?? null, toolId
-          );
-          this.broadcastToClients({
-            type: 'message.updated',
-            data: {
-              id: toolId,
-              role: 'tool',
-              content,
-              parts: { toolName: msg.toolName, status: toolStatus, args: msg.args, result: msg.result },
-              createdAt: Math.floor(Date.now() / 1000),
-              ...(toolCh ? { channelType: toolCh.channelType, channelId: toolCh.channelId } : {}),
-            },
-          });
-          if (toolStatus === 'completed' || toolStatus === 'error') {
-            this.appendAuditLog('agent.tool_completed', `${msg.toolName || 'unknown'} ${toolStatus}`, undefined, { toolId, toolName: msg.toolName, status: toolStatus });
-          }
-        }
-        if (msg.toolName === 'wait_for_event' && toolStatus === 'completed') {
-          // Don't set runnerBusy=false or dequeue here — the current agent turn
-          // is still active. The runner will send 'complete' when the full turn
-          // finishes, which triggers handlePromptComplete → sendNextQueuedPrompt.
-          // Setting runnerBusy=false here would allow a new prompt to be dispatched
-          // concurrently, causing double-dispatch and queue corruption.
-          console.log('[SessionAgentDO] wait_for_event completed — agent turn continues');
-        }
         break;
       }
 
@@ -2169,7 +2055,6 @@ export class SessionAgentDO {
             role: 'assistant',
             content: '',
             parts: [],
-            messageFormat: 'v2',
             createdAt: Math.floor(Date.now() / 1000),
             ...(msg.channelType ? { channelType: msg.channelType } : {}),
             ...(msg.channelId ? { channelId: msg.channelId } : {}),
@@ -2255,7 +2140,6 @@ export class SessionAgentDO {
             role: 'assistant',
             content: turn.text,
             parts: turn.parts,
-            messageFormat: 'v2',
             ...(turn.channelType ? { channelType: turn.channelType, channelId: turn.channelId } : {}),
           },
         });
@@ -2306,7 +2190,6 @@ export class SessionAgentDO {
             role: 'assistant',
             content: finalContent,
             parts: turn.parts,
-            messageFormat: 'v2',
             ...(turn.channelType ? { channelType: turn.channelType, channelId: turn.channelId } : {}),
           },
         });
@@ -2400,7 +2283,6 @@ export class SessionAgentDO {
                 model: initialModel || undefined,
                 opencodeSessionId: this.getChannelOcSessionId(this.channelKeyFrom(undefined, undefined)),
                 modelPreferences: ipModelPrefs,
-                messageFormat: 'v2' as const,
               });
               this.setStateValue('runnerBusy', 'true');
               this.setStateValue('lastPromptDispatchedAt', String(Date.now()));
@@ -5373,13 +5255,10 @@ export class SessionAgentDO {
       .map((row) => row.created_at as number);
     const minSkippedTs = skippedActiveTs.length > 0 ? Math.min(...skippedActiveTs) : null;
 
-    // Batch write to D1 — use INSERT OR REPLACE for v2 messages (content updates on finalize)
+    // Batch write to D1 — use INSERT OR REPLACE (content updates on finalize)
     const stmts = flushable.map((row) => {
-      const isV2 = (row.message_format as string) === 'v2';
       return this.env.DB.prepare(
-        isV2
-          ? 'INSERT OR REPLACE INTO messages (id, session_id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id, message_format) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-          : 'INSERT OR IGNORE INTO messages (id, session_id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id, message_format) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT OR REPLACE INTO messages (id, session_id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id, message_format) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       ).bind(
         row.id as string,
         sessionId,
@@ -5393,7 +5272,7 @@ export class SessionAgentDO {
         row.channel_type as string | null,
         row.channel_id as string | null,
         row.opencode_session_id as string | null,
-        row.message_format as string || 'v1',
+        row.message_format as string || 'v2',
       );
     });
 
@@ -6035,7 +5914,6 @@ export class SessionAgentDO {
             content,
             opencodeSessionId: sysOcSessionId,
             modelPreferences: sysModelPrefs,
-            messageFormat: 'v2',
           });
           if (!sysDispatched) {
             this.ctx.storage.sql.exec("UPDATE prompt_queue SET status = 'queued' WHERE id = ?", messageId);
@@ -6253,7 +6131,6 @@ export class SessionAgentDO {
       gitEmail: authorDetails?.gitEmail,
       opencodeSessionId: queueOcSessionId,
       modelPreferences: queueModelPrefs,
-      messageFormat: 'v2' as const,
     });
     if (!queueDispatched) {
       this.ctx.storage.sql.exec("UPDATE prompt_queue SET status = 'queued' WHERE id = ?", prompt.id as string);
@@ -7801,7 +7678,7 @@ export class SessionAgentDO {
 
   private sendToRunner(message: RunnerOutbound): boolean {
     if (message.type === 'prompt') {
-      console.log(`[SessionAgentDO] sendToRunner prompt: messageFormat=${message.messageFormat}, messageId=${message.messageId}`);
+      console.log(`[SessionAgentDO] sendToRunner prompt: messageId=${message.messageId}`);
     }
     const runners = this.ctx.getWebSockets('runner');
     if (runners.length === 0) {

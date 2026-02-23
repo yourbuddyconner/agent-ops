@@ -5,6 +5,7 @@ import { sessionKeys } from '@/api/sessions';
 import { api } from '@/api/client';
 import { toast } from './use-toast';
 import type { Message, SessionStatus } from '@/api/types';
+import type { MessagePart } from '@agent-ops/shared';
 import { useAuthStore } from '@/stores/auth';
 import { SLASH_COMMANDS, type QueueMode } from '@agent-ops/shared';
 
@@ -85,7 +86,6 @@ export interface ReviewResultData {
 interface ChatState {
   messages: Message[];
   status: SessionStatus;
-  streamingContent: string;
   pendingQuestions: PendingQuestion[];
   connectedUsers: ConnectedUser[];
   logEntries: LogEntry[];
@@ -102,8 +102,6 @@ interface ChatState {
   reviewError: string | null;
   reviewLoading: boolean;
   reviewDiffFiles: DiffFile[] | null;
-  streamingChannelType?: string;
-  streamingChannelId?: string;
   agentStatusChannelType?: string;
   agentStatusChannelId?: string;
 }
@@ -119,8 +117,7 @@ interface WebSocketInitMessage {
       id: string;
       role: 'user' | 'assistant' | 'system' | 'tool';
       content: string;
-      parts?: unknown;
-      messageFormat?: 'v1' | 'v2';
+      parts?: MessagePart[];
       authorId?: string;
       authorEmail?: string;
       authorName?: string;
@@ -152,8 +149,7 @@ interface WebSocketMessageMessage {
     id: string;
     role: 'user' | 'assistant' | 'system' | 'tool';
     content: string;
-    parts?: unknown;
-    messageFormat?: 'v1' | 'v2';
+    parts?: MessagePart[];
     authorId?: string;
     authorEmail?: string;
     authorName?: string;
@@ -202,8 +198,7 @@ interface WebSocketMessageUpdatedMessage {
     id: string;
     role: 'user' | 'assistant' | 'system' | 'tool';
     content: string;
-    parts?: unknown;
-    messageFormat?: 'v1' | 'v2';
+    parts?: MessagePart[];
     channelType?: string;
     channelId?: string;
     createdAt: number;
@@ -340,7 +335,6 @@ function createInitialState(): ChatState {
   return {
     messages: [],
     status: 'initializing',
-    streamingContent: '',
     pendingQuestions: [],
     connectedUsers: [],
     logEntries: [],
@@ -489,7 +483,7 @@ export function useChat(sessionId: string) {
         const restoredChildEvents: ChildSessionEvent[] = [];
         for (const m of message.session.messages) {
           if (m.role === 'tool' && m.parts && typeof m.parts === 'object') {
-            const p = m.parts as Record<string, unknown>;
+            const p = m.parts as unknown as Record<string, unknown>;
             if (typeof p.toolName === 'string' && p.toolName === 'spawn_session' && typeof p.result === 'string') {
               const match = p.result.match(/Child session spawned:\s*(\S+)/) || p.result.match(UUID_RE);
               const childId = match ? (match[1] || match[0]) : null;
@@ -539,7 +533,6 @@ export function useChat(sessionId: string) {
             role: m.role,
             content: m.content,
             parts: m.parts,
-            messageFormat: m.messageFormat,
             authorId: m.authorId,
             authorEmail: m.authorEmail,
             authorName: m.authorName,
@@ -549,7 +542,6 @@ export function useChat(sessionId: string) {
             createdAt: new Date(m.createdAt * 1000),
           })),
           status: message.session.status,
-          streamingContent: '',
           pendingQuestions: [],
           connectedUsers: normalizedUsers,
           logEntries: seededLogEntries,
@@ -579,7 +571,6 @@ export function useChat(sessionId: string) {
           role: d.role,
           content: d.content,
           parts: d.parts,
-          messageFormat: d.messageFormat,
           authorId: d.authorId,
           authorEmail: d.authorEmail,
           authorName: d.authorName,
@@ -588,7 +579,6 @@ export function useChat(sessionId: string) {
           channelId: d.channelId,
           createdAt: new Date(d.createdAt * 1000),
         };
-        const isV2 = d.messageFormat === 'v2';
         setState((prev) => {
           if (prev.messages.some((existing) => existing.id === msg.id)) {
             return prev;
@@ -599,10 +589,6 @@ export function useChat(sessionId: string) {
           return {
             ...prev,
             messages: newMessages,
-            // V2 messages don't use streamingContent — text is in parts[].
-            // V1: clear streaming content when an assistant message arrives.
-            streamingContent: (!isV2 && d.role === 'assistant') ? '' : prev.streamingContent,
-            ...((!isV2 && d.role === 'assistant') ? { streamingChannelType: undefined, streamingChannelId: undefined } : {}),
             // Stop thinking when assistant responds; reset status after tool results
             isAgentThinking: d.role === 'assistant' ? false : prev.isAgentThinking,
             ...(d.role === 'tool'
@@ -628,7 +614,6 @@ export function useChat(sessionId: string) {
               ...m,
               content: newContent,
               parts: u.parts ?? m.parts,
-              messageFormat: u.messageFormat ?? m.messageFormat,
               channelType: u.channelType ?? m.channelType,
               channelId: u.channelId ?? m.channelId,
             };
@@ -699,39 +684,24 @@ export function useChat(sessionId: string) {
 
       case 'chunk': {
         const chunkMsg = message as WebSocketChunkMessage;
-        if (chunkMsg.messageId) {
-          // V2: update the message's text part in-place
-          setState((prev) => {
-            if (prev.agentStatus === 'idle') return prev;
-            const idx = prev.messages.findIndex((m) => m.id === chunkMsg.messageId);
-            if (idx === -1) return prev;
-            const msg = prev.messages[idx];
-            const parts = Array.isArray(msg.parts) ? [...msg.parts] : [];
-            const lastPart = parts[parts.length - 1];
-            if (lastPart && typeof lastPart === 'object' && (lastPart as Record<string, unknown>).type === 'text') {
-              const textPart = { ...lastPart as Record<string, unknown> };
-              textPart.text = ((textPart.text as string) || '') + chunkMsg.content;
-              parts[parts.length - 1] = textPart;
-            } else {
-              parts.push({ type: 'text', text: chunkMsg.content, streaming: true });
-            }
-            const updated = [...prev.messages];
-            updated[idx] = { ...msg, content: (msg.content || '') + chunkMsg.content, parts };
-            return { ...prev, messages: updated, isAgentThinking: false };
-          });
-        } else {
-          // V1: accumulate streaming content separately
-          setState((prev) => {
-            if (prev.agentStatus === 'idle') return prev;
-            return {
-              ...prev,
-              streamingContent: prev.streamingContent + chunkMsg.content,
-              streamingChannelType: chunkMsg.channelType ?? prev.streamingChannelType,
-              streamingChannelId: chunkMsg.channelId ?? prev.streamingChannelId,
-              isAgentThinking: false,
-            };
-          });
-        }
+        // Update the message's text part in-place
+        setState((prev) => {
+          if (prev.agentStatus === 'idle') return prev;
+          if (!chunkMsg.messageId) return prev;
+          const idx = prev.messages.findIndex((m) => m.id === chunkMsg.messageId);
+          if (idx === -1) return prev;
+          const msg = prev.messages[idx];
+          const parts = Array.isArray(msg.parts) ? [...msg.parts] : [];
+          const lastPart = parts[parts.length - 1];
+          if (lastPart && lastPart.type === 'text') {
+            parts[parts.length - 1] = { ...lastPart, text: (lastPart.text || '') + chunkMsg.content };
+          } else {
+            parts.push({ type: 'text', text: chunkMsg.content, streaming: true });
+          }
+          const updated = [...prev.messages];
+          updated[idx] = { ...msg, content: (msg.content || '') + chunkMsg.content, parts };
+          return { ...prev, messages: updated, isAgentThinking: false };
+        });
         break;
       }
 
@@ -768,8 +738,6 @@ export function useChat(sessionId: string) {
             agentStatusChannelId: statusMsg.channelId,
             // Also update isAgentThinking for backward compatibility
             isAgentThinking: statusMsg.status !== 'idle' && !isTerminalSessionStatus(prev.status),
-            // Clear streaming channel metadata when agent goes idle
-            ...(statusMsg.status === 'idle' ? { streamingChannelType: undefined, streamingChannelId: undefined } : {}),
           };
         });
         break;
@@ -794,7 +762,6 @@ export function useChat(sessionId: string) {
         setState((prev) => ({
           ...prev,
           messages: [...prev.messages, errorMessage],
-          streamingContent: '',
           isAgentThinking: false,
           agentStatus: 'error',
           agentStatusDetail: errorText,
@@ -1027,7 +994,6 @@ export function useChat(sessionId: string) {
     // Optimistically clear streaming state
     setState((prev) => ({
       ...prev,
-      streamingContent: '',
       isAgentThinking: false,
       agentStatus: 'idle' as const,
       agentStatusDetail: undefined,
@@ -1227,15 +1193,12 @@ export function useChat(sessionId: string) {
   return {
     messages: state.messages,
     sessionStatus: state.status,
-    streamingContent: state.streamingContent,
     pendingQuestions: state.pendingQuestions,
     connectedUsers: state.connectedUsers,
     logEntries: state.logEntries,
     isAgentThinking: state.isAgentThinking,
     agentStatus: state.agentStatus,
     agentStatusDetail: state.agentStatusDetail,
-    streamingChannelType: state.streamingChannelType,
-    streamingChannelId: state.streamingChannelId,
     agentStatusChannelType: state.agentStatusChannelType,
     agentStatusChannelId: state.agentStatusChannelId,
     availableModels: state.availableModels,

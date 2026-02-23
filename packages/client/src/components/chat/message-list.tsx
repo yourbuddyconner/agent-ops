@@ -1,9 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { Link } from '@tanstack/react-router';
 import type { Message } from '@/api/types';
 import type { MessagePart } from '@agent-ops/shared';
 import { MessageItem } from './message-item';
-import { StreamingMessage } from './streaming-message';
 import { ThinkingIndicator } from './thinking-indicator';
 import { MarkdownContent } from './markdown';
 import { ToolCard, type ToolCallData, type ToolCallStatus } from './tool-cards';
@@ -17,7 +15,6 @@ type AgentStatus = 'idle' | 'thinking' | 'tool_calling' | 'streaming' | 'error' 
 
 interface MessageListProps {
   messages: Message[];
-  streamingContent?: string;
   isAgentThinking?: boolean;
   agentStatus?: AgentStatus;
   agentStatusDetail?: string;
@@ -35,50 +32,26 @@ interface MessageListProps {
  * in a single visual block, maintaining the order they were received.
  */
 interface MessageTurn {
-  type: 'standalone' | 'assistant-turn' | 'v2-turn';
+  type: 'standalone' | 'assistant-turn';
   messages: Message[];
-}
-
-function isV2Message(msg: Message): boolean {
-  return msg.messageFormat === 'v2';
 }
 
 function groupIntoTurns(messages: Message[]): MessageTurn[] {
   const turns: MessageTurn[] = [];
-  let currentTurn: Message[] = [];
 
   for (const msg of messages) {
     if (msg.role === 'user' || msg.role === 'system') {
-      // Flush any pending assistant turn
-      if (currentTurn.length > 0) {
-        const isV2 = currentTurn.some(isV2Message);
-        turns.push({ type: isV2 ? 'v2-turn' : 'assistant-turn', messages: currentTurn });
-        currentTurn = [];
-      }
       turns.push({ type: 'standalone', messages: [msg] });
-    } else if (isV2Message(msg)) {
-      // V2 assistant message — each is its own turn (self-contained with parts)
-      if (currentTurn.length > 0) {
-        turns.push({ type: 'assistant-turn', messages: currentTurn });
-        currentTurn = [];
-      }
-      turns.push({ type: 'v2-turn', messages: [msg] });
     } else {
-      // V1 tool or assistant — part of the current turn
-      currentTurn.push(msg);
+      // Each assistant message is its own turn (self-contained with parts)
+      turns.push({ type: 'assistant-turn', messages: [msg] });
     }
-  }
-
-  // Flush remaining
-  if (currentTurn.length > 0) {
-    const isV2 = currentTurn.some(isV2Message);
-    turns.push({ type: isV2 ? 'v2-turn' : 'assistant-turn', messages: currentTurn });
   }
 
   return turns;
 }
 
-export function MessageList({ messages, streamingContent, isAgentThinking, agentStatus, agentStatusDetail, onRevert, childSessionEvents, childSessions, connectedUsers }: MessageListProps) {
+export function MessageList({ messages, isAgentThinking, agentStatus, agentStatusDetail, onRevert, childSessionEvents, childSessions, connectedUsers }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const { activePanel } = useDrawer();
   const compact = activePanel !== null;
@@ -120,8 +93,8 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
     }
   }, [messages.length]);
 
-  // V2 streaming updates messages in-place (no length change, no streamingContent),
-  // so we track the last message's content length to trigger auto-scroll during v2 streaming.
+  // Streaming updates messages in-place (no length change),
+  // so we track the last message's content length to trigger auto-scroll during streaming.
   const lastMsgLen = messages.length > 0 ? (messages[messages.length - 1].content?.length ?? 0) : 0;
 
   // Auto-scroll on new messages / streaming content (only when already at bottom)
@@ -129,7 +102,7 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
     if (isAtBottomRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages.length, streamingContent, lastMsgLen]);
+  }, [messages.length, lastMsgLen]);
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -137,7 +110,7 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
     }
   }, []);
 
-  const isEmpty = messages.length === 0 && !streamingContent;
+  const isEmpty = messages.length === 0;
   const turns = isEmpty ? [] : groupIntoTurns(messages);
 
   return (
@@ -164,20 +137,10 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
                 return <MessageItem key={msg.id} message={msg} onRevert={onRevert} connectedUsers={connectedUsers} />;
               }
 
-              if (turn.type === 'v2-turn') {
-                return (
-                  <V2AssistantTurn
-                    key={turn.messages[0].id}
-                    message={turn.messages[0]}
-                  />
-                );
-              }
-
-              // V1 assistant turn: render all tool + assistant messages in order within one block
               return (
                 <AssistantTurn
                   key={turn.messages[0].id}
-                  messages={turn.messages}
+                  message={turn.messages[0]}
                 />
               );
             })}
@@ -188,8 +151,7 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
                 children={childSessions}
               />
             )}
-            {streamingContent && <StreamingMessage content={streamingContent} />}
-            {isAgentThinking && !streamingContent && <ThinkingIndicator status={agentStatus} detail={agentStatusDetail} />}
+            {isAgentThinking && <ThinkingIndicator status={agentStatus} detail={agentStatusDetail} />}
           </div>
         )}
       </div>
@@ -209,149 +171,8 @@ export function MessageList({ messages, streamingContent, isAgentThinking, agent
   );
 }
 
-/**
- * Build segments from an assistant turn's messages.
- * Consecutive text messages that overlap (streaming snapshots) are merged
- * to avoid fragmented rendering. Genuinely separate messages (no overlap)
- * are kept as distinct segments with visual dividers between them.
- */
-type TurnSegment =
-  | { kind: 'text'; content: string; id: string }
-  | { kind: 'tool'; message: Message }
-  | { kind: 'forwarded'; message: Message; sourceTitle: string; sourceSessionId?: string; originalRole: string };
-
-/** Check if a message has forwarded metadata in its parts. */
-function isForwardedMessage(msg: Message): boolean {
-  if (!msg.parts || typeof msg.parts !== 'object') return false;
-  return (msg.parts as Record<string, unknown>).forwarded === true;
-}
-
-/**
- * Try to merge two strings as streaming snapshots.
- * Returns the merged string if overlap is detected (streaming update),
- * or null if they appear to be genuinely separate messages.
- */
-function tryMergeSnapshot(base: string, incoming: string): string | null {
-  if (!incoming) return base;
-  if (!base) return incoming;
-  if (base === incoming) return base;
-  if (incoming.startsWith(base)) return incoming;
-  if (base.endsWith(incoming)) return base;
-
-  const maxOverlap = Math.min(base.length, incoming.length);
-  for (let overlap = maxOverlap; overlap > 0; overlap--) {
-    if (base.slice(-overlap) === incoming.slice(0, overlap)) {
-      return base + incoming.slice(overlap);
-    }
-  }
-  // No overlap — these are separate messages, don't merge
-  return null;
-}
-
-function mergeAssistantSegments(messages: Message[]): TurnSegment[] {
-  const segments: TurnSegment[] = [];
-
-  for (const msg of messages) {
-    if (msg.role === 'tool') {
-      segments.push({ kind: 'tool', message: msg });
-    } else if (isForwardedMessage(msg)) {
-      const parts = msg.parts as Record<string, unknown>;
-      segments.push({
-        kind: 'forwarded',
-        message: msg,
-        sourceTitle: (parts.sourceSessionTitle as string) || 'Session',
-        sourceSessionId: parts.sourceSessionId as string | undefined,
-        originalRole: (parts.originalRole as string) || 'assistant',
-      });
-    } else if (msg.content) {
-      const last = segments[segments.length - 1];
-      if (last && last.kind === 'text') {
-        // Only merge if overlap detected (streaming snapshot dedupe).
-        // Separate messages (no overlap) stay as distinct segments.
-        const merged = tryMergeSnapshot(last.content, msg.content);
-        if (merged !== null) {
-          last.content = merged;
-        } else {
-          segments.push({ kind: 'text', content: msg.content, id: msg.id });
-        }
-      } else {
-        segments.push({ kind: 'text', content: msg.content, id: msg.id });
-      }
-    }
-  }
-
-  return segments;
-}
-
-/** Renders an assistant turn: interleaved text segments and tool calls in one visual block. */
-function AssistantTurn({ messages }: { messages: Message[] }) {
-  const firstMessage = messages[0];
-  const segments = mergeAssistantSegments(messages);
-  const copyText = segments
-    .map((seg) => {
-      if (seg.kind === 'text') return seg.content;
-      if (seg.kind === 'forwarded') return seg.message.content;
-      return '';
-    })
-    .map((content) => content.trim())
-    .filter((content) => content.length > 0)
-    .join('\n\n');
-
-  // Check if any message in the turn was forwarded to an external channel
-  const sentToChannel = messages.find((m) => m.role === 'assistant' && m.channelType);
-
-  return (
-    <div className="group relative flex gap-3 py-3 animate-fade-in">
-      <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-accent/8 text-accent mt-0.5">
-        <BotIcon className="h-3 w-3" />
-      </div>
-
-      <div className="min-w-0 flex-1">
-        <div className="mb-1.5 flex items-baseline gap-2">
-          <span className="font-mono text-[11px] font-semibold tracking-tight text-neutral-800 dark:text-neutral-200">
-            Agent
-          </span>
-          <span className="font-mono text-[10px] tabular-nums text-neutral-300 dark:text-neutral-600">
-            {formatTime(firstMessage.createdAt)}
-          </span>
-          {copyText.length > 0 && (
-            <MessageCopyButton text={copyText} className="text-[10px]" />
-          )}
-          {sentToChannel && <ChannelSentBadge channelType={sentToChannel.channelType!} />}
-        </div>
-
-        <div className="space-y-1.5 border-l-[1.5px] border-accent/15 pl-3 dark:border-accent/10">
-          {segments.map((seg, i) => {
-            const prevSeg = i > 0 ? segments[i - 1] : null;
-            const showDivider = seg.kind === 'text' && prevSeg?.kind === 'text';
-
-            return seg.kind === 'tool' ? (
-              <InlineToolCard key={seg.message.id} message={seg.message} />
-            ) : seg.kind === 'forwarded' ? (
-              <ForwardedMessage
-                key={seg.message.id}
-                content={seg.message.content}
-                sourceTitle={seg.sourceTitle}
-                sourceSessionId={seg.sourceSessionId}
-                originalRole={seg.originalRole}
-              />
-            ) : (
-              <div key={seg.id}>
-                {showDivider && (
-                  <hr className="my-2.5 border-neutral-200/60 dark:border-neutral-700/40" />
-                )}
-                <MarkdownContent content={seg.content} />
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** Renders a V2 assistant turn: a single message with structured parts[]. */
-function V2AssistantTurn({ message }: { message: Message }) {
+/** Renders an assistant turn: a single message with structured parts[]. */
+function AssistantTurn({ message }: { message: Message }) {
   const parts = (Array.isArray(message.parts) ? message.parts : []) as MessagePart[];
   const copyText = parts
     .filter((p): p is MessagePart & { type: 'text' } => p.type === 'text')
@@ -428,77 +249,10 @@ function V2PartRenderer({ part }: { part: MessagePart }) {
   }
 }
 
-/** Inline tool card for rendering within an assistant turn — delegates to specialized ToolCard. */
-function InlineToolCard({ message }: { message: Message }) {
-  const toolData = getToolCallFromParts(message.parts);
-
-  if (!toolData) {
-    // Fallback: render content as text
-    return <MarkdownContent content={message.content} />;
-  }
-
-  return <ToolCard tool={toolData} />;
-}
-
-function getToolCallFromParts(parts: unknown): ToolCallData | null {
-  if (!parts || typeof parts !== 'object') return null;
-  const p = parts as Record<string, unknown>;
-  if (typeof p.toolName === 'string') {
-    return {
-      toolName: p.toolName,
-      status: (p.status as ToolCallStatus) || 'completed',
-      args: p.args ?? null,
-      result: p.result ?? null,
-    };
-  }
-  return null;
-}
-
 function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-/** Renders a forwarded message in a quote-style block with source attribution. */
-function ForwardedMessage({ content, sourceTitle, sourceSessionId, originalRole }: { content: string; sourceTitle: string; sourceSessionId?: string; originalRole: string }) {
-  const roleLabel = originalRole === 'user' ? 'User' : originalRole === 'assistant' ? 'Agent' : originalRole === 'tool' ? 'Tool' : originalRole;
-
-  return (
-    <div className="ml-3 border-l-2 border-neutral-200/70 pl-3 dark:border-neutral-700/60">
-      <div className="rounded-md border border-neutral-200/60 bg-neutral-50/60 px-3 py-2 dark:border-neutral-700/40 dark:bg-neutral-800/35">
-        <div className="mb-1 flex items-center gap-1.5">
-          <ForwardIcon className="h-3 w-3 text-neutral-400 dark:text-neutral-500" />
-          <span className="font-mono text-[9px] font-medium uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
-            Forwarded from {sourceTitle} &middot; {roleLabel}
-          </span>
-          {sourceSessionId && (
-            <>
-              <span className="text-[9px] text-neutral-300 dark:text-neutral-600">•</span>
-              <Link
-                to="/sessions/$sessionId"
-                params={{ sessionId: sourceSessionId }}
-                className="font-mono text-[9px] font-medium uppercase tracking-wider text-neutral-400 transition-colors hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300"
-              >
-                Open Session
-              </Link>
-            </>
-          )}
-        </div>
-        <div className="text-[13px] leading-relaxed text-neutral-600 dark:text-neutral-300">
-          <MarkdownContent content={content} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ForwardIcon({ className }: { className?: string }) {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <polyline points="15 17 20 12 15 7" />
-      <path d="M4 18v-2a4 4 0 0 1 4-4h12" />
-    </svg>
-  );
-}
 
 function ChannelSentBadge({ channelType }: { channelType: string }) {
   return (

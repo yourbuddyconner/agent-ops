@@ -48,7 +48,7 @@ export class AgentClient {
   private consecutiveUpgradeFailures = 0;
   private hasEverConnected = false;
 
-  private promptHandler: ((messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string, opencodeSessionId?: string, messageFormat?: "v1" | "v2") => void | Promise<void>) | null = null;
+  private promptHandler: ((messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string, opencodeSessionId?: string) => void | Promise<void>) | null = null;
   private answerHandler: ((questionId: string, answer: string | boolean) => void | Promise<void>) | null = null;
   private stopHandler: (() => void) | null = null;
   private abortHandler: ((channelType?: string, channelId?: string) => void | Promise<void>) | null = null;
@@ -191,14 +191,6 @@ export class AgentClient {
 
   // ─── Outbound (Runner → DO) ─────────────────────────────────────────
 
-  sendStreamChunk(messageId: string, content: string): void {
-    this.send({ type: "stream", messageId, content });
-  }
-
-  sendResult(messageId: string, content: string): void {
-    this.send({ type: "result", messageId, content });
-  }
-
   sendWorkflowChatMessage(
     role: "user" | "assistant" | "system",
     content: string,
@@ -218,10 +210,6 @@ export class AgentClient {
 
   sendQuestion(questionId: string, text: string, options?: string[]): void {
     this.send({ type: "question", questionId, text, options });
-  }
-
-  sendToolCall(callID: string, toolName: string, status: ToolCallStatus, args: unknown, result: unknown): void {
-    this.send({ type: "tool", callID, toolName, status, args, result });
   }
 
   sendScreenshot(data: string, description: string): void {
@@ -751,7 +739,7 @@ export class AgentClient {
 
   // ─── Inbound Handlers (DO → Runner) ─────────────────────────────────
 
-  onPrompt(handler: (messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string, opencodeSessionId?: string, messageFormat?: "v1" | "v2") => void | Promise<void>): void {
+  onPrompt(handler: (messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string, opencodeSessionId?: string) => void | Promise<void>): void {
     this.promptHandler = handler;
   }
 
@@ -857,7 +845,7 @@ export class AgentClient {
           const author: PromptAuthor | undefined = (msg.authorId || msg.gitName || msg.gitEmail || msg.authorName || msg.authorEmail)
             ? { authorId: msg.authorId, gitName: msg.gitName, gitEmail: msg.gitEmail, authorName: msg.authorName, authorEmail: msg.authorEmail }
             : undefined;
-          await this.promptHandler?.(msg.messageId, msg.content, msg.model, author, msg.modelPreferences, msg.attachments, msg.channelType, msg.channelId, msg.opencodeSessionId, msg.messageFormat);
+          await this.promptHandler?.(msg.messageId, msg.content, msg.model, author, msg.modelPreferences, msg.attachments, msg.channelType, msg.channelId, msg.opencodeSessionId);
           break;
         }
         case "answer":

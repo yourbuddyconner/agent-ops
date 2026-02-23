@@ -8,7 +8,6 @@ export type {
   SessionPurpose,
   AgentSession,
   Message,
-  ToolCall,
   User,
   CreateSessionRequest,
   CreateSessionResponse,
