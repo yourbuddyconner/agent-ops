@@ -2242,6 +2242,11 @@ export class SessionAgentDO {
           };
           turn.parts.push(toolPart);
         }
+        // Persist parts to SQLite so they survive DO hibernation
+        this.ctx.storage.sql.exec(
+          "UPDATE messages SET parts = ?, content = ? WHERE id = ?",
+          JSON.stringify(turn.parts), turn.text, msg.turnId
+        );
         // Broadcast the full updated message to clients
         this.broadcastToClients({
           type: 'message.updated',
@@ -7068,22 +7073,28 @@ export class SessionAgentDO {
   private recoverTurnFromSQLite(turnId: string): { text: string; parts: Array<{ type: string; [key: string]: unknown }>; channelType?: string; channelId?: string; opencodeSessionId?: string } | undefined {
     const rows = this.ctx.storage.sql
       .exec(
-        "SELECT channel_type, channel_id, opencode_session_id FROM messages WHERE id = ? AND role = 'assistant' AND message_format = 'v2'",
+        "SELECT content, parts, channel_type, channel_id, opencode_session_id FROM messages WHERE id = ? AND role = 'assistant' AND message_format = 'v2'",
         turnId
       )
       .toArray();
     if (rows.length === 0) return undefined;
 
     const row = rows[0];
+    let recoveredParts: Array<{ type: string; [key: string]: unknown }> = [];
+    try {
+      if (row.parts && typeof row.parts === 'string') {
+        recoveredParts = JSON.parse(row.parts);
+      }
+    } catch { /* corrupted parts — start fresh */ }
     const turn = {
-      text: '',
-      parts: [] as Array<{ type: string; [key: string]: unknown }>,
+      text: (row.content as string) || '',
+      parts: recoveredParts,
       channelType: (row.channel_type as string) || undefined,
       channelId: (row.channel_id as string) || undefined,
       opencodeSessionId: (row.opencode_session_id as string) || undefined,
     };
     this.activeTurns.set(turnId, turn);
-    console.log(`[SessionAgentDO] Recovering turn ${turnId} from SQLite after hibernation`);
+    console.log(`[SessionAgentDO] Recovering turn ${turnId} from SQLite after hibernation (${recoveredParts.length} parts, ${turn.text.length} chars)`);
     return turn;
   }
 
