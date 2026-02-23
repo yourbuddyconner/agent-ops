@@ -1966,6 +1966,68 @@ export class PromptHandler {
     return data.id;
   }
 
+  /**
+   * Called BEFORE OpenCode is stopped for a config-driven restart.
+   * Cancels all in-flight prompts and tears down SSE state.
+   */
+  async handleOpenCodeRestart(): Promise<void> {
+    console.log("[PromptHandler] Preparing for OpenCode restart");
+
+    // Clear all response timeouts
+    this.clearResponseTimeout();
+    this.clearFirstResponseTimeout();
+
+    // Finalize in-flight turns on all active channels with reason: canceled
+    for (const [, channel] of this.channels) {
+      if (channel.activeMessageId) {
+        const turnId = channel.turnId;
+        if (turnId) {
+          this.agentClient.sendTurnFinalize(turnId, "canceled", undefined, "OpenCode restarting for config update");
+        }
+        channel.activeMessageId = null;
+        channel.streamedContent = "";
+        channel.hasActivity = false;
+        channel.toolStates.clear();
+        channel.textPartSnapshots.clear();
+        channel.messageTextSnapshots.clear();
+        channel.messageRoles.clear();
+        channel.activeAssistantMessageIds.clear();
+        channel.latestAssistantTextSnapshot = "";
+        channel.recentEventTrace = [];
+        channel.turnCreated = false;
+        channel.turnId = null;
+        channel.idleNotified = false;
+      }
+      // Null out session IDs — they won't survive the restart
+      channel.opencodeSessionId = null;
+      channel.adoptedPersistedSession = false;
+    }
+
+    // Clear reverse-lookup map
+    this.ocSessionToChannel.clear();
+
+    // Stop SSE stream (it will die when the process exits)
+    this.eventStreamActive = false;
+  }
+
+  /**
+   * Called AFTER OpenCode has restarted and is healthy again.
+   * Re-subscribes to SSE and re-discovers models.
+   */
+  async handleOpenCodeRestarted(): Promise<void> {
+    console.log("[PromptHandler] OpenCode restarted, re-initializing");
+
+    // Re-subscribe to SSE event stream
+    await this.startEventStream();
+
+    // Re-discover available models and send to DO
+    const models = await this.fetchAvailableModels();
+    if (models.length > 0) {
+      this.agentClient.sendModels(models);
+      console.log(`[PromptHandler] Sent ${models.length} provider(s) to DO after restart`);
+    }
+  }
+
   async fetchAvailableModels(): Promise<AvailableModels> {
     try {
       const res = await fetch(`${this.opencodeUrl}/provider`);

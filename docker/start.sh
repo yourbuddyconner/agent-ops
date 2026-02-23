@@ -151,74 +151,17 @@ else
   fi
 fi
 
-# ─── OpenCode Auth (provider credentials) ────────────────────────────
-# Store API keys in OpenCode's auth.json so providers appear as "connected"
-# in the /provider endpoint. This enables the model picker in the UI.
+# ─── Runner Process (manages OpenCode lifecycle) ─────────────────────
+# The Runner now owns the full OpenCode lifecycle: writing config files,
+# starting/stopping the process, and health-checking. It also connects
+# to the SessionAgent DO via WebSocket, receives prompts, forwards them
+# to OpenCode, and streams results back. It starts the auth gateway on
+# GATEWAY_PORT (for VS Code/VNC/TTYD iframe JWT validation).
 
-echo "[start.sh] Setting up OpenCode provider credentials"
-mkdir -p /root/.local/share/opencode
-AUTH_JSON="{}"
-if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-  AUTH_JSON=$(echo "$AUTH_JSON" | jq --arg key "$ANTHROPIC_API_KEY" '. + {"anthropic": {"type": "api", "key": $key}}')
-fi
-if [ -n "${OPENAI_API_KEY:-}" ]; then
-  AUTH_JSON=$(echo "$AUTH_JSON" | jq --arg key "$OPENAI_API_KEY" '. + {"openai": {"type": "api", "key": $key}}')
-fi
-if [ -n "${GOOGLE_API_KEY:-}" ]; then
-  AUTH_JSON=$(echo "$AUTH_JSON" | jq --arg key "$GOOGLE_API_KEY" '. + {"google": {"type": "api", "key": $key}}')
-fi
-echo "$AUTH_JSON" > /root/.local/share/opencode/auth.json
-chmod 600 /root/.local/share/opencode/auth.json
-echo "[start.sh] Registered $(echo "$AUTH_JSON" | jq 'keys | length') provider(s) in auth.json"
+# Export workspace dir for Runner to use as OpenCode cwd
+export WORK_DIR="${WORK_DIR}"
 
-# ─── OpenCode Config & Tools ─────────────────────────────────────────
-
-echo "[start.sh] Setting up OpenCode config, custom tools, and skills"
-mkdir -p "${WORK_DIR}/.opencode/tools"
-cp /opencode-config/tools/* "${WORK_DIR}/.opencode/tools/"
-cp /opencode-config/opencode.json "${WORK_DIR}/.opencode/opencode.json"
-
-# Orchestrators should never self-terminate and have no parent
-if [ "${IS_ORCHESTRATOR:-}" = "true" ]; then
-  echo "[start.sh] Orchestrator mode: removing complete_session and notify_parent tools"
-  rm -f "${WORK_DIR}/.opencode/tools/complete_session.ts"
-  rm -f "${WORK_DIR}/.opencode/tools/notify_parent.ts"
-fi
-
-mkdir -p "${WORK_DIR}/.opencode/skills"
-cp -r /opencode-config/skills/* "${WORK_DIR}/.opencode/skills/"
-
-# ─── OpenCode Server ──────────────────────────────────────────────────
-
-echo "[start.sh] Starting OpenCode server on port ${OPENCODE_PORT}"
-cd "${WORK_DIR}"
-echo "[start.sh] OpenCode version: $(opencode --version 2>/dev/null || echo unknown)"
-opencode serve --port ${OPENCODE_PORT} &
-OPENCODE_PID=$!
-
-# Wait for OpenCode to be healthy
-echo "[start.sh] Waiting for OpenCode health..."
-MAX_RETRIES=60
-RETRY=0
-until curl -sf http://localhost:${OPENCODE_PORT}/health > /dev/null 2>&1; do
-  RETRY=$((RETRY + 1))
-  if [ $RETRY -ge $MAX_RETRIES ]; then
-    echo "[start.sh] ERROR: OpenCode failed to start after ${MAX_RETRIES} retries"
-    exit 1
-  fi
-  sleep 1
-done
-if [ $RETRY -lt $MAX_RETRIES ]; then
-  echo "[start.sh] OpenCode is healthy"
-fi
-
-# ─── Runner Process (main) ────────────────────────────────────────────
-# The Runner connects to the SessionAgent DO via WebSocket, receives
-# prompts, forwards them to OpenCode, and streams results back.
-# It also starts the auth gateway on GATEWAY_PORT (for VS Code/VNC/TTYD
-# iframe JWT validation).
-
-echo "[start.sh] Starting Runner process"
+echo "[start.sh] Starting Runner (manages OpenCode lifecycle)"
 echo "[start.sh] Ports: OpenCode=${OPENCODE_PORT} VSCode=${VSCODE_PORT} VNC=${VNC_PORT} TTYD=${TTYD_PORT} Gateway=${GATEWAY_PORT}"
 
 cd /runner

@@ -98,7 +98,16 @@ export type DOToRunnerMessage =
   | { type: "tunnel-delete"; name: string; actorId?: string; actorName?: string; actorEmail?: string }
   | { type: "opencode-command"; command: string; args?: string; requestId: string }
   | { type: "new-session"; channelType: string; channelId: string; requestId: string }
-  | { type: "init" };
+  | { type: "init" }
+  | {
+      type: "opencode-config";
+      config: {
+        tools?: Record<string, boolean>;
+        providerKeys?: Record<string, string>;
+        instructions?: string[];
+        isOrchestrator?: boolean;
+      };
+    };
 
 /** Tool call status values */
 export type ToolCallStatus = "pending" | "running" | "completed" | "error";
@@ -183,7 +192,8 @@ export type RunnerToDOMessage =
   | { type: "message.create"; turnId: string; channelType?: string; channelId?: string; opencodeSessionId?: string }
   | { type: "message.part.text-delta"; turnId: string; delta: string }
   | { type: "message.part.tool-update"; turnId: string; callId: string; toolName: string; status: ToolCallStatus; args?: unknown; result?: unknown; error?: string }
-  | { type: "message.finalize"; turnId: string; reason: "end_turn" | "error" | "canceled"; finalText?: string; error?: string };
+  | { type: "message.finalize"; turnId: string; reason: "end_turn" | "error" | "canceled"; finalText?: string; error?: string }
+  | { type: "opencode-config-applied"; success: boolean; restarted: boolean; error?: string };
 
 /** Structured review result data */
 export interface ReviewFinding {

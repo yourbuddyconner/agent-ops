@@ -14,6 +14,7 @@ import { parseArgs } from "util";
 import { AgentClient } from "./agent-client.js";
 import { PromptHandler } from "./prompt.js";
 import { startGateway } from "./gateway.js";
+import { OpenCodeManager, type OpenCodeConfig } from "./opencode-manager.js";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -56,14 +57,57 @@ if (!opencodeUrl || !doUrl || !runnerToken || !sessionId) {
   process.exit(1);
 }
 
+// ─── Build Initial OpenCode Config from Environment ──────────────────────
+
+function buildInitialConfig(): OpenCodeConfig {
+  const providerKeys: Record<string, string> = {};
+  if (process.env.ANTHROPIC_API_KEY) providerKeys.anthropic = process.env.ANTHROPIC_API_KEY;
+  if (process.env.OPENAI_API_KEY) providerKeys.openai = process.env.OPENAI_API_KEY;
+  if (process.env.GOOGLE_API_KEY) providerKeys.google = process.env.GOOGLE_API_KEY;
+
+  const tools: Record<string, boolean> = {};
+  // Disable Parallel AI tools if the API key is not configured
+  if (!process.env.PARALLEL_API_KEY) {
+    tools.parallel_web_search = false;
+    tools.parallel_web_extract = false;
+    tools.parallel_deep_research = false;
+    tools.parallel_data_enrichment = false;
+  }
+
+  return {
+    providerKeys,
+    tools,
+    instructions: [],
+    isOrchestrator: process.env.IS_ORCHESTRATOR === "true",
+  };
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────
 
 async function main() {
   console.log(`[Runner] Starting for session ${sessionId}`);
-  console.log(`[Runner] OpenCode URL: ${opencodeUrl}`);
   console.log(`[Runner] DO URL: ${doUrl}`);
 
-  // Connect to SessionAgent DO
+  // Parse the OpenCode port from the URL
+  const opencodePort = new URL(opencodeUrl!).port || "4096";
+  const workspaceDir = process.env.WORK_DIR || "/workspace";
+  const configSourceDir = "/opencode-config";
+  const authJsonPath = "/root/.local/share/opencode/auth.json";
+
+  // ─── Start OpenCode (before DO connection) ──────────────────────────
+  const openCodeManager = new OpenCodeManager({
+    workspaceDir,
+    port: parseInt(opencodePort, 10),
+    configSourceDir,
+    authJsonPath,
+  });
+
+  const initialConfig = buildInitialConfig();
+  console.log(`[Runner] Starting OpenCode with ${Object.keys(initialConfig.providerKeys).length} provider key(s)`);
+  await openCodeManager.start(initialConfig);
+  console.log(`[Runner] OpenCode URL: ${openCodeManager.getUrl()}`);
+
+  // ─── Connect to SessionAgent DO ─────────────────────────────────────
   const agentClient = new AgentClient(doUrl!, runnerToken!);
 
   // Start auth gateway with callbacks
@@ -219,9 +263,9 @@ async function main() {
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient, sessionId!);
 
   // Register handlers
-  agentClient.onPrompt(async (messageId, content, model, author, modelPreferences, attachments, channelType, channelId, opencodeSessionId, messageFormat) => {
+  agentClient.onPrompt(async (messageId, content, model, author, modelPreferences, attachments, channelType, channelId, opencodeSessionId) => {
     console.log(`[Runner] Received prompt: ${messageId}${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length} models)` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}${channelType ? ` (channel: ${channelType})` : ''}`);
-    await promptHandler.handlePrompt(messageId, content, model, author, modelPreferences, attachments, channelType, channelId, opencodeSessionId, messageFormat);
+    await promptHandler.handlePrompt(messageId, content, model, author, modelPreferences, attachments, channelType, channelId, opencodeSessionId);
   });
 
   agentClient.onAnswer(async (questionId, answer) => {
@@ -229,8 +273,9 @@ async function main() {
     await promptHandler.handleAnswer(questionId, answer);
   });
 
-  agentClient.onStop(() => {
+  agentClient.onStop(async () => {
     console.log("[Runner] Received stop signal, shutting down");
+    await openCodeManager.stop();
     agentClient.disconnect();
     process.exit(0);
   });
@@ -288,6 +333,35 @@ async function main() {
       console.error("[Runner] Tunnel delete error:", err);
     }
   });
+
+  // ─── OpenCode Config Handler ──────────────────────────────────────────
+  agentClient.onOpenCodeConfig(async (config) => {
+    console.log("[Runner] Received opencode-config from DO");
+    try {
+      await promptHandler.handleOpenCodeRestart();
+      const result = await openCodeManager.applyConfig(config);
+      if (result.restarted) {
+        await promptHandler.handleOpenCodeRestarted();
+      }
+      agentClient.sendOpenCodeConfigApplied(true, result.restarted);
+      agentClient.sendAgentStatus("idle");
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error("[Runner] Failed to apply opencode config:", errorMsg);
+      agentClient.sendOpenCodeConfigApplied(false, false, errorMsg);
+    }
+  });
+
+  // ─── Graceful Shutdown ────────────────────────────────────────────────
+  const shutdown = async () => {
+    console.log("[Runner] Shutting down...");
+    await openCodeManager.stop();
+    agentClient.disconnect();
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 
   // Brief delay before first connection — the sandbox may boot before the Worker
   // finishes calling /start on the DO to store our runner token (race condition).

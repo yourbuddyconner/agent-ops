@@ -203,7 +203,8 @@ function deriveRuntimeStates(args: {
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'command-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'list-channels' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'workflow-chat-message' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply' | 'audio-transcript' | 'channel-session-created' | 'session-reset' | 'message.create' | 'message.part.text-delta' | 'message.part.tool-update' | 'message.finalize';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'command-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'memory-read' | 'memory-write' | 'memory-delete' | 'list-repos' | 'list-personas' | 'list-channels' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'workflow-chat-message' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply' | 'audio-transcript' | 'channel-session-created' | 'session-reset' | 'opencode-config-applied' | 'message.create' | 'message.part.text-delta' | 'message.part.tool-update' | 'message.finalize';
+  restarted?: boolean;
   turnId?: string;
   delta?: string;
   callId?: string;
@@ -336,7 +337,13 @@ interface ClientOutbound {
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'opencode-command' | 'pong' | 'init' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'list-channels-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'workflow-api-result' | 'trigger-api-result' | 'execution-api-result' | 'workflow-execute' | 'tunnel-delete' | 'channel-reply-result';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'opencode-command' | 'pong' | 'init' | 'opencode-config' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'memory-read-result' | 'memory-write-result' | 'memory-delete-result' | 'list-repos-result' | 'list-personas-result' | 'list-channels-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'workflow-api-result' | 'trigger-api-result' | 'execution-api-result' | 'workflow-execute' | 'tunnel-delete' | 'channel-reply-result';
+  config?: {
+    tools?: Record<string, boolean>;
+    providerKeys?: Record<string, string>;
+    instructions?: string[];
+    isOrchestrator?: boolean;
+  };
   command?: string;
   messageId?: string;
   content?: string;
@@ -921,6 +928,10 @@ export class SessionAgentDO {
 
     // Send init message to runner
     server.send(JSON.stringify({ type: 'init' }));
+
+    // Push latest OpenCode config — after hibernation/wake the runner may need
+    // updated keys (e.g. admin rotated a provider key while sandbox was hibernated).
+    this.sendOpenCodeConfig();
 
     // Don't dispatch queued work immediately — the runner isn't ready yet.
     // It needs to start its event stream, discover models, and create OpenCode sessions.
@@ -2602,6 +2613,19 @@ export class SessionAgentDO {
       case 'self-terminate':
         await this.handleSelfTerminate();
         break;
+
+      case 'opencode-config-applied': {
+        if (msg.error) {
+          console.error(`[SessionAgentDO] OpenCode config apply failed: ${msg.error}`);
+          this.appendAuditLog('opencode.config_error', `Config apply failed: ${msg.error}`);
+        } else {
+          console.log(`[SessionAgentDO] OpenCode config applied (restarted=${msg.restarted ?? false})`);
+          if (msg.restarted) {
+            this.appendAuditLog('opencode.config_applied', 'OpenCode restarted with new config');
+          }
+        }
+        break;
+      }
 
       // ─── Orchestrator Operations ──────────────────────────────────────
       case 'memory-read':
@@ -7684,6 +7708,50 @@ export class SessionAgentDO {
       "UPDATE channel_followups SET status = 'resolved' WHERE status = 'pending' AND channel_type = ? AND channel_id = ?",
       channelType, channelId
     );
+  }
+
+  /**
+   * Send current OpenCode config to the runner so it can apply it.
+   * Reads provider keys and settings from the spawnRequest envVars.
+   */
+  private sendOpenCodeConfig(): void {
+    const spawnRequestStr = this.getStateValue('spawnRequest');
+    if (!spawnRequestStr) {
+      console.warn('[SessionAgentDO] sendOpenCodeConfig: no spawnRequest in state, skipping');
+      return;
+    }
+
+    let spawnRequest: { envVars?: Record<string, string> };
+    try {
+      spawnRequest = JSON.parse(spawnRequestStr);
+    } catch {
+      console.warn('[SessionAgentDO] sendOpenCodeConfig: failed to parse spawnRequest');
+      return;
+    }
+
+    const envVars = spawnRequest.envVars || {};
+    const config: NonNullable<RunnerOutbound['config']> = {
+      providerKeys: {},
+      tools: {},
+      instructions: [],
+      isOrchestrator: envVars.IS_ORCHESTRATOR === 'true',
+    };
+
+    // Map provider keys
+    if (envVars.ANTHROPIC_API_KEY) config.providerKeys!.anthropic = envVars.ANTHROPIC_API_KEY;
+    if (envVars.OPENAI_API_KEY) config.providerKeys!.openai = envVars.OPENAI_API_KEY;
+    if (envVars.GOOGLE_API_KEY) config.providerKeys!.google = envVars.GOOGLE_API_KEY;
+
+    // Disable parallel tools if no key
+    if (!envVars.PARALLEL_API_KEY) {
+      config.tools!.parallel_web_search = false;
+      config.tools!.parallel_web_extract = false;
+      config.tools!.parallel_deep_research = false;
+      config.tools!.parallel_data_enrichment = false;
+    }
+
+    console.log(`[SessionAgentDO] Sending opencode-config to runner (providers=${Object.keys(config.providerKeys!).length}, isOrchestrator=${config.isOrchestrator})`);
+    this.sendToRunner({ type: 'opencode-config', config });
   }
 
   private sendToRunner(message: RunnerOutbound): boolean {

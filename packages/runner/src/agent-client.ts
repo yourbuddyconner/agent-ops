@@ -67,6 +67,7 @@ export class AgentClient {
   }, model?: string, modelPreferences?: string[]) => void | Promise<void>) | null = null;
   private newSessionHandler: ((channelType: string, channelId: string, requestId: string) => void | Promise<void>) | null = null;
   private initHandler: (() => void | Promise<void>) | null = null;
+  private openCodeConfigHandler: ((config: { tools?: Record<string, boolean>; providerKeys?: Record<string, string>; instructions?: string[]; isOrchestrator?: boolean }) => void | Promise<void>) | null = null;
 
   private pendingRequests = new Map<string, {
     resolve: (value: any) => void;
@@ -324,6 +325,10 @@ export class AgentClient {
 
   sendCommandResult(requestId: string, command: string, result?: unknown, error?: string): void {
     this.send({ type: "command-result", requestId, command, result, error });
+  }
+
+  sendOpenCodeConfigApplied(success: boolean, restarted: boolean, error?: string): void {
+    this.send({ type: "opencode-config-applied", success, restarted, error });
   }
 
   // ─── Request/Response (Runner → DO → Runner) ─────────────────────────
@@ -794,6 +799,10 @@ export class AgentClient {
     this.initHandler = handler;
   }
 
+  onOpenCodeConfig(handler: (config: { tools?: Record<string, boolean>; providerKeys?: Record<string, string>; instructions?: string[]; isOrchestrator?: boolean }) => void | Promise<void>): void {
+    this.openCodeConfigHandler = handler;
+  }
+
   // ─── Keepalive ──────────────────────────────────────────────────────
 
   private startPing(): void {
@@ -880,6 +889,10 @@ export class AgentClient {
 
         case "init":
           await this.initHandler?.();
+          break;
+
+        case "opencode-config":
+          await this.openCodeConfigHandler?.(msg.config);
           break;
 
         case "spawn-child-result":
