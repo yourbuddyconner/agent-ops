@@ -2694,6 +2694,22 @@ export async function markNonActionableNotificationsRead(
   return result.meta.changes ?? 0;
 }
 
+export async function markAllNotificationsRead(
+  db: D1Database,
+  userId: string,
+): Promise<number> {
+  const result = await db
+    .prepare(
+      `UPDATE mailbox_messages
+       SET read = 1, updated_at = datetime('now')
+       WHERE to_user_id = ?
+         AND read = 0`,
+    )
+    .bind(userId)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
 export async function markWorkflowApprovalNotificationsRead(
   db: D1Database,
   userId: string,

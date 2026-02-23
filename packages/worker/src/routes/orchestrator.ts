@@ -513,6 +513,16 @@ orchestratorRouter.put('/notifications/read-non-actionable', async (c) => {
 });
 
 /**
+ * PUT /api/me/notifications/read-all
+ * Mark all unread notifications as read (including approvals, questions, escalations).
+ */
+orchestratorRouter.put('/notifications/read-all', async (c) => {
+  const user = c.get('user');
+  const count = await db.markAllNotificationsRead(c.env.DB, user.id);
+  return c.json({ success: true, count });
+});
+
+/**
  * POST /api/me/notifications/:messageId/reply
  * Reply to a notification thread.
  */

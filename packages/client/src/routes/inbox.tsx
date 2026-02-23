@@ -8,7 +8,9 @@ import {
   useNotificationCount,
   useMarkNotificationRead,
   useMarkNonActionableNotificationsRead,
+  useMarkAllNotificationsRead,
 } from '@/api/orchestrator';
+import { Button } from '@/components/ui/button';
 import { formatRelativeTime } from '@/lib/format';
 import type { MailboxMessage, MailboxMessageType } from '@/api/types';
 
@@ -28,6 +30,7 @@ function InboxPage() {
   const [typeFilter, setTypeFilter] = React.useState<MailboxMessageType | 'all'>('all');
   const markReadMutation = useMarkNotificationRead();
   const markNonActionableRead = useMarkNonActionableNotificationsRead();
+  const markAllRead = useMarkAllNotificationsRead();
   const clearAttemptedRef = React.useRef(false);
 
   const { data: inboxData, isLoading } = useNotifications({
@@ -55,6 +58,18 @@ function InboxPage() {
           unreadTotal > 0
             ? `${unreadTotal} unread notification${unreadTotal !== 1 ? 's' : ''}`
             : 'Updates from your agents'
+        }
+        actions={
+          unreadTotal > 0 ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => markAllRead.mutate()}
+              disabled={markAllRead.isPending}
+            >
+              {markAllRead.isPending ? 'Marking...' : 'Mark all as read'}
+            </Button>
+          ) : undefined
         }
       />
 

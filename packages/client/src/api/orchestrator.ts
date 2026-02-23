@@ -206,6 +206,19 @@ export function useMarkNonActionableNotificationsRead() {
   });
 }
 
+export function useMarkAllNotificationsRead() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () =>
+      api.put<{ success: boolean; count: number }>('/me/notifications/read-all'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [...orchestratorKeys.all, 'notifications'] });
+      queryClient.invalidateQueries({ queryKey: orchestratorKeys.notificationCount() });
+    },
+  });
+}
+
 export function useReplyToNotification() {
   const queryClient = useQueryClient();
 
