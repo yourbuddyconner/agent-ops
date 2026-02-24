@@ -343,6 +343,13 @@ interface RunnerOutbound {
     providerKeys?: Record<string, string>;
     instructions?: string[];
     isOrchestrator?: boolean;
+    customProviders?: Array<{
+      providerId: string;
+      displayName: string;
+      baseUrl: string;
+      apiKey?: string;
+      models: Array<{ id: string; name?: string; contextLimit?: number; outputLimit?: number }>;
+    }>;
   };
   command?: string;
   messageId?: string;
@@ -7721,7 +7728,7 @@ export class SessionAgentDO {
       return;
     }
 
-    let spawnRequest: { envVars?: Record<string, string> };
+    let spawnRequest: { envVars?: Record<string, string>; customProviders?: Array<{ providerId: string; displayName: string; baseUrl: string; apiKey?: string; models: Array<{ id: string; name?: string; contextLimit?: number; outputLimit?: number }> }> };
     try {
       spawnRequest = JSON.parse(spawnRequestStr);
     } catch {
@@ -7750,7 +7757,12 @@ export class SessionAgentDO {
       config.tools!.parallel_data_enrichment = false;
     }
 
-    console.log(`[SessionAgentDO] Sending opencode-config to runner (providers=${Object.keys(config.providerKeys!).length}, isOrchestrator=${config.isOrchestrator})`);
+    // Attach custom providers if present
+    if (spawnRequest.customProviders && spawnRequest.customProviders.length > 0) {
+      config.customProviders = spawnRequest.customProviders;
+    }
+
+    console.log(`[SessionAgentDO] Sending opencode-config to runner (providers=${Object.keys(config.providerKeys!).length}, customProviders=${config.customProviders?.length ?? 0}, isOrchestrator=${config.isOrchestrator})`);
     this.sendToRunner({ type: 'opencode-config', config });
   }
 

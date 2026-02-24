@@ -10,11 +10,20 @@ import { Subprocess } from "bun";
 import { existsSync, mkdirSync, readdirSync, copyFileSync, unlinkSync, writeFileSync, readFileSync, statSync } from "fs";
 import { join, basename } from "path";
 
+export interface CustomProviderConfig {
+  providerId: string;
+  displayName: string;
+  baseUrl: string;
+  apiKey?: string;
+  models: Array<{ id: string; name?: string; contextLimit?: number; outputLimit?: number }>;
+}
+
 export interface OpenCodeConfig {
   tools: Record<string, boolean>;        // tool name → enabled/disabled
   providerKeys: Record<string, string>;  // "anthropic"|"openai"|"google" → key
   instructions: string[];                // extra instruction lines to append
   isOrchestrator: boolean;               // controls tool removal
+  customProviders?: CustomProviderConfig[];
 }
 
 interface OpenCodeManagerOptions {
@@ -154,6 +163,16 @@ export class OpenCodeManager {
         authJson[provider] = { type: "api", key };
       }
     }
+
+    // Add custom provider keys to auth.json
+    if (config.customProviders) {
+      for (const cp of config.customProviders) {
+        if (cp.apiKey) {
+          authJson[cp.providerId] = { type: "api", key: cp.apiKey };
+        }
+      }
+    }
+
     writeFileSync(this.authJsonPath, JSON.stringify(authJson, null, 2), { mode: 0o600 });
     console.log(`[OpenCodeManager] Wrote auth.json with ${Object.keys(authJson).length} provider(s)`);
 
@@ -181,6 +200,32 @@ export class OpenCodeManager {
         ? opencodeConfig.instructions
         : "";
       opencodeConfig.instructions = existingInstructions + "\n" + config.instructions.join("\n");
+    }
+
+    // Add custom providers to opencode.json provider block
+    if (config.customProviders && config.customProviders.length > 0) {
+      const providerBlock = (opencodeConfig.provider as Record<string, unknown>) || {};
+      for (const cp of config.customProviders) {
+        const models: Record<string, { name?: string; limit?: { context?: number; output?: number } }> = {};
+        for (const m of cp.models) {
+          const modelEntry: { name?: string; limit?: { context?: number; output?: number } } = {};
+          if (m.name) modelEntry.name = m.name;
+          if (m.contextLimit || m.outputLimit) {
+            modelEntry.limit = {};
+            if (m.contextLimit) modelEntry.limit.context = m.contextLimit;
+            if (m.outputLimit) modelEntry.limit.output = m.outputLimit;
+          }
+          models[m.id] = modelEntry;
+        }
+        providerBlock[cp.providerId] = {
+          npm: "@ai-sdk/openai-compatible",
+          name: cp.displayName,
+          options: { baseURL: cp.baseUrl },
+          models,
+        };
+      }
+      opencodeConfig.provider = providerBlock;
+      console.log(`[OpenCodeManager] Added ${config.customProviders.length} custom provider(s) to opencode.json`);
     }
 
     writeFileSync(
@@ -320,6 +365,9 @@ export class OpenCodeManager {
       isOrchestrator: partial.isOrchestrator !== undefined
         ? partial.isOrchestrator
         : current.isOrchestrator,
+      customProviders: partial.customProviders !== undefined
+        ? partial.customProviders
+        : current.customProviders,
     };
   }
 

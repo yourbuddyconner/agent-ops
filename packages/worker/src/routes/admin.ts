@@ -15,6 +15,9 @@ import {
   listUsers,
   updateUserRole,
   deleteUser,
+  listCustomProviders,
+  upsertCustomProvider,
+  deleteCustomProvider,
 } from '../lib/db.js';
 
 export const adminRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -177,6 +180,77 @@ adminRouter.delete('/users/:id', async (c) => {
   }
 
   await deleteUser(c.env.DB, userId);
+  return c.json({ ok: true });
+});
+
+// --- Custom Providers ---
+
+const BUILT_IN_PROVIDER_IDS = ['anthropic', 'openai', 'google', 'parallel'];
+const PROVIDER_ID_REGEX = /^[a-z0-9-]+$/;
+
+adminRouter.get('/custom-providers', async (c) => {
+  const providers = await listCustomProviders(c.env.DB);
+  return c.json(providers);
+});
+
+adminRouter.put('/custom-providers/:providerId', async (c) => {
+  const providerId = c.req.param('providerId');
+
+  // Validate provider ID format
+  if (!providerId || providerId.length > 50 || !PROVIDER_ID_REGEX.test(providerId)) {
+    throw new ValidationError('Provider ID must be 1-50 characters, lowercase alphanumeric with hyphens');
+  }
+
+  // Prevent collision with built-in providers
+  if (BUILT_IN_PROVIDER_IDS.includes(providerId)) {
+    throw new ValidationError(`Provider ID "${providerId}" is reserved for a built-in provider`);
+  }
+
+  const body = await c.req.json<{
+    displayName: string;
+    baseUrl: string;
+    apiKey?: string;
+    models: Array<{ id: string; name?: string; contextLimit?: number; outputLimit?: number }>;
+  }>();
+
+  if (!body.displayName || typeof body.displayName !== 'string' || body.displayName.trim().length === 0) {
+    throw new ValidationError('Display name is required');
+  }
+  if (!body.baseUrl || typeof body.baseUrl !== 'string' || body.baseUrl.trim().length === 0) {
+    throw new ValidationError('Base URL is required');
+  }
+  if (!Array.isArray(body.models) || body.models.length === 0) {
+    throw new ValidationError('At least one model is required');
+  }
+  for (const model of body.models) {
+    if (!model.id || typeof model.id !== 'string' || model.id.trim().length === 0) {
+      throw new ValidationError('Each model must have an id');
+    }
+  }
+
+  let encryptedKey: string | null = null;
+  if (body.apiKey && body.apiKey.trim().length > 0) {
+    encryptedKey = await encryptApiKey(body.apiKey, c.env.ENCRYPTION_KEY);
+  }
+
+  const user = c.get('user');
+
+  await upsertCustomProvider(c.env.DB, {
+    id: crypto.randomUUID(),
+    providerId,
+    displayName: body.displayName.trim(),
+    baseUrl: body.baseUrl.trim(),
+    encryptedKey,
+    models: JSON.stringify(body.models),
+    setBy: user.id,
+  });
+
+  return c.json({ ok: true });
+});
+
+adminRouter.delete('/custom-providers/:providerId', async (c) => {
+  const providerId = c.req.param('providerId');
+  await deleteCustomProvider(c.env.DB, providerId);
   return c.json({ ok: true });
 });
 

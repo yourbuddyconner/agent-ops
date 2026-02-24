@@ -370,6 +370,27 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     }
   }
 
+  // Custom LLM providers — fetch all with keys, decrypt, attach to spawnRequest
+  let customProviders: Array<{ providerId: string; displayName: string; baseUrl: string; apiKey?: string; models: Array<{ id: string; name?: string; contextLimit?: number; outputLimit?: number }> }> = [];
+  try {
+    const rawProviders = await db.getAllCustomProvidersWithKeys(c.env.DB);
+    for (const p of rawProviders) {
+      let apiKey: string | undefined;
+      if (p.encryptedKey) {
+        apiKey = await decryptApiKey(p.encryptedKey, c.env.ENCRYPTION_KEY);
+      }
+      customProviders.push({
+        providerId: p.providerId,
+        displayName: p.displayName,
+        baseUrl: p.baseUrl,
+        apiKey,
+        models: p.models,
+      });
+    }
+  } catch {
+    // Table may not exist yet — skip
+  }
+
   // If repo URL provided, decrypt GitHub token and add repo/git env vars
   if (body.repoUrl) {
     const oauthToken = await db.getOAuthToken(c.env.DB, user.id, 'github');
@@ -419,6 +440,7 @@ sessionsRouter.post('/', zValidator('json', createSessionSchema), async (c) => {
     idleTimeoutSeconds,
     envVars,
     personaFiles,
+    customProviders: customProviders.length > 0 ? customProviders : undefined,
   };
 
   try {

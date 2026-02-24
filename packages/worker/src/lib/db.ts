@@ -734,6 +734,67 @@ export async function deleteOrgApiKey(db: D1Database, provider: string): Promise
   await db.prepare('DELETE FROM org_api_keys WHERE provider = ?').bind(provider).run();
 }
 
+// Custom provider operations
+export async function listCustomProviders(db: D1Database): Promise<import('@agent-ops/shared').CustomProvider[]> {
+  const result = await db.prepare(
+    'SELECT id, provider_id, display_name, base_url, encrypted_key, models, set_by, created_at, updated_at FROM custom_providers ORDER BY display_name'
+  ).all();
+  return (result.results || []).map((row: any) => ({
+    id: row.id,
+    providerId: row.provider_id,
+    displayName: row.display_name,
+    baseUrl: row.base_url,
+    hasKey: !!row.encrypted_key,
+    models: JSON.parse(row.models || '[]'),
+    setBy: row.set_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function getAllCustomProvidersWithKeys(db: D1Database): Promise<Array<{
+  providerId: string;
+  displayName: string;
+  baseUrl: string;
+  encryptedKey: string | null;
+  models: import('@agent-ops/shared').CustomProviderModel[];
+}>> {
+  const result = await db.prepare(
+    'SELECT provider_id, display_name, base_url, encrypted_key, models FROM custom_providers'
+  ).all();
+  return (result.results || []).map((row: any) => ({
+    providerId: row.provider_id,
+    displayName: row.display_name,
+    baseUrl: row.base_url,
+    encryptedKey: row.encrypted_key || null,
+    models: JSON.parse(row.models || '[]'),
+  }));
+}
+
+export async function upsertCustomProvider(
+  db: D1Database,
+  params: { id: string; providerId: string; displayName: string; baseUrl: string; encryptedKey: string | null; models: string; setBy: string }
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO custom_providers (id, provider_id, display_name, base_url, encrypted_key, models, set_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(provider_id) DO UPDATE SET
+         display_name = excluded.display_name,
+         base_url = excluded.base_url,
+         encrypted_key = excluded.encrypted_key,
+         models = excluded.models,
+         set_by = excluded.set_by,
+         updated_at = datetime('now')`
+    )
+    .bind(params.id, params.providerId, params.displayName, params.baseUrl, params.encryptedKey, params.models, params.setBy)
+    .run();
+}
+
+export async function deleteCustomProvider(db: D1Database, providerId: string): Promise<void> {
+  await db.prepare('DELETE FROM custom_providers WHERE provider_id = ?').bind(providerId).run();
+}
+
 // User credential operations
 export async function listUserCredentials(db: D1Database, userId: string): Promise<import('@agent-ops/shared').UserCredential[]> {
   const result = await db.prepare(

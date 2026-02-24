@@ -1,12 +1,13 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
-import type { OrgSettings, OrgApiKey, Invite, User } from '@agent-ops/shared';
+import type { OrgSettings, OrgApiKey, Invite, User, CustomProvider } from '@agent-ops/shared';
 
 // Query key factory
 export const adminKeys = {
   all: ['admin'] as const,
   settings: () => [...adminKeys.all, 'settings'] as const,
   llmKeys: () => [...adminKeys.all, 'llm-keys'] as const,
+  customProviders: () => [...adminKeys.all, 'custom-providers'] as const,
   invites: () => [...adminKeys.all, 'invites'] as const,
   users: () => [...adminKeys.all, 'users'] as const,
 };
@@ -127,6 +128,45 @@ export function useRemoveUser() {
       api.delete<{ ok: boolean }>(`/admin/users/${userId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: adminKeys.users() });
+    },
+  });
+}
+
+// --- Custom Providers ---
+
+export function useCustomProviders() {
+  return useQuery({
+    queryKey: adminKeys.customProviders(),
+    queryFn: () => api.get<CustomProvider[]>('/admin/custom-providers'),
+  });
+}
+
+export function useUpsertCustomProvider() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ providerId, ...data }: {
+      providerId: string;
+      displayName: string;
+      baseUrl: string;
+      apiKey?: string;
+      models: Array<{ id: string; name?: string; contextLimit?: number; outputLimit?: number }>;
+    }) =>
+      api.put<{ ok: boolean }>(`/admin/custom-providers/${providerId}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: adminKeys.customProviders() });
+    },
+  });
+}
+
+export function useDeleteCustomProvider() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (providerId: string) =>
+      api.delete<{ ok: boolean }>(`/admin/custom-providers/${providerId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: adminKeys.customProviders() });
     },
   });
 }

@@ -441,6 +441,26 @@ export interface SyncStatusResponse {
   completedAt?: Date;
 }
 
+// Custom LLM provider types
+export interface CustomProviderModel {
+  id: string;
+  name?: string;
+  contextLimit?: number;
+  outputLimit?: number;
+}
+
+export interface CustomProvider {
+  id: string;
+  providerId: string;
+  displayName: string;
+  baseUrl: string;
+  hasKey: boolean;
+  models: CustomProviderModel[];
+  setBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // API key types
 export interface StoredAPIKey {
   id: string;

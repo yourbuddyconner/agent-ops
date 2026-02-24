@@ -9,6 +9,9 @@ import {
   useOrgLLMKeys,
   useSetLLMKey,
   useDeleteLLMKey,
+  useCustomProviders,
+  useUpsertCustomProvider,
+  useDeleteCustomProvider,
   useInvites,
   useCreateInvite,
   useDeleteInvite,
@@ -18,7 +21,7 @@ import {
 } from '@/api/admin';
 import { useOrgRepos, useCreateOrgRepo, useDeleteOrgRepo, useSetRepoPersonaDefault } from '@/api/org-repos';
 import { usePersonas } from '@/api/personas';
-import type { UserRole } from '@agent-ops/shared';
+import type { UserRole, CustomProviderModel } from '@agent-ops/shared';
 import { Input } from '@/components/ui/input';
 import { useAvailableModels } from '@/api/sessions';
 import type { ProviderModels } from '@/api/sessions';
@@ -60,6 +63,7 @@ function AdminSettingsPage() {
         <OrgModelPreferencesSection />
         <OrgReposSection />
         <LLMKeysSection />
+        <CustomProvidersSection />
         <AccessControlSection />
         <InvitesSection />
         <UsersSection currentUserId={user.id} />
@@ -625,6 +629,272 @@ function LLMKeyRow({ provider, label, isSet }: { provider: string; label: string
         </>
       )}
     </div>
+  );
+}
+
+// --- Custom Providers ---
+
+function CustomProvidersSection() {
+  const { data: providers, isLoading } = useCustomProviders();
+  const [adding, setAdding] = React.useState(false);
+
+  return (
+    <Section title="Custom LLM Providers">
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Add OpenAI-compatible LLM providers (self-hosted models, Together AI, Fireworks, etc.) that will be available in sandboxes.
+        </p>
+        {isLoading ? (
+          <div className="space-y-3">
+            {[1, 2].map((i) => (
+              <div key={i} className="h-12 animate-pulse rounded-md bg-neutral-100 dark:bg-neutral-700" />
+            ))}
+          </div>
+        ) : (
+          <>
+            {providers && providers.length > 0 && (
+              <div className="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-700">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800/50">
+                      <th className="px-3 py-2 text-left font-medium text-neutral-600 dark:text-neutral-400">Provider ID</th>
+                      <th className="px-3 py-2 text-left font-medium text-neutral-600 dark:text-neutral-400">Name</th>
+                      <th className="px-3 py-2 text-left font-medium text-neutral-600 dark:text-neutral-400">Base URL</th>
+                      <th className="px-3 py-2 text-left font-medium text-neutral-600 dark:text-neutral-400">Models</th>
+                      <th className="px-3 py-2 text-left font-medium text-neutral-600 dark:text-neutral-400">Key</th>
+                      <th className="px-3 py-2 text-right font-medium text-neutral-600 dark:text-neutral-400">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {providers.map((p) => (
+                      <CustomProviderRow key={p.id} provider={p} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {adding ? (
+              <CustomProviderForm onCancel={() => setAdding(false)} onSaved={() => setAdding(false)} />
+            ) : (
+              <Button variant="secondary" onClick={() => setAdding(true)}>
+                Add Provider
+              </Button>
+            )}
+          </>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+function CustomProviderRow({ provider }: { provider: import('@agent-ops/shared').CustomProvider }) {
+  const deleteProvider = useDeleteCustomProvider();
+  const [editing, setEditing] = React.useState(false);
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
+
+  if (editing) {
+    return (
+      <tr>
+        <td colSpan={6} className="p-3">
+          <CustomProviderForm
+            existing={provider}
+            onCancel={() => setEditing(false)}
+            onSaved={() => setEditing(false)}
+          />
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <tr className="border-b border-neutral-100 last:border-0 dark:border-neutral-700/50">
+      <td className="px-3 py-2 font-mono text-xs text-neutral-700 dark:text-neutral-300">{provider.providerId}</td>
+      <td className="px-3 py-2 text-neutral-900 dark:text-neutral-100">{provider.displayName}</td>
+      <td className="px-3 py-2 text-neutral-500 dark:text-neutral-400 truncate max-w-[200px]">{provider.baseUrl}</td>
+      <td className="px-3 py-2 text-neutral-500 dark:text-neutral-400">{provider.models.length}</td>
+      <td className="px-3 py-2 text-neutral-500 dark:text-neutral-400">{provider.hasKey ? 'Set' : 'None'}</td>
+      <td className="px-3 py-2 text-right">
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="secondary" onClick={() => setEditing(true)}>Edit</Button>
+          {confirmDelete ? (
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  deleteProvider.mutate(provider.providerId, { onSuccess: () => setConfirmDelete(false) });
+                }}
+                disabled={deleteProvider.isPending}
+              >
+                Confirm
+              </Button>
+              <Button variant="secondary" onClick={() => setConfirmDelete(false)}>Cancel</Button>
+            </>
+          ) : (
+            <Button variant="secondary" onClick={() => setConfirmDelete(true)}>Delete</Button>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function CustomProviderForm({
+  existing,
+  onCancel,
+  onSaved,
+}: {
+  existing?: import('@agent-ops/shared').CustomProvider;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const upsert = useUpsertCustomProvider();
+  const [providerId, setProviderId] = React.useState(existing?.providerId ?? '');
+  const [displayName, setDisplayName] = React.useState(existing?.displayName ?? '');
+  const [baseUrl, setBaseUrl] = React.useState(existing?.baseUrl ?? '');
+  const [apiKey, setApiKey] = React.useState('');
+  const [models, setModels] = React.useState<CustomProviderModel[]>(
+    existing?.models ?? [{ id: '' }]
+  );
+
+  function addModel() {
+    setModels([...models, { id: '' }]);
+  }
+
+  function removeModel(index: number) {
+    if (models.length <= 1) return;
+    setModels(models.filter((_, i) => i !== index));
+  }
+
+  function updateModel(index: number, field: keyof CustomProviderModel, value: string | number) {
+    const updated = [...models];
+    updated[index] = { ...updated[index], [field]: value };
+    setModels(updated);
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const validModels = models.filter((m) => m.id.trim().length > 0);
+    if (validModels.length === 0) return;
+
+    upsert.mutate(
+      {
+        providerId,
+        displayName,
+        baseUrl,
+        apiKey: apiKey || undefined,
+        models: validModels.map((m) => ({
+          id: m.id,
+          name: m.name || undefined,
+          contextLimit: m.contextLimit || undefined,
+          outputLimit: m.outputLimit || undefined,
+        })),
+      },
+      { onSuccess: onSaved }
+    );
+  }
+
+  const isValid = providerId.trim().length > 0 && /^[a-z0-9-]+$/.test(providerId) &&
+    displayName.trim().length > 0 && baseUrl.trim().length > 0 &&
+    models.some((m) => m.id.trim().length > 0);
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4 rounded-md border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-700 dark:bg-neutral-800/50">
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">Provider ID</label>
+          <input
+            value={providerId}
+            onChange={(e) => setProviderId(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+            placeholder="together-ai"
+            className={inputClass}
+            disabled={!!existing}
+            maxLength={50}
+          />
+          <p className="mt-1 text-xs text-neutral-400">Lowercase, alphanumeric, hyphens only</p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">Display Name</label>
+          <input
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="Together AI"
+            className={inputClass}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">Base URL</label>
+          <input
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="https://api.together.xyz/v1"
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">API Key (optional)</label>
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={existing?.hasKey ? '(unchanged)' : 'sk-...'}
+            className={inputClass}
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">Models</label>
+        <div className="mt-2 space-y-2">
+          {models.map((model, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input
+                value={model.id}
+                onChange={(e) => updateModel(i, 'id', e.target.value)}
+                placeholder="model-id"
+                className={inputClass + ' !mt-0 flex-1'}
+              />
+              <input
+                value={model.name ?? ''}
+                onChange={(e) => updateModel(i, 'name', e.target.value)}
+                placeholder="Display name (optional)"
+                className={inputClass + ' !mt-0 flex-1'}
+              />
+              <input
+                type="number"
+                value={model.contextLimit ?? ''}
+                onChange={(e) => updateModel(i, 'contextLimit', parseInt(e.target.value) || 0)}
+                placeholder="Context limit"
+                className={inputClass + ' !mt-0 w-28'}
+              />
+              <input
+                type="number"
+                value={model.outputLimit ?? ''}
+                onChange={(e) => updateModel(i, 'outputLimit', parseInt(e.target.value) || 0)}
+                placeholder="Output limit"
+                className={inputClass + ' !mt-0 w-28'}
+              />
+              <Button type="button" variant="secondary" onClick={() => removeModel(i)} disabled={models.length <= 1}>
+                -
+              </Button>
+            </div>
+          ))}
+          <Button type="button" variant="secondary" onClick={addModel}>
+            + Add Model
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <Button type="submit" disabled={!isValid || upsert.isPending}>
+          {upsert.isPending ? 'Saving...' : existing ? 'Update Provider' : 'Add Provider'}
+        </Button>
+        <Button type="button" variant="secondary" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
   );
 }
 
