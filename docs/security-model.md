@@ -73,7 +73,7 @@ Users authenticate via GitHub or Google OAuth. The flow:
 5. Worker generates a 256-bit random session token, SHA-256 hashes it, and stores the hash in `auth_sessions` (7-day expiry)
 6. The plaintext token is returned to the browser, which stores it in a Zustand store backed by localStorage
 
-All subsequent API requests include `Authorization: Bearer <token>`. The auth middleware hashes the token, looks up the hash in `auth_sessions`, verifies expiry, and sets `c.set('user', { id, email, role })` for downstream route handlers.
+All subsequent API requests include `Authorization: Bearer <token>`. For browser WebSocket upgrades, the client sends `Sec-WebSocket-Protocol: agent-ops, bearer.<token>` (instead of putting tokens in URL query params). The auth middleware hashes the token, looks up the hash in `auth_sessions`, verifies expiry, and sets `c.set('user', { id, email, role })` for downstream route handlers.
 
 **Key files:** `packages/worker/src/routes/oauth.ts`, `packages/worker/src/middleware/auth.ts`
 

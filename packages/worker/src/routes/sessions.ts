@@ -300,16 +300,32 @@ sessionsRouter.get('/:id/messages', async (c) => {
 sessionsRouter.get('/:id/ws', async (c) => {
   const { id } = c.req.param();
 
+  // Allow both client and runner connections
+  // Clients: authenticated user (role/userId derived server-side)
+  // Runner: ?role=runner&token=...
   const role = c.req.query('role');
-
-  if (role === 'client') {
-    const user = c.get('user');
-    await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
-  }
 
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
 
+  if (role === 'client') {
+    const user = c.get('user');
+    await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
+
+    // Never trust user identity in URL params from the browser.
+    // Rebuild request URL so DO receives server-derived userId.
+    const doUrl = new URL(c.req.url);
+    doUrl.searchParams.set('role', 'client');
+    doUrl.searchParams.set('userId', user.id);
+    doUrl.searchParams.delete('token');
+
+    return sessionDO.fetch(new Request(doUrl.toString(), {
+      headers: c.req.raw.headers,
+    }));
+  }
+
+  // Runner auth is handled by the DO itself via token validation
+  // Forward raw request for runner traffic.
   return sessionDO.fetch(c.req.raw);
 });
 
