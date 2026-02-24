@@ -1,10 +1,63 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { OrgSettings, OrgApiKey, Invite, UserRole, OrgRepository, OrchestratorIdentity, CustomProvider, CustomProviderModel } from '@agent-ops/shared';
-import { mapOrgSettings, mapInvite, mapOrgRepository } from './mappers.js';
+import { eq, and, isNull, gt, sql, desc, asc } from 'drizzle-orm';
+import { getDb, toDate } from '../drizzle.js';
+import { orgSettings, orgApiKeys, invites, orgRepositories, customProviders } from '../schema/index.js';
+import { orchestratorIdentities } from '../schema/orchestrator.js';
+
+function rowToOrgSettings(row: typeof orgSettings.$inferSelect): OrgSettings {
+  return {
+    id: row.id!,
+    name: row.name,
+    allowedEmailDomain: row.allowedEmailDomain || undefined,
+    allowedEmails: row.allowedEmails || undefined,
+    domainGatingEnabled: !!row.domainGatingEnabled,
+    emailAllowlistEnabled: !!row.emailAllowlistEnabled,
+    defaultSessionVisibility: (row.defaultSessionVisibility as OrgSettings['defaultSessionVisibility']) || 'private',
+    modelPreferences: row.modelPreferences || undefined,
+    createdAt: toDate(row.createdAt),
+    updatedAt: toDate(row.updatedAt),
+  };
+}
+
+function rowToInvite(row: typeof invites.$inferSelect): Invite {
+  return {
+    id: row.id,
+    code: row.code,
+    email: row.email || undefined,
+    role: row.role as UserRole,
+    invitedBy: row.invitedBy,
+    acceptedAt: row.acceptedAt ? toDate(row.acceptedAt) : undefined,
+    acceptedBy: row.acceptedBy || undefined,
+    expiresAt: toDate(row.expiresAt),
+    createdAt: toDate(row.createdAt),
+  };
+}
+
+function rowToOrgRepository(row: any): OrgRepository {
+  return {
+    id: row.id,
+    orgId: row.orgId || row.org_id,
+    provider: row.provider,
+    owner: row.owner,
+    name: row.name,
+    fullName: row.fullName || row.full_name,
+    description: row.description || undefined,
+    defaultBranch: row.defaultBranch || row.default_branch || 'main',
+    language: row.language || undefined,
+    topics: row.topics ? (typeof row.topics === 'string' ? JSON.parse(row.topics) : row.topics) : undefined,
+    enabled: row.enabled !== undefined ? !!row.enabled : true,
+    personaId: row.personaId || row.persona_id || undefined,
+    personaName: row.personaName || row.persona_name || undefined,
+    createdAt: row.createdAt || row.created_at,
+    updatedAt: row.updatedAt || row.updated_at,
+  };
+}
 
 // Org settings operations
 export async function getOrgSettings(db: D1Database): Promise<OrgSettings> {
-  const row = await db.prepare("SELECT * FROM org_settings WHERE id = 'default'").first();
+  const drizzle = getDb(db);
+  const row = await drizzle.select().from(orgSettings).where(eq(orgSettings.id, 'default')).get();
   if (!row) {
     return {
       id: 'default',
@@ -16,13 +69,14 @@ export async function getOrgSettings(db: D1Database): Promise<OrgSettings> {
       updatedAt: new Date(),
     };
   }
-  return mapOrgSettings(row);
+  return rowToOrgSettings(row);
 }
 
 export async function updateOrgSettings(
   db: D1Database,
   updates: Partial<Pick<OrgSettings, 'name' | 'allowedEmailDomain' | 'allowedEmails' | 'domainGatingEnabled' | 'emailAllowlistEnabled' | 'modelPreferences'>>
 ): Promise<OrgSettings> {
+  // Dynamic SET — keep as raw SQL
   const sets: string[] = [];
   const params: (string | number | null)[] = [];
 
@@ -43,58 +97,81 @@ export async function updateOrgSettings(
 
 // Org API key operations
 export async function listOrgApiKeys(db: D1Database): Promise<OrgApiKey[]> {
-  const result = await db.prepare('SELECT id, provider, set_by, created_at, updated_at FROM org_api_keys ORDER BY provider').all();
-  return (result.results || []).map((row: any) => ({
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select({
+      id: orgApiKeys.id,
+      provider: orgApiKeys.provider,
+      setBy: orgApiKeys.setBy,
+      createdAt: orgApiKeys.createdAt,
+      updatedAt: orgApiKeys.updatedAt,
+    })
+    .from(orgApiKeys)
+    .orderBy(asc(orgApiKeys.provider));
+
+  return rows.map((row) => ({
     id: row.id,
     provider: row.provider,
     isSet: true,
-    setBy: row.set_by,
-    createdAt: new Date(row.created_at),
-    updatedAt: new Date(row.updated_at),
+    setBy: row.setBy,
+    createdAt: toDate(row.createdAt),
+    updatedAt: toDate(row.updatedAt),
   }));
 }
 
 export async function getOrgApiKey(db: D1Database, provider: string): Promise<{ encryptedKey: string } | null> {
-  const row = await db.prepare('SELECT encrypted_key FROM org_api_keys WHERE provider = ?').bind(provider).first<{ encrypted_key: string }>();
-  return row ? { encryptedKey: row.encrypted_key } : null;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select({ encryptedKey: orgApiKeys.encryptedKey })
+    .from(orgApiKeys)
+    .where(eq(orgApiKeys.provider, provider))
+    .get();
+  return row || null;
 }
 
 export async function setOrgApiKey(
   db: D1Database,
   params: { id: string; provider: string; encryptedKey: string; setBy: string }
 ): Promise<void> {
-  await db
-    .prepare(
-      `INSERT INTO org_api_keys (id, provider, encrypted_key, set_by)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(provider) DO UPDATE SET
-         encrypted_key = excluded.encrypted_key,
-         set_by = excluded.set_by,
-         updated_at = datetime('now')`
-    )
-    .bind(params.id, params.provider, params.encryptedKey, params.setBy)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle.insert(orgApiKeys).values({
+    id: params.id,
+    provider: params.provider,
+    encryptedKey: params.encryptedKey,
+    setBy: params.setBy,
+  }).onConflictDoUpdate({
+    target: orgApiKeys.provider,
+    set: {
+      encryptedKey: sql`excluded.encrypted_key`,
+      setBy: sql`excluded.set_by`,
+      updatedAt: sql`datetime('now')`,
+    },
+  });
 }
 
 export async function deleteOrgApiKey(db: D1Database, provider: string): Promise<void> {
-  await db.prepare('DELETE FROM org_api_keys WHERE provider = ?').bind(provider).run();
+  const drizzle = getDb(db);
+  await drizzle.delete(orgApiKeys).where(eq(orgApiKeys.provider, provider));
 }
 
 // Custom provider operations
 export async function listCustomProviders(db: D1Database): Promise<CustomProvider[]> {
-  const result = await db.prepare(
-    'SELECT id, provider_id, display_name, base_url, encrypted_key, models, set_by, created_at, updated_at FROM custom_providers ORDER BY display_name'
-  ).all();
-  return (result.results || []).map((row: any) => ({
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select()
+    .from(customProviders)
+    .orderBy(asc(customProviders.displayName));
+
+  return rows.map((row) => ({
     id: row.id,
-    providerId: row.provider_id,
-    displayName: row.display_name,
-    baseUrl: row.base_url,
-    hasKey: !!row.encrypted_key,
-    models: JSON.parse(row.models || '[]'),
-    setBy: row.set_by,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    providerId: row.providerId,
+    displayName: row.displayName,
+    baseUrl: row.baseUrl,
+    hasKey: !!row.encryptedKey,
+    models: row.models as CustomProviderModel[],
+    setBy: row.setBy,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   }));
 }
 
@@ -105,15 +182,23 @@ export async function getAllCustomProvidersWithKeys(db: D1Database): Promise<Arr
   encryptedKey: string | null;
   models: CustomProviderModel[];
 }>> {
-  const result = await db.prepare(
-    'SELECT provider_id, display_name, base_url, encrypted_key, models FROM custom_providers'
-  ).all();
-  return (result.results || []).map((row: any) => ({
-    providerId: row.provider_id,
-    displayName: row.display_name,
-    baseUrl: row.base_url,
-    encryptedKey: row.encrypted_key || null,
-    models: JSON.parse(row.models || '[]'),
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select({
+      providerId: customProviders.providerId,
+      displayName: customProviders.displayName,
+      baseUrl: customProviders.baseUrl,
+      encryptedKey: customProviders.encryptedKey,
+      models: customProviders.models,
+    })
+    .from(customProviders);
+
+  return rows.map((row) => ({
+    providerId: row.providerId,
+    displayName: row.displayName,
+    baseUrl: row.baseUrl,
+    encryptedKey: row.encryptedKey || null,
+    models: row.models as CustomProviderModel[],
   }));
 }
 
@@ -121,6 +206,7 @@ export async function upsertCustomProvider(
   db: D1Database,
   params: { id: string; providerId: string; displayName: string; baseUrl: string; encryptedKey: string | null; models: string; setBy: string }
 ): Promise<void> {
+  // models comes as pre-stringified JSON — use raw SQL for this upsert
   await db
     .prepare(
       `INSERT INTO custom_providers (id, provider_id, display_name, base_url, encrypted_key, models, set_by)
@@ -138,7 +224,8 @@ export async function upsertCustomProvider(
 }
 
 export async function deleteCustomProvider(db: D1Database, providerId: string): Promise<void> {
-  await db.prepare('DELETE FROM custom_providers WHERE provider_id = ?').bind(providerId).run();
+  const drizzle = getDb(db);
+  await drizzle.delete(customProviders).where(eq(customProviders.providerId, providerId));
 }
 
 // Invite operations
@@ -146,10 +233,15 @@ export async function createInvite(
   db: D1Database,
   params: { id: string; code: string; email?: string; role: UserRole; invitedBy: string; expiresAt: string }
 ): Promise<Invite> {
-  await db
-    .prepare('INSERT INTO invites (id, code, email, role, invited_by, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .bind(params.id, params.code, params.email || null, params.role, params.invitedBy, params.expiresAt)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle.insert(invites).values({
+    id: params.id,
+    code: params.code,
+    email: params.email || null,
+    role: params.role,
+    invitedBy: params.invitedBy,
+    expiresAt: params.expiresAt,
+  });
 
   return {
     id: params.id,
@@ -163,40 +255,52 @@ export async function createInvite(
 }
 
 export async function getInviteByEmail(db: D1Database, email: string): Promise<Invite | null> {
-  const row = await db
-    .prepare("SELECT * FROM invites WHERE email = ? AND accepted_at IS NULL AND expires_at > datetime('now')")
-    .bind(email)
-    .first();
-  return row ? mapInvite(row) : null;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select()
+    .from(invites)
+    .where(and(eq(invites.email, email), isNull(invites.acceptedAt), gt(invites.expiresAt, sql`datetime('now')`)))
+    .get();
+  return row ? rowToInvite(row) : null;
 }
 
 export async function getInviteByCode(db: D1Database, code: string): Promise<Invite | null> {
-  const row = await db
-    .prepare("SELECT * FROM invites WHERE code = ? AND accepted_at IS NULL AND expires_at > datetime('now')")
-    .bind(code)
-    .first();
-  return row ? mapInvite(row) : null;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select()
+    .from(invites)
+    .where(and(eq(invites.code, code), isNull(invites.acceptedAt), gt(invites.expiresAt, sql`datetime('now')`)))
+    .get();
+  return row ? rowToInvite(row) : null;
 }
 
 export async function getInviteByCodeAny(db: D1Database, code: string): Promise<Invite | null> {
-  const row = await db
-    .prepare("SELECT * FROM invites WHERE code = ?")
-    .bind(code)
-    .first();
-  return row ? mapInvite(row) : null;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select()
+    .from(invites)
+    .where(eq(invites.code, code))
+    .get();
+  return row ? rowToInvite(row) : null;
 }
 
 export async function listInvites(db: D1Database): Promise<Invite[]> {
-  const result = await db.prepare('SELECT * FROM invites ORDER BY created_at DESC').all();
-  return (result.results || []).map(mapInvite);
+  const drizzle = getDb(db);
+  const rows = await drizzle.select().from(invites).orderBy(desc(invites.createdAt));
+  return rows.map(rowToInvite);
 }
 
 export async function deleteInvite(db: D1Database, id: string): Promise<void> {
-  await db.prepare('DELETE FROM invites WHERE id = ?').bind(id).run();
+  const drizzle = getDb(db);
+  await drizzle.delete(invites).where(eq(invites.id, id));
 }
 
 export async function markInviteAccepted(db: D1Database, id: string, acceptedBy?: string): Promise<void> {
-  await db.prepare("UPDATE invites SET accepted_at = datetime('now'), accepted_by = ? WHERE id = ?").bind(acceptedBy || null, id).run();
+  const drizzle = getDb(db);
+  await drizzle
+    .update(invites)
+    .set({ acceptedAt: sql`datetime('now')`, acceptedBy: acceptedBy || null })
+    .where(eq(invites.id, id));
 }
 
 // Org Repository Operations
@@ -207,33 +311,37 @@ export async function createOrgRepository(
   const parts = data.fullName.split('/');
   const owner = parts[0];
   const name = parts[1];
+  const drizzle = getDb(db);
 
-  await db
-    .prepare(
-      `INSERT INTO org_repositories (id, owner, name, full_name, description, default_branch, language)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    )
-    .bind(data.id, owner, name, data.fullName, data.description || null, data.defaultBranch || 'main', data.language || null)
-    .run();
-
-  return mapOrgRepository({
+  await drizzle.insert(orgRepositories).values({
     id: data.id,
-    org_id: 'default',
+    owner,
+    name,
+    fullName: data.fullName,
+    description: data.description || null,
+    defaultBranch: data.defaultBranch || 'main',
+    language: data.language || null,
+  });
+
+  return rowToOrgRepository({
+    id: data.id,
+    orgId: 'default',
     provider: 'github',
     owner,
     name,
-    full_name: data.fullName,
+    fullName: data.fullName,
     description: data.description || null,
-    default_branch: data.defaultBranch || 'main',
+    defaultBranch: data.defaultBranch || 'main',
     language: data.language || null,
     topics: null,
-    enabled: 1,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+    enabled: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   });
 }
 
 export async function listOrgRepositories(db: D1Database, orgId: string = 'default'): Promise<OrgRepository[]> {
+  // JOIN with persona defaults — keep as raw SQL for the LEFT JOINs
   const result = await db
     .prepare(
       `SELECT r.*, d.persona_id, ap.name as persona_name
@@ -246,12 +354,29 @@ export async function listOrgRepositories(db: D1Database, orgId: string = 'defau
     .bind(orgId)
     .all();
 
-  return (result.results || []).map(mapOrgRepository);
+  return (result.results || []).map((row: any) => rowToOrgRepository({
+    id: row.id,
+    orgId: row.org_id,
+    provider: row.provider,
+    owner: row.owner,
+    name: row.name,
+    fullName: row.full_name,
+    description: row.description,
+    defaultBranch: row.default_branch,
+    language: row.language,
+    topics: row.topics,
+    enabled: row.enabled,
+    personaId: row.persona_id,
+    personaName: row.persona_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
 }
 
 export async function getOrgRepository(db: D1Database, id: string): Promise<OrgRepository | null> {
-  const row = await db.prepare('SELECT * FROM org_repositories WHERE id = ?').bind(id).first();
-  return row ? mapOrgRepository(row) : null;
+  const drizzle = getDb(db);
+  const row = await drizzle.select().from(orgRepositories).where(eq(orgRepositories.id, id)).get();
+  return row ? rowToOrgRepository(row) : null;
 }
 
 export async function updateOrgRepository(
@@ -259,6 +384,7 @@ export async function updateOrgRepository(
   id: string,
   updates: Partial<Pick<OrgRepository, 'description' | 'defaultBranch' | 'language' | 'enabled'>>
 ): Promise<void> {
+  // Dynamic SET — keep as raw SQL
   const sets: string[] = [];
   const params: (string | number | null)[] = [];
 
@@ -274,25 +400,29 @@ export async function updateOrgRepository(
 }
 
 export async function deleteOrgRepository(db: D1Database, id: string): Promise<void> {
-  await db.prepare('DELETE FROM org_repositories WHERE id = ?').bind(id).run();
+  const drizzle = getDb(db);
+  await drizzle.delete(orgRepositories).where(eq(orgRepositories.id, id));
 }
 
 // Org Directory Helper
 export async function getOrgAgents(db: D1Database, orgId: string): Promise<OrchestratorIdentity[]> {
-  const result = await db
-    .prepare('SELECT * FROM orchestrator_identities WHERE org_id = ? ORDER BY name')
-    .bind(orgId)
-    .all();
-  return (result.results || []).map((row: any) => ({
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select()
+    .from(orchestratorIdentities)
+    .where(eq(orchestratorIdentities.orgId, orgId))
+    .orderBy(asc(orchestratorIdentities.name));
+
+  return rows.map((row) => ({
     id: row.id,
-    userId: row.user_id || undefined,
-    orgId: row.org_id,
-    type: row.type,
+    userId: row.userId || undefined,
+    orgId: row.orgId,
+    type: row.type as OrchestratorIdentity['type'],
     name: row.name,
     handle: row.handle,
     avatar: row.avatar || undefined,
-    customInstructions: row.custom_instructions || undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    customInstructions: row.customInstructions || undefined,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   }));
 }

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
 import { ValidationError } from '@agent-ops/shared';
-import { encryptApiKey } from './admin.js';
+import { encryptString } from '../lib/crypto.js';
 
 export const authRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -108,7 +108,7 @@ authRouter.put('/me/credentials/:provider', async (c) => {
   }
 
   const user = c.get('user');
-  const encryptedKey = await encryptApiKey(key, c.env.ENCRYPTION_KEY);
+  const encryptedKey = await encryptString(key, c.env.ENCRYPTION_KEY);
 
   await db.setUserCredential(c.env.DB, {
     id: crypto.randomUUID(),

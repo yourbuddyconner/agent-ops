@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { Env, Variables } from '../env.js';
 import type { DashboardStatsResponse } from '@agent-ops/shared';
 import * as db from '../lib/db.js';
+import type { SessionAggregateRow } from '../lib/db/dashboard.js';
 
 export const dashboardRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -48,145 +49,30 @@ dashboardRouter.get('/stats', async (c) => {
   const prevPeriodStartStr = prevPeriodStart.toISOString();
 
   // Lazy backfill: find sessions with message_count still at 0 and trigger DO flush.
-  // This handles pre-migration sessions. Once flushed, they won't be picked up again.
-  const unflushed = await c.env.DB.prepare(
-    `SELECT id FROM sessions
-     WHERE user_id = ?
-       AND message_count = 0
-       AND status != 'initializing'
-       AND COALESCE(purpose, 'interactive') != 'workflow'
-     LIMIT 20`
-  ).bind(user.id).all();
-
-  const unflushedIds = (unflushed.results ?? []).map((r: Record<string, unknown>) => String(r.id));
+  const unflushedIds = await db.getUnflushedSessionIds(c.env.DB, user.id, 20);
   if (unflushedIds.length > 0) {
-    // Fire-and-forget — don't block the response
     c.executionCtx?.waitUntil(backfillUnflushedSessions(c.env, unflushedIds));
   }
 
-  type AggRow = {
-    total_sessions: number;
-    active_sessions: number;
-    unique_repos: number;
-    total_messages: number;
-    total_tool_calls: number;
-    total_duration: number;
-  };
-
   const [
-    orgAggregateResult,
-    userAggregateResult,
-    prevPeriodResult,
-    activityResult,
-    topReposResult,
-    recentSessionsResult,
-    activeSessionsResult,
+    orgAgg,
+    userAgg,
+    prevPeriod,
+    activity,
+    topRepos,
+    recentSessions,
+    activeSessions,
   ] = await Promise.all([
-    // Org-wide aggregate stats for current period
-    c.env.DB.prepare(`
-      SELECT
-        COUNT(*) as total_sessions,
-        SUM(CASE WHEN status IN ('running', 'idle', 'initializing') THEN 1 ELSE 0 END) as active_sessions,
-        COUNT(DISTINCT workspace) as unique_repos,
-        COALESCE(SUM(message_count), 0) as total_messages,
-        COALESCE(SUM(tool_call_count), 0) as total_tool_calls,
-        COALESCE(SUM(active_seconds), 0) as total_duration
-      FROM sessions
-      WHERE created_at >= ?
-        AND COALESCE(purpose, 'interactive') != 'workflow'
-    `).bind(periodStartStr).first<AggRow>(),
-
-    // Per-user aggregate stats for current period
-    c.env.DB.prepare(`
-      SELECT
-        COUNT(*) as total_sessions,
-        SUM(CASE WHEN status IN ('running', 'idle', 'initializing') THEN 1 ELSE 0 END) as active_sessions,
-        COUNT(DISTINCT workspace) as unique_repos,
-        COALESCE(SUM(message_count), 0) as total_messages,
-        COALESCE(SUM(tool_call_count), 0) as total_tool_calls,
-        COALESCE(SUM(active_seconds), 0) as total_duration
-      FROM sessions
-      WHERE user_id = ?
-        AND created_at >= ?
-        AND COALESCE(purpose, 'interactive') != 'workflow'
-    `).bind(user.id, periodStartStr).first<AggRow>(),
-
-    // Previous period aggregates (org-wide for delta)
-    c.env.DB.prepare(`
-      SELECT
-        COUNT(*) as count,
-        COALESCE(SUM(message_count), 0) as messages
-      FROM sessions
-      WHERE created_at >= ?
-        AND created_at < ?
-        AND COALESCE(purpose, 'interactive') != 'workflow'
-    `).bind(prevPeriodStartStr, periodStartStr).first<{ count: number; messages: number }>(),
-
-    // Daily activity with message counts (org-wide)
-    c.env.DB.prepare(`
-      WITH RECURSIVE dates(date) AS (
-        SELECT date(?, '-' || ? || ' days')
-        UNION ALL
-        SELECT date(date, '+1 day') FROM dates WHERE date < date('now')
-      )
-      SELECT
-        d.date,
-        COALESCE(sc.cnt, 0) as sessions,
-        COALESCE(sc.msgs, 0) as messages
-      FROM dates d
-      LEFT JOIN (
-        SELECT date(created_at) as day, COUNT(*) as cnt, COALESCE(SUM(message_count), 0) as msgs
-        FROM sessions
-        WHERE created_at >= ?
-          AND COALESCE(purpose, 'interactive') != 'workflow'
-        GROUP BY day
-      ) sc ON sc.day = d.date
-      ORDER BY d.date
-    `).bind(periodStartStr, Math.max(1, Math.ceil(periodHours / 24)), periodStartStr).all(),
-
-    // Top repos by session count with message totals (org-wide)
-    c.env.DB.prepare(`
-      SELECT
-        workspace,
-        COUNT(*) as session_count,
-        COALESCE(SUM(message_count), 0) as message_count
-      FROM sessions
-      WHERE created_at >= ?
-        AND COALESCE(purpose, 'interactive') != 'workflow'
-        AND is_orchestrator = 0
-      GROUP BY workspace
-      ORDER BY session_count DESC
-      LIMIT 8
-    `).bind(periodStartStr).all(),
-
-    // Recent sessions (user-accessible: owned or participant)
-    c.env.DB.prepare(`
-      SELECT DISTINCT
-        s.id, s.workspace, s.status, s.message_count, s.tool_call_count,
-        s.active_seconds as duration_seconds,
-        s.created_at, s.last_active_at, s.error_message
-      FROM sessions s
-      LEFT JOIN session_participants sp ON sp.session_id = s.id AND sp.user_id = ?
-      WHERE (s.user_id = ? OR sp.user_id IS NOT NULL)
-        AND COALESCE(s.purpose, 'interactive') != 'workflow'
-        AND s.is_orchestrator = 0
-      ORDER BY s.created_at DESC
-      LIMIT 10
-    `).bind(user.id, user.id).all(),
-
-    // Currently active sessions (user-accessible: owned or participant)
-    c.env.DB.prepare(`
-      SELECT DISTINCT s.id, s.workspace, s.status, s.created_at, s.last_active_at
-      FROM sessions s
-      LEFT JOIN session_participants sp ON sp.session_id = s.id AND sp.user_id = ?
-      WHERE (s.user_id = ? OR sp.user_id IS NOT NULL)
-        AND s.status IN ('running', 'idle', 'initializing', 'restoring')
-        AND COALESCE(s.purpose, 'interactive') != 'workflow'
-      ORDER BY s.last_active_at DESC
-    `).bind(user.id, user.id).all(),
+    db.getOrgSessionAggregate(c.env.DB, periodStartStr),
+    db.getUserSessionAggregate(c.env.DB, user.id, periodStartStr),
+    db.getPrevPeriodAggregate(c.env.DB, prevPeriodStartStr, periodStartStr),
+    db.getSessionActivityByDay(c.env.DB, periodStartStr, Math.max(1, Math.ceil(periodHours / 24))),
+    db.getTopReposBySessionCount(c.env.DB, periodStartStr, 8),
+    db.getRecentUserSessions(c.env.DB, user.id, 10),
+    db.getActiveUserSessions(c.env.DB, user.id),
   ]);
 
-  function buildHero(agg: AggRow) {
+  function buildHero(agg: SessionAggregateRow) {
     const totalSessions = agg.total_sessions;
     const totalToolCalls = agg.total_tool_calls;
     const totalDuration = agg.total_duration;
@@ -203,11 +89,8 @@ dashboardRouter.get('/stats', async (c) => {
     };
   }
 
-  const orgAgg = orgAggregateResult!;
-  const userAgg = userAggregateResult!;
-
-  const prevSessions = prevPeriodResult?.count ?? 0;
-  const prevMessages = prevPeriodResult?.messages ?? 0;
+  const prevSessions = prevPeriod.count;
+  const prevMessages = prevPeriod.messages;
   const sessionDelta = prevSessions > 0 ? Math.round(((orgAgg.total_sessions - prevSessions) / prevSessions) * 100) : 0;
   const messageDelta = prevMessages > 0 ? Math.round(((orgAgg.total_messages - prevMessages) / prevMessages) * 100) : 0;
 
@@ -218,34 +101,10 @@ dashboardRouter.get('/stats', async (c) => {
       sessions: sessionDelta,
       messages: messageDelta,
     },
-    activity: (activityResult.results ?? []).map((r: Record<string, unknown>) => ({
-      date: String(r.date),
-      sessions: Number(r.sessions),
-      messages: Number(r.messages),
-    })),
-    topRepos: (topReposResult.results ?? []).map((r: Record<string, unknown>) => ({
-      workspace: String(r.workspace),
-      sessionCount: Number(r.session_count),
-      messageCount: Number(r.message_count),
-    })),
-    recentSessions: (recentSessionsResult.results ?? []).map((r: Record<string, unknown>) => ({
-      id: String(r.id),
-      workspace: String(r.workspace),
-      status: String(r.status) as DashboardStatsResponse['recentSessions'][0]['status'],
-      messageCount: Number(r.message_count),
-      toolCallCount: Number(r.tool_call_count),
-      durationSeconds: Number(r.duration_seconds),
-      createdAt: String(r.created_at),
-      lastActiveAt: String(r.last_active_at),
-      errorMessage: r.error_message ? String(r.error_message) : undefined,
-    })),
-    activeSessions: (activeSessionsResult.results ?? []).map((r: Record<string, unknown>) => ({
-      id: String(r.id),
-      workspace: String(r.workspace),
-      status: String(r.status) as DashboardStatsResponse['activeSessions'][0]['status'],
-      createdAt: String(r.created_at),
-      lastActiveAt: String(r.last_active_at),
-    })),
+    activity,
+    topRepos,
+    recentSessions: recentSessions as DashboardStatsResponse['recentSessions'],
+    activeSessions: activeSessions as DashboardStatsResponse['activeSessions'],
     period,
   };
 

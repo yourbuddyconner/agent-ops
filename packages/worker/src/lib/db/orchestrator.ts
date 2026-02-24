@@ -1,37 +1,101 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { OrchestratorIdentity, OrchestratorMemory, OrchestratorMemoryCategory, AgentSession } from '@agent-ops/shared';
-import { mapOrchestratorIdentity, mapOrchestratorMemory, mapSession, MEMORY_CAP } from './mappers.js';
+import { eq, and, desc, sql } from 'drizzle-orm';
+import { getDb } from '../drizzle.js';
+import { orchestratorIdentities, orchestratorMemories } from '../schema/index.js';
 import { getSession } from './sessions.js';
+
+function mapSessionRow(row: any): AgentSession {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    workspace: row.workspace,
+    status: row.status,
+    title: row.title || undefined,
+    parentSessionId: row.parent_session_id || undefined,
+    containerId: row.container_id || undefined,
+    metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+    errorMessage: row.error_message || undefined,
+    personaId: row.persona_id || undefined,
+    personaName: row.persona_name || undefined,
+    isOrchestrator: !!row.is_orchestrator || undefined,
+    purpose: row.purpose || 'interactive',
+    createdAt: new Date(row.created_at),
+    lastActiveAt: new Date(row.last_active_at),
+  };
+}
+
+const MEMORY_CAP = 200;
+
+// ─── Row-to-Domain Converters ───────────────────────────────────────────────
+
+function rowToIdentity(row: typeof orchestratorIdentities.$inferSelect): OrchestratorIdentity {
+  return {
+    id: row.id,
+    userId: row.userId || undefined,
+    orgId: row.orgId,
+    type: row.type as OrchestratorIdentity['type'],
+    name: row.name,
+    handle: row.handle,
+    avatar: row.avatar || undefined,
+    customInstructions: row.customInstructions || undefined,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function rowToMemory(row: typeof orchestratorMemories.$inferSelect): OrchestratorMemory {
+  return {
+    id: row.id,
+    userId: row.userId,
+    orgId: row.orgId,
+    category: row.category as OrchestratorMemoryCategory,
+    content: row.content,
+    relevance: row.relevance,
+    createdAt: row.createdAt,
+    lastAccessedAt: row.lastAccessedAt,
+  };
+}
 
 // ─── Orchestrator Identity Operations ───────────────────────────────────────
 
 export async function getOrchestratorIdentity(db: D1Database, userId: string, orgId: string = 'default'): Promise<OrchestratorIdentity | null> {
-  const row = await db
-    .prepare('SELECT * FROM orchestrator_identities WHERE user_id = ? AND org_id = ?')
-    .bind(userId, orgId)
-    .first();
-  return row ? mapOrchestratorIdentity(row) : null;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select()
+    .from(orchestratorIdentities)
+    .where(and(eq(orchestratorIdentities.userId, userId), eq(orchestratorIdentities.orgId, orgId)))
+    .get();
+  return row ? rowToIdentity(row) : null;
 }
 
 export async function getOrchestratorIdentityByHandle(db: D1Database, handle: string, orgId: string = 'default'): Promise<OrchestratorIdentity | null> {
-  const row = await db
-    .prepare('SELECT * FROM orchestrator_identities WHERE handle = ? AND org_id = ?')
-    .bind(handle, orgId)
-    .first();
-  return row ? mapOrchestratorIdentity(row) : null;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select()
+    .from(orchestratorIdentities)
+    .where(and(eq(orchestratorIdentities.handle, handle), eq(orchestratorIdentities.orgId, orgId)))
+    .get();
+  return row ? rowToIdentity(row) : null;
 }
 
 export async function createOrchestratorIdentity(
   db: D1Database,
   data: { id: string; userId: string; name: string; handle: string; avatar?: string; customInstructions?: string; orgId?: string }
 ): Promise<OrchestratorIdentity> {
+  const drizzle = getDb(db);
   const orgId = data.orgId || 'default';
-  await db
-    .prepare(
-      'INSERT INTO orchestrator_identities (id, user_id, org_id, type, name, handle, avatar, custom_instructions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    )
-    .bind(data.id, data.userId, orgId, 'personal', data.name, data.handle, data.avatar || null, data.customInstructions || null)
-    .run();
+
+  await drizzle.insert(orchestratorIdentities).values({
+    id: data.id,
+    userId: data.userId,
+    orgId,
+    type: 'personal',
+    name: data.name,
+    handle: data.handle,
+    avatar: data.avatar || null,
+    customInstructions: data.customInstructions || null,
+  });
 
   return {
     id: data.id,
@@ -47,6 +111,7 @@ export async function createOrchestratorIdentity(
   };
 }
 
+// Raw SQL: dynamic SET clauses
 export async function updateOrchestratorIdentity(
   db: D1Database,
   id: string,
@@ -68,6 +133,7 @@ export async function updateOrchestratorIdentity(
 
 // ─── Orchestrator Memory Operations ─────────────────────────────────────────
 
+// Raw SQL: FTS5 MATCH + bm25() ranking (FTS path); plain path delegates to Drizzle
 export async function listOrchestratorMemories(
   db: D1Database,
   userId: string,
@@ -105,32 +171,36 @@ export async function listOrchestratorMemories(
     params.push(limit);
 
     const result = await db.prepare(query).bind(...params).all();
-    return (result.results || []).map(mapOrchestratorMemory);
+    return (result.results || []).map((row: any) => rowToMemory(row as typeof orchestratorMemories.$inferSelect));
   }
 
   return listOrchestratorMemoriesPlain(db, userId, options.category, limit);
 }
 
-function listOrchestratorMemoriesPlain(
+async function listOrchestratorMemoriesPlain(
   db: D1Database,
   userId: string,
   category?: string,
   limit: number = 50,
 ): Promise<OrchestratorMemory[]> {
-  let query = 'SELECT * FROM orchestrator_memories WHERE user_id = ?';
-  const params: (string | number)[] = [userId];
+  const drizzle = getDb(db);
+  const conditions = [eq(orchestratorMemories.userId, userId)];
 
   if (category) {
-    query += ' AND category = ?';
-    params.push(category);
+    conditions.push(eq(orchestratorMemories.category, category));
   }
 
-  query += ' ORDER BY relevance DESC, last_accessed_at DESC LIMIT ?';
-  params.push(limit);
+  const rows = await drizzle
+    .select()
+    .from(orchestratorMemories)
+    .where(and(...conditions))
+    .orderBy(desc(orchestratorMemories.relevance), desc(orchestratorMemories.lastAccessedAt))
+    .limit(limit);
 
-  return db.prepare(query).bind(...params).all().then((r) => (r.results || []).map(mapOrchestratorMemory));
+  return rows.map(rowToMemory);
 }
 
+// Raw SQL: FTS5 INSERT sync, rowid queries, prune logic
 export async function createOrchestratorMemory(
   db: D1Database,
   data: { id: string; userId: string; category: OrchestratorMemoryCategory; content: string; relevance?: number }
@@ -204,6 +274,7 @@ export async function createOrchestratorMemory(
   };
 }
 
+// Raw SQL: FTS5 cleanup after DELETE
 export async function deleteOrchestratorMemory(db: D1Database, id: string, userId: string): Promise<boolean> {
   // Get rowid before deleting so we can clean up FTS
   const row = await db
@@ -227,6 +298,7 @@ export async function deleteOrchestratorMemory(db: D1Database, id: string, userI
   return (result.meta?.changes ?? 0) > 0;
 }
 
+// Raw SQL: UPDATE with MIN() expression
 export async function boostMemoryRelevance(db: D1Database, id: string): Promise<void> {
   await db
     .prepare(
@@ -238,18 +310,20 @@ export async function boostMemoryRelevance(db: D1Database, id: string): Promise<
 
 // ─── Orchestrator Session Helpers ───────────────────────────────────────────
 
+// Raw SQL: uses mapSession for snake_case row mapping + fallback to getSession
 export async function getOrchestratorSession(db: D1Database, userId: string): Promise<AgentSession | null> {
   // Look up the active orchestrator session by flag, not by fixed ID.
   // This supports session ID rotation on refresh (new DO instance = fresh code).
   const row = await db.prepare(
     `SELECT * FROM sessions WHERE user_id = ? AND is_orchestrator = 1 AND status NOT IN ('terminated', 'archived', 'error') ORDER BY created_at DESC LIMIT 1`
   ).bind(userId).first();
-  if (row) return mapSession(row);
+  if (row) return mapSessionRow(row);
   // Fallback: check for legacy fixed-ID session (may be in terminal state for restart detection)
   const legacyId = `orchestrator:${userId}`;
   return getSession(db, legacyId);
 }
 
+// Raw SQL: NOT EXISTS subquery + JOIN
 /**
  * Find orchestrator sessions stuck in terminal state for longer than `minAgeMinutes`.
  * Only returns one per user, and only if no newer healthy session exists.

@@ -1,5 +1,8 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramToken, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramToken, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels } from '../lib/db.js';
+import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
+import { listTriggers, getTrigger, deleteTrigger, createTrigger, getTriggerForRun, updateTriggerLastRun, findScheduleTriggerByNameAndWorkflow, findScheduleTriggersByWorkflow, findScheduleTriggersByName, updateTriggerFull } from '../lib/db/triggers.js';
+import { getExecution, getExecutionWithWorkflowName, getExecutionForAuth, getExecutionSteps, getExecutionOwnerAndStatus, checkIdempotencyKey, createExecution, completeExecutionFull, upsertExecutionStep, listExecutions } from '../lib/db/executions.js';
 import { decryptString } from '../lib/crypto.js';
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 import { sendTelegramMessage, sendTelegramPhoto } from '../routes/telegram.js';
@@ -789,18 +792,16 @@ export class SessionAgentDO {
     // Cache user details for author attribution (only fetch if not already cached)
     if (!this.userDetailsCache.has(userId)) {
       try {
-        const userRow = await this.env.DB.prepare(
-          'SELECT id, email, name, avatar_url, git_name, git_email, model_preferences FROM users WHERE id = ?'
-        ).bind(userId).first<{ id: string; email: string; name: string | null; avatar_url: string | null; git_name: string | null; git_email: string | null; model_preferences: string | null }>();
-        if (userRow) {
+        const user = await getUserById(this.env.DB, userId);
+        if (user) {
           this.userDetailsCache.set(userId, {
-            id: userRow.id,
-            email: userRow.email,
-            name: userRow.name || undefined,
-            avatarUrl: userRow.avatar_url || undefined,
-            gitName: userRow.git_name || undefined,
-            gitEmail: userRow.git_email || undefined,
-            modelPreferences: userRow.model_preferences ? JSON.parse(userRow.model_preferences) : undefined,
+            id: user.id,
+            email: user.email,
+            name: user.name || undefined,
+            avatarUrl: user.avatarUrl || undefined,
+            gitName: user.gitName || undefined,
+            gitEmail: user.gitEmail || undefined,
+            modelPreferences: user.modelPreferences,
           });
         }
       } catch (err) {
@@ -2366,9 +2367,7 @@ export class SessionAgentDO {
           // Persist to D1 so the settings typeahead works without a running session
           const userId = this.getStateValue('userId');
           if (userId) {
-            this.env.DB.prepare('UPDATE users SET discovered_models = ? WHERE id = ?')
-              .bind(JSON.stringify(msg.models), userId)
-              .run()
+            updateUserDiscoveredModels(this.env.DB, userId, JSON.stringify(msg.models))
               .catch((err: unknown) => console.error('[SessionAgentDO] Failed to cache models to D1:', err));
           }
         }
@@ -3265,12 +3264,7 @@ export class SessionAgentDO {
   private async handleWorkflowList(requestId: string) {
     try {
       const userId = this.getStateValue('userId')!;
-      const result = await this.env.DB.prepare(`
-        SELECT id, slug, name, description, version, data, enabled, tags, created_at, updated_at
-        FROM workflows
-        WHERE user_id = ?
-        ORDER BY updated_at DESC
-      `).bind(userId).all();
+      const result = await listWorkflows(this.env.DB, userId);
 
       const workflows = (result.results || []).map((row) => {
         let data: Record<string, unknown> = {};
@@ -3332,27 +3326,16 @@ export class SessionAgentDO {
       const version = (params.version || '1.0.0').trim() || '1.0.0';
       const now = new Date().toISOString();
 
-      await this.env.DB.prepare(`
-        INSERT INTO workflows (id, user_id, slug, name, description, version, data, enabled, updated_at, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          slug = excluded.slug,
-          name = excluded.name,
-          description = excluded.description,
-          version = excluded.version,
-          data = excluded.data,
-          updated_at = excluded.updated_at
-      `).bind(
-        workflowId,
+      await upsertWorkflow(this.env.DB, {
+        id: workflowId,
         userId,
         slug,
         name,
-        params.description || null,
+        description: params.description || null,
         version,
-        JSON.stringify(params.data),
+        data: JSON.stringify(params.data),
         now,
-        now,
-      ).run();
+      });
 
       const workflow = {
         id: workflowId,
@@ -3413,17 +3396,12 @@ export class SessionAgentDO {
         return;
       }
 
-      const workflow = await this.env.DB.prepare(`
-        SELECT id, name, version, data
-        FROM workflows
-        WHERE (id = ? OR slug = ?) AND user_id = ?
-        LIMIT 1
-      `).bind(workflowLookupId, workflowLookupId, userId).first<{
+      const workflow = await getWorkflowByIdOrSlug(this.env.DB, userId, workflowLookupId) as {
         id: string;
         name: string;
         version: string | null;
         data: string;
-      }>();
+      } | null;
 
       if (!workflow) {
         this.sendToRunner({ type: 'workflow-run-result', requestId, error: `Workflow not found: ${workflowLookupId}` } as any);
@@ -3441,16 +3419,11 @@ export class SessionAgentDO {
       }
 
       const idempotencyKey = `agent:${workflow.id}:${userId}:${requestId}`;
-      const existing = await this.env.DB.prepare(`
-        SELECT id, status, session_id
-        FROM workflow_executions
-        WHERE workflow_id = ? AND idempotency_key = ?
-        LIMIT 1
-      `).bind(workflow.id, idempotencyKey).first<{
+      const existing = await checkIdempotencyKey(this.env.DB, workflow.id, idempotencyKey) as {
         id: string;
         status: string;
         session_id: string | null;
-      }>();
+      } | null;
 
       if (existing) {
         this.sendToRunner({
@@ -3486,29 +3459,23 @@ export class SessionAgentDO {
         ref,
       });
 
-      await this.env.DB.prepare(`
-        INSERT INTO workflow_executions
-          (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
-           workflow_version, workflow_hash, workflow_snapshot, idempotency_key, session_id, initiator_type, initiator_user_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).bind(
-        executionId,
-        workflow.id,
+      await createExecution(this.env.DB, {
+        id: executionId,
+        workflowId: workflow.id,
         userId,
-        null,
-        'pending',
-        'manual',
-        JSON.stringify({ triggeredBy: 'agent_tool', direct: true }),
-        JSON.stringify(variables || {}),
+        triggerId: null,
+        triggerType: 'manual',
+        triggerMetadata: JSON.stringify({ triggeredBy: 'agent_tool', direct: true }),
+        variables: JSON.stringify(variables || {}),
         now,
-        workflow.version || null,
+        workflowVersion: workflow.version || null,
         workflowHash,
-        workflow.data,
+        workflowSnapshot: workflow.data,
         idempotencyKey,
         sessionId,
-        'manual',
-        userId,
-      ).run();
+        initiatorType: 'manual',
+        initiatorUserId: userId,
+      });
 
       const dispatched = await enqueueWorkflowExecution(this.env, {
         executionId,
@@ -3552,12 +3519,7 @@ export class SessionAgentDO {
 
       let workflowFilterId: string | null = null;
       if (workflowId) {
-        const workflow = await this.env.DB.prepare(`
-          SELECT id
-          FROM workflows
-          WHERE (id = ? OR slug = ?) AND user_id = ?
-          LIMIT 1
-        `).bind(workflowId, workflowId, userId).first<{ id: string }>();
+        const workflow = await getWorkflowOwnerCheck(this.env.DB, userId, workflowId);
         if (!workflow) {
           this.sendToRunner({ type: 'workflow-executions-result', requestId, executions: [] } as any);
           return;
@@ -3565,21 +3527,10 @@ export class SessionAgentDO {
         workflowFilterId = workflow.id;
       }
 
-      const result = workflowFilterId
-        ? await this.env.DB.prepare(`
-            SELECT id, workflow_id, trigger_id, status, trigger_type, trigger_metadata, variables, outputs, steps, error, started_at, completed_at, session_id
-            FROM workflow_executions
-            WHERE user_id = ? AND workflow_id = ?
-            ORDER BY started_at DESC
-            LIMIT ?
-          `).bind(userId, workflowFilterId, max).all()
-        : await this.env.DB.prepare(`
-            SELECT id, workflow_id, trigger_id, status, trigger_type, trigger_metadata, variables, outputs, steps, error, started_at, completed_at, session_id
-            FROM workflow_executions
-            WHERE user_id = ?
-            ORDER BY started_at DESC
-            LIMIT ?
-          `).bind(userId, max).all();
+      const result = await listExecutions(this.env.DB, userId, {
+        workflowId: workflowFilterId || undefined,
+        limit: max,
+      });
 
       const executions = (result.results || []).map((row) => ({
         id: row.id,
@@ -3635,9 +3586,7 @@ export class SessionAgentDO {
   private async resolveWorkflowIdForUser(userId: string, workflowIdOrSlug?: string | null): Promise<string | null> {
     const lookup = (workflowIdOrSlug || '').trim();
     if (!lookup) return null;
-    const row = await this.env.DB.prepare(`
-      SELECT id FROM workflows WHERE (id = ? OR slug = ?) AND user_id = ? LIMIT 1
-    `).bind(lookup, lookup, userId).first<{ id: string }>();
+    const row = await getWorkflowOwnerCheck(this.env.DB, userId, lookup);
     return row?.id || null;
   }
 
@@ -3650,12 +3599,7 @@ export class SessionAgentDO {
         return;
       }
 
-      const existing = await this.env.DB.prepare(`
-        SELECT id, slug, name, description, version, data, enabled, tags, created_at, updated_at
-        FROM workflows
-        WHERE (id = ? OR slug = ?) AND user_id = ?
-        LIMIT 1
-      `).bind(workflowIdOrSlug, workflowIdOrSlug, userId).first<Record<string, unknown>>();
+      const existing = await getWorkflowByIdOrSlug(this.env.DB, userId, workflowIdOrSlug) as Record<string, unknown> | null;
 
       if (!existing) {
         this.sendToRunner({ type: 'workflow-api-result', requestId, error: `Workflow not found: ${workflowIdOrSlug}` } as any);
@@ -3668,8 +3612,8 @@ export class SessionAgentDO {
       }
 
       if (action === 'delete') {
-        await this.env.DB.prepare(`DELETE FROM triggers WHERE workflow_id = ? AND user_id = ?`).bind(existing.id, userId).run();
-        await this.env.DB.prepare(`DELETE FROM workflows WHERE id = ? AND user_id = ?`).bind(existing.id, userId).run();
+        await deleteWorkflowTriggers(this.env.DB, existing.id as string, userId);
+        await deleteWorkflowById(this.env.DB, existing.id as string, userId);
         this.sendToRunner({ type: 'workflow-api-result', requestId, data: { success: true } } as any);
         return;
       }
@@ -3761,11 +3705,8 @@ export class SessionAgentDO {
       values.push(updatedAt);
       values.push(existing.id);
 
-      await this.env.DB.prepare(`UPDATE workflows SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
-      const updated = await this.env.DB.prepare(`
-        SELECT id, slug, name, description, version, data, enabled, tags, created_at, updated_at
-        FROM workflows WHERE id = ? LIMIT 1
-      `).bind(existing.id).first<Record<string, unknown>>();
+      await updateWorkflow(this.env.DB, existing.id as string, updates, values);
+      const updated = await getWorkflowById(this.env.DB, existing.id as string) as Record<string, unknown> | null;
 
       this.sendToRunner({
         type: 'workflow-api-result',
@@ -3792,13 +3733,7 @@ export class SessionAgentDO {
       const userId = this.getStateValue('userId')!;
 
       if (action === 'list') {
-        const result = await this.env.DB.prepare(`
-          SELECT t.*, w.name as workflow_name
-          FROM triggers t
-          LEFT JOIN workflows w ON t.workflow_id = w.id
-          WHERE t.user_id = ?
-          ORDER BY t.created_at DESC
-        `).bind(userId).all();
+        const result = await listTriggers(this.env.DB, userId);
 
         const workflowFilter = typeof payload?.workflowId === 'string' ? payload.workflowId : undefined;
         const typeFilter = typeof payload?.type === 'string' ? payload.type : undefined;
@@ -3838,9 +3773,7 @@ export class SessionAgentDO {
           this.sendToRunner({ type: 'trigger-api-result', requestId, error: 'triggerId is required' } as any);
           return;
         }
-        const result = await this.env.DB.prepare(`
-          DELETE FROM triggers WHERE id = ? AND user_id = ?
-        `).bind(triggerId, userId).run();
+        const result = await deleteTrigger(this.env.DB, triggerId, userId);
         if ((result.meta?.changes || 0) === 0) {
           this.sendToRunner({ type: 'trigger-api-result', requestId, error: `Trigger not found: ${triggerId}` } as any);
           return;
@@ -3856,12 +3789,7 @@ export class SessionAgentDO {
         let fallbackToUpdate = false;
 
         let existing = isUpdate
-          ? await this.env.DB.prepare(`
-              SELECT *
-              FROM triggers
-              WHERE id = ? AND user_id = ?
-              LIMIT 1
-            `).bind(triggerId, userId).first<Record<string, unknown>>()
+          ? await getTrigger(this.env.DB, userId, triggerId) as Record<string, unknown> | null
           : null;
 
         if (isUpdate && !existing) {
@@ -3913,30 +3841,13 @@ export class SessionAgentDO {
         // This prevents accidental duplicate schedules from repeated "update" attempts.
         if (!isUpdate && rawConfig.type === 'schedule') {
           if (hasWorkflowIdPayload) {
-            const sameName = await this.env.DB.prepare(`
-              SELECT *
-              FROM triggers
-              WHERE user_id = ?
-                AND type = 'schedule'
-                AND ((? IS NULL AND workflow_id IS NULL) OR workflow_id = ?)
-                AND lower(name) = lower(?)
-              ORDER BY datetime(updated_at) DESC
-              LIMIT 1
-            `).bind(userId, workflowId, workflowId, nextName).first<Record<string, unknown>>();
+            const sameName = await findScheduleTriggerByNameAndWorkflow(this.env.DB, userId, workflowId, nextName);
 
             if (sameName) {
               existing = sameName;
               fallbackToUpdate = true;
             } else {
-              const workflowMatches = await this.env.DB.prepare(`
-                SELECT *
-                FROM triggers
-                WHERE user_id = ?
-                  AND type = 'schedule'
-                  AND ((? IS NULL AND workflow_id IS NULL) OR workflow_id = ?)
-                ORDER BY datetime(updated_at) DESC
-                LIMIT 2
-              `).bind(userId, workflowId, workflowId).all<Record<string, unknown>>();
+              const workflowMatches = await findScheduleTriggersByWorkflow(this.env.DB, userId, workflowId, 2);
               const candidates = workflowMatches.results || [];
               if (candidates.length === 1) {
                 existing = candidates[0];
@@ -3944,15 +3855,7 @@ export class SessionAgentDO {
               }
             }
           } else {
-            const sameName = await this.env.DB.prepare(`
-              SELECT *
-              FROM triggers
-              WHERE user_id = ?
-                AND type = 'schedule'
-                AND lower(name) = lower(?)
-              ORDER BY datetime(updated_at) DESC
-              LIMIT 2
-            `).bind(userId, nextName).all<Record<string, unknown>>();
+            const sameName = await findScheduleTriggersByName(this.env.DB, userId, nextName, 2);
             const candidates = sameName.results || [];
             if (candidates.length === 1) {
               existing = candidates[0];
@@ -4002,52 +3905,30 @@ export class SessionAgentDO {
           ? (typeof existing?.id === 'string' ? existing.id : triggerId)
           : crypto.randomUUID();
         if (shouldUpdate) {
-          await this.env.DB.prepare(`
-            UPDATE triggers
-            SET workflow_id = ?,
-                name = ?,
-                enabled = ?,
-                type = ?,
-                config = ?,
-                variable_mapping = ?,
-                updated_at = ?
-            WHERE id = ? AND user_id = ?
-          `).bind(
+          await updateTriggerFull(this.env.DB, targetTriggerId, userId, {
             workflowId,
-            nextName,
-            nextEnabled ? 1 : 0,
-            String(rawConfig.type),
-            JSON.stringify(rawConfig),
-            variableMapping ? JSON.stringify(variableMapping) : null,
+            name: nextName,
+            enabled: nextEnabled,
+            type: String(rawConfig.type),
+            config: JSON.stringify(rawConfig),
+            variableMapping: variableMapping ? JSON.stringify(variableMapping) : null,
             now,
-            targetTriggerId,
-            userId,
-          ).run();
+          });
         } else {
-          await this.env.DB.prepare(`
-            INSERT INTO triggers (id, workflow_id, user_id, name, enabled, type, config, variable_mapping, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(
-            targetTriggerId,
-            workflowId,
+          await createTrigger(this.env.DB, {
+            id: targetTriggerId,
             userId,
-            nextName,
-            nextEnabled ? 1 : 0,
-            String(rawConfig.type),
-            JSON.stringify(rawConfig),
-            variableMapping ? JSON.stringify(variableMapping) : null,
+            workflowId,
+            name: nextName,
+            enabled: nextEnabled,
+            type: String(rawConfig.type),
+            config: JSON.stringify(rawConfig),
+            variableMapping: variableMapping ? JSON.stringify(variableMapping) : null,
             now,
-            now,
-          ).run();
+          });
         }
 
-        const row = await this.env.DB.prepare(`
-          SELECT t.*, w.name AS workflow_name
-          FROM triggers t
-          LEFT JOIN workflows w ON t.workflow_id = w.id
-          WHERE t.id = ? AND t.user_id = ?
-          LIMIT 1
-        `).bind(targetTriggerId, userId).first<Record<string, unknown>>();
+        const row = await getTrigger(this.env.DB, userId, targetTriggerId) as Record<string, unknown> | null;
 
         this.sendToRunner({
           type: 'trigger-api-result',
@@ -4081,22 +3962,7 @@ export class SessionAgentDO {
           return;
         }
 
-        const row = await this.env.DB.prepare(`
-          SELECT t.*, w.id as wf_id, w.name as workflow_name, w.version as workflow_version, w.data as workflow_data
-          FROM triggers t
-          LEFT JOIN workflows w ON t.workflow_id = w.id
-          WHERE t.id = ? AND t.user_id = ?
-          LIMIT 1
-        `).bind(triggerId, userId).first<{
-          id: string;
-          type: string;
-          config: string;
-          wf_id: string | null;
-          workflow_name: string | null;
-          workflow_version: string | null;
-          workflow_data: string | null;
-          variable_mapping: string | null;
-        }>();
+        const row = await getTriggerForRun(this.env.DB, userId, triggerId);
 
         if (!row) {
           this.sendToRunner({ type: 'trigger-api-result', requestId, error: `Trigger not found: ${triggerId}` } as any);
@@ -4123,7 +3989,7 @@ export class SessionAgentDO {
           });
           const now = new Date().toISOString();
           if (dispatch.dispatched) {
-            await this.env.DB.prepare(`UPDATE triggers SET last_run_at = ? WHERE id = ?`).bind(now, triggerId).run();
+            await updateTriggerLastRun(this.env.DB, triggerId, now);
           }
           this.sendToRunner({
             type: 'trigger-api-result',
@@ -4182,12 +4048,11 @@ export class SessionAgentDO {
         };
 
         const idempotencyKey = `manual-trigger:${triggerId}:${userId}:${requestId}`;
-        const existingExecution = await this.env.DB.prepare(`
-          SELECT id, status, session_id
-          FROM workflow_executions
-          WHERE workflow_id = ? AND idempotency_key = ?
-          LIMIT 1
-        `).bind(row.wf_id, idempotencyKey).first<{ id: string; status: string; session_id: string | null }>();
+        const existingExecution = await checkIdempotencyKey(this.env.DB, row.wf_id!, idempotencyKey) as {
+          id: string;
+          status: string;
+          session_id: string | null;
+        } | null;
 
         if (existingExecution) {
           this.sendToRunner({
@@ -4227,31 +4092,25 @@ export class SessionAgentDO {
           ref,
         });
 
-        await this.env.DB.prepare(`
-          INSERT INTO workflow_executions
-            (id, workflow_id, user_id, trigger_id, status, trigger_type, trigger_metadata, variables, started_at,
-             workflow_version, workflow_hash, workflow_snapshot, idempotency_key, session_id, initiator_type, initiator_user_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).bind(
-          executionId,
-          row.wf_id,
+        await createExecution(this.env.DB, {
+          id: executionId,
+          workflowId: row.wf_id!,
           userId,
           triggerId,
-          'pending',
-          'manual',
-          JSON.stringify({ triggeredBy: 'api' }),
-          JSON.stringify(variables),
+          triggerType: 'manual',
+          triggerMetadata: JSON.stringify({ triggeredBy: 'api' }),
+          variables: JSON.stringify(variables),
           now,
-          row.workflow_version || null,
+          workflowVersion: row.workflow_version || null,
           workflowHash,
-          row.workflow_data,
+          workflowSnapshot: row.workflow_data!,
           idempotencyKey,
           sessionId,
-          'manual',
-          userId,
-        ).run();
+          initiatorType: 'manual',
+          initiatorUserId: userId,
+        });
 
-        await this.env.DB.prepare(`UPDATE triggers SET last_run_at = ? WHERE id = ?`).bind(now, triggerId).run();
+        await updateTriggerLastRun(this.env.DB, triggerId, now);
 
         const dispatched = await enqueueWorkflowExecution(this.env, {
           executionId,
@@ -4298,14 +4157,7 @@ export class SessionAgentDO {
       }
 
       if (action === 'get') {
-        const row = await this.env.DB.prepare(`
-          SELECT e.*, w.name as workflow_name, t.name as trigger_name
-          FROM workflow_executions e
-          LEFT JOIN workflows w ON e.workflow_id = w.id
-          LEFT JOIN triggers t ON e.trigger_id = t.id
-          WHERE e.id = ? AND e.user_id = ?
-          LIMIT 1
-        `).bind(executionId, userId).first<Record<string, unknown>>();
+        const row = await getExecution(this.env.DB, executionId, userId);
 
         if (!row) {
           this.sendToRunner({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
@@ -4340,12 +4192,7 @@ export class SessionAgentDO {
       }
 
       if (action === 'steps') {
-        const execution = await this.env.DB.prepare(`
-          SELECT id, user_id, workflow_snapshot
-          FROM workflow_executions
-          WHERE id = ?
-          LIMIT 1
-        `).bind(executionId).first<{ id: string; user_id: string; workflow_snapshot: string | null }>();
+        const execution = await getExecutionForAuth(this.env.DB, executionId);
 
         if (!execution || execution.user_id !== userId) {
           this.sendToRunner({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
@@ -4388,13 +4235,7 @@ export class SessionAgentDO {
         const workflowStepOrder = buildWorkflowStepOrderMap(execution.workflow_snapshot);
         const rankStepOrderIndex = (value: number | null): number => value ?? Number.MAX_SAFE_INTEGER;
 
-        const result = await this.env.DB.prepare(`
-          SELECT rowid AS insertion_order,
-                 id, execution_id, step_id, attempt, status, input_json, output_json, error, started_at, completed_at, created_at
-          FROM workflow_execution_steps
-          WHERE execution_id = ?
-          ORDER BY attempt ASC, insertion_order ASC
-        `).bind(executionId).all();
+        const result = await getExecutionSteps(this.env.DB, executionId);
 
         const steps = (result.results || [])
           .map((row) => ({
@@ -4449,9 +4290,7 @@ export class SessionAgentDO {
           return;
         }
 
-        const execution = await this.env.DB.prepare(`
-          SELECT user_id FROM workflow_executions WHERE id = ? LIMIT 1
-        `).bind(executionId).first<{ user_id: string }>();
+        const execution = await getExecutionOwnerAndStatus(this.env.DB, executionId) as { user_id: string; status: string } | null;
         if (!execution || execution.user_id !== userId) {
           this.sendToRunner({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
           return;
@@ -4487,9 +4326,7 @@ export class SessionAgentDO {
 
       if (action === 'cancel') {
         const reason = typeof payload?.reason === 'string' ? payload.reason : undefined;
-        const execution = await this.env.DB.prepare(`
-          SELECT user_id FROM workflow_executions WHERE id = ? LIMIT 1
-        `).bind(executionId).first<{ user_id: string }>();
+        const execution = await getExecutionOwnerAndStatus(this.env.DB, executionId) as { user_id: string; status: string } | null;
         if (!execution || execution.user_id !== userId) {
           this.sendToRunner({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
           return;
@@ -4536,24 +4373,7 @@ export class SessionAgentDO {
       return;
     }
 
-    const execution = await this.env.DB.prepare(`
-      SELECT
-        e.id,
-        e.user_id,
-        e.workflow_id,
-        e.session_id,
-        w.name AS workflow_name
-      FROM workflow_executions e
-      LEFT JOIN workflows w ON w.id = e.workflow_id
-      WHERE e.id = ?
-      LIMIT 1
-    `).bind(executionId).first<{
-      id: string;
-      user_id: string;
-      workflow_id: string | null;
-      session_id: string | null;
-      workflow_name: string | null;
-    }>();
+    const execution = await getExecutionWithWorkflowName(this.env.DB, executionId);
 
     if (!execution) {
       console.warn(`[SessionAgentDO] Received workflow result for unknown execution ${executionId}`);
@@ -4597,51 +4417,28 @@ export class SessionAgentDO {
       }
     }
 
-    await this.env.DB.prepare(`
-      UPDATE workflow_executions
-      SET status = ?,
-          outputs = ?,
-          steps = ?,
-          error = ?,
-          resume_token = ?,
-          completed_at = ?
-      WHERE id = ?
-    `).bind(
-      nextStatus,
-      outputsJson,
-      stepsJson,
+    await completeExecutionFull(this.env.DB, executionId, {
+      status: nextStatus,
+      outputs: outputsJson,
+      steps: stepsJson,
       error,
       resumeToken,
       completedAt,
-      executionId,
-    ).run();
+    });
 
     if (Array.isArray(envelope.steps) && envelope.steps.length > 0) {
       for (const step of envelope.steps) {
         const attempt = step.attempt && step.attempt > 0 ? step.attempt : 1;
-        await this.env.DB.prepare(`
-          INSERT INTO workflow_execution_steps
-            (id, execution_id, step_id, attempt, status, input_json, output_json, error, started_at, completed_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(execution_id, step_id, attempt) DO UPDATE SET
-            status = excluded.status,
-            input_json = COALESCE(excluded.input_json, workflow_execution_steps.input_json),
-            output_json = COALESCE(excluded.output_json, workflow_execution_steps.output_json),
-            error = excluded.error,
-            started_at = COALESCE(excluded.started_at, workflow_execution_steps.started_at),
-            completed_at = COALESCE(excluded.completed_at, workflow_execution_steps.completed_at)
-        `).bind(
-          crypto.randomUUID(),
-          executionId,
-          step.stepId,
+        await upsertExecutionStep(this.env.DB, executionId, {
+          stepId: step.stepId,
           attempt,
-          step.status,
-          step.input !== undefined ? JSON.stringify(step.input) : null,
-          step.output !== undefined ? JSON.stringify(step.output) : null,
-          step.error || null,
-          step.startedAt || null,
-          step.completedAt || null,
-        ).run();
+          status: step.status,
+          input: step.input !== undefined ? JSON.stringify(step.input) : null,
+          output: step.output !== undefined ? JSON.stringify(step.output) : null,
+          error: step.error || null,
+          startedAt: step.startedAt || null,
+          completedAt: step.completedAt || null,
+        });
       }
     }
 
@@ -4667,12 +4464,7 @@ export class SessionAgentDO {
     }
 
     if (nextStatus !== 'waiting_approval' && currentSessionId) {
-      const sessionRow = await this.env.DB.prepare(`
-        SELECT purpose
-        FROM sessions
-        WHERE id = ?
-        LIMIT 1
-      `).bind(currentSessionId).first<{ purpose: string | null }>();
+      const sessionRow = await getSession(this.env.DB, currentSessionId);
 
       if (sessionRow?.purpose === 'workflow') {
         this.ctx.waitUntil(this.handleStop(`workflow_execution_${nextStatus}`));
@@ -5297,28 +5089,21 @@ export class SessionAgentDO {
     const minSkippedTs = skippedActiveTs.length > 0 ? Math.min(...skippedActiveTs) : null;
 
     // Batch write to D1 — use INSERT OR REPLACE (content updates on finalize)
-    const stmts = flushable.map((row) => {
-      return this.env.DB.prepare(
-        'INSERT OR REPLACE INTO messages (id, session_id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id, message_format) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-      ).bind(
-        row.id as string,
-        sessionId,
-        row.role as string,
-        row.content as string,
-        row.parts as string | null,
-        row.author_id as string | null,
-        row.author_email as string | null,
-        row.author_name as string | null,
-        row.author_avatar_url as string | null,
-        row.channel_type as string | null,
-        row.channel_id as string | null,
-        row.opencode_session_id as string | null,
-        row.message_format as string || 'v2',
-      );
-    });
-
     try {
-      await this.env.DB.batch(stmts);
+      await batchUpsertMessages(this.env.DB, sessionId, flushable.map((row) => ({
+        id: row.id as string,
+        role: row.role as string,
+        content: row.content as string,
+        parts: row.parts as string | null,
+        authorId: row.author_id as string | null,
+        authorEmail: row.author_email as string | null,
+        authorName: row.author_name as string | null,
+        authorAvatarUrl: row.author_avatar_url as string | null,
+        channelType: row.channel_type as string | null,
+        channelId: row.channel_id as string | null,
+        opencodeSessionId: row.opencode_session_id as string | null,
+        messageFormat: (row.message_format as string) || 'v2',
+      })));
       // Update last flush timestamp — don't advance past any skipped active turns
       const latestFlushed = flushable[flushable.length - 1].created_at as number;
       const safeWatermark = minSkippedTs !== null ? Math.min(latestFlushed, minSkippedTs - 1) : latestFlushed;
@@ -7124,19 +6909,16 @@ export class SessionAgentDO {
     const uncachedIds = userIds.filter((id) => !this.userDetailsCache.has(id));
     if (uncachedIds.length > 0) {
       try {
-        const placeholders = uncachedIds.map(() => '?').join(',');
-        const rows = await this.env.DB.prepare(
-          `SELECT id, email, name, avatar_url, git_name, git_email, model_preferences FROM users WHERE id IN (${placeholders})`
-        ).bind(...uncachedIds).all<{ id: string; email: string; name: string | null; avatar_url: string | null; git_name: string | null; git_email: string | null; model_preferences: string | null }>();
-        for (const row of rows.results) {
-          this.userDetailsCache.set(row.id, {
-            id: row.id,
-            email: row.email,
-            name: row.name || undefined,
-            avatarUrl: row.avatar_url || undefined,
-            gitName: row.git_name || undefined,
-            gitEmail: row.git_email || undefined,
-            modelPreferences: row.model_preferences ? JSON.parse(row.model_preferences) : undefined,
+        const users = await getUsersByIds(this.env.DB, uncachedIds);
+        for (const user of users) {
+          this.userDetailsCache.set(user.id, {
+            id: user.id,
+            email: user.email,
+            name: user.name || undefined,
+            avatarUrl: user.avatarUrl || undefined,
+            gitName: user.gitName || undefined,
+            gitEmail: user.gitEmail || undefined,
+            modelPreferences: user.modelPreferences,
           });
         }
       } catch (err) {
@@ -7292,21 +7074,15 @@ export class SessionAgentDO {
         .toArray();
 
       if (unflushed.length > 0) {
-        const stmts = unflushed.map((row) =>
-          this.env.DB.prepare(
-            'INSERT OR IGNORE INTO session_audit_log (id, session_id, event_type, summary, actor_id, metadata, created_at, flushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))'
-          ).bind(
-            `${sessionId}:${row.id}`,
-            sessionId,
-            row.event_type as string,
-            row.summary as string,
-            (row.actor_id as string) || null,
-            (row.metadata as string) || null,
-            row.created_at as string,
-          )
-        );
         try {
-          await this.env.DB.batch(stmts);
+          await batchInsertAuditLog(this.env.DB, sessionId, unflushed.map((row) => ({
+            localId: row.id as number,
+            eventType: row.event_type as string,
+            summary: row.summary as string,
+            actorId: (row.actor_id as string) || null,
+            metadata: (row.metadata as string) || null,
+            createdAt: row.created_at as string,
+          })));
           // Mark as flushed
           const flushedIds = unflushed.map((r) => r.id as number);
           const placeholders = flushedIds.map(() => '?').join(',');

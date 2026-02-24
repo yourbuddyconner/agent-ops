@@ -1,17 +1,35 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { UserTelegramConfig } from '@agent-ops/shared';
+import { eq, sql } from 'drizzle-orm';
 import { encryptString, decryptString } from '../crypto.js';
-import { mapTelegramConfig } from './mappers.js';
+import { getDb } from '../drizzle.js';
+import { userTelegramConfig } from '../schema/index.js';
 
 export async function getUserTelegramConfig(
   db: D1Database,
   userId: string,
 ): Promise<UserTelegramConfig | null> {
-  const row = await db
-    .prepare('SELECT * FROM user_telegram_config WHERE user_id = ?')
-    .bind(userId)
-    .first();
-  return row ? mapTelegramConfig(row) : null;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select({
+      id: userTelegramConfig.id,
+      userId: userTelegramConfig.userId,
+      botUsername: userTelegramConfig.botUsername,
+      botInfo: userTelegramConfig.botInfo,
+      webhookActive: userTelegramConfig.webhookActive,
+      createdAt: userTelegramConfig.createdAt,
+      updatedAt: userTelegramConfig.updatedAt,
+    })
+    .from(userTelegramConfig)
+    .where(eq(userTelegramConfig.userId, userId))
+    .get();
+  if (!row) return null;
+  return {
+    ...row,
+    webhookActive: !!row.webhookActive,
+    createdAt: row.createdAt!,
+    updatedAt: row.updatedAt!,
+  };
 }
 
 export async function getUserTelegramToken(
@@ -19,13 +37,26 @@ export async function getUserTelegramToken(
   userId: string,
   encryptionKey: string,
 ): Promise<{ config: UserTelegramConfig; botToken: string } | null> {
-  const row = await db
-    .prepare('SELECT * FROM user_telegram_config WHERE user_id = ?')
-    .bind(userId)
-    .first<any>();
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select()
+    .from(userTelegramConfig)
+    .where(eq(userTelegramConfig.userId, userId))
+    .get();
   if (!row) return null;
-  const botToken = await decryptString(row.bot_token_encrypted, encryptionKey);
-  return { config: mapTelegramConfig(row), botToken };
+  const botToken = await decryptString(row.botTokenEncrypted, encryptionKey);
+  return {
+    config: {
+      id: row.id,
+      userId: row.userId,
+      botUsername: row.botUsername,
+      botInfo: row.botInfo,
+      webhookActive: !!row.webhookActive,
+      createdAt: row.createdAt!,
+      updatedAt: row.updatedAt!,
+    },
+    botToken,
+  };
 }
 
 export async function saveUserTelegramConfig(
@@ -41,19 +72,25 @@ export async function saveUserTelegramConfig(
 ): Promise<UserTelegramConfig> {
   const encrypted = await encryptString(data.botToken, data.encryptionKey);
   const now = new Date().toISOString();
+  const drizzle = getDb(db);
 
-  await db
-    .prepare(
-      `INSERT INTO user_telegram_config (id, user_id, bot_token_encrypted, bot_username, bot_info, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(user_id) DO UPDATE SET
-         bot_token_encrypted = excluded.bot_token_encrypted,
-         bot_username = excluded.bot_username,
-         bot_info = excluded.bot_info,
-         updated_at = excluded.updated_at`,
-    )
-    .bind(data.id, data.userId, encrypted, data.botUsername, data.botInfo, now, now)
-    .run();
+  await drizzle.insert(userTelegramConfig).values({
+    id: data.id,
+    userId: data.userId,
+    botTokenEncrypted: encrypted,
+    botUsername: data.botUsername,
+    botInfo: data.botInfo,
+    createdAt: now,
+    updatedAt: now,
+  }).onConflictDoUpdate({
+    target: userTelegramConfig.userId,
+    set: {
+      botTokenEncrypted: sql`excluded.bot_token_encrypted`,
+      botUsername: sql`excluded.bot_username`,
+      botInfo: sql`excluded.bot_info`,
+      updatedAt: sql`excluded.updated_at`,
+    },
+  });
 
   return {
     id: data.id,
@@ -72,12 +109,15 @@ export async function updateTelegramWebhookStatus(
   webhookUrl: string,
   active: boolean,
 ): Promise<void> {
-  await db
-    .prepare(
-      'UPDATE user_telegram_config SET webhook_url = ?, webhook_active = ?, updated_at = datetime(\'now\') WHERE user_id = ?',
-    )
-    .bind(webhookUrl, active ? 1 : 0, userId)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle
+    .update(userTelegramConfig)
+    .set({
+      webhookUrl,
+      webhookActive: active,
+      updatedAt: sql`datetime('now')`,
+    })
+    .where(eq(userTelegramConfig.userId, userId));
 }
 
 export async function deleteUserTelegramConfig(

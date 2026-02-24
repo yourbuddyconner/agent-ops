@@ -3,6 +3,7 @@ import { Bot, webhookCallback } from 'grammy';
 import type { Env, Variables } from '../env.js';
 import { telegramScopeKey, SLASH_COMMANDS } from '@agent-ops/shared';
 import * as db from '../lib/db.js';
+import * as telegramService from '../services/telegram.js';
 import { dispatchOrchestratorPrompt } from '../lib/workflow-runtime.js';
 
 // ─── Forward / Quote Formatting ──────────────────────────────────────────────
@@ -479,46 +480,16 @@ telegramApiRouter.post('/', async (c) => {
   const user = c.get('user');
   const { botToken } = await c.req.json<{ botToken: string }>();
 
-  if (!botToken || typeof botToken !== 'string' || !botToken.trim()) {
-    return c.json({ error: 'botToken is required' }, 400);
-  }
-
-  // Validate token by calling getMe()
-  const bot = new Bot(botToken.trim());
-  let botInfo;
-  try {
-    botInfo = await bot.api.getMe();
-  } catch {
-    return c.json({ error: 'Invalid bot token — could not reach Telegram API' }, 400);
-  }
-
-  // Save config with encrypted token
-  const config = await db.saveUserTelegramConfig(c.env.DB, {
-    id: crypto.randomUUID(),
-    userId: user.id,
-    botToken: botToken.trim(),
-    botUsername: botInfo.username || botInfo.first_name,
-    botInfo: JSON.stringify(botInfo),
-    encryptionKey: c.env.ENCRYPTION_KEY,
-  });
-
-  // Register webhook with Telegram
   const workerUrl = new URL(c.req.url).origin;
-  const webhookUrl = `${workerUrl}/telegram/webhook/${user.id}`;
-  await bot.api.setWebhook(webhookUrl);
+  const result = await telegramService.setupTelegramBot(
+    c.env.DB, c.env.ENCRYPTION_KEY, user.id, botToken, workerUrl,
+  );
 
-  // Register bot commands so Telegram shows the command menu
-  const tgCommands = SLASH_COMMANDS
-    .filter((cmd) => cmd.availableIn.includes('telegram'))
-    .map((cmd) => ({ command: cmd.name, description: cmd.description }));
-  await bot.api.setMyCommands(tgCommands).catch(() => {
-    // Best effort — non-critical if this fails
-  });
+  if (!result.ok) {
+    return c.json({ error: result.error }, 400);
+  }
 
-  // Update webhook status
-  await db.updateTelegramWebhookStatus(c.env.DB, user.id, webhookUrl, true);
-
-  return c.json({ config: { ...config, webhookActive: true }, webhookUrl });
+  return c.json({ config: result.config, webhookUrl: result.webhookUrl });
 });
 
 /**
@@ -535,21 +506,7 @@ telegramApiRouter.get('/', async (c) => {
  */
 telegramApiRouter.delete('/', async (c) => {
   const user = c.get('user');
-
-  // Get token to call deleteWebhook
-  const telegramData = await db.getUserTelegramToken(
-    c.env.DB, user.id, c.env.ENCRYPTION_KEY,
-  );
-  if (telegramData) {
-    try {
-      const bot = new Bot(telegramData.botToken);
-      await bot.api.deleteWebhook();
-    } catch {
-      // Best effort — token may be revoked
-    }
-  }
-
-  await db.deleteUserTelegramConfig(c.env.DB, user.id);
+  await telegramService.disconnectTelegramBot(c.env.DB, c.env.ENCRYPTION_KEY, user.id);
   return c.json({ success: true });
 });
 

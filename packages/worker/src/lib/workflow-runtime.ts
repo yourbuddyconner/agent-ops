@@ -1,47 +1,36 @@
+/**
+ * Workflow runtime utilities.
+ *
+ * Business logic functions have moved to services/:
+ * - dispatchOrchestratorPrompt → services/orchestrator.ts
+ * - checkWorkflowConcurrency, enqueueWorkflowExecution → services/executions.ts
+ *
+ * This module keeps sha256Hex (pure utility) and createWorkflowSession (data access helper),
+ * and re-exports the moved functions for backward compatibility.
+ */
+
 import type { D1Database } from '@cloudflare/workers-types';
 import * as db from './db.js';
-import type { Env } from '../env.js';
 
-const ENQUEUE_MAX_ATTEMPTS = 5;
-const ENQUEUE_BASE_DELAY_MS = 150;
+// ─── Re-exports (backward compatibility) ───────────────────────────────────
 
-function buildWorkflowWorkspace(workflowId: string, executionId: string): string {
-  const wf = workflowId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16) || 'workflow';
-  const ex = executionId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16) || 'execution';
-  return `workflow-${wf}-${ex}`.slice(0, 100);
-}
+export { dispatchOrchestratorPrompt } from '../services/orchestrator.js';
+export { checkWorkflowConcurrency, enqueueWorkflowExecution } from '../services/executions.js';
 
-function shouldRetryEnqueueStatus(status: number): boolean {
-  return (
-    status === 404 || // D1 read-after-write race across colo
-    status === 408 ||
-    status === 409 ||
-    status === 425 ||
-    status === 429 ||
-    status === 500 ||
-    status === 502 ||
-    status === 503 ||
-    status === 504
-  );
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-type EnqueueResponseBody = {
-  ok?: boolean;
-  promptDispatched?: boolean;
-  status?: string;
-  ignored?: boolean;
-  reason?: string;
-  error?: string;
-};
+// ─── Pure Utility ───────────────────────────────────────────────────────────
 
 export async function sha256Hex(input: string): Promise<string> {
   const data = new TextEncoder().encode(input);
   const digest = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ─── Data Access Helper ─────────────────────────────────────────────────────
+
+function buildWorkflowWorkspace(workflowId: string, executionId: string): string {
+  const wf = workflowId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16) || 'workflow';
+  const ex = executionId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16) || 'execution';
+  return `workflow-${wf}-${ex}`.slice(0, 100);
 }
 
 export async function createWorkflowSession(
@@ -84,218 +73,4 @@ export async function createWorkflowSession(
   await db.updateSessionStatus(database, sessionId, 'hibernated');
 
   return sessionId;
-}
-
-export async function enqueueWorkflowExecution(
-  env: Env,
-  params: {
-    executionId: string;
-    workflowId: string;
-    userId: string;
-    sessionId?: string;
-    triggerType: 'manual' | 'webhook' | 'schedule';
-    workerOrigin?: string;
-  }
-): Promise<boolean> {
-  const doId = env.WORKFLOW_EXECUTOR.idFromName(params.executionId);
-  const stub = env.WORKFLOW_EXECUTOR.get(doId);
-
-  for (let attempt = 1; attempt <= ENQUEUE_MAX_ATTEMPTS; attempt += 1) {
-    try {
-      const response = await stub.fetch(new Request('https://workflow-executor/enqueue', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
-      }));
-
-      if (response.ok) {
-        let body: EnqueueResponseBody | null = null;
-        try {
-          body = await response.clone().json<EnqueueResponseBody>();
-        } catch {
-          body = null;
-        }
-
-        // Defensive: explicit non-dispatch should not be treated as success for fresh runs.
-        if (body?.promptDispatched === false && !body.ignored) {
-          const shouldRetry = attempt < ENQUEUE_MAX_ATTEMPTS;
-          if (!shouldRetry) {
-            console.error(
-              `[WorkflowRuntime] Enqueue returned promptDispatched=false for ${params.executionId} ` +
-              `after ${attempt} attempt(s): ${body.error || '<no error>'}`
-            );
-            return false;
-          }
-          const waitMs = ENQUEUE_BASE_DELAY_MS * attempt;
-          console.warn(
-            `[WorkflowRuntime] Enqueue response not dispatched for ${params.executionId} ` +
-            `(attempt ${attempt}/${ENQUEUE_MAX_ATTEMPTS}, status=${body.status || 'unknown'}). ` +
-            `Retrying in ${waitMs}ms`
-          );
-          await delay(waitMs);
-          continue;
-        }
-
-        return true;
-      }
-
-      const errText = (await response.text().catch(() => '')).slice(0, 500);
-      const shouldRetry = attempt < ENQUEUE_MAX_ATTEMPTS && shouldRetryEnqueueStatus(response.status);
-      if (!shouldRetry) {
-        console.error(
-          `[WorkflowRuntime] Failed to enqueue execution ${params.executionId} ` +
-          `after ${attempt} attempt(s): status=${response.status} body=${errText || '<empty>'}`
-        );
-        return false;
-      }
-
-      const waitMs = ENQUEUE_BASE_DELAY_MS * attempt;
-      console.warn(
-        `[WorkflowRuntime] Enqueue attempt ${attempt}/${ENQUEUE_MAX_ATTEMPTS} failed for ${params.executionId} ` +
-        `(status=${response.status}). Retrying in ${waitMs}ms`
-      );
-      await delay(waitMs);
-    } catch (error) {
-      if (attempt >= ENQUEUE_MAX_ATTEMPTS) {
-        console.error(`[WorkflowRuntime] Failed to enqueue execution ${params.executionId}`, error);
-        return false;
-      }
-      const waitMs = ENQUEUE_BASE_DELAY_MS * attempt;
-      console.warn(
-        `[WorkflowRuntime] Enqueue attempt ${attempt}/${ENQUEUE_MAX_ATTEMPTS} errored for ${params.executionId}. ` +
-        `Retrying in ${waitMs}ms`,
-        error
-      );
-      await delay(waitMs);
-    }
-  }
-
-  return false;
-}
-
-export async function checkWorkflowConcurrency(
-  database: D1Database,
-  userId: string,
-  limits: { perUser?: number; global?: number } = {},
-): Promise<{ allowed: boolean; reason?: string; activeUser: number; activeGlobal: number }> {
-  const perUserLimit = limits.perUser ?? 5;
-  const globalLimit = limits.global ?? 50;
-
-  const userRow = await database.prepare(`
-    SELECT COUNT(*) AS count
-    FROM workflow_executions
-    WHERE user_id = ?
-      AND status IN ('pending', 'running', 'waiting_approval')
-  `).bind(userId).first<{ count: number }>();
-
-  const globalRow = await database.prepare(`
-    SELECT COUNT(*) AS count
-    FROM workflow_executions
-    WHERE status IN ('pending', 'running', 'waiting_approval')
-  `).first<{ count: number }>();
-
-  const activeUser = userRow?.count ?? 0;
-  const activeGlobal = globalRow?.count ?? 0;
-
-  if (activeUser >= perUserLimit) {
-    return {
-      allowed: false,
-      reason: `per_user_limit_exceeded:${perUserLimit}`,
-      activeUser,
-      activeGlobal,
-    };
-  }
-
-  if (activeGlobal >= globalLimit) {
-    return {
-      allowed: false,
-      reason: `global_limit_exceeded:${globalLimit}`,
-      activeUser,
-      activeGlobal,
-    };
-  }
-
-  return { allowed: true, activeUser, activeGlobal };
-}
-
-type OrchestratorPromptDispatchResult = {
-  dispatched: boolean;
-  sessionId: string;
-  reason?: string;
-};
-
-const ORCHESTRATOR_UNAVAILABLE_STATUSES = new Set(['terminated', 'archived', 'error']);
-
-export async function dispatchOrchestratorPrompt(
-  env: Env,
-  params: {
-    userId: string;
-    content: string;
-    authorName?: string;
-    authorEmail?: string;
-    channelType?: string;
-    channelId?: string;
-    attachments?: Array<{ type: string; mime: string; url: string; filename?: string }>;
-  }
-): Promise<OrchestratorPromptDispatchResult> {
-  const content = params.content.trim();
-  if (!content && (!params.attachments || params.attachments.length === 0)) {
-    return { dispatched: false, sessionId: `orchestrator:${params.userId}`, reason: 'empty_prompt' };
-  }
-
-  // Resolve the current orchestrator session (supports rotated IDs)
-  console.log(`[OrchestratorDispatch] Looking up orchestrator for userId=${params.userId} channelType=${params.channelType} channelId=${params.channelId}`);
-  const session = await db.getOrchestratorSession(env.DB, params.userId);
-  if (!session || session.purpose !== 'orchestrator') {
-    console.log(`[OrchestratorDispatch] No orchestrator found for userId=${params.userId} session=${session?.id || 'null'} purpose=${session?.purpose || 'null'}`);
-    return { dispatched: false, sessionId: `orchestrator:${params.userId}`, reason: 'orchestrator_not_configured' };
-  }
-  const sessionId = session.id;
-  if (ORCHESTRATOR_UNAVAILABLE_STATUSES.has(session.status)) {
-    console.log(`[OrchestratorDispatch] Orchestrator unavailable: session=${sessionId} status=${session.status}`);
-    return { dispatched: false, sessionId, reason: `orchestrator_unavailable:${session.status}` };
-  }
-
-  console.log(`[OrchestratorDispatch] Dispatching to session=${sessionId} status=${session.status}`);
-  const messageId = crypto.randomUUID();
-  await db.saveMessage(env.DB, {
-    id: messageId,
-    sessionId,
-    role: 'user',
-    content,
-    authorId: params.userId,
-    authorName: params.authorName,
-    authorEmail: params.authorEmail,
-    channelType: params.channelType,
-    channelId: params.channelId,
-  });
-
-  const doId = env.SESSIONS.idFromName(sessionId);
-  const sessionDO = env.SESSIONS.get(doId);
-  const doRes = await sessionDO.fetch(new Request('http://do/prompt', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      content,
-      channelType: params.channelType,
-      channelId: params.channelId,
-      attachments: params.attachments,
-      authorName: params.authorName,
-      authorEmail: params.authorEmail,
-      authorId: params.userId,
-    }),
-  }));
-
-  if (!doRes.ok) {
-    const errText = (await doRes.text().catch(() => '')).slice(0, 200);
-    console.log(`[OrchestratorDispatch] DO dispatch failed: status=${doRes.status} body=${errText}`);
-    return {
-      dispatched: false,
-      sessionId,
-      reason: `orchestrator_dispatch_failed:${doRes.status}${errText ? `:${errText}` : ''}`,
-    };
-  }
-
-  console.log(`[OrchestratorDispatch] Success: session=${sessionId} messageId=${messageId}`);
-  return { dispatched: true, sessionId };
 }

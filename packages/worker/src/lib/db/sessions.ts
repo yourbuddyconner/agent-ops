@@ -1,6 +1,34 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { AgentSession, SessionGitState, AdoptionMetrics, SessionSourceType, PRState, SessionFileChanged, ChildSessionSummary, SessionParticipant, SessionParticipantRole, SessionParticipantSummary, SessionShareLink, AuditLogEntry, SessionPurpose } from '@agent-ops/shared';
-import { mapSession, mapSessionWithOwner, mapSessionGitState, mapShareLink, generateShareToken, ROLE_HIERARCHY, ACTIVE_SESSION_STATUSES, DEFAULT_MAX_ACTIVE_SESSIONS } from './mappers.js';
+import type {
+  AgentSession,
+  SessionGitState,
+  AdoptionMetrics,
+  SessionSourceType,
+  PRState,
+  FileChangeStatus,
+  SessionFileChanged,
+  ChildSessionSummary,
+  SessionParticipant,
+  SessionParticipantRole,
+  SessionParticipantSummary,
+  SessionShareLink,
+  AuditLogEntry,
+  SessionPurpose,
+} from '@agent-ops/shared';
+import { eq, and, or, ne, lt, gt, desc, asc, sql, inArray, isNull, isNotNull, not } from 'drizzle-orm';
+import { getDb, toDate } from '../drizzle.js';
+import {
+  sessions,
+  sessionGitState,
+  sessionFilesChanged,
+  sessionParticipants,
+  sessionShareLinks,
+  sessionAuditLog,
+  messages,
+} from '../schema/index.js';
+import { users } from '../schema/users.js';
+import { agentPersonas } from '../schema/personas.js';
+import { generateShareToken, ROLE_HIERARCHY, ACTIVE_SESSION_STATUSES, DEFAULT_MAX_ACTIVE_SESSIONS } from './constants.js';
 import { getOrgSettings } from './org.js';
 
 // ─── Exported Types ─────────────────────────────────────────────────────────
@@ -28,30 +56,90 @@ export interface ConcurrencyCheckResult {
   limit: number;
 }
 
+// ─── Row-to-Domain Converters ───────────────────────────────────────────────
+
+function rowToSession(row: typeof sessions.$inferSelect & { personaName?: string | null }): AgentSession {
+  return {
+    id: row.id,
+    userId: row.userId,
+    workspace: row.workspace,
+    status: row.status as AgentSession['status'],
+    title: row.title || undefined,
+    parentSessionId: row.parentSessionId || undefined,
+    containerId: row.containerId || undefined,
+    metadata: row.metadata || undefined,
+    errorMessage: row.errorMessage || undefined,
+    personaId: row.personaId || undefined,
+    personaName: (row as any).personaName || undefined,
+    isOrchestrator: row.isOrchestrator || undefined,
+    purpose: (row.purpose as SessionPurpose) || 'interactive',
+    createdAt: toDate(row.createdAt),
+    lastActiveAt: toDate(row.lastActiveAt),
+  };
+}
+
+function rowToGitState(row: typeof sessionGitState.$inferSelect): SessionGitState {
+  return {
+    id: row.id,
+    sessionId: row.sessionId,
+    sourceType: (row.sourceType as SessionSourceType) || null,
+    sourcePrNumber: row.sourcePrNumber ?? null,
+    sourceIssueNumber: row.sourceIssueNumber ?? null,
+    sourceRepoFullName: row.sourceRepoFullName || null,
+    sourceRepoUrl: row.sourceRepoUrl || null,
+    branch: row.branch || null,
+    ref: row.ref || null,
+    baseBranch: row.baseBranch || null,
+    commitCount: row.commitCount ?? 0,
+    prNumber: row.prNumber ?? null,
+    prTitle: row.prTitle || null,
+    prState: (row.prState as PRState) || null,
+    prUrl: row.prUrl || null,
+    prCreatedAt: row.prCreatedAt || null,
+    prMergedAt: row.prMergedAt || null,
+    agentAuthored: !!row.agentAuthored,
+    createdAt: row.createdAt!,
+    updatedAt: row.updatedAt!,
+  };
+}
+
+function rowToShareLink(row: typeof sessionShareLinks.$inferSelect): SessionShareLink {
+  return {
+    id: row.id,
+    sessionId: row.sessionId,
+    token: row.token,
+    role: row.role as SessionParticipantRole,
+    createdBy: row.createdBy,
+    expiresAt: row.expiresAt ? toDate(row.expiresAt) : undefined,
+    maxUses: row.maxUses ?? undefined,
+    useCount: row.useCount ?? 0,
+    active: !!row.active,
+    createdAt: toDate(row.createdAt),
+  };
+}
+
 // ─── Session CRUD ───────────────────────────────────────────────────────────
 
 export async function createSession(
   db: D1Database,
   data: { id: string; userId: string; workspace: string; title?: string; parentSessionId?: string; containerId?: string; metadata?: Record<string, unknown>; personaId?: string; isOrchestrator?: boolean; purpose?: SessionPurpose }
 ): Promise<AgentSession> {
-  await db
-    .prepare(
-      'INSERT INTO sessions (id, user_id, workspace, status, container_id, metadata, title, parent_session_id, persona_id, is_orchestrator, purpose) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    )
-    .bind(
-      data.id,
-      data.userId,
-      data.workspace,
-      'initializing',
-      data.containerId || null,
-      data.metadata ? JSON.stringify(data.metadata) : null,
-      data.title || null,
-      data.parentSessionId || null,
-      data.personaId || null,
-      data.isOrchestrator ? 1 : 0,
-      data.purpose || (data.isOrchestrator ? 'orchestrator' : 'interactive')
-    )
-    .run();
+  const drizzle = getDb(db);
+  const purpose = data.purpose || (data.isOrchestrator ? 'orchestrator' : 'interactive');
+
+  await drizzle.insert(sessions).values({
+    id: data.id,
+    userId: data.userId,
+    workspace: data.workspace,
+    status: 'initializing',
+    containerId: data.containerId || null,
+    metadata: data.metadata || null,
+    title: data.title || null,
+    parentSessionId: data.parentSessionId || null,
+    personaId: data.personaId || null,
+    isOrchestrator: data.isOrchestrator ?? false,
+    purpose,
+  });
 
   return {
     id: data.id,
@@ -64,15 +152,20 @@ export async function createSession(
     metadata: data.metadata,
     personaId: data.personaId,
     isOrchestrator: data.isOrchestrator,
-    purpose: data.purpose || (data.isOrchestrator ? 'orchestrator' : 'interactive'),
+    purpose,
     createdAt: new Date(),
     lastActiveAt: new Date(),
   };
 }
 
 export async function getSession(db: D1Database, id: string): Promise<AgentSession | null> {
-  const row = await db.prepare('SELECT * FROM sessions WHERE id = ?').bind(id).first();
-  return row ? mapSession(row) : null;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select()
+    .from(sessions)
+    .where(eq(sessions.id, id))
+    .get();
+  return row ? rowToSession(row) : null;
 }
 
 export async function getUserSessions(
@@ -83,7 +176,8 @@ export async function getUserSessions(
   const limit = options.limit || 20;
   const ownership = options.ownership || 'all';
 
-  // Build the base query with owner info joined
+  // This query involves a complex dynamic JOIN with DISTINCT and subqueries,
+  // so we keep it as raw SQL per the migration guidelines.
   let query = `
     SELECT DISTINCT
       s.*,
@@ -145,10 +239,36 @@ export async function getUserSessions(
   const sessionIds = pageRows.map((row: any) => row.id);
   const participantsBySession = await getParticipantsForSessions(db, sessionIds);
 
-  const sessions = pageRows.map((row: any) => mapSessionWithOwner(row, userId, participantsBySession.get(row.id) || []));
+  const mappedSessions = pageRows.map((row: any) => {
+    // Map with snake_case raw SQL row (not Drizzle camelCase)
+    const base: AgentSession = {
+      id: row.id,
+      userId: row.user_id,
+      workspace: row.workspace,
+      status: row.status,
+      title: row.title || undefined,
+      parentSessionId: row.parent_session_id || undefined,
+      containerId: row.container_id || undefined,
+      metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+      errorMessage: row.error_message || undefined,
+      personaId: row.persona_id || undefined,
+      personaName: row.persona_name || undefined,
+      isOrchestrator: !!row.is_orchestrator || undefined,
+      purpose: row.purpose || 'interactive',
+      createdAt: new Date(row.created_at),
+      lastActiveAt: new Date(row.last_active_at),
+      ownerName: row.owner_name || undefined,
+      ownerEmail: row.owner_email || undefined,
+      ownerAvatarUrl: row.owner_avatar_url || undefined,
+      participantCount: row.participant_count ?? 0,
+      participants: participantsBySession.get(row.id) || [],
+      isOwner: row.user_id === userId,
+    };
+    return base;
+  });
 
   return {
-    sessions,
+    sessions: mappedSessions,
     // Use the raw DB string (YYYY-MM-DD HH:MM:SS) so it matches SQLite's format
     cursor: hasMore ? String((pageRows[pageRows.length - 1] as any).created_at) : undefined,
     hasMore,
@@ -161,31 +281,33 @@ async function getParticipantsForSessions(
 ): Promise<Map<string, SessionParticipantSummary[]>> {
   if (sessionIds.length === 0) return new Map();
 
-  const placeholders = sessionIds.map(() => '?').join(', ');
-  const result = await db
-    .prepare(
-      `SELECT sp.session_id, sp.user_id, sp.role, u.name, u.email, u.avatar_url
-       FROM session_participants sp
-       JOIN users u ON u.id = sp.user_id
-       WHERE sp.session_id IN (${placeholders})
-       ORDER BY sp.created_at ASC`
-    )
-    .bind(...sessionIds)
-    .all();
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select({
+      sessionId: sessionParticipants.sessionId,
+      userId: sessionParticipants.userId,
+      role: sessionParticipants.role,
+      name: users.name,
+      email: users.email,
+      avatarUrl: users.avatarUrl,
+    })
+    .from(sessionParticipants)
+    .innerJoin(users, eq(users.id, sessionParticipants.userId))
+    .where(inArray(sessionParticipants.sessionId, sessionIds))
+    .orderBy(asc(sessionParticipants.createdAt));
 
   const map = new Map<string, SessionParticipantSummary[]>();
-  for (const row of result.results || []) {
-    const r = row as any;
-    const sessionId = r.session_id;
-    if (!map.has(sessionId)) {
-      map.set(sessionId, []);
+  for (const row of rows) {
+    const sid = row.sessionId;
+    if (!map.has(sid)) {
+      map.set(sid, []);
     }
-    map.get(sessionId)!.push({
-      userId: r.user_id,
-      name: r.name || undefined,
-      email: r.email || undefined,
-      avatarUrl: r.avatar_url || undefined,
-      role: r.role as SessionParticipantRole,
+    map.get(sid)!.push({
+      userId: row.userId,
+      name: row.name || undefined,
+      email: row.email || undefined,
+      avatarUrl: row.avatarUrl || undefined,
+      role: row.role as SessionParticipantRole,
     });
   }
   return map;
@@ -198,16 +320,21 @@ export async function updateSessionStatus(
   containerId?: string,
   errorMessage?: string
 ): Promise<void> {
-  await db
-    .prepare(
-      'UPDATE sessions SET status = ?, container_id = COALESCE(?, container_id), error_message = ?, last_active_at = datetime(\'now\') WHERE id = ?'
-    )
-    .bind(status, containerId || null, errorMessage || null, id)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle
+    .update(sessions)
+    .set({
+      status,
+      containerId: containerId !== undefined ? sql`COALESCE(${containerId}, ${sessions.containerId})` : undefined,
+      errorMessage: errorMessage || null,
+      lastActiveAt: sql`datetime('now')`,
+    })
+    .where(eq(sessions.id, id));
 }
 
 export async function deleteSession(db: D1Database, id: string): Promise<void> {
-  await db.prepare('DELETE FROM sessions WHERE id = ?').bind(id).run();
+  const drizzle = getDb(db);
+  await drizzle.delete(sessions).where(eq(sessions.id, id));
 }
 
 // Session metrics (flushed from DO)
@@ -216,12 +343,15 @@ export async function updateSessionMetrics(
   id: string,
   metrics: { messageCount: number; toolCallCount: number }
 ): Promise<void> {
-  await db
-    .prepare(
-      "UPDATE sessions SET message_count = ?, tool_call_count = ?, last_active_at = datetime('now') WHERE id = ?"
-    )
-    .bind(metrics.messageCount, metrics.toolCallCount, id)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle
+    .update(sessions)
+    .set({
+      messageCount: metrics.messageCount,
+      toolCallCount: metrics.toolCallCount,
+      lastActiveAt: sql`datetime('now')`,
+    })
+    .where(eq(sessions.id, id));
 }
 
 export async function addActiveSeconds(
@@ -230,20 +360,25 @@ export async function addActiveSeconds(
   seconds: number
 ): Promise<void> {
   if (seconds <= 0) return;
-  await db
-    .prepare(
-      'UPDATE sessions SET active_seconds = active_seconds + ? WHERE id = ?'
-    )
-    .bind(Math.round(seconds), id)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle
+    .update(sessions)
+    .set({
+      activeSeconds: sql`${sessions.activeSeconds} + ${Math.round(seconds)}`,
+    })
+    .where(eq(sessions.id, id));
 }
 
 // Session title update
 export async function updateSessionTitle(db: D1Database, sessionId: string, title: string): Promise<void> {
-  await db
-    .prepare("UPDATE sessions SET title = ?, last_active_at = datetime('now') WHERE id = ?")
-    .bind(title, sessionId)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle
+    .update(sessions)
+    .set({
+      title,
+      lastActiveAt: sql`datetime('now')`,
+    })
+    .where(eq(sessions.id, sessionId));
 }
 
 // ─── Session Git State ──────────────────────────────────────────────────────
@@ -262,48 +397,44 @@ export async function createSessionGitState(
     baseBranch?: string;
   }
 ): Promise<SessionGitState> {
+  const drizzle = getDb(db);
   const id = crypto.randomUUID();
-  await db
-    .prepare(
-      `INSERT INTO session_git_state (id, session_id, source_type, source_pr_number, source_issue_number, source_repo_full_name, source_repo_url, branch, ref, base_branch)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .bind(
-      id,
-      data.sessionId,
-      data.sourceType || null,
-      data.sourcePrNumber ?? null,
-      data.sourceIssueNumber ?? null,
-      data.sourceRepoFullName || null,
-      data.sourceRepoUrl || null,
-      data.branch || null,
-      data.ref || null,
-      data.baseBranch || null
-    )
-    .run();
 
-  return mapSessionGitState({
+  await drizzle.insert(sessionGitState).values({
     id,
-    session_id: data.sessionId,
-    source_type: data.sourceType || null,
-    source_pr_number: data.sourcePrNumber ?? null,
-    source_issue_number: data.sourceIssueNumber ?? null,
-    source_repo_full_name: data.sourceRepoFullName || null,
-    source_repo_url: data.sourceRepoUrl || null,
+    sessionId: data.sessionId,
+    sourceType: data.sourceType || null,
+    sourcePrNumber: data.sourcePrNumber ?? null,
+    sourceIssueNumber: data.sourceIssueNumber ?? null,
+    sourceRepoFullName: data.sourceRepoFullName || null,
+    sourceRepoUrl: data.sourceRepoUrl || null,
     branch: data.branch || null,
     ref: data.ref || null,
-    base_branch: data.baseBranch || null,
-    commit_count: 0,
-    pr_number: null,
-    pr_title: null,
-    pr_state: null,
-    pr_url: null,
-    pr_created_at: null,
-    pr_merged_at: null,
-    agent_authored: 1,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+    baseBranch: data.baseBranch || null,
   });
+
+  return {
+    id,
+    sessionId: data.sessionId,
+    sourceType: data.sourceType || null,
+    sourcePrNumber: data.sourcePrNumber ?? null,
+    sourceIssueNumber: data.sourceIssueNumber ?? null,
+    sourceRepoFullName: data.sourceRepoFullName || null,
+    sourceRepoUrl: data.sourceRepoUrl || null,
+    branch: data.branch || null,
+    ref: data.ref || null,
+    baseBranch: data.baseBranch || null,
+    commitCount: 0,
+    prNumber: null,
+    prTitle: null,
+    prState: null,
+    prUrl: null,
+    prCreatedAt: null,
+    prMergedAt: null,
+    agentAuthored: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 export async function updateSessionGitState(
@@ -322,58 +453,60 @@ export async function updateSessionGitState(
     prMergedAt: string;
   }>
 ): Promise<void> {
-  const sets: string[] = [];
-  const params: (string | number | null)[] = [];
+  const setValues: Record<string, unknown> = {};
 
-  if (updates.branch !== undefined) { sets.push('branch = ?'); params.push(updates.branch); }
-  if (updates.ref !== undefined) { sets.push('ref = ?'); params.push(updates.ref); }
-  if (updates.baseBranch !== undefined) { sets.push('base_branch = ?'); params.push(updates.baseBranch); }
-  if (updates.commitCount !== undefined) { sets.push('commit_count = ?'); params.push(updates.commitCount); }
-  if (updates.prNumber !== undefined) { sets.push('pr_number = ?'); params.push(updates.prNumber); }
-  if (updates.prTitle !== undefined) { sets.push('pr_title = ?'); params.push(updates.prTitle); }
-  if (updates.prState !== undefined) { sets.push('pr_state = ?'); params.push(updates.prState); }
-  if (updates.prUrl !== undefined) { sets.push('pr_url = ?'); params.push(updates.prUrl); }
-  if (updates.prCreatedAt !== undefined) { sets.push('pr_created_at = ?'); params.push(updates.prCreatedAt); }
-  if (updates.prMergedAt !== undefined) { sets.push('pr_merged_at = ?'); params.push(updates.prMergedAt); }
+  if (updates.branch !== undefined) setValues.branch = updates.branch;
+  if (updates.ref !== undefined) setValues.ref = updates.ref;
+  if (updates.baseBranch !== undefined) setValues.baseBranch = updates.baseBranch;
+  if (updates.commitCount !== undefined) setValues.commitCount = updates.commitCount;
+  if (updates.prNumber !== undefined) setValues.prNumber = updates.prNumber;
+  if (updates.prTitle !== undefined) setValues.prTitle = updates.prTitle;
+  if (updates.prState !== undefined) setValues.prState = updates.prState;
+  if (updates.prUrl !== undefined) setValues.prUrl = updates.prUrl;
+  if (updates.prCreatedAt !== undefined) setValues.prCreatedAt = updates.prCreatedAt;
+  if (updates.prMergedAt !== undefined) setValues.prMergedAt = updates.prMergedAt;
 
-  if (sets.length === 0) return;
+  if (Object.keys(setValues).length === 0) return;
 
-  sets.push("updated_at = datetime('now')");
-  await db
-    .prepare(`UPDATE session_git_state SET ${sets.join(', ')} WHERE session_id = ?`)
-    .bind(...params, sessionId)
-    .run();
+  setValues.updatedAt = sql`datetime('now')`;
+
+  const drizzle = getDb(db);
+  await drizzle
+    .update(sessionGitState)
+    .set(setValues)
+    .where(eq(sessionGitState.sessionId, sessionId));
 }
 
 export async function getSessionGitState(db: D1Database, sessionId: string): Promise<SessionGitState | null> {
-  const row = await db
-    .prepare('SELECT * FROM session_git_state WHERE session_id = ?')
-    .bind(sessionId)
-    .first();
-  return row ? mapSessionGitState(row) : null;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select()
+    .from(sessionGitState)
+    .where(eq(sessionGitState.sessionId, sessionId))
+    .get();
+  return row ? rowToGitState(row) : null;
 }
 
 export async function getAdoptionMetrics(db: D1Database, periodDays: number): Promise<AdoptionMetrics> {
-  const result = await db
-    .prepare(
-      `SELECT
-        COUNT(CASE WHEN pr_number IS NOT NULL AND agent_authored = 1 THEN 1 END) as total_prs_created,
-        COUNT(CASE WHEN pr_state = 'merged' AND agent_authored = 1 THEN 1 END) as total_prs_merged,
-        COALESCE(SUM(commit_count), 0) as total_commits
-      FROM session_git_state
-      WHERE created_at >= datetime('now', '-' || ? || ' days')`
-    )
-    .bind(periodDays)
-    .first<{ total_prs_created: number; total_prs_merged: number; total_commits: number }>();
+  const drizzle = getDb(db);
+  const result = await drizzle
+    .select({
+      totalPrsCreated: sql<number>`COUNT(CASE WHEN ${sessionGitState.prNumber} IS NOT NULL AND ${sessionGitState.agentAuthored} = 1 THEN 1 END)`,
+      totalPrsMerged: sql<number>`COUNT(CASE WHEN ${sessionGitState.prState} = 'merged' AND ${sessionGitState.agentAuthored} = 1 THEN 1 END)`,
+      totalCommits: sql<number>`COALESCE(SUM(${sessionGitState.commitCount}), 0)`,
+    })
+    .from(sessionGitState)
+    .where(gt(sessionGitState.createdAt, sql`datetime('now', '-' || ${periodDays} || ' days')`))
+    .get();
 
-  const totalCreated = result?.total_prs_created ?? 0;
-  const totalMerged = result?.total_prs_merged ?? 0;
+  const totalCreated = result?.totalPrsCreated ?? 0;
+  const totalMerged = result?.totalPrsMerged ?? 0;
 
   return {
     totalPRsCreated: totalCreated,
     totalPRsMerged: totalMerged,
     mergeRate: totalCreated > 0 ? Math.round((totalMerged / totalCreated) * 100) : 0,
-    totalCommits: result?.total_commits ?? 0,
+    totalCommits: result?.totalCommits ?? 0,
   };
 }
 
@@ -386,7 +519,8 @@ export async function getChildSessions(
 ): Promise<PaginatedChildSessions> {
   const { limit = 20, cursor, status, excludeStatuses } = options;
 
-  // Build WHERE clauses
+  // Build WHERE clauses — raw SQL is used here because of dynamic NOT IN
+  // and the LEFT JOIN with session_git_state for child summaries.
   const whereClauses = ['s.parent_session_id = ?'];
   const binds: (string | number)[] = [parentSessionId];
 
@@ -462,26 +596,33 @@ export async function checkSessionConcurrency(
   db: D1Database,
   userId: string
 ): Promise<ConcurrencyCheckResult> {
-  // Get user's custom limit (NULL = default)
-  const user = await db
-    .prepare('SELECT max_active_sessions FROM users WHERE id = ?')
-    .bind(userId)
-    .first<{ max_active_sessions: number | null }>();
+  const drizzle = getDb(db);
 
-  const limit = user?.max_active_sessions ?? DEFAULT_MAX_ACTIVE_SESSIONS;
+  // Get user's custom limit (NULL = default)
+  const user = await drizzle
+    .select({ maxActiveSessions: users.maxActiveSessions })
+    .from(users)
+    .where(eq(users.id, userId))
+    .get();
+
+  const limit = user?.maxActiveSessions ?? DEFAULT_MAX_ACTIVE_SESSIONS;
 
   // Count active sessions (exclude orchestrator and workflow sessions)
-  const placeholders = ACTIVE_SESSION_STATUSES.map(() => '?').join(',');
-  const result = await db
-    .prepare(
-      `SELECT COUNT(*) as count FROM sessions
-       WHERE user_id = ?
-         AND status IN (${placeholders})
-         AND (parent_session_id IS NULL OR parent_session_id NOT LIKE 'orchestrator:%')
-         AND id NOT LIKE 'orchestrator:%'`
+  const result = await drizzle
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(sessions)
+    .where(
+      and(
+        eq(sessions.userId, userId),
+        inArray(sessions.status, ACTIVE_SESSION_STATUSES),
+        or(
+          isNull(sessions.parentSessionId),
+          not(sql`${sessions.parentSessionId} LIKE 'orchestrator:%'`)
+        ),
+        not(sql`${sessions.id} LIKE 'orchestrator:%'`)
+      )
     )
-    .bind(userId, ...ACTIVE_SESSION_STATUSES)
-    .first<{ count: number }>();
+    .get();
 
   const activeCount = result?.count ?? 0;
 
@@ -505,6 +646,7 @@ export async function upsertSessionFileChanged(
   file: { filePath: string; status: string; additions?: number; deletions?: number }
 ): Promise<void> {
   const id = `${sessionId}:${file.filePath}`;
+  // INSERT OR ... ON CONFLICT with custom update-set is simpler with raw SQL
   await db
     .prepare(
       `INSERT INTO session_files_changed (id, session_id, file_path, status, additions, deletions)
@@ -520,47 +662,56 @@ export async function upsertSessionFileChanged(
 }
 
 export async function getSessionFilesChanged(db: D1Database, sessionId: string): Promise<SessionFileChanged[]> {
-  const result = await db
-    .prepare('SELECT * FROM session_files_changed WHERE session_id = ? ORDER BY file_path ASC')
-    .bind(sessionId)
-    .all();
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select()
+    .from(sessionFilesChanged)
+    .where(eq(sessionFilesChanged.sessionId, sessionId))
+    .orderBy(asc(sessionFilesChanged.filePath));
 
-  return (result.results || []).map((row: any) => ({
+  return rows.map((row) => ({
     id: row.id,
-    sessionId: row.session_id,
-    filePath: row.file_path,
-    status: row.status,
+    sessionId: row.sessionId,
+    filePath: row.filePath,
+    status: row.status as FileChangeStatus,
     additions: row.additions ?? 0,
     deletions: row.deletions ?? 0,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    createdAt: row.createdAt!,
+    updatedAt: row.updatedAt!,
   }));
 }
 
 // ─── Session Participants ───────────────────────────────────────────────────
 
 export async function getSessionParticipants(db: D1Database, sessionId: string): Promise<SessionParticipant[]> {
-  const result = await db
-    .prepare(
-      `SELECT sp.*, u.name as user_name, u.email as user_email, u.avatar_url as user_avatar_url
-       FROM session_participants sp
-       JOIN users u ON u.id = sp.user_id
-       WHERE sp.session_id = ?
-       ORDER BY sp.created_at ASC`
-    )
-    .bind(sessionId)
-    .all();
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select({
+      id: sessionParticipants.id,
+      sessionId: sessionParticipants.sessionId,
+      userId: sessionParticipants.userId,
+      role: sessionParticipants.role,
+      addedBy: sessionParticipants.addedBy,
+      createdAt: sessionParticipants.createdAt,
+      userName: users.name,
+      userEmail: users.email,
+      userAvatarUrl: users.avatarUrl,
+    })
+    .from(sessionParticipants)
+    .innerJoin(users, eq(users.id, sessionParticipants.userId))
+    .where(eq(sessionParticipants.sessionId, sessionId))
+    .orderBy(asc(sessionParticipants.createdAt));
 
-  return (result.results || []).map((row: any) => ({
+  return rows.map((row) => ({
     id: row.id,
-    sessionId: row.session_id,
-    userId: row.user_id,
+    sessionId: row.sessionId,
+    userId: row.userId,
     role: row.role as SessionParticipantRole,
-    addedBy: row.added_by || undefined,
-    createdAt: new Date(row.created_at),
-    userName: row.user_name || undefined,
-    userEmail: row.user_email || undefined,
-    userAvatarUrl: row.user_avatar_url || undefined,
+    addedBy: row.addedBy || undefined,
+    createdAt: toDate(row.createdAt),
+    userName: row.userName || undefined,
+    userEmail: row.userEmail || undefined,
+    userAvatarUrl: row.userAvatarUrl || undefined,
   }));
 }
 
@@ -572,6 +723,7 @@ export async function addSessionParticipant(
   addedBy?: string
 ): Promise<void> {
   const id = crypto.randomUUID();
+  // INSERT ... ON CONFLICT DO NOTHING — keep as raw SQL per migration rules
   await db
     .prepare(
       `INSERT INTO session_participants (id, session_id, user_id, role, added_by)
@@ -583,10 +735,10 @@ export async function addSessionParticipant(
 }
 
 export async function removeSessionParticipant(db: D1Database, sessionId: string, userId: string): Promise<void> {
-  await db
-    .prepare('DELETE FROM session_participants WHERE session_id = ? AND user_id = ?')
-    .bind(sessionId, userId)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle
+    .delete(sessionParticipants)
+    .where(and(eq(sessionParticipants.sessionId, sessionId), eq(sessionParticipants.userId, userId)));
 }
 
 export async function getSessionParticipant(
@@ -594,36 +746,46 @@ export async function getSessionParticipant(
   sessionId: string,
   userId: string
 ): Promise<SessionParticipant | null> {
-  const row = await db
-    .prepare(
-      `SELECT sp.*, u.name as user_name, u.email as user_email, u.avatar_url as user_avatar_url
-       FROM session_participants sp
-       JOIN users u ON u.id = sp.user_id
-       WHERE sp.session_id = ? AND sp.user_id = ?`
-    )
-    .bind(sessionId, userId)
-    .first();
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select({
+      id: sessionParticipants.id,
+      sessionId: sessionParticipants.sessionId,
+      userId: sessionParticipants.userId,
+      role: sessionParticipants.role,
+      addedBy: sessionParticipants.addedBy,
+      createdAt: sessionParticipants.createdAt,
+      userName: users.name,
+      userEmail: users.email,
+      userAvatarUrl: users.avatarUrl,
+    })
+    .from(sessionParticipants)
+    .innerJoin(users, eq(users.id, sessionParticipants.userId))
+    .where(and(eq(sessionParticipants.sessionId, sessionId), eq(sessionParticipants.userId, userId)))
+    .get();
 
   if (!row) return null;
   return {
-    id: (row as any).id,
-    sessionId: (row as any).session_id,
-    userId: (row as any).user_id,
-    role: (row as any).role as SessionParticipantRole,
-    addedBy: (row as any).added_by || undefined,
-    createdAt: new Date((row as any).created_at),
-    userName: (row as any).user_name || undefined,
-    userEmail: (row as any).user_email || undefined,
-    userAvatarUrl: (row as any).user_avatar_url || undefined,
+    id: row.id,
+    sessionId: row.sessionId,
+    userId: row.userId,
+    role: row.role as SessionParticipantRole,
+    addedBy: row.addedBy || undefined,
+    createdAt: toDate(row.createdAt),
+    userName: row.userName || undefined,
+    userEmail: row.userEmail || undefined,
+    userAvatarUrl: row.userAvatarUrl || undefined,
   };
 }
 
 export async function isSessionParticipant(db: D1Database, sessionId: string, userId: string): Promise<boolean> {
-  const result = await db
-    .prepare('SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?')
-    .bind(sessionId, userId)
-    .first();
-  return !!result;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select({ id: sessionParticipants.id })
+    .from(sessionParticipants)
+    .where(and(eq(sessionParticipants.sessionId, sessionId), eq(sessionParticipants.userId, userId)))
+    .get();
+  return !!row;
 }
 
 // ─── Session Share Links ────────────────────────────────────────────────────
@@ -636,16 +798,19 @@ export async function createShareLink(
   expiresAt?: string,
   maxUses?: number
 ): Promise<SessionShareLink> {
+  const drizzle = getDb(db);
   const id = crypto.randomUUID();
   const token = generateShareToken();
 
-  await db
-    .prepare(
-      `INSERT INTO session_share_links (id, session_id, token, role, created_by, expires_at, max_uses)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    )
-    .bind(id, sessionId, token, role, createdBy, expiresAt || null, maxUses ?? null)
-    .run();
+  await drizzle.insert(sessionShareLinks).values({
+    id,
+    sessionId,
+    token,
+    role,
+    createdBy,
+    expiresAt: expiresAt || null,
+    maxUses: maxUses ?? null,
+  });
 
   return {
     id,
@@ -662,32 +827,38 @@ export async function createShareLink(
 }
 
 export async function getShareLink(db: D1Database, token: string): Promise<SessionShareLink | null> {
-  const row = await db
-    .prepare("SELECT * FROM session_share_links WHERE token = ? AND active = 1")
-    .bind(token)
-    .first();
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select()
+    .from(sessionShareLinks)
+    .where(and(eq(sessionShareLinks.token, token), eq(sessionShareLinks.active, true)))
+    .get();
 
   if (!row) return null;
-  return mapShareLink(row);
+  return rowToShareLink(row);
 }
 
 export async function getShareLinkById(db: D1Database, id: string): Promise<SessionShareLink | null> {
-  const row = await db
-    .prepare("SELECT * FROM session_share_links WHERE id = ?")
-    .bind(id)
-    .first();
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select()
+    .from(sessionShareLinks)
+    .where(eq(sessionShareLinks.id, id))
+    .get();
 
   if (!row) return null;
-  return mapShareLink(row);
+  return rowToShareLink(row);
 }
 
 export async function getSessionShareLinks(db: D1Database, sessionId: string): Promise<SessionShareLink[]> {
-  const result = await db
-    .prepare("SELECT * FROM session_share_links WHERE session_id = ? ORDER BY created_at DESC")
-    .bind(sessionId)
-    .all();
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select()
+    .from(sessionShareLinks)
+    .where(eq(sessionShareLinks.sessionId, sessionId))
+    .orderBy(desc(sessionShareLinks.createdAt));
 
-  return (result.results || []).map(mapShareLink);
+  return rows.map(rowToShareLink);
 }
 
 export async function redeemShareLink(
@@ -705,10 +876,11 @@ export async function redeemShareLink(
   if (link.maxUses !== undefined && link.maxUses !== null && link.useCount >= link.maxUses) return null;
 
   // Increment use count
-  await db
-    .prepare('UPDATE session_share_links SET use_count = use_count + 1 WHERE token = ?')
-    .bind(token)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle
+    .update(sessionShareLinks)
+    .set({ useCount: sql`${sessionShareLinks.useCount} + 1` })
+    .where(eq(sessionShareLinks.token, token));
 
   // Add user as participant
   await addSessionParticipant(db, link.sessionId, userId, link.role, link.createdBy);
@@ -717,10 +889,11 @@ export async function redeemShareLink(
 }
 
 export async function deactivateShareLink(db: D1Database, id: string): Promise<void> {
-  await db
-    .prepare('UPDATE session_share_links SET active = 0 WHERE id = ?')
-    .bind(id)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle
+    .update(sessionShareLinks)
+    .set({ active: false })
+    .where(eq(sessionShareLinks.id, id));
 }
 
 // ─── Session Access Helpers ─────────────────────────────────────────────────
@@ -774,36 +947,109 @@ export async function assertSessionAccess(
 
 // ─── Session Audit Log ──────────────────────────────────────────────────────
 
+export async function batchInsertAuditLog(
+  db: D1Database,
+  sessionId: string,
+  entries: Array<{
+    localId: number;
+    eventType: string;
+    summary: string;
+    actorId: string | null;
+    metadata: string | null;
+    createdAt: string;
+  }>,
+): Promise<void> {
+  if (entries.length === 0) return;
+
+  // INSERT OR IGNORE — keep as raw d1.batch() per migration rules
+  const stmts = entries.map((entry) =>
+    db.prepare(
+      'INSERT OR IGNORE INTO session_audit_log (id, session_id, event_type, summary, actor_id, metadata, created_at, flushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))'
+    ).bind(
+      `${sessionId}:${entry.localId}`,
+      sessionId,
+      entry.eventType,
+      entry.summary,
+      entry.actorId,
+      entry.metadata,
+      entry.createdAt,
+    )
+  );
+
+  await db.batch(stmts);
+}
+
+// ─── Bulk Operations ─────────────────────────────────────────────────────
+
+export async function filterOwnedSessionIds(
+  db: D1Database,
+  sessionIds: string[],
+  userId: string
+): Promise<string[]> {
+  if (sessionIds.length === 0) return [];
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select({ id: sessions.id })
+    .from(sessions)
+    .where(and(inArray(sessions.id, sessionIds), eq(sessions.userId, userId)));
+  return rows.map((r) => r.id);
+}
+
+export async function bulkDeleteSessionRecords(
+  db: D1Database,
+  sessionIds: string[],
+  userId: string
+): Promise<void> {
+  if (sessionIds.length === 0) return;
+  const drizzle = getDb(db);
+  await drizzle
+    .delete(sessions)
+    .where(and(inArray(sessions.id, sessionIds), eq(sessions.userId, userId)));
+}
+
+export async function bulkDeleteSessionMessages(
+  db: D1Database,
+  sessionIds: string[]
+): Promise<void> {
+  if (sessionIds.length === 0) return;
+  const drizzle = getDb(db);
+  await drizzle
+    .delete(messages)
+    .where(inArray(messages.sessionId, sessionIds));
+}
+
 export async function getSessionAuditLog(
   db: D1Database,
   sessionId: string,
   options: { limit?: number; after?: string; eventType?: string } = {}
 ): Promise<AuditLogEntry[]> {
-  const limit = options.limit || 200;
-  let query = 'SELECT * FROM session_audit_log WHERE session_id = ?';
-  const params: (string | number)[] = [sessionId];
+  const drizzle = getDb(db);
+  const queryLimit = options.limit || 200;
+
+  const conditions = [eq(sessionAuditLog.sessionId, sessionId)];
 
   if (options.after) {
-    query += ' AND created_at > ?';
-    params.push(options.after);
+    conditions.push(gt(sessionAuditLog.createdAt, options.after));
   }
 
   if (options.eventType) {
-    query += ' AND event_type = ?';
-    params.push(options.eventType);
+    conditions.push(eq(sessionAuditLog.eventType, options.eventType));
   }
 
-  query += ' ORDER BY created_at ASC LIMIT ?';
-  params.push(limit);
+  const rows = await drizzle
+    .select()
+    .from(sessionAuditLog)
+    .where(and(...conditions))
+    .orderBy(asc(sessionAuditLog.createdAt))
+    .limit(queryLimit);
 
-  const result = await db.prepare(query).bind(...params).all();
-  return (result.results || []).map((row: any) => ({
+  return rows.map((row) => ({
     id: row.id,
-    sessionId: row.session_id,
-    eventType: row.event_type,
+    sessionId: row.sessionId,
+    eventType: row.eventType as AuditLogEntry['eventType'],
     summary: row.summary,
-    actorId: row.actor_id || undefined,
-    metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-    createdAt: row.created_at,
+    actorId: row.actorId || undefined,
+    metadata: row.metadata || undefined,
+    createdAt: row.createdAt,
   }));
 }

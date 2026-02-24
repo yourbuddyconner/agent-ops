@@ -1,24 +1,47 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { User, UserRole, QueueMode } from '@agent-ops/shared';
-import { mapUser } from './mappers.js';
+import { eq, sql, asc, inArray } from 'drizzle-orm';
+import { getDb } from '../drizzle.js';
+import { toDate } from '../drizzle.js';
+import { users } from '../schema/index.js';
+
+function rowToUser(row: typeof users.$inferSelect): User {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name || undefined,
+    avatarUrl: row.avatarUrl || undefined,
+    githubId: row.githubId || undefined,
+    githubUsername: row.githubUsername || undefined,
+    gitName: row.gitName || undefined,
+    gitEmail: row.gitEmail || undefined,
+    onboardingCompleted: !!row.onboardingCompleted,
+    idleTimeoutSeconds: row.idleTimeoutSeconds ?? 900,
+    modelPreferences: row.modelPreferences || undefined,
+    uiQueueMode: (row.uiQueueMode as QueueMode) || 'followup',
+    role: (row.role as UserRole) || 'member',
+    createdAt: toDate(row.createdAt),
+    updatedAt: toDate(row.updatedAt),
+  };
+}
 
 export async function getOrCreateUser(
   db: D1Database,
   data: { id: string; email: string; name?: string; avatarUrl?: string }
 ): Promise<User> {
-  const existing = await db
-    .prepare('SELECT * FROM users WHERE id = ?')
-    .bind(data.id)
-    .first<User>();
+  const drizzle = getDb(db);
+  const existing = await drizzle.select().from(users).where(eq(users.id, data.id)).get();
 
   if (existing) {
-    return existing;
+    return rowToUser(existing);
   }
 
-  await db
-    .prepare('INSERT INTO users (id, email, name, avatar_url) VALUES (?, ?, ?, ?)')
-    .bind(data.id, data.email, data.name || null, data.avatarUrl || null)
-    .run();
+  await drizzle.insert(users).values({
+    id: data.id,
+    email: data.email,
+    name: data.name || null,
+    avatarUrl: data.avatarUrl || null,
+  });
 
   return {
     id: data.id,
@@ -32,13 +55,15 @@ export async function getOrCreateUser(
 }
 
 export async function findUserByGitHubId(db: D1Database, githubId: string): Promise<User | null> {
-  const row = await db.prepare('SELECT * FROM users WHERE github_id = ?').bind(githubId).first();
-  return row ? mapUser(row) : null;
+  const drizzle = getDb(db);
+  const row = await drizzle.select().from(users).where(eq(users.githubId, githubId)).get();
+  return row ? rowToUser(row) : null;
 }
 
 export async function findUserByEmail(db: D1Database, email: string): Promise<User | null> {
-  const row = await db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first();
-  return row ? mapUser(row) : null;
+  const drizzle = getDb(db);
+  const row = await drizzle.select().from(users).where(eq(users.email, email)).get();
+  return row ? rowToUser(row) : null;
 }
 
 export async function updateUserGitHub(
@@ -46,17 +71,23 @@ export async function updateUserGitHub(
   userId: string,
   data: { githubId: string; githubUsername: string; name?: string; avatarUrl?: string }
 ): Promise<void> {
-  await db
-    .prepare(
-      "UPDATE users SET github_id = ?, github_username = ?, name = COALESCE(?, name), avatar_url = COALESCE(?, avatar_url), updated_at = datetime('now') WHERE id = ?"
-    )
-    .bind(data.githubId, data.githubUsername, data.name || null, data.avatarUrl || null, userId)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle
+    .update(users)
+    .set({
+      githubId: data.githubId,
+      githubUsername: data.githubUsername,
+      name: sql`COALESCE(${data.name || null}, ${users.name})`,
+      avatarUrl: sql`COALESCE(${data.avatarUrl || null}, ${users.avatarUrl})`,
+      updatedAt: sql`datetime('now')`,
+    })
+    .where(eq(users.id, userId));
 }
 
 export async function getUserById(db: D1Database, userId: string): Promise<User | null> {
-  const row = await db.prepare('SELECT * FROM users WHERE id = ?').bind(userId).first();
-  return row ? mapUser(row) : null;
+  const drizzle = getDb(db);
+  const row = await drizzle.select().from(users).where(eq(users.id, userId)).get();
+  return row ? rowToUser(row) : null;
 }
 
 export async function updateUserProfile(
@@ -122,19 +153,100 @@ export async function backfillGitConfig(
 }
 
 export async function updateUserRole(db: D1Database, userId: string, role: UserRole): Promise<void> {
-  await db.prepare("UPDATE users SET role = ?, updated_at = datetime('now') WHERE id = ?").bind(role, userId).run();
+  const drizzle = getDb(db);
+  await drizzle
+    .update(users)
+    .set({ role, updatedAt: sql`datetime('now')` })
+    .where(eq(users.id, userId));
 }
 
 export async function getUserCount(db: D1Database): Promise<number> {
-  const row = await db.prepare('SELECT COUNT(*) as count FROM users').first<{ count: number }>();
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(users)
+    .get();
   return row?.count ?? 0;
 }
 
 export async function listUsers(db: D1Database): Promise<User[]> {
-  const result = await db.prepare('SELECT * FROM users ORDER BY created_at').all();
-  return (result.results || []).map(mapUser);
+  const drizzle = getDb(db);
+  const rows = await drizzle.select().from(users).orderBy(asc(users.createdAt));
+  return rows.map(rowToUser);
 }
 
 export async function deleteUser(db: D1Database, userId: string): Promise<void> {
-  await db.prepare('DELETE FROM users WHERE id = ?').bind(userId).run();
+  const drizzle = getDb(db);
+  await drizzle.delete(users).where(eq(users.id, userId));
+}
+
+// ─── DO Helpers ──────────────────────────────────────────────────────────────
+
+export async function getUserIdleTimeout(db: D1Database, userId: string): Promise<number> {
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select({ idleTimeoutSeconds: users.idleTimeoutSeconds })
+    .from(users)
+    .where(eq(users.id, userId))
+    .get();
+  return row?.idleTimeoutSeconds ?? 900;
+}
+
+export async function getUserGitConfig(
+  db: D1Database,
+  userId: string,
+): Promise<{
+  name: string | null;
+  email: string | null;
+  githubUsername: string | null;
+  gitName: string | null;
+  gitEmail: string | null;
+} | null> {
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select({
+      name: users.name,
+      email: users.email,
+      githubUsername: users.githubUsername,
+      gitName: users.gitName,
+      gitEmail: users.gitEmail,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .get();
+  return row || null;
+}
+
+export async function getUsersByIds(db: D1Database, userIds: string[]): Promise<User[]> {
+  if (userIds.length === 0) return [];
+  const drizzle = getDb(db);
+  const rows = await drizzle.select().from(users).where(inArray(users.id, userIds));
+  return rows.map(rowToUser);
+}
+
+export async function getUserDiscoveredModels(
+  db: D1Database,
+  userId: string,
+): Promise<unknown[] | null> {
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select({ discoveredModels: users.discoveredModels })
+    .from(users)
+    .where(eq(users.id, userId))
+    .get();
+  if (!row?.discoveredModels) return null;
+  const parsed = row.discoveredModels;
+  return Array.isArray(parsed) ? parsed : null;
+}
+
+export async function updateUserDiscoveredModels(
+  db: D1Database,
+  userId: string,
+  modelsJson: string,
+): Promise<void> {
+  const drizzle = getDb(db);
+  await drizzle
+    .update(users)
+    .set({ discoveredModels: sql`${modelsJson}` })
+    .where(eq(users.id, userId));
 }

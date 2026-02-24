@@ -1,0 +1,311 @@
+import type { Env } from '../env.js';
+import * as db from '../lib/db.js';
+import { buildDoWebSocketUrl } from '../lib/do-ws-url.js';
+import { buildOrchestratorPersonaFiles } from '../lib/orchestrator-persona.js';
+import { generateRunnerToken, assembleProviderEnv, assembleCredentialEnv } from '../lib/env-assembly.js';
+
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+const TERMINAL_STATUSES = new Set(['terminated', 'archived', 'error']);
+const ORCHESTRATOR_UNAVAILABLE_STATUSES = new Set(['terminated', 'archived', 'error']);
+
+// ─── Restart Orchestrator Session ───────────────────────────────────────────
+
+export async function restartOrchestratorSession(
+  env: Env,
+  userId: string,
+  userEmail: string,
+  identity: { id: string; name: string; handle: string; customInstructions?: string | null },
+  requestUrl?: string
+): Promise<{ sessionId: string }> {
+  const personaFiles = buildOrchestratorPersonaFiles(identity as any);
+
+  const sessionId = `orchestrator:${userId}:${crypto.randomUUID()}`;
+  const runnerToken = generateRunnerToken();
+
+  await db.createSession(env.DB, {
+    id: sessionId,
+    userId,
+    workspace: 'orchestrator',
+    title: `${identity.name} (Orchestrator)`,
+    isOrchestrator: true,
+    purpose: 'orchestrator',
+  });
+
+  // Build env vars (LLM keys + orchestrator flag)
+  const providerVars = await assembleProviderEnv(env.DB, env);
+  const credentialVars = await assembleCredentialEnv(env.DB, env, userId);
+  const envVars: Record<string, string> = {
+    IS_ORCHESTRATOR: 'true',
+    ...providerVars,
+    ...credentialVars,
+  };
+
+  const doWsUrl = buildDoWebSocketUrl({
+    env,
+    sessionId,
+    requestUrl,
+  });
+
+  // Fetch user preferences (idle timeout, queue mode, model preferences)
+  const userRow = await db.getUserById(env.DB, userId);
+  const idleTimeoutSeconds = userRow?.idleTimeoutSeconds ?? 900;
+  const uiQueueMode = userRow?.uiQueueMode ?? 'followup';
+  const idleTimeoutMs = idleTimeoutSeconds * 1000;
+
+  // Resolve default model: user prefs first, then org prefs as fallback.
+  let initialModel: string | undefined;
+  if (userRow?.modelPreferences && userRow.modelPreferences.length > 0) {
+    initialModel = userRow.modelPreferences[0];
+  } else {
+    try {
+      const orgSettings = await db.getOrgSettings(env.DB);
+      if (orgSettings.modelPreferences && orgSettings.modelPreferences.length > 0) {
+        initialModel = orgSettings.modelPreferences[0];
+      }
+    } catch {
+      // org settings unavailable — no default model
+    }
+  }
+
+  const spawnRequest = {
+    sessionId,
+    userId,
+    workspace: 'orchestrator',
+    imageType: 'base',
+    doWsUrl,
+    runnerToken,
+    jwtSecret: env.ENCRYPTION_KEY,
+    idleTimeoutSeconds,
+    envVars,
+    personaFiles,
+  };
+
+  // Initialize SessionAgent DO
+  const doId = env.SESSIONS.idFromName(sessionId);
+  const sessionDO = env.SESSIONS.get(doId);
+
+  try {
+    await sessionDO.fetch(new Request('http://do/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId,
+        userId,
+        workspace: 'orchestrator',
+        runnerToken,
+        backendUrl: env.MODAL_BACKEND_URL.replace('{label}', 'create-session'),
+        terminateUrl: env.MODAL_BACKEND_URL.replace('{label}', 'terminate-session'),
+        hibernateUrl: env.MODAL_BACKEND_URL.replace('{label}', 'hibernate-session'),
+        restoreUrl: env.MODAL_BACKEND_URL.replace('{label}', 'restore-session'),
+        idleTimeoutMs,
+        queueMode: uiQueueMode,
+        spawnRequest,
+        initialModel,
+      }),
+    }));
+  } catch (err) {
+    console.error('Failed to initialize orchestrator DO:', err);
+    await db.updateSessionStatus(env.DB, sessionId, 'error', undefined,
+      `Failed to initialize orchestrator: ${err instanceof Error ? err.message : String(err)}`);
+    throw err;
+  }
+
+  return { sessionId };
+}
+
+// ─── Onboard Orchestrator ───────────────────────────────────────────────────
+
+export interface OnboardOrchestratorParams {
+  name: string;
+  handle: string;
+  avatar?: string;
+  customInstructions?: string;
+}
+
+export type OnboardOrchestratorResult =
+  | { ok: true; sessionId: string; identity: any; session: any }
+  | { ok: false; reason: 'already_exists' }
+  | { ok: false; reason: 'handle_taken' };
+
+export async function onboardOrchestrator(
+  env: Env,
+  userId: string,
+  userEmail: string,
+  params: OnboardOrchestratorParams,
+  requestUrl: string,
+): Promise<OnboardOrchestratorResult> {
+  let identity = await db.getOrchestratorIdentity(env.DB, userId);
+  const existingSession = await db.getOrchestratorSession(env.DB, userId);
+
+  if (identity && existingSession && !TERMINAL_STATUSES.has(existingSession.status)) {
+    return { ok: false, reason: 'already_exists' };
+  }
+
+  // Ensure user exists in DB
+  await db.getOrCreateUser(env.DB, { id: userId, email: userEmail });
+
+  if (!identity) {
+    const handleTaken = await db.getOrchestratorIdentityByHandle(env.DB, params.handle);
+    if (handleTaken) {
+      return { ok: false, reason: 'handle_taken' };
+    }
+
+    const identityId = crypto.randomUUID();
+    identity = await db.createOrchestratorIdentity(env.DB, {
+      id: identityId,
+      userId,
+      name: params.name,
+      handle: params.handle,
+      avatar: params.avatar,
+      customInstructions: params.customInstructions,
+    });
+  } else {
+    await db.updateOrchestratorIdentity(env.DB, identity.id, {
+      name: params.name,
+      handle: params.handle,
+      customInstructions: params.customInstructions,
+    });
+    identity = (await db.getOrchestratorIdentity(env.DB, userId))!;
+  }
+
+  const result = await restartOrchestratorSession(env, userId, userEmail, identity, requestUrl);
+  const session = await db.getSession(env.DB, result.sessionId);
+  return { ok: true, sessionId: result.sessionId, identity, session };
+}
+
+// ─── Get Orchestrator Info ──────────────────────────────────────────────────
+
+export interface OrchestratorInfo {
+  sessionId: string;
+  identity: any;
+  session: any;
+  exists: boolean;
+  needsRestart: boolean;
+}
+
+export async function getOrchestratorInfo(database: import('@cloudflare/workers-types').D1Database, userId: string): Promise<OrchestratorInfo> {
+  const identity = await db.getOrchestratorIdentity(database, userId);
+  const session = await db.getOrchestratorSession(database, userId);
+  const sessionId = session?.id ?? `orchestrator:${userId}`;
+  const needsRestart = !!identity && (!session || TERMINAL_STATUSES.has(session.status));
+
+  return {
+    sessionId,
+    identity,
+    session,
+    exists: !!identity && !!session,
+    needsRestart,
+  };
+}
+
+// ─── Update Orchestrator Identity ───────────────────────────────────────────
+
+export type UpdateIdentityResult =
+  | { ok: true; identity: any }
+  | { ok: false; error: 'not_found' }
+  | { ok: false; error: 'handle_taken' };
+
+export async function updateOrchestratorIdentity(
+  database: import('@cloudflare/workers-types').D1Database,
+  userId: string,
+  updates: { name?: string; handle?: string; avatar?: string; customInstructions?: string },
+): Promise<UpdateIdentityResult> {
+  const identity = await db.getOrchestratorIdentity(database, userId);
+  if (!identity) {
+    return { ok: false, error: 'not_found' };
+  }
+
+  if (updates.handle && updates.handle !== identity.handle) {
+    const handleTaken = await db.getOrchestratorIdentityByHandle(database, updates.handle);
+    if (handleTaken) {
+      return { ok: false, error: 'handle_taken' };
+    }
+  }
+
+  await db.updateOrchestratorIdentity(database, identity.id, updates);
+  const updated = await db.getOrchestratorIdentity(database, userId);
+  return { ok: true, identity: updated };
+}
+
+// ─── Dispatch Orchestrator Prompt ───────────────────────────────────────────
+
+type OrchestratorPromptDispatchResult = {
+  dispatched: boolean;
+  sessionId: string;
+  reason?: string;
+};
+
+export async function dispatchOrchestratorPrompt(
+  env: Env,
+  params: {
+    userId: string;
+    content: string;
+    authorName?: string;
+    authorEmail?: string;
+    channelType?: string;
+    channelId?: string;
+    attachments?: Array<{ type: string; mime: string; url: string; filename?: string }>;
+  }
+): Promise<OrchestratorPromptDispatchResult> {
+  const content = params.content.trim();
+  if (!content && (!params.attachments || params.attachments.length === 0)) {
+    return { dispatched: false, sessionId: `orchestrator:${params.userId}`, reason: 'empty_prompt' };
+  }
+
+  // Resolve the current orchestrator session (supports rotated IDs)
+  console.log(`[OrchestratorDispatch] Looking up orchestrator for userId=${params.userId} channelType=${params.channelType} channelId=${params.channelId}`);
+  const session = await db.getOrchestratorSession(env.DB, params.userId);
+  if (!session || session.purpose !== 'orchestrator') {
+    console.log(`[OrchestratorDispatch] No orchestrator found for userId=${params.userId} session=${session?.id || 'null'} purpose=${session?.purpose || 'null'}`);
+    return { dispatched: false, sessionId: `orchestrator:${params.userId}`, reason: 'orchestrator_not_configured' };
+  }
+  const sessionId = session.id;
+  if (ORCHESTRATOR_UNAVAILABLE_STATUSES.has(session.status)) {
+    console.log(`[OrchestratorDispatch] Orchestrator unavailable: session=${sessionId} status=${session.status}`);
+    return { dispatched: false, sessionId, reason: `orchestrator_unavailable:${session.status}` };
+  }
+
+  console.log(`[OrchestratorDispatch] Dispatching to session=${sessionId} status=${session.status}`);
+  const messageId = crypto.randomUUID();
+  await db.saveMessage(env.DB, {
+    id: messageId,
+    sessionId,
+    role: 'user',
+    content,
+    authorId: params.userId,
+    authorName: params.authorName,
+    authorEmail: params.authorEmail,
+    channelType: params.channelType,
+    channelId: params.channelId,
+  });
+
+  const doId = env.SESSIONS.idFromName(sessionId);
+  const sessionDO = env.SESSIONS.get(doId);
+  const doRes = await sessionDO.fetch(new Request('http://do/prompt', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      content,
+      channelType: params.channelType,
+      channelId: params.channelId,
+      attachments: params.attachments,
+      authorName: params.authorName,
+      authorEmail: params.authorEmail,
+      authorId: params.userId,
+    }),
+  }));
+
+  if (!doRes.ok) {
+    const errText = (await doRes.text().catch(() => '')).slice(0, 200);
+    console.log(`[OrchestratorDispatch] DO dispatch failed: status=${doRes.status} body=${errText}`);
+    return {
+      dispatched: false,
+      sessionId,
+      reason: `orchestrator_dispatch_failed:${doRes.status}${errText ? `:${errText}` : ''}`,
+    };
+  }
+
+  console.log(`[OrchestratorDispatch] Success: session=${sessionId} messageId=${messageId}`);
+  return { dispatched: true, sessionId };
+}

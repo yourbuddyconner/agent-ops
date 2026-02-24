@@ -47,7 +47,7 @@ import {
   enqueueWorkflowExecution,
   sha256Hex,
 } from './lib/workflow-runtime.js';
-import { restartOrchestratorSession } from './routes/orchestrator.js';
+import { restartOrchestratorSession } from './services/orchestrator.js';
 
 // Durable Object exports
 export { APIKeysDurableObject } from './durable-objects/api-keys.js';

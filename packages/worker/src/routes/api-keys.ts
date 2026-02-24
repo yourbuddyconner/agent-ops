@@ -3,6 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { NotFoundError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
+import * as db from '../lib/db.js';
 
 export const apiKeysRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -48,25 +49,7 @@ async function hashToken(token: string): Promise<string> {
  */
 apiKeysRouter.get('/', async (c) => {
   const user = c.get('user');
-
-  const result = await c.env.DB.prepare(
-    `SELECT id, name, prefix, created_at, last_used_at, expires_at
-     FROM api_tokens
-     WHERE user_id = ? AND revoked_at IS NULL
-     ORDER BY created_at DESC`
-  )
-    .bind(user.id)
-    .all();
-
-  const keys: APIKey[] = (result.results || []).map((row: any) => ({
-    id: row.id,
-    name: row.name,
-    prefix: row.prefix,
-    createdAt: row.created_at,
-    lastUsedAt: row.last_used_at,
-    expiresAt: row.expires_at,
-  }));
-
+  const keys = await db.listApiTokens(c.env.DB, user.id);
   return c.json({ keys });
 });
 
@@ -96,12 +79,7 @@ apiKeysRouter.post('/', zValidator('json', createKeySchema), async (c) => {
     expiresAt = expDate.toISOString();
   }
 
-  await c.env.DB.prepare(
-    `INSERT INTO api_tokens (id, user_id, name, token_hash, prefix, created_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, datetime('now'), ?)`
-  )
-    .bind(id, user.id, name, tokenHash, prefix, expiresAt)
-    .run();
+  await db.insertApiToken(c.env.DB, { id, userId: user.id, name, tokenHash, prefix, expiresAt });
 
   const key: APIKeyWithToken = {
     id,
@@ -124,23 +102,10 @@ apiKeysRouter.delete('/:id', async (c) => {
   const user = c.get('user');
   const id = c.req.param('id');
 
-  // Verify ownership
-  const existing = await c.env.DB.prepare(
-    `SELECT id FROM api_tokens WHERE id = ? AND user_id = ? AND revoked_at IS NULL`
-  )
-    .bind(id, user.id)
-    .first();
-
-  if (!existing) {
+  const revoked = await db.revokeApiToken(c.env.DB, id, user.id);
+  if (!revoked) {
     throw new NotFoundError('API key not found');
   }
-
-  // Soft delete by setting revoked_at
-  await c.env.DB.prepare(
-    `UPDATE api_tokens SET revoked_at = datetime('now') WHERE id = ?`
-  )
-    .bind(id)
-    .run();
 
   return c.json({ success: true });
 });

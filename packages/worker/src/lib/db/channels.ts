@@ -1,6 +1,39 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { UserIdentityLink, ChannelBinding, ChannelType, QueueMode } from '@agent-ops/shared';
-import { mapIdentityLink, mapChannelBinding } from './mappers.js';
+import { eq, and, desc } from 'drizzle-orm';
+import { getDb } from '../drizzle.js';
+import { userIdentityLinks, channelBindings } from '../schema/index.js';
+
+function rowToIdentityLink(row: typeof userIdentityLinks.$inferSelect): UserIdentityLink {
+  return {
+    id: row.id,
+    userId: row.userId,
+    provider: row.provider,
+    externalId: row.externalId,
+    externalName: row.externalName || undefined,
+    teamId: row.teamId || undefined,
+    createdAt: row.createdAt,
+  };
+}
+
+function rowToChannelBinding(row: typeof channelBindings.$inferSelect): ChannelBinding {
+  return {
+    id: row.id,
+    sessionId: row.sessionId,
+    channelType: row.channelType as ChannelType,
+    channelId: row.channelId,
+    scopeKey: row.scopeKey,
+    userId: row.userId || undefined,
+    orgId: row.orgId,
+    queueMode: row.queueMode as QueueMode,
+    collectDebounceMs: row.collectDebounceMs ?? 3000,
+    slackChannelId: row.slackChannelId || undefined,
+    slackThreadTs: row.slackThreadTs || undefined,
+    githubRepoFullName: row.githubRepoFullName || undefined,
+    githubPrNumber: row.githubPrNumber ?? undefined,
+    createdAt: row.createdAt,
+  };
+}
 
 // Identity Links
 
@@ -8,12 +41,15 @@ export async function createIdentityLink(
   db: D1Database,
   data: { id: string; userId: string; provider: string; externalId: string; externalName?: string; teamId?: string },
 ): Promise<UserIdentityLink> {
-  await db
-    .prepare(
-      'INSERT INTO user_identity_links (id, user_id, provider, external_id, external_name, team_id) VALUES (?, ?, ?, ?, ?, ?)',
-    )
-    .bind(data.id, data.userId, data.provider, data.externalId, data.externalName || null, data.teamId || null)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle.insert(userIdentityLinks).values({
+    id: data.id,
+    userId: data.userId,
+    provider: data.provider,
+    externalId: data.externalId,
+    externalName: data.externalName || null,
+    teamId: data.teamId || null,
+  });
 
   return {
     id: data.id,
@@ -27,11 +63,13 @@ export async function createIdentityLink(
 }
 
 export async function getUserIdentityLinks(db: D1Database, userId: string): Promise<UserIdentityLink[]> {
-  const result = await db
-    .prepare('SELECT * FROM user_identity_links WHERE user_id = ? ORDER BY created_at DESC')
-    .bind(userId)
-    .all();
-  return (result.results || []).map(mapIdentityLink);
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select()
+    .from(userIdentityLinks)
+    .where(eq(userIdentityLinks.userId, userId))
+    .orderBy(desc(userIdentityLinks.createdAt));
+  return rows.map(rowToIdentityLink);
 }
 
 export async function deleteIdentityLink(db: D1Database, id: string, userId: string): Promise<boolean> {
@@ -47,11 +85,13 @@ export async function resolveUserByExternalId(
   provider: string,
   externalId: string,
 ): Promise<string | null> {
-  const row = await db
-    .prepare('SELECT user_id FROM user_identity_links WHERE provider = ? AND external_id = ?')
-    .bind(provider, externalId)
-    .first<{ user_id: string }>();
-  return row?.user_id || null;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select({ userId: userIdentityLinks.userId })
+    .from(userIdentityLinks)
+    .where(and(eq(userIdentityLinks.provider, provider), eq(userIdentityLinks.externalId, externalId)))
+    .get();
+  return row?.userId || null;
 }
 
 // Channel Bindings
@@ -76,28 +116,23 @@ export async function createChannelBinding(
 ): Promise<ChannelBinding> {
   const queueMode = data.queueMode || 'followup';
   const collectDebounceMs = data.collectDebounceMs ?? 3000;
+  const drizzle = getDb(db);
 
-  await db
-    .prepare(
-      `INSERT INTO channel_bindings (id, session_id, channel_type, channel_id, scope_key, user_id, org_id, queue_mode, collect_debounce_ms, slack_channel_id, slack_thread_ts, github_repo_full_name, github_pr_number)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(
-      data.id,
-      data.sessionId,
-      data.channelType,
-      data.channelId,
-      data.scopeKey,
-      data.userId || null,
-      data.orgId,
-      queueMode,
-      collectDebounceMs,
-      data.slackChannelId || null,
-      data.slackThreadTs || null,
-      data.githubRepoFullName || null,
-      data.githubPrNumber ?? null,
-    )
-    .run();
+  await drizzle.insert(channelBindings).values({
+    id: data.id,
+    sessionId: data.sessionId,
+    channelType: data.channelType,
+    channelId: data.channelId,
+    scopeKey: data.scopeKey,
+    userId: data.userId || null,
+    orgId: data.orgId,
+    queueMode,
+    collectDebounceMs,
+    slackChannelId: data.slackChannelId || null,
+    slackThreadTs: data.slackThreadTs || null,
+    githubRepoFullName: data.githubRepoFullName || null,
+    githubPrNumber: data.githubPrNumber ?? null,
+  });
 
   return {
     id: data.id,
@@ -118,31 +153,38 @@ export async function createChannelBinding(
 }
 
 export async function getChannelBindingByScopeKey(db: D1Database, scopeKey: string): Promise<ChannelBinding | null> {
-  const row = await db
-    .prepare('SELECT * FROM channel_bindings WHERE scope_key = ?')
-    .bind(scopeKey)
-    .first();
-  return row ? mapChannelBinding(row) : null;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select()
+    .from(channelBindings)
+    .where(eq(channelBindings.scopeKey, scopeKey))
+    .get();
+  return row ? rowToChannelBinding(row) : null;
 }
 
 export async function getSessionChannelBindings(db: D1Database, sessionId: string): Promise<ChannelBinding[]> {
-  const result = await db
-    .prepare('SELECT * FROM channel_bindings WHERE session_id = ? ORDER BY created_at DESC')
-    .bind(sessionId)
-    .all();
-  return (result.results || []).map(mapChannelBinding);
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select()
+    .from(channelBindings)
+    .where(eq(channelBindings.sessionId, sessionId))
+    .orderBy(desc(channelBindings.createdAt));
+  return rows.map(rowToChannelBinding);
 }
 
 export async function listUserChannelBindings(db: D1Database, userId: string): Promise<ChannelBinding[]> {
-  const result = await db
-    .prepare('SELECT * FROM channel_bindings WHERE user_id = ? ORDER BY created_at DESC')
-    .bind(userId)
-    .all();
-  return (result.results || []).map(mapChannelBinding);
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select()
+    .from(channelBindings)
+    .where(eq(channelBindings.userId, userId))
+    .orderBy(desc(channelBindings.createdAt));
+  return rows.map(rowToChannelBinding);
 }
 
 export async function deleteChannelBinding(db: D1Database, id: string): Promise<void> {
-  await db.prepare('DELETE FROM channel_bindings WHERE id = ?').bind(id).run();
+  const drizzle = getDb(db);
+  await drizzle.delete(channelBindings).where(eq(channelBindings.id, id));
 }
 
 export async function updateChannelBindingQueueMode(
@@ -151,15 +193,13 @@ export async function updateChannelBindingQueueMode(
   queueMode: QueueMode,
   collectDebounceMs?: number,
 ): Promise<void> {
+  const drizzle = getDb(db);
+  const setValues: Record<string, unknown> = { queueMode };
   if (collectDebounceMs !== undefined) {
-    await db
-      .prepare('UPDATE channel_bindings SET queue_mode = ?, collect_debounce_ms = ? WHERE id = ?')
-      .bind(queueMode, collectDebounceMs, id)
-      .run();
-  } else {
-    await db
-      .prepare('UPDATE channel_bindings SET queue_mode = ? WHERE id = ?')
-      .bind(queueMode, id)
-      .run();
+    setValues.collectDebounceMs = collectDebounceMs;
   }
+  await drizzle
+    .update(channelBindings)
+    .set(setValues)
+    .where(eq(channelBindings.id, id));
 }

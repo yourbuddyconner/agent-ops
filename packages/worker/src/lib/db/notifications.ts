@@ -1,11 +1,59 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { MailboxMessage, UserNotificationPreference } from '@agent-ops/shared';
-import { mapMailboxMessage, mapNotificationPreference, normalizeNotificationEventType } from './mappers.js';
+import { eq, and, desc, sql, inArray } from 'drizzle-orm';
+import { getDb } from '../drizzle.js';
+import { mailboxMessages, userNotificationPreferences } from '../schema/index.js';
+import { normalizeNotificationEventType } from './constants.js';
 
 // ─── Notification Queue Types ───────────────────────────────────────────────
 
 export type NotificationQueueItem = MailboxMessage;
 export type NotificationQueueType = MailboxMessage['messageType'];
+
+// ─── Row Conversion Helpers ─────────────────────────────────────────────────
+
+/**
+ * Convert a raw row from the mailbox_messages table (with optional joined columns)
+ * into a MailboxMessage. Used for raw SQL results that include joined aliases.
+ */
+function rowToMailboxMessage(row: any): MailboxMessage {
+  return {
+    id: row.id,
+    fromSessionId: row.from_session_id || undefined,
+    fromUserId: row.from_user_id || undefined,
+    toSessionId: row.to_session_id || undefined,
+    toUserId: row.to_user_id || undefined,
+    messageType: row.message_type,
+    content: row.content,
+    contextSessionId: row.context_session_id || undefined,
+    contextTaskId: row.context_task_id || undefined,
+    replyToId: row.reply_to_id || undefined,
+    read: !!row.read,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    fromSessionTitle: row.from_session_title || undefined,
+    fromUserName: row.from_user_name || undefined,
+    fromUserEmail: row.from_user_email || undefined,
+    toSessionTitle: row.to_session_title || undefined,
+    toUserName: row.to_user_name || undefined,
+    replyCount: row.reply_count !== undefined ? Number(row.reply_count) : undefined,
+    lastActivityAt: row.last_activity_at || undefined,
+  };
+}
+
+function drizzleRowToPreference(row: typeof userNotificationPreferences.$inferSelect): UserNotificationPreference {
+  return {
+    id: row.id,
+    userId: row.userId,
+    messageType: row.messageType as UserNotificationPreference['messageType'],
+    eventType: row.eventType || '*',
+    webEnabled: !!row.webEnabled,
+    slackEnabled: !!row.slackEnabled,
+    emailEnabled: !!row.emailEnabled,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
 
 // ─── Mailbox Operations ─────────────────────────────────────────────────────
 
@@ -23,28 +71,26 @@ export async function createMailboxMessage(
     replyToId?: string;
   },
 ): Promise<MailboxMessage> {
+  const drizzle = getDb(db);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  await db
-    .prepare(
-      `INSERT INTO mailbox_messages (id, from_session_id, from_user_id, to_session_id, to_user_id, message_type, content, context_session_id, context_task_id, reply_to_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(
-      id,
-      data.fromSessionId || null,
-      data.fromUserId || null,
-      data.toSessionId || null,
-      data.toUserId || null,
-      data.messageType || 'message',
-      data.content,
-      data.contextSessionId || null,
-      data.contextTaskId || null,
-      data.replyToId || null,
-      now,
-      now,
-    )
-    .run();
+
+  await drizzle.insert(mailboxMessages).values({
+    id,
+    fromSessionId: data.fromSessionId || null,
+    fromUserId: data.fromUserId || null,
+    toSessionId: data.toSessionId || null,
+    toUserId: data.toUserId || null,
+    messageType: data.messageType || 'message',
+    content: data.content,
+    contextSessionId: data.contextSessionId || null,
+    contextTaskId: data.contextTaskId || null,
+    replyToId: data.replyToId || null,
+    read: false,
+    createdAt: now,
+    updatedAt: now,
+  });
+
   return {
     id,
     fromSessionId: data.fromSessionId,
@@ -97,7 +143,7 @@ export async function getSessionMailbox(
     .bind(...params)
     .all();
 
-  return (result.results || []).map(mapMailboxMessage);
+  return (result.results || []).map(rowToMailboxMessage);
 }
 
 export async function getUserInbox(
@@ -158,7 +204,7 @@ export async function getUserInbox(
   const rows = result.results || [];
   const hasMore = rows.length === limit;
   const items = hasMore ? rows.slice(0, -1) : rows;
-  const messages = items.map(mapMailboxMessage);
+  const messages = items.map(rowToMailboxMessage);
   const cursor =
     hasMore && messages.length > 0 ? messages[messages.length - 1].lastActivityAt || messages[messages.length - 1].createdAt : undefined;
 
@@ -166,27 +212,37 @@ export async function getUserInbox(
 }
 
 export async function getUserInboxCount(db: D1Database, userId: string): Promise<number> {
-  const result = await db
-    .prepare('SELECT COUNT(*) as count FROM mailbox_messages WHERE to_user_id = ? AND read = 0')
-    .bind(userId)
-    .first<{ count: number }>();
-  return result?.count ?? 0;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select({ count: sql<number>`count(*)` })
+    .from(mailboxMessages)
+    .where(and(eq(mailboxMessages.toUserId, userId), eq(mailboxMessages.read, false)))
+    .get();
+  return row?.count ?? 0;
 }
 
 export async function markSessionMailboxRead(db: D1Database, sessionId: string): Promise<number> {
-  const result = await db
-    .prepare("UPDATE mailbox_messages SET read = 1, updated_at = datetime('now') WHERE to_session_id = ? AND read = 0")
-    .bind(sessionId)
-    .run();
-  return result.meta.changes ?? 0;
+  const drizzle = getDb(db);
+  const result = await drizzle
+    .update(mailboxMessages)
+    .set({
+      read: true,
+      updatedAt: sql`datetime('now')`,
+    })
+    .where(and(eq(mailboxMessages.toSessionId, sessionId), eq(mailboxMessages.read, false)));
+  return (result as any).meta?.changes ?? 0;
 }
 
 export async function markInboxMessageRead(db: D1Database, messageId: string, userId: string): Promise<boolean> {
-  const result = await db
-    .prepare("UPDATE mailbox_messages SET read = 1, updated_at = datetime('now') WHERE id = ? AND to_user_id = ?")
-    .bind(messageId, userId)
-    .run();
-  return (result.meta.changes ?? 0) > 0;
+  const drizzle = getDb(db);
+  const result = await drizzle
+    .update(mailboxMessages)
+    .set({
+      read: true,
+      updatedAt: sql`datetime('now')`,
+    })
+    .where(and(eq(mailboxMessages.id, messageId), eq(mailboxMessages.toUserId, userId)));
+  return ((result as any).meta?.changes ?? 0) > 0;
 }
 
 export async function getMailboxMessage(db: D1Database, messageId: string): Promise<MailboxMessage | null> {
@@ -207,7 +263,7 @@ export async function getMailboxMessage(db: D1Database, messageId: string): Prom
     )
     .bind(messageId)
     .first();
-  return row ? mapMailboxMessage(row) : null;
+  return row ? rowToMailboxMessage(row) : null;
 }
 
 export async function getInboxThread(
@@ -234,7 +290,7 @@ export async function getInboxThread(
     .bind(threadId, threadId)
     .all();
 
-  const messages = (result.results || []).map(mapMailboxMessage);
+  const messages = (result.results || []).map(rowToMailboxMessage);
   const rootMessage = messages.find((m) => m.id === threadId && !m.replyToId) || null;
 
   // Security: user must be participant
@@ -422,33 +478,36 @@ export async function markNonActionableNotificationsRead(
   db: D1Database,
   userId: string,
 ): Promise<number> {
-  const result = await db
-    .prepare(
-      `UPDATE mailbox_messages
-       SET read = 1, updated_at = datetime('now')
-       WHERE to_user_id = ?
-         AND read = 0
-         AND message_type IN ('message', 'notification')`,
-    )
-    .bind(userId)
-    .run();
-  return result.meta.changes ?? 0;
+  const drizzle = getDb(db);
+  const result = await drizzle
+    .update(mailboxMessages)
+    .set({
+      read: true,
+      updatedAt: sql`datetime('now')`,
+    })
+    .where(
+      and(
+        eq(mailboxMessages.toUserId, userId),
+        eq(mailboxMessages.read, false),
+        inArray(mailboxMessages.messageType, ['message', 'notification']),
+      ),
+    );
+  return (result as any).meta?.changes ?? 0;
 }
 
 export async function markAllNotificationsRead(
   db: D1Database,
   userId: string,
 ): Promise<number> {
-  const result = await db
-    .prepare(
-      `UPDATE mailbox_messages
-       SET read = 1, updated_at = datetime('now')
-       WHERE to_user_id = ?
-         AND read = 0`,
-    )
-    .bind(userId)
-    .run();
-  return result.meta.changes ?? 0;
+  const drizzle = getDb(db);
+  const result = await drizzle
+    .update(mailboxMessages)
+    .set({
+      read: true,
+      updatedAt: sql`datetime('now')`,
+    })
+    .where(and(eq(mailboxMessages.toUserId, userId), eq(mailboxMessages.read, false)));
+  return (result as any).meta?.changes ?? 0;
 }
 
 export async function markWorkflowApprovalNotificationsRead(
@@ -456,15 +515,22 @@ export async function markWorkflowApprovalNotificationsRead(
   userId: string,
   executionId: string,
 ): Promise<number> {
-  const result = await db.prepare(`
-    UPDATE mailbox_messages
-    SET read = 1, updated_at = datetime('now')
-    WHERE to_user_id = ?
-      AND read = 0
-      AND message_type = 'approval'
-      AND context_task_id = ?
-  `).bind(userId, executionId).run();
-  return result.meta.changes ?? 0;
+  const drizzle = getDb(db);
+  const result = await drizzle
+    .update(mailboxMessages)
+    .set({
+      read: true,
+      updatedAt: sql`datetime('now')`,
+    })
+    .where(
+      and(
+        eq(mailboxMessages.toUserId, userId),
+        eq(mailboxMessages.read, false),
+        eq(mailboxMessages.messageType, 'approval'),
+        eq(mailboxMessages.contextTaskId, executionId),
+      ),
+    );
+  return (result as any).meta?.changes ?? 0;
 }
 
 export async function markNotificationThreadRead(
@@ -481,15 +547,17 @@ export async function getNotificationPreferences(
   db: D1Database,
   userId: string,
 ): Promise<UserNotificationPreference[]> {
-  const result = await db
-    .prepare(
-      `SELECT * FROM user_notification_preferences
-       WHERE user_id = ?
-       ORDER BY message_type, CASE WHEN event_type = '*' THEN 0 ELSE 1 END, event_type`,
-    )
-    .bind(userId)
-    .all();
-  return (result.results || []).map(mapNotificationPreference);
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select()
+    .from(userNotificationPreferences)
+    .where(eq(userNotificationPreferences.userId, userId))
+    .orderBy(
+      userNotificationPreferences.messageType,
+      sql`CASE WHEN ${userNotificationPreferences.eventType} = '*' THEN 0 ELSE 1 END`,
+      userNotificationPreferences.eventType,
+    );
+  return rows.map(drizzleRowToPreference);
 }
 
 export async function upsertNotificationPreference(
@@ -499,37 +567,45 @@ export async function upsertNotificationPreference(
   eventType: string | undefined,
   prefs: { webEnabled?: boolean; slackEnabled?: boolean; emailEnabled?: boolean },
 ): Promise<UserNotificationPreference> {
+  const drizzle = getDb(db);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const normalizedEventType = normalizeNotificationEventType(eventType);
 
-  await db
-    .prepare(
-      `INSERT INTO user_notification_preferences (id, user_id, message_type, event_type, web_enabled, slack_enabled, email_enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(user_id, message_type, event_type) DO UPDATE SET
-         web_enabled = COALESCE(excluded.web_enabled, user_notification_preferences.web_enabled),
-         slack_enabled = COALESCE(excluded.slack_enabled, user_notification_preferences.slack_enabled),
-         email_enabled = COALESCE(excluded.email_enabled, user_notification_preferences.email_enabled),
-         updated_at = excluded.updated_at`,
-    )
-    .bind(
+  await drizzle
+    .insert(userNotificationPreferences)
+    .values({
       id,
       userId,
       messageType,
-      normalizedEventType,
-      prefs.webEnabled !== undefined ? (prefs.webEnabled ? 1 : 0) : 1,
-      prefs.slackEnabled !== undefined ? (prefs.slackEnabled ? 1 : 0) : 0,
-      prefs.emailEnabled !== undefined ? (prefs.emailEnabled ? 1 : 0) : 0,
-      now,
-      now,
+      eventType: normalizedEventType,
+      webEnabled: prefs.webEnabled !== undefined ? prefs.webEnabled : true,
+      slackEnabled: prefs.slackEnabled !== undefined ? prefs.slackEnabled : false,
+      emailEnabled: prefs.emailEnabled !== undefined ? prefs.emailEnabled : false,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [userNotificationPreferences.userId, userNotificationPreferences.messageType, userNotificationPreferences.eventType],
+      set: {
+        webEnabled: sql`COALESCE(excluded.web_enabled, ${userNotificationPreferences.webEnabled})`,
+        slackEnabled: sql`COALESCE(excluded.slack_enabled, ${userNotificationPreferences.slackEnabled})`,
+        emailEnabled: sql`COALESCE(excluded.email_enabled, ${userNotificationPreferences.emailEnabled})`,
+        updatedAt: sql`excluded.updated_at`,
+      },
+    });
+
+  const row = await drizzle
+    .select()
+    .from(userNotificationPreferences)
+    .where(
+      and(
+        eq(userNotificationPreferences.userId, userId),
+        eq(userNotificationPreferences.messageType, messageType),
+        eq(userNotificationPreferences.eventType, normalizedEventType),
+      ),
     )
-    .run();
+    .get();
 
-  const row = await db
-    .prepare('SELECT * FROM user_notification_preferences WHERE user_id = ? AND message_type = ? AND event_type = ?')
-    .bind(userId, messageType, normalizedEventType)
-    .first();
-
-  return mapNotificationPreference(row);
+  return drizzleRowToPreference(row!);
 }

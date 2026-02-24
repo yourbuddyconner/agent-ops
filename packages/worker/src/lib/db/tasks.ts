@@ -1,6 +1,25 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { SessionTask } from '@agent-ops/shared';
-import { mapSessionTask } from './mappers.js';
+import { eq, sql } from 'drizzle-orm';
+import { getDb } from '../drizzle.js';
+import { sessionTasks, sessionTaskDependencies } from '../schema/index.js';
+
+function mapTaskRow(row: any): SessionTask {
+  return {
+    id: row.id,
+    orchestratorSessionId: row.orchestrator_session_id,
+    sessionId: row.session_id || undefined,
+    title: row.title,
+    description: row.description || undefined,
+    status: row.status,
+    result: row.result || undefined,
+    parentTaskId: row.parent_task_id || undefined,
+    blockedBy: row.blocked_by_ids ? row.blocked_by_ids.split(',').filter(Boolean) : undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    sessionTitle: row.session_title || undefined,
+  };
+}
 
 export async function createSessionTask(
   db: D1Database,
@@ -17,21 +36,26 @@ export async function createSessionTask(
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const status = data.blockedBy?.length ? 'blocked' : (data.status || 'pending');
+  const drizzle = getDb(db);
 
-  await db
-    .prepare(
-      `INSERT INTO session_tasks (id, orchestrator_session_id, session_id, title, description, status, parent_task_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(id, data.orchestratorSessionId, data.sessionId || null, data.title, data.description || null, status, data.parentTaskId || null, now, now)
-    .run();
+  await drizzle.insert(sessionTasks).values({
+    id,
+    orchestratorSessionId: data.orchestratorSessionId,
+    sessionId: data.sessionId || null,
+    title: data.title,
+    description: data.description || null,
+    status,
+    parentTaskId: data.parentTaskId || null,
+    createdAt: now,
+    updatedAt: now,
+  });
 
   if (data.blockedBy?.length) {
     for (const blockedById of data.blockedBy) {
-      await db
-        .prepare('INSERT INTO session_task_dependencies (task_id, blocked_by_task_id) VALUES (?, ?)')
-        .bind(id, blockedById)
-        .run();
+      await drizzle.insert(sessionTaskDependencies).values({
+        taskId: id,
+        blockedByTaskId: blockedById,
+      });
     }
   }
 
@@ -54,6 +78,7 @@ export async function getSessionTasks(
   orchestratorSessionId: string,
   opts?: { status?: string; limit?: number },
 ): Promise<SessionTask[]> {
+  // GROUP_CONCAT + GROUP BY + LEFT JOIN — keep as raw SQL
   const conditions = ['t.orchestrator_session_id = ?'];
   const params: (string | number)[] = [orchestratorSessionId];
 
@@ -81,7 +106,7 @@ export async function getSessionTasks(
     .bind(...params)
     .all();
 
-  return (result.results || []).map(mapSessionTask);
+  return (result.results || []).map(mapTaskRow);
 }
 
 export async function getMyTasks(
@@ -89,6 +114,7 @@ export async function getMyTasks(
   sessionId: string,
   opts?: { status?: string; limit?: number },
 ): Promise<SessionTask[]> {
+  // GROUP_CONCAT + GROUP BY — keep as raw SQL
   const conditions = ['t.session_id = ?'];
   const params: (string | number)[] = [sessionId];
 
@@ -114,7 +140,7 @@ export async function getMyTasks(
     .bind(...params)
     .all();
 
-  return (result.results || []).map(mapSessionTask);
+  return (result.results || []).map(mapTaskRow);
 }
 
 export async function updateSessionTask(
@@ -122,6 +148,7 @@ export async function updateSessionTask(
   taskId: string,
   updates: { status?: string; result?: string; description?: string; sessionId?: string; title?: string },
 ): Promise<SessionTask | null> {
+  // Dynamic SET — keep as raw SQL
   const setClauses: string[] = ["updated_at = datetime('now')"];
   const params: (string | null)[] = [];
 
@@ -164,15 +191,15 @@ export async function updateSessionTask(
     .bind(taskId)
     .first();
 
-  return row ? mapSessionTask(row) : null;
+  return row ? mapTaskRow(row) : null;
 }
 
 export async function addTaskDependency(db: D1Database, taskId: string, blockedByTaskId: string): Promise<void> {
+  // INSERT OR IGNORE — keep as raw SQL
   await db
     .prepare('INSERT OR IGNORE INTO session_task_dependencies (task_id, blocked_by_task_id) VALUES (?, ?)')
     .bind(taskId, blockedByTaskId)
     .run();
-  // Auto-set status to blocked
   await db
     .prepare("UPDATE session_tasks SET status = 'blocked', updated_at = datetime('now') WHERE id = ? AND status = 'pending'")
     .bind(taskId)
@@ -180,9 +207,10 @@ export async function addTaskDependency(db: D1Database, taskId: string, blockedB
 }
 
 export async function getTaskDependencies(db: D1Database, taskId: string): Promise<string[]> {
-  const result = await db
-    .prepare('SELECT blocked_by_task_id FROM session_task_dependencies WHERE task_id = ?')
-    .bind(taskId)
-    .all<{ blocked_by_task_id: string }>();
-  return (result.results || []).map((r) => r.blocked_by_task_id);
+  const drizzle = getDb(db);
+  const rows = await drizzle
+    .select({ blockedByTaskId: sessionTaskDependencies.blockedByTaskId })
+    .from(sessionTaskDependencies)
+    .where(eq(sessionTaskDependencies.taskId, taskId));
+  return rows.map((r) => r.blockedByTaskId);
 }

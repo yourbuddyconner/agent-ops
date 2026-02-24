@@ -17,12 +17,14 @@
     "@cf-wasm/resvg": "^0.3.3",
     "@cf-wasm/satori": "^0.3.3",
     "@hono/zod-validator": "^0.2.1",
+    "drizzle-orm": "^0.45.1",
     "grammy": "^1.39.3",
     "hono": "^4.3.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240117.0",
+    "drizzle-kit": "^0.31.9",
     "typescript": "^5.3.3",
     "wrangler": "^3.28.0"
   }

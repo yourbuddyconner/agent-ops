@@ -6,19 +6,15 @@ import {
   getOrgSettings,
   updateOrgSettings,
   listOrgApiKeys,
-  setOrgApiKey,
   deleteOrgApiKey,
   listInvites,
-  createInvite,
   deleteInvite,
   getInviteByCodeAny,
   listUsers,
-  updateUserRole,
-  deleteUser,
   listCustomProviders,
-  upsertCustomProvider,
   deleteCustomProvider,
 } from '../lib/db.js';
+import * as adminService from '../services/admin.js';
 
 export const adminRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -78,15 +74,8 @@ adminRouter.put('/llm-keys/:provider', async (c) => {
     throw new ValidationError('API key is required');
   }
 
-  const encryptedKey = await encryptApiKey(key, c.env.ENCRYPTION_KEY);
   const user = c.get('user');
-
-  await setOrgApiKey(c.env.DB, {
-    id: crypto.randomUUID(),
-    provider,
-    encryptedKey,
-    setBy: user.id,
-  });
+  await adminService.setOrgLlmKey(c.env.DB, c.env.ENCRYPTION_KEY, { provider, key, setBy: user.id });
 
   return c.json({ ok: true });
 });
@@ -106,24 +95,9 @@ adminRouter.get('/invites', async (c) => {
 
 adminRouter.post('/invites', async (c) => {
   const { email, role } = await c.req.json<{ email?: string; role?: 'admin' | 'member' }>();
-
-  // Generate a random 12-char alphanumeric code
-  const bytes = new Uint8Array(9);
-  crypto.getRandomValues(bytes);
-  const code = Array.from(bytes).map(b => b.toString(36).padStart(2, '0')).join('').slice(0, 12);
-
   const user = c.get('user');
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  const invite = await createInvite(c.env.DB, {
-    id: crypto.randomUUID(),
-    code,
-    email: email?.trim().toLowerCase(),
-    role: role || 'member',
-    invitedBy: user.id,
-    expiresAt,
-  });
-
+  const invite = await adminService.createInvite(c.env.DB, { email, role, invitedBy: user.id });
   return c.json(invite, 201);
 });
 
@@ -148,17 +122,11 @@ adminRouter.patch('/users/:id', async (c) => {
     throw new ValidationError('Valid role is required (admin or member)');
   }
 
-  // Prevent demoting last admin
-  if (role === 'member') {
-    const users = await listUsers(c.env.DB);
-    const adminCount = users.filter((u) => u.role === 'admin').length;
-    const targetUser = users.find((u) => u.id === userId);
-    if (targetUser?.role === 'admin' && adminCount <= 1) {
-      throw new ValidationError('Cannot demote the last admin');
-    }
+  const result = await adminService.updateUserRoleSafe(c.env.DB, userId, role);
+  if (!result.ok) {
+    throw new ValidationError('Cannot demote the last admin');
   }
 
-  await updateUserRole(c.env.DB, userId, role);
   return c.json({ ok: true });
 });
 
@@ -166,20 +134,16 @@ adminRouter.delete('/users/:id', async (c) => {
   const userId = c.req.param('id');
   const currentUser = c.get('user');
 
-  if (userId === currentUser.id) {
-    throw new ValidationError('Cannot delete yourself');
-  }
-
-  const users = await listUsers(c.env.DB);
-  const targetUser = users.find((u) => u.id === userId);
-  if (targetUser?.role === 'admin') {
-    const adminCount = users.filter((u) => u.role === 'admin').length;
-    if (adminCount <= 1) {
+  const result = await adminService.deleteUserSafe(c.env.DB, userId, currentUser.id);
+  if (!result.ok) {
+    if (result.error === 'self_delete') {
+      throw new ValidationError('Cannot delete yourself');
+    }
+    if (result.error === 'last_admin') {
       throw new ValidationError('Cannot delete the last admin');
     }
   }
 
-  await deleteUser(c.env.DB, userId);
   return c.json({ ok: true });
 });
 
@@ -228,19 +192,12 @@ adminRouter.put('/custom-providers/:providerId', async (c) => {
     }
   }
 
-  let encryptedKey: string | null = null;
-  if (body.apiKey && body.apiKey.trim().length > 0) {
-    encryptedKey = await encryptApiKey(body.apiKey, c.env.ENCRYPTION_KEY);
-  }
-
   const user = c.get('user');
-
-  await upsertCustomProvider(c.env.DB, {
-    id: crypto.randomUUID(),
+  await adminService.upsertCustomProviderWithEncryption(c.env.DB, c.env.ENCRYPTION_KEY, {
     providerId,
     displayName: body.displayName.trim(),
     baseUrl: body.baseUrl.trim(),
-    encryptedKey,
+    apiKey: body.apiKey,
     models: JSON.stringify(body.models),
     setBy: user.id,
   });
@@ -253,30 +210,3 @@ adminRouter.delete('/custom-providers/:providerId', async (c) => {
   await deleteCustomProvider(c.env.DB, providerId);
   return c.json({ ok: true });
 });
-
-// --- Encryption helpers ---
-
-export async function encryptApiKey(key: string, secret: string): Promise<string> {
-  const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(secret).slice(0, 32), 'AES-GCM', false, [
-    'encrypt',
-  ]);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, keyMaterial, enc.encode(key));
-  const combined = new Uint8Array(iv.length + new Uint8Array(ciphertext).length);
-  combined.set(iv);
-  combined.set(new Uint8Array(ciphertext), iv.length);
-  return btoa(String.fromCharCode(...combined));
-}
-
-export async function decryptApiKey(encrypted: string, secret: string): Promise<string> {
-  const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(secret).slice(0, 32), 'AES-GCM', false, [
-    'decrypt',
-  ]);
-  const combined = Uint8Array.from(atob(encrypted), (c) => c.charCodeAt(0));
-  const iv = combined.slice(0, 12);
-  const ciphertext = combined.slice(12);
-  const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, keyMaterial, ciphertext);
-  return new TextDecoder().decode(plaintext);
-}

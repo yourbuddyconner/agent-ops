@@ -5,6 +5,7 @@ import { NotFoundError, ValidationError, IntegrationError, ErrorCodes } from '@a
 import type { IntegrationService } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
+import * as integrationService from '../services/integrations.js';
 import { integrationRegistry } from '../integrations/base.js';
 import '../integrations/github.js'; // Register GitHub integration
 import '../integrations/gmail.js'; // Register Gmail integration
@@ -39,18 +40,7 @@ integrationsRouter.get('/', async (c) => {
   const userIntegrations = await db.getUserIntegrations(c.env.DB, user.id);
 
   // Get org-scope integrations (visible to all members)
-  const orgResult = await c.env.DB.prepare(
-    "SELECT * FROM integrations WHERE scope = 'org' AND user_id != ? ORDER BY created_at DESC"
-  ).bind(user.id).all();
-  const orgIntegrations = (orgResult.results || []).map((row: any) => ({
-    id: row.id,
-    service: row.service,
-    status: row.status,
-    scope: 'org' as const,
-    config: JSON.parse(row.config),
-    lastSyncedAt: row.last_synced_at ? new Date(row.last_synced_at) : null,
-    createdAt: new Date(row.created_at),
-  }));
+  const orgIntegrations = await db.getOrgIntegrations(c.env.DB, user.id);
 
   // Don't expose sensitive data
   const sanitized = [
@@ -72,8 +62,8 @@ integrationsRouter.get('/', async (c) => {
       status: i.status,
       scope: i.scope,
       config: {
-        syncFrequency: i.config.syncFrequency,
-        entities: i.config.entities,
+        syncFrequency: (i.config as any).syncFrequency,
+        entities: (i.config as any).entities,
       },
       lastSyncedAt: i.lastSyncedAt,
       createdAt: i.createdAt,
@@ -109,73 +99,11 @@ integrationsRouter.post('/', zValidator('json', configureIntegrationSchema), asy
   const user = c.get('user');
   const body = c.req.valid('json');
 
-  // Check if integration already exists
-  const existing = await db.getUserIntegrations(c.env.DB, user.id);
-  if (existing.some((i) => i.service === body.service)) {
-    throw new IntegrationError(
-      `Integration for ${body.service} already exists`,
-      ErrorCodes.INTEGRATION_ALREADY_EXISTS
-    );
+  const result = await integrationService.configureIntegration(c.env, user.id, user.email, body);
+  if (!result.ok) {
+    return c.json({ error: result.error }, 400);
   }
-
-  // Get the integration handler
-  const integration = integrationRegistry.get(body.service as IntegrationService);
-  if (!integration) {
-    throw new ValidationError(`Unsupported integration: ${body.service}`);
-  }
-
-  // Test credentials
-  integration.setCredentials(body.credentials);
-  if (!integration.validateCredentials()) {
-    throw new IntegrationError('Invalid credentials provided', ErrorCodes.INVALID_CREDENTIALS);
-  }
-
-  const connectionValid = await integration.testConnection();
-  if (!connectionValid) {
-    throw new IntegrationError('Failed to connect to service', ErrorCodes.INTEGRATION_AUTH_FAILED);
-  }
-
-  // Ensure user exists
-  await db.getOrCreateUser(c.env.DB, { id: user.id, email: user.email });
-
-  // Store credentials securely in Durable Object
-  const doId = c.env.API_KEYS.idFromName(user.id);
-  const apiKeysDO = c.env.API_KEYS.get(doId);
-
-  await apiKeysDO.fetch(new Request('http://internal/store', {
-    method: 'POST',
-    body: JSON.stringify({
-      userId: user.id,
-      service: body.service,
-      credentials: body.credentials,
-      scopes: body.config.entities,
-    }),
-  }));
-
-  // Create integration record (without credentials)
-  const integrationId = crypto.randomUUID();
-  const created = await db.createIntegration(c.env.DB, {
-    id: integrationId,
-    userId: user.id,
-    service: body.service,
-    config: body.config,
-  });
-
-  // Update status to active
-  await db.updateIntegrationStatus(c.env.DB, integrationId, 'active');
-
-  return c.json(
-    {
-      integration: {
-        id: created.id,
-        service: created.service,
-        status: 'active',
-        config: created.config,
-        createdAt: created.createdAt,
-      },
-    },
-    201
-  );
+  return c.json({ integration: result.integration }, 201);
 });
 
 /**
@@ -217,80 +145,11 @@ integrationsRouter.post('/:id/sync', zValidator('json', triggerSyncSchema), asyn
   const { id } = c.req.param();
   const body = c.req.valid('json');
 
-  const integration = await db.getIntegration(c.env.DB, id);
-
-  if (!integration) {
-    throw new NotFoundError('Integration', id);
-  }
-
-  if (integration.userId !== user.id) {
-    throw new NotFoundError('Integration', id);
-  }
-
-  if (integration.status !== 'active') {
-    throw new IntegrationError('Integration is not active', ErrorCodes.INTEGRATION_AUTH_FAILED);
-  }
-
-  // Get the integration handler
-  const handler = integrationRegistry.get(integration.service);
-  if (!handler) {
-    throw new ValidationError(`Unsupported integration: ${integration.service}`);
-  }
-
-  // Retrieve credentials from Durable Object
-  const doId = c.env.API_KEYS.idFromName(user.id);
-  const apiKeysDO = c.env.API_KEYS.get(doId);
-
-  const credsRes = await apiKeysDO.fetch(new Request('http://internal/retrieve', {
-    method: 'POST',
-    body: JSON.stringify({ service: integration.service }),
-  }));
-
-  if (!credsRes.ok) {
-    throw new IntegrationError('Failed to retrieve credentials', ErrorCodes.INTEGRATION_AUTH_FAILED);
-  }
-
-  const { credentials } = await credsRes.json<{ credentials: Record<string, string> }>();
-  handler.setCredentials(credentials);
-
-  // Create sync log
-  const syncId = crypto.randomUUID();
-  await db.createSyncLog(c.env.DB, { id: syncId, integrationId: id });
-
-  // Run sync in background
-  c.executionCtx.waitUntil(
-    (async () => {
-      try {
-        await db.updateSyncLog(c.env.DB, syncId, { status: 'running' });
-
-        const result = await handler.sync({
-          entities: body.entities || integration.config.entities,
-          fullSync: body.fullSync,
-        });
-
-        await db.updateSyncLog(c.env.DB, syncId, {
-          status: result.success ? 'completed' : 'failed',
-          recordsSynced: result.recordsSynced,
-          errors: result.errors,
-        });
-
-        if (result.success) {
-          await db.updateIntegrationSyncTime(c.env.DB, id);
-        } else {
-          await db.updateIntegrationStatus(c.env.DB, id, 'error', result.errors[0]?.message);
-        }
-      } catch (error) {
-        console.error('Sync error:', error);
-        await db.updateSyncLog(c.env.DB, syncId, {
-          status: 'failed',
-          errors: [{ entity: 'unknown', message: String(error), code: 'SYNC_ERROR' }],
-        });
-        await db.updateIntegrationStatus(c.env.DB, id, 'error', String(error));
-      }
-    })()
+  const result = await integrationService.triggerIntegrationSync(
+    c.env, user.id, id, body, c.executionCtx,
   );
 
-  return c.json({ syncId, status: 'started' }, 202);
+  return c.json({ syncId: result.syncId, status: 'started' }, 202);
 });
 
 /**

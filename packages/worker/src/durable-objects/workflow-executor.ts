@@ -1,6 +1,10 @@
 import type { DurableObjectState } from '@cloudflare/workers-types';
 import type { Env } from '../env.js';
 import { decryptString } from '../lib/crypto.js';
+import { getExecutionWithWorkflow, updateExecutionRuntimeState, resumeExecution, cancelExecutionWithReason, type ExecutionWithWorkflowRow } from '../lib/db/executions.js';
+import { getUserIdleTimeout, getUserGitConfig } from '../lib/db/users.js';
+import { getOAuthToken } from '../lib/db/oauth.js';
+import { getSession, getSessionGitState, updateSessionStatus } from '../lib/db/sessions.js';
 
 interface EnqueueRequest {
   executionId: string;
@@ -37,20 +41,7 @@ interface RuntimeState {
   };
 }
 
-interface ExecutionRow {
-  id: string;
-  status: string;
-  runtime_state: string | null;
-  session_id: string | null;
-  workflow_hash: string | null;
-  variables: string | null;
-  trigger_metadata: string | null;
-  attempt_count: number | null;
-  idempotency_key: string | null;
-  user_id: string;
-  workflow_id: string;
-  workflow_data: string | null;
-}
+type ExecutionRow = ExecutionWithWorkflowRow;
 
 interface EnsureSessionResult {
   ok: boolean;
@@ -104,25 +95,7 @@ export class WorkflowExecutorDO implements DurableObject {
       return Response.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    const row = await this.env.DB.prepare(`
-      SELECT
-        e.id,
-        e.status,
-        e.runtime_state,
-        e.session_id,
-        e.workflow_hash,
-        e.variables,
-        e.trigger_metadata,
-        e.attempt_count,
-        e.idempotency_key,
-        e.user_id,
-        e.workflow_id,
-        COALESCE(e.workflow_snapshot, w.data) AS workflow_data
-      FROM workflow_executions e
-      LEFT JOIN workflows w ON w.id = e.workflow_id
-      WHERE e.id = ?
-      LIMIT 1
-    `).bind(body.executionId).first<ExecutionRow>();
+    const row = await getExecutionWithWorkflow(this.env.DB, body.executionId);
 
     if (!row) {
       return Response.json({ error: 'Execution not found' }, { status: 404 });
@@ -191,12 +164,7 @@ export class WorkflowExecutorDO implements DurableObject {
 
     const nextStatus = row.status === 'pending' && promptDispatchedAt ? 'running' : row.status;
 
-    await this.env.DB.prepare(`
-      UPDATE workflow_executions
-      SET runtime_state = ?,
-          status = ?
-      WHERE id = ?
-    `).bind(JSON.stringify(nextState), nextStatus, body.executionId).run();
+    await updateExecutionRuntimeState(this.env.DB, body.executionId, JSON.stringify(nextState), nextStatus);
 
     await this.publishEnqueuedEvent(
       body.executionId,
@@ -240,18 +208,13 @@ export class WorkflowExecutorDO implements DurableObject {
     executionId: string;
     workerOrigin: string;
   }): Promise<EnsureSessionResult> {
-    const session = await this.env.DB.prepare(`
-      SELECT id, status, workspace
-      FROM sessions
-      WHERE id = ?
-      LIMIT 1
-    `).bind(params.sessionId).first<{ id: string; status: string; workspace: string }>();
+    const session = await getSession(this.env.DB, params.sessionId);
 
     if (!session) {
       return { ok: false, error: `Session ${params.sessionId} not found` };
     }
 
-    if (session.status === 'running' || session.status === 'initializing' || session.status === 'waking') {
+    if (session.status === 'running' || session.status === 'initializing' || (session.status as string) === 'waking') {
       return { ok: true };
     }
 
@@ -279,13 +242,7 @@ export class WorkflowExecutorDO implements DurableObject {
       const runnerToken = this.generateRunnerToken();
       const doWsUrl = this.buildDoWsUrl(params.workerOrigin, params.sessionId);
 
-      const userRow = await this.env.DB.prepare(`
-        SELECT idle_timeout_seconds
-        FROM users
-        WHERE id = ?
-      `).bind(params.userId).first<{ idle_timeout_seconds: number | null }>();
-
-      const idleTimeoutSeconds = userRow?.idle_timeout_seconds ?? 900;
+      const idleTimeoutSeconds = await getUserIdleTimeout(this.env.DB, params.userId);
       const idleTimeoutMs = idleTimeoutSeconds * 1000;
 
       const envVars = await this.buildSandboxEnvVars({
@@ -307,13 +264,7 @@ export class WorkflowExecutorDO implements DurableObject {
         envVars,
       };
 
-      await this.env.DB.prepare(`
-        UPDATE sessions
-        SET status = 'initializing',
-            last_active_at = ?,
-            error_message = NULL
-        WHERE id = ?
-      `).bind(new Date().toISOString(), params.sessionId).run();
+      await updateSessionStatus(this.env.DB, params.sessionId, 'initializing');
 
       const doId = this.env.SESSIONS.idFromName(params.sessionId);
       const sessionDO = this.env.SESSIONS.get(doId);
@@ -365,51 +316,27 @@ export class WorkflowExecutorDO implements DurableObject {
     if (this.env.OPENAI_API_KEY) envVars.OPENAI_API_KEY = this.env.OPENAI_API_KEY;
     if (this.env.GOOGLE_API_KEY) envVars.GOOGLE_API_KEY = this.env.GOOGLE_API_KEY;
 
-    const gitUserRow = await this.env.DB.prepare(`
-      SELECT name, email, github_username, git_name, git_email
-      FROM users
-      WHERE id = ?
-    `).bind(params.userId).first<{
-      name: string | null;
-      email: string | null;
-      github_username: string | null;
-      git_name: string | null;
-      git_email: string | null;
-    }>();
+    const gitUserRow = await getUserGitConfig(this.env.DB, params.userId);
 
-    envVars.GIT_USER_NAME = gitUserRow?.git_name || gitUserRow?.name || gitUserRow?.github_username || 'Agent Ops User';
-    envVars.GIT_USER_EMAIL = gitUserRow?.git_email || gitUserRow?.email || 'agent-ops@example.local';
+    envVars.GIT_USER_NAME = gitUserRow?.gitName || gitUserRow?.name || gitUserRow?.githubUsername || 'Agent Ops User';
+    envVars.GIT_USER_EMAIL = gitUserRow?.gitEmail || gitUserRow?.email || 'agent-ops@example.local';
 
-    const oauthRow = await this.env.DB.prepare(`
-      SELECT encrypted_access_token
-      FROM oauth_tokens
-      WHERE user_id = ? AND provider = 'github'
-      LIMIT 1
-    `).bind(params.userId).first<{ encrypted_access_token: string }>();
+    const oauthRow = await getOAuthToken(this.env.DB, params.userId, 'github');
 
-    if (oauthRow?.encrypted_access_token) {
+    if (oauthRow?.encryptedAccessToken) {
       try {
-        envVars.GITHUB_TOKEN = await decryptString(oauthRow.encrypted_access_token, this.env.ENCRYPTION_KEY);
+        envVars.GITHUB_TOKEN = await decryptString(oauthRow.encryptedAccessToken, this.env.ENCRYPTION_KEY);
       } catch (error) {
         console.warn('[WorkflowExecutorDO] Failed to decrypt GitHub token for workflow session', error);
       }
     }
 
-    const gitStateRow = await this.env.DB.prepare(`
-      SELECT source_repo_url, branch, ref
-      FROM session_git_state
-      WHERE session_id = ?
-      LIMIT 1
-    `).bind(params.sessionId).first<{
-      source_repo_url: string | null;
-      branch: string | null;
-      ref: string | null;
-    }>();
+    const gitState = await getSessionGitState(this.env.DB, params.sessionId);
 
-    if (gitStateRow?.source_repo_url) {
-      envVars.REPO_URL = gitStateRow.source_repo_url;
-      if (gitStateRow.branch) envVars.REPO_BRANCH = gitStateRow.branch;
-      if (gitStateRow.ref) envVars.REPO_REF = gitStateRow.ref;
+    if (gitState?.sourceRepoUrl) {
+      envVars.REPO_URL = gitState.sourceRepoUrl;
+      if (gitState.branch) envVars.REPO_BRANCH = gitState.branch;
+      if (gitState.ref) envVars.REPO_REF = gitState.ref;
     }
 
     return envVars;
@@ -644,40 +571,7 @@ export class WorkflowExecutorDO implements DurableObject {
       return Response.json({ error: 'Missing executionId or resumeToken' }, { status: 400 });
     }
 
-    const row = await this.env.DB.prepare(`
-      SELECT
-        e.id,
-        e.status,
-        e.resume_token,
-        e.runtime_state,
-        e.user_id,
-        e.workflow_id,
-        e.session_id,
-        e.workflow_hash,
-        e.variables,
-        e.trigger_metadata,
-        e.attempt_count,
-        e.idempotency_key,
-        COALESCE(e.workflow_snapshot, w.data) AS workflow_data
-      FROM workflow_executions e
-      LEFT JOIN workflows w ON w.id = e.workflow_id
-      WHERE e.id = ?
-      LIMIT 1
-    `).bind(body.executionId).first<{
-      id: string;
-      status: string;
-      resume_token: string | null;
-      runtime_state: string | null;
-      user_id: string;
-      workflow_id: string;
-      session_id: string | null;
-      workflow_hash: string | null;
-      variables: string | null;
-      trigger_metadata: string | null;
-      attempt_count: number | null;
-      idempotency_key: string | null;
-      workflow_data: string | null;
-    }>();
+    const row = await getExecutionWithWorkflow(this.env.DB, body.executionId);
 
     if (!row) {
       return Response.json({ error: 'Execution not found' }, { status: 404 });
@@ -728,29 +622,18 @@ export class WorkflowExecutorDO implements DurableObject {
         }
       }
 
-      await this.env.DB.prepare(`
-        UPDATE workflow_executions
-        SET status = 'running',
-            resume_token = NULL,
-            runtime_state = ?,
-            error = NULL
-        WHERE id = ?
-      `).bind(JSON.stringify(nextState), body.executionId).run();
+      await resumeExecution(this.env.DB, body.executionId, JSON.stringify(nextState));
 
       await this.publishLifecycleEvent(row.user_id, row.workflow_id, body.executionId, 'resumed', null);
       return Response.json({ ok: true, executionId: body.executionId, status: 'running' });
     }
 
     const reason = body.reason || 'approval_denied';
-    await this.env.DB.prepare(`
-      UPDATE workflow_executions
-      SET status = 'cancelled',
-          resume_token = NULL,
-          runtime_state = ?,
-          error = ?,
-          completed_at = ?
-      WHERE id = ?
-    `).bind(JSON.stringify(nextState), reason, now, body.executionId).run();
+    await cancelExecutionWithReason(this.env.DB, body.executionId, {
+      runtimeState: JSON.stringify(nextState),
+      reason,
+      completedAt: now,
+    });
 
     await this.publishLifecycleEvent(row.user_id, row.workflow_id, body.executionId, 'denied', reason);
     return Response.json({ ok: true, executionId: body.executionId, status: 'cancelled' });
@@ -762,19 +645,7 @@ export class WorkflowExecutorDO implements DurableObject {
       return Response.json({ error: 'Missing executionId' }, { status: 400 });
     }
 
-    const row = await this.env.DB.prepare(`
-      SELECT id, status, runtime_state, user_id, workflow_id, session_id
-      FROM workflow_executions
-      WHERE id = ?
-      LIMIT 1
-    `).bind(body.executionId).first<{
-      id: string;
-      status: string;
-      runtime_state: string | null;
-      user_id: string;
-      workflow_id: string;
-      session_id: string | null;
-    }>();
+    const row = await getExecutionWithWorkflow(this.env.DB, body.executionId);
 
     if (!row) {
       return Response.json({ error: 'Execution not found' }, { status: 404 });
@@ -788,14 +659,11 @@ export class WorkflowExecutorDO implements DurableObject {
     const now = new Date().toISOString();
     const reason = body.reason || 'cancelled_by_user';
 
-    await this.env.DB.prepare(`
-      UPDATE workflow_executions
-      SET status = 'cancelled',
-          runtime_state = ?,
-          error = ?,
-          completed_at = ?
-      WHERE id = ?
-    `).bind(JSON.stringify(existingState), reason, now, body.executionId).run();
+    await cancelExecutionWithReason(this.env.DB, body.executionId, {
+      runtimeState: JSON.stringify(existingState),
+      reason,
+      completedAt: now,
+    });
 
     if (row.session_id) {
       await this.stopWorkflowSession(row.session_id, reason);

@@ -1,33 +1,34 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { AgentPersona, AgentPersonaFile, PersonaVisibility } from '@agent-ops/shared';
-import { mapPersona, mapPersonaFile } from './mappers.js';
+import { eq, and, or, sql, desc, asc } from 'drizzle-orm';
+import { getDb } from '../drizzle.js';
+import { agentPersonas, agentPersonaFiles, orgRepoPersonaDefaults } from '../schema/index.js';
+import { users } from '../schema/users.js';
 
 export async function createPersona(
   db: D1Database,
   data: { id: string; name: string; slug: string; description?: string; icon?: string; defaultModel?: string; visibility?: PersonaVisibility; isDefault?: boolean; createdBy: string }
 ): Promise<AgentPersona> {
-  // If setting as default, clear existing defaults first
+  const drizzle = getDb(db);
+
   if (data.isDefault) {
-    await db.prepare("UPDATE agent_personas SET is_default = 0 WHERE org_id = 'default' AND is_default = 1").run();
+    await drizzle
+      .update(agentPersonas)
+      .set({ isDefault: false })
+      .where(and(eq(agentPersonas.orgId, 'default'), eq(agentPersonas.isDefault, true)));
   }
 
-  await db
-    .prepare(
-      `INSERT INTO agent_personas (id, name, slug, description, icon, default_model, visibility, is_default, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .bind(
-      data.id,
-      data.name,
-      data.slug,
-      data.description || null,
-      data.icon || null,
-      data.defaultModel || null,
-      data.visibility || 'shared',
-      data.isDefault ? 1 : 0,
-      data.createdBy
-    )
-    .run();
+  await drizzle.insert(agentPersonas).values({
+    id: data.id,
+    name: data.name,
+    slug: data.slug,
+    description: data.description || null,
+    icon: data.icon || null,
+    defaultModel: data.defaultModel || null,
+    visibility: data.visibility || 'shared',
+    isDefault: !!data.isDefault,
+    createdBy: data.createdBy,
+  });
 
   return {
     id: data.id,
@@ -47,6 +48,7 @@ export async function createPersona(
 }
 
 export async function listPersonas(db: D1Database, userId: string, orgId: string = 'default'): Promise<AgentPersona[]> {
+  // Subquery for file_count — use raw SQL for the subquery
   const result = await db
     .prepare(
       `SELECT p.*, u.name as creator_name,
@@ -60,10 +62,28 @@ export async function listPersonas(db: D1Database, userId: string, orgId: string
     .bind(orgId, userId)
     .all();
 
-  return (result.results || []).map(mapPersona);
+  return (result.results || []).map((row: any): AgentPersona => ({
+    id: row.id,
+    orgId: row.org_id,
+    name: row.name,
+    slug: row.slug,
+    description: row.description || undefined,
+    icon: row.icon || undefined,
+    defaultModel: row.default_model || undefined,
+    visibility: row.visibility as PersonaVisibility,
+    isDefault: !!row.is_default,
+    createdBy: row.created_by,
+    creatorName: row.creator_name || undefined,
+    fileCount: row.file_count ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
 }
 
 export async function getPersonaWithFiles(db: D1Database, id: string): Promise<AgentPersona | null> {
+  const drizzle = getDb(db);
+
+  // Main persona with creator name via raw SQL for the join
   const row = await db
     .prepare(
       `SELECT p.*, u.name as creator_name
@@ -72,17 +92,42 @@ export async function getPersonaWithFiles(db: D1Database, id: string): Promise<A
        WHERE p.id = ?`
     )
     .bind(id)
-    .first();
+    .first<any>();
 
   if (!row) return null;
 
-  const filesResult = await db
-    .prepare('SELECT * FROM agent_persona_files WHERE persona_id = ? ORDER BY sort_order ASC, filename ASC')
-    .bind(id)
-    .all();
+  const files = await drizzle
+    .select()
+    .from(agentPersonaFiles)
+    .where(eq(agentPersonaFiles.personaId, id))
+    .orderBy(asc(agentPersonaFiles.sortOrder), asc(agentPersonaFiles.filename));
 
-  const persona = mapPersona(row);
-  persona.files = (filesResult.results || []).map(mapPersonaFile);
+  const persona: AgentPersona = {
+    id: row.id,
+    orgId: row.org_id,
+    name: row.name,
+    slug: row.slug,
+    description: row.description || undefined,
+    icon: row.icon || undefined,
+    defaultModel: row.default_model || undefined,
+    visibility: row.visibility as PersonaVisibility,
+    isDefault: !!row.is_default,
+    createdBy: row.created_by,
+    creatorName: row.creator_name || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+
+  persona.files = files.map((f): AgentPersonaFile => ({
+    id: f.id,
+    personaId: f.personaId,
+    filename: f.filename,
+    content: f.content,
+    sortOrder: f.sortOrder ?? 0,
+    createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
+  }));
+
   return persona;
 }
 
@@ -91,6 +136,7 @@ export async function updatePersona(
   id: string,
   updates: Partial<Pick<AgentPersona, 'name' | 'slug' | 'description' | 'icon' | 'defaultModel' | 'visibility' | 'isDefault'>>
 ): Promise<void> {
+  // Dynamic SET clauses — keep as raw SQL for flexibility
   const sets: string[] = [];
   const params: (string | number | null)[] = [];
 
@@ -115,7 +161,8 @@ export async function updatePersona(
 }
 
 export async function deletePersona(db: D1Database, id: string): Promise<void> {
-  await db.prepare('DELETE FROM agent_personas WHERE id = ?').bind(id).run();
+  const drizzle = getDb(db);
+  await drizzle.delete(agentPersonas).where(eq(agentPersonas.id, id));
 }
 
 // Persona File Operations
@@ -123,44 +170,53 @@ export async function upsertPersonaFile(
   db: D1Database,
   data: { id: string; personaId: string; filename: string; content: string; sortOrder?: number }
 ): Promise<void> {
-  await db
-    .prepare(
-      `INSERT INTO agent_persona_files (id, persona_id, filename, content, sort_order)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(persona_id, filename) DO UPDATE SET
-         content = excluded.content,
-         sort_order = excluded.sort_order,
-         updated_at = datetime('now')`
-    )
-    .bind(data.id, data.personaId, data.filename, data.content, data.sortOrder ?? 0)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle.insert(agentPersonaFiles).values({
+    id: data.id,
+    personaId: data.personaId,
+    filename: data.filename,
+    content: data.content,
+    sortOrder: data.sortOrder ?? 0,
+  }).onConflictDoUpdate({
+    target: [agentPersonaFiles.personaId, agentPersonaFiles.filename],
+    set: {
+      content: sql`excluded.content`,
+      sortOrder: sql`excluded.sort_order`,
+      updatedAt: sql`datetime('now')`,
+    },
+  });
 }
 
 export async function deletePersonaFile(db: D1Database, id: string): Promise<void> {
-  await db.prepare('DELETE FROM agent_persona_files WHERE id = ?').bind(id).run();
+  const drizzle = getDb(db);
+  await drizzle.delete(agentPersonaFiles).where(eq(agentPersonaFiles.id, id));
 }
 
 // Repo-Persona Default Operations
 export async function setRepoPersonaDefault(db: D1Database, orgRepoId: string, personaId: string): Promise<void> {
   const id = crypto.randomUUID();
-  await db
-    .prepare(
-      `INSERT INTO org_repo_persona_defaults (id, org_repo_id, persona_id)
-       VALUES (?, ?, ?)
-       ON CONFLICT(org_repo_id) DO UPDATE SET persona_id = excluded.persona_id`
-    )
-    .bind(id, orgRepoId, personaId)
-    .run();
+  const drizzle = getDb(db);
+  await drizzle.insert(orgRepoPersonaDefaults).values({
+    id,
+    orgRepoId,
+    personaId,
+  }).onConflictDoUpdate({
+    target: orgRepoPersonaDefaults.orgRepoId,
+    set: { personaId: sql`excluded.persona_id` },
+  });
 }
 
 export async function getRepoPersonaDefault(db: D1Database, orgRepoId: string): Promise<string | null> {
-  const row = await db
-    .prepare('SELECT persona_id FROM org_repo_persona_defaults WHERE org_repo_id = ?')
-    .bind(orgRepoId)
-    .first<{ persona_id: string }>();
-  return row?.persona_id || null;
+  const drizzle = getDb(db);
+  const row = await drizzle
+    .select({ personaId: orgRepoPersonaDefaults.personaId })
+    .from(orgRepoPersonaDefaults)
+    .where(eq(orgRepoPersonaDefaults.orgRepoId, orgRepoId))
+    .get();
+  return row?.personaId || null;
 }
 
 export async function deleteRepoPersonaDefault(db: D1Database, orgRepoId: string): Promise<void> {
-  await db.prepare('DELETE FROM org_repo_persona_defaults WHERE org_repo_id = ?').bind(orgRepoId).run();
+  const drizzle = getDb(db);
+  await drizzle.delete(orgRepoPersonaDefaults).where(eq(orgRepoPersonaDefaults.orgRepoId, orgRepoId));
 }
