@@ -1,6 +1,7 @@
 import type { MiddlewareHandler } from 'hono';
 import { UnauthorizedError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
+import { extractBearerToken } from '../lib/ws-auth.js';
 
 /**
  * Authentication middleware supporting:
@@ -17,11 +18,8 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env; Variables: Varia
     return next();
   }
 
-  // Extract bearer token from Authorization header or ?token= query param
-  const authHeader = c.req.header('Authorization');
-  const bearerToken = authHeader?.startsWith('Bearer ')
-    ? authHeader.slice(7)
-    : new URL(c.req.url).searchParams.get('token');
+  // Extract bearer token from Authorization header, WebSocket subprotocol, or legacy ?token= query param
+  const bearerToken = extractBearerToken(c.req.raw);
 
   if (bearerToken) {
     const tokenHash = await hashToken(bearerToken);
