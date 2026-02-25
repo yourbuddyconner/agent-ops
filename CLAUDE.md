@@ -12,10 +12,12 @@ agent-ops/
 │   ├── client/          # React SPA (Vite + TanStack Router + Query + Zustand)
 │   ├── worker/          # Cloudflare Worker (Hono + D1 + R2 + Durable Objects)
 │   ├── shared/          # Shared TypeScript types & errors
-│   └── runner/          # [TO BUILD] Bun/TS runner for inside sandboxes
-├── backend/             # [TO BUILD] Modal Python backend
-├── docker/              # [TO BUILD] Sandbox Dockerfile + start.sh
-├── V1.md                # Full architecture spec (READ THIS FIRST)
+│   └── runner/          # Bun/TS runner for inside sandboxes
+├── backend/             # Modal Python backend
+├── docker/              # Sandbox Dockerfile + start.sh
+├── docs/
+│   └── specs/           # Subsystem specs (source of truth per domain)
+├── V1.md                # Original architecture spec (may be outdated)
 ├── WORKFLOW_PLUGIN_SPEC.md  # Workflow engine spec
 ├── Makefile             # Dev, test, deploy commands
 ├── docker-compose.yml   # Local dev (OpenCode container)
@@ -32,6 +34,23 @@ agent-ops/
 | Runner | Bun, TypeScript, `@opencode-ai/sdk`, Hono | `packages/runner/src/` |
 | Backend | Python 3.12, Modal SDK | `backend/` |
 | Sandbox | OpenCode serve, code-server, Xvfb+VNC, TTYD | `docker/` |
+
+## Subsystem Specs
+
+Detailed per-subsystem specifications live in `docs/specs/`. These are the source of truth for each domain's behavior, boundaries, data model, and contracts. When modifying a subsystem, update its spec in the same commit.
+
+| Spec | Covers |
+|------|--------|
+| [`docs/specs/sessions.md`](docs/specs/sessions.md) | Session lifecycle, state machine, sandbox orchestration, prompt queue, message streaming, hibernation/restore, access control, multiplayer |
+| [`docs/specs/sandbox-runtime.md`](docs/specs/sandbox-runtime.md) | Sandbox boot sequence, service ports, auth gateway, Runner process, OpenCode lifecycle, Runner↔DO WebSocket protocol, Modal backend |
+| [`docs/specs/real-time.md`](docs/specs/real-time.md) | SessionAgentDO WebSocket handling, EventBusDO, event types, V2 streaming protocol, client reconnection, message deduplication |
+| [`docs/specs/workflows.md`](docs/specs/workflows.md) | Workflow definitions, trigger types (webhook/schedule/manual), execution lifecycle, WorkflowExecutorDO, step engine, approval gates, proposals, version history |
+| [`docs/specs/auth-access.md`](docs/specs/auth-access.md) | OAuth flows (GitHub/Google), token auth, admin middleware, org model (settings/invites/LLM keys), session access control, JWT issuance |
+| [`docs/specs/orchestrator.md`](docs/specs/orchestrator.md) | Orchestrator identity, auto-restart, child session spawning, memory system (FTS), mailbox, channel routing, task board |
+| [`docs/specs/integrations.md`](docs/specs/integrations.md) | Integration framework, GitHub (OAuth/webhooks/API proxy), Telegram bot, Gmail, Google Calendar, channel bindings, custom LLM providers, credential storage |
+| [`docs/specs/sandbox-images.md`](docs/specs/sandbox-images.md) | Base image definition (Modal SDK), layer order, version pinning, cache busting, env var assembly, snapshot/restore, workspace volumes, Dockerfile drift |
+
+Boundary rules are enforced: each spec declares what it does NOT cover. Don't add content to the wrong spec — create or update the correct one.
 
 ## Key Architectural Decisions
 
