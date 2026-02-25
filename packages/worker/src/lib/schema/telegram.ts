@@ -5,7 +5,6 @@ import { users } from './users.js';
 export const userTelegramConfig = sqliteTable('user_telegram_config', {
   id: text().primaryKey(),
   userId: text().notNull().references(() => users.id, { onDelete: 'cascade' }),
-  botTokenEncrypted: text().notNull(),
   botUsername: text().notNull(),
   botInfo: text().notNull(),
   webhookUrl: text(),

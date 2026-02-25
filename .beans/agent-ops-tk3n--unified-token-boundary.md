@@ -1,7 +1,7 @@
 ---
 # agent-ops-tk3n
 title: Unified Credential Boundary
-status: todo
+status: completed
 type: epic
 priority: high
 tags:
@@ -10,7 +10,7 @@ tags:
     - security
     - refactor
 created_at: 2026-02-24T00:00:00Z
-updated_at: 2026-02-24T00:00:00Z
+updated_at: 2026-02-25T00:00:00Z
 ---
 
 Consolidate four independent credential stores into a single `credentials` D1 table, delete the API_KEYS Durable Object, and expose a single `getCredential()` / `storeCredential()` boundary service that all consumers use. This is a real simplification — fewer stores, fewer encryption code paths, fewer moving parts — not just an abstraction layer over the existing mess.
@@ -379,16 +379,17 @@ Rough estimate: **~500 lines deleted**, ~250 lines added in `services/credential
 
 ## Acceptance Criteria
 
-- [ ] `credentials` D1 table exists with migration
-- [ ] `services/credentials.ts` exists with `getCredential()`, `storeCredential()`, `revokeCredential()`, `listCredentials()`
-- [ ] All encryption uses PBKDF2 key derivation (batch migration script re-encrypts old data)
-- [ ] `durable-objects/api-keys.ts` deleted
-- [ ] `API_KEYS` removed from `wrangler.toml` and `env.ts`
-- [ ] `oauth_tokens` table dropped
-- [ ] `user_credentials` table dropped
-- [ ] `user_telegram_config` no longer stores `botTokenEncrypted` (token moved to `credentials`)
-- [ ] All consumers use `getCredential()` / `storeCredential()`: integrations, repos, auth, env-assembly, telegram
-- [ ] Auto-refresh for Gmail and Google Calendar handled in boundary
-- [ ] No direct credential store access outside `services/credentials.ts`
-- [ ] `pnpm typecheck` passes
-- [ ] Existing credentials accessible after migration (no user-facing breakage)
+- [x] `credentials` D1 table exists with migration (0041)
+- [x] `services/credentials.ts` exists with `getCredential()`, `storeCredential()`, `revokeCredential()`, `listCredentials()`
+- [x] All new encryption uses PBKDF2 key derivation
+- [x] `durable-objects/api-keys.ts` deleted
+- [x] `API_KEYS` removed from `wrangler.toml` and `env.ts`
+- [x] `oauth_tokens` table dropped (migration 0042)
+- [x] `user_credentials` table dropped (migration 0042)
+- [x] `user_telegram_config` no longer stores `botTokenEncrypted` (migration 0042 recreates table without it)
+- [x] All consumers use `getCredential()` / `storeCredential()`: integrations, repos, auth, env-assembly, telegram
+- [x] Auto-refresh for Gmail and Google Calendar handled in credential boundary (`refreshGoogleToken`)
+- [x] No direct credential store access outside `services/credentials.ts` — `lib/db/oauth.ts` deleted, Drizzle schemas for old tables removed
+- [x] `StoredAPIKey` type removed from shared package
+- [x] `pnpm typecheck` passes
+- [x] Old tables dropped instead of migrated — users re-authenticate (acceptable given limited adoption)

@@ -9,7 +9,6 @@ export * from './db/users.js';
 export * from './db/sessions.js';
 export * from './db/messages.js';
 export * from './db/auth.js';
-export * from './db/oauth.js';
 export * from './db/integrations.js';
 export * from './db/org.js';
 export * from './db/personas.js';

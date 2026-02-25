@@ -461,17 +461,6 @@ export interface CustomProvider {
   updatedAt: string;
 }
 
-// API key types
-export interface StoredAPIKey {
-  id: string;
-  userId: string;
-  service: IntegrationService;
-  encryptedCredentials: string;
-  scopes: string[];
-  createdAt: Date;
-  expiresAt?: Date;
-}
-
 // Webhook types
 export interface WebhookPayload {
   service: IntegrationService;

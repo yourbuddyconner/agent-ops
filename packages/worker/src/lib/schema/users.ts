@@ -52,28 +52,3 @@ export const authSessions = sqliteTable('auth_sessions', {
   index('idx_auth_sessions_token').on(table.tokenHash),
 ]);
 
-export const oauthTokens = sqliteTable('oauth_tokens', {
-  id: text().primaryKey(),
-  userId: text().notNull().references(() => users.id, { onDelete: 'cascade' }),
-  provider: text().notNull(),
-  encryptedAccessToken: text().notNull(),
-  encryptedRefreshToken: text(),
-  scopes: text(),
-  expiresAt: text(),
-  createdAt: text().default(sql`(datetime('now'))`),
-  updatedAt: text().default(sql`(datetime('now'))`),
-}, (table) => [
-  uniqueIndex('idx_oauth_tokens_user_provider').on(table.userId, table.provider),
-]);
-
-export const userCredentials = sqliteTable('user_credentials', {
-  id: text().primaryKey(),
-  userId: text().notNull().references(() => users.id, { onDelete: 'cascade' }),
-  provider: text().notNull(),
-  encryptedKey: text().notNull(),
-  createdAt: text().default(sql`(datetime('now'))`),
-  updatedAt: text().default(sql`(datetime('now'))`),
-}, (table) => [
-  uniqueIndex('idx_user_credentials_unique').on(table.userId, table.provider),
-  index('idx_user_credentials_user').on(table.userId),
-]);

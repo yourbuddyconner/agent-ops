@@ -1,6 +1,7 @@
 import { Bot } from 'grammy';
 import type { D1Database } from '@cloudflare/workers-types';
 import { SLASH_COMMANDS } from '@agent-ops/shared';
+import type { UserTelegramConfig } from '@agent-ops/shared';
 import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
 import { storeCredential, getCredential, revokeCredential } from '../services/credentials.js';
@@ -8,7 +9,7 @@ import { storeCredential, getCredential, revokeCredential } from '../services/cr
 // ─── Setup Telegram Bot ─────────────────────────────────────────────────────
 
 export type SetupTelegramResult =
-  | { ok: true; config: Awaited<ReturnType<typeof db.saveUserTelegramConfig>>; webhookUrl: string }
+  | { ok: true; config: UserTelegramConfig & { webhookActive: boolean }; webhookUrl: string }
   | { ok: false; error: string };
 
 export async function setupTelegramBot(
@@ -37,14 +38,12 @@ export async function setupTelegramBot(
     credentialType: 'bot_token',
   });
 
-  // Save metadata (without the encrypted token)
+  // Save metadata (token is in credentials table, not here)
   const config = await db.saveUserTelegramConfig(env.DB, {
     id: crypto.randomUUID(),
     userId,
-    botToken: trimmedToken,
     botUsername: botInfo.username || botInfo.first_name,
     botInfo: JSON.stringify(botInfo),
-    encryptionKey: env.ENCRYPTION_KEY,
   });
 
   // Register webhook with Telegram

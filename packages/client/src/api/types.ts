@@ -17,7 +17,6 @@ export type {
   ConfigureIntegrationRequest,
   TriggerSyncRequest,
   SyncStatusResponse,
-  StoredAPIKey,
   WebhookPayload,
   DashboardStatsResponse,
   DashboardHeroStats,
