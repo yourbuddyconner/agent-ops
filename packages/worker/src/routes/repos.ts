@@ -1,10 +1,9 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { NotFoundError, ValidationError } from '@agent-ops/shared';
+import { ValidationError } from '@agent-ops/shared';
 import type { Env, Variables } from '../env.js';
-import * as db from '../lib/db.js';
-import { decryptString } from '../lib/crypto.js';
+import { getCredential } from '../services/credentials.js';
 
 export const reposRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -12,11 +11,11 @@ export const reposRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
  * Get the user's decrypted GitHub access token. Throws if not connected.
  */
 async function getGitHubToken(env: Env, userId: string): Promise<string> {
-  const oauthToken = await db.getOAuthToken(env.DB, userId, 'github');
-  if (!oauthToken) {
+  const result = await getCredential(env, userId, 'github');
+  if (!result.ok) {
     throw new ValidationError('GitHub account not connected');
   }
-  return decryptString(oauthToken.encryptedAccessToken, env.ENCRYPTION_KEY);
+  return result.credential.accessToken;
 }
 
 /**

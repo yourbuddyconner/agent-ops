@@ -3,6 +3,7 @@ import type { IntegrationService } from '@agent-ops/shared';
 import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
 import { integrationRegistry } from '../integrations/base.js';
+import { storeCredential, getCredential } from '../services/credentials.js';
 import '../integrations/github.js';
 import '../integrations/gmail.js';
 import '../integrations/google-calendar.js';
@@ -58,19 +59,11 @@ export async function configureIntegration(
   // Ensure user exists
   await db.getOrCreateUser(env.DB, { id: userId, email: userEmail });
 
-  // Store credentials securely in Durable Object
-  const doId = env.API_KEYS.idFromName(userId);
-  const apiKeysDO = env.API_KEYS.get(doId);
-
-  await apiKeysDO.fetch(new Request('http://internal/store', {
-    method: 'POST',
-    body: JSON.stringify({
-      userId,
-      service: params.service,
-      credentials: params.credentials,
-      scopes: params.config.entities,
-    }),
-  }));
+  // Store credentials in unified credentials table
+  await storeCredential(env, userId, params.service, params.credentials, {
+    credentialType: 'oauth2',
+    scopes: params.config.entities.join(' '),
+  });
 
   // Create integration record (without credentials)
   const integrationId = crypto.randomUUID();
@@ -127,21 +120,12 @@ export async function triggerIntegrationSync(
     throw new ValidationError(`Unsupported integration: ${integration.service}`);
   }
 
-  // Retrieve credentials from Durable Object
-  const doId = env.API_KEYS.idFromName(userId);
-  const apiKeysDO = env.API_KEYS.get(doId);
-
-  const credsRes = await apiKeysDO.fetch(new Request('http://internal/retrieve', {
-    method: 'POST',
-    body: JSON.stringify({ service: integration.service }),
-  }));
-
-  if (!credsRes.ok) {
+  // Retrieve credentials from unified credentials table
+  const credResult = await getCredential(env, userId, integration.service);
+  if (!credResult.ok) {
     throw new IntegrationError('Failed to retrieve credentials', ErrorCodes.INTEGRATION_AUTH_FAILED);
   }
-
-  const { credentials } = await credsRes.json<{ credentials: Record<string, string> }>();
-  handler.setCredentials(credentials);
+  handler.setCredentials({ access_token: credResult.credential.accessToken });
 
   // Create sync log
   const syncId = crypto.randomUUID();

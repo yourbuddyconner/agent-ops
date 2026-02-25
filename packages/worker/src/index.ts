@@ -32,14 +32,13 @@ import { tasksRouter } from './routes/tasks.js';
 import { notificationQueueRouter } from './routes/mailbox.js';
 import { channelsRouter } from './routes/channels.js';
 import { telegramRouter, telegramApiRouter } from './routes/telegram.js';
-import { decryptString } from './lib/crypto.js';
 import {
   enqueueWorkflowApprovalNotificationIfMissing,
-  getOAuthToken,
   getTerminatedOrchestratorSessions,
   markWorkflowApprovalNotificationsRead,
   updateSessionGitState,
 } from './lib/db.js';
+import { getCredential } from './services/credentials.js';
 import {
   checkWorkflowConcurrency,
   createWorkflowSession,
@@ -50,7 +49,6 @@ import {
 import { restartOrchestratorSession } from './services/orchestrator.js';
 
 // Durable Object exports
-export { APIKeysDurableObject } from './durable-objects/api-keys.js';
 export { SessionAgentDO } from './durable-objects/session-agent.js';
 export { EventBusDO } from './durable-objects/event-bus.js';
 export { WorkflowExecutorDO } from './durable-objects/workflow-executor.js';
@@ -328,16 +326,15 @@ async function reconcileGitHubResources(env: Env): Promise<void> {
   const getTokenForUser = async (userId: string): Promise<string | null> => {
     if (tokenCache.has(userId)) return tokenCache.get(userId) ?? null;
     try {
-      const tokenRow = await getOAuthToken(env.DB, userId, 'github');
-      if (!tokenRow) {
+      const result = await getCredential(env, userId, 'github');
+      if (!result.ok) {
         tokenCache.set(userId, null);
         return null;
       }
-      const token = await decryptString(tokenRow.encryptedAccessToken, env.ENCRYPTION_KEY);
-      tokenCache.set(userId, token);
-      return token;
+      tokenCache.set(userId, result.credential.accessToken);
+      return result.credential.accessToken;
     } catch (error) {
-      console.warn(`GitHub reconcile: failed to decrypt token for user ${userId}`, error);
+      console.warn(`GitHub reconcile: failed to get token for user ${userId}`, error);
       tokenCache.set(userId, null);
       return null;
     }

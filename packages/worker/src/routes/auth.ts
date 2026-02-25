@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
 import { ValidationError } from '@agent-ops/shared';
-import { encryptString } from '../lib/crypto.js';
+import { storeCredential, listCredentials, revokeCredential, hasCredential } from '../services/credentials.js';
 
 export const authRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -16,8 +16,8 @@ authRouter.get('/me', async (c) => {
 
   const [fullUser, hasGitHub, hasGoogle, orgSettings] = await Promise.all([
     db.getUserById(c.env.DB, authUser.id),
-    db.hasOAuthProvider(c.env.DB, authUser.id, 'github'),
-    db.hasOAuthProvider(c.env.DB, authUser.id, 'google'),
+    hasCredential(c.env, authUser.id, 'github'),
+    hasCredential(c.env, authUser.id, 'google'),
     db.getOrgSettings(c.env.DB),
   ]);
 
@@ -88,8 +88,8 @@ const VALID_CREDENTIAL_PROVIDERS = ['1password'] as const;
  */
 authRouter.get('/me/credentials', async (c) => {
   const user = c.get('user');
-  const credentials = await db.listUserCredentials(c.env.DB, user.id);
-  return c.json(credentials);
+  const creds = await listCredentials(c.env, user.id);
+  return c.json(creds);
 });
 
 /**
@@ -108,13 +108,9 @@ authRouter.put('/me/credentials/:provider', async (c) => {
   }
 
   const user = c.get('user');
-  const encryptedKey = await encryptString(key, c.env.ENCRYPTION_KEY);
 
-  await db.setUserCredential(c.env.DB, {
-    id: crypto.randomUUID(),
-    userId: user.id,
-    provider,
-    encryptedKey,
+  await storeCredential(c.env, user.id, provider, { token: key }, {
+    credentialType: 'service_account',
   });
 
   return c.json({ ok: true });
@@ -127,7 +123,7 @@ authRouter.put('/me/credentials/:provider', async (c) => {
 authRouter.delete('/me/credentials/:provider', async (c) => {
   const provider = c.req.param('provider');
   const user = c.get('user');
-  await db.deleteUserCredential(c.env.DB, user.id, provider);
+  await revokeCredential(c.env, user.id, provider);
   return c.json({ ok: true });
 });
 

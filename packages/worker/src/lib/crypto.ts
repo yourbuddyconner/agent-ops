@@ -53,3 +53,61 @@ export async function decryptString(ciphertext: string, secret: string): Promise
   const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
   return decoder.decode(decrypted);
 }
+
+// --- PBKDF2-based encryption (used by unified credentials table) ---
+
+const PBKDF2_SALT = encoder.encode('agent-ops-credentials');
+const PBKDF2_ITERATIONS = 100_000;
+
+async function deriveKeyPBKDF2(secret: string): Promise<CryptoKey> {
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    'PBKDF2',
+    false,
+    ['deriveKey'],
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: PBKDF2_SALT, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+export async function encryptStringPBKDF2(plaintext: string, secret: string): Promise<string> {
+  const key = await deriveKeyPBKDF2(secret);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    encoder.encode(plaintext),
+  );
+
+  const combined = new Uint8Array(iv.length + encrypted.byteLength);
+  combined.set(iv, 0);
+  combined.set(new Uint8Array(encrypted), iv.length);
+
+  let binary = '';
+  for (const byte of combined) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+export async function decryptStringPBKDF2(ciphertext: string, secret: string): Promise<string> {
+  const key = await deriveKeyPBKDF2(secret);
+
+  const binary = atob(ciphertext);
+  const combined = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    combined[i] = binary.charCodeAt(i);
+  }
+
+  const iv = combined.slice(0, 12);
+  const data = combined.slice(12);
+
+  const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
+  return decoder.decode(decrypted);
+}

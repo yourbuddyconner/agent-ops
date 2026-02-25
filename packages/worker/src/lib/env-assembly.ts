@@ -2,6 +2,7 @@ import type { D1Database } from '@cloudflare/workers-types';
 import type { Env } from '../env.js';
 import * as db from './db.js';
 import { decryptString } from './crypto.js';
+import { getCredential } from '../services/credentials.js';
 
 /**
  * Generate a 256-bit hex token for runner authentication.
@@ -62,12 +63,12 @@ export async function assembleCredentialEnv(
 
   for (const { provider, envKey } of credentialEnvMap) {
     try {
-      const cred = await db.getUserCredential(database, userId, provider);
-      if (cred) {
-        envVars[envKey] = await decryptString(cred.encryptedKey, env.ENCRYPTION_KEY);
+      const result = await getCredential(env, userId, provider);
+      if (result.ok) {
+        envVars[envKey] = result.credential.accessToken;
       }
     } catch {
-      // Table may not exist yet — skip
+      // skip
     }
   }
 
@@ -133,11 +134,11 @@ export async function assembleGitHubEnv(
     return { envVars };
   }
 
-  const oauthToken = await db.getOAuthToken(database, userId, 'github');
-  if (!oauthToken) {
+  const result = await getCredential(env, userId, 'github');
+  if (!result.ok) {
     return { envVars, error: 'GitHub account not connected. Sign in with GitHub first.' };
   }
-  const githubToken = await decryptString(oauthToken.encryptedAccessToken, env.ENCRYPTION_KEY);
+  const githubToken = result.credential.accessToken;
 
   // Fetch git user info from the users table
   const userRow = await database.prepare('SELECT name, email, github_username, git_name, git_email FROM users WHERE id = ?')

@@ -2,7 +2,6 @@ import type { D1Database, R2Bucket, DurableObjectNamespace } from '@cloudflare/w
 
 export interface Env {
   // Durable Objects
-  API_KEYS: DurableObjectNamespace;
   SESSIONS: DurableObjectNamespace;
   EVENT_BUS: DurableObjectNamespace;
   WORKFLOW_EXECUTOR: DurableObjectNamespace;

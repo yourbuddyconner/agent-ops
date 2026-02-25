@@ -7,6 +7,7 @@ import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
 import * as integrationService from '../services/integrations.js';
 import { integrationRegistry } from '../integrations/base.js';
+import { revokeCredential } from '../services/credentials.js';
 import '../integrations/github.js'; // Register GitHub integration
 import '../integrations/gmail.js'; // Register Gmail integration
 import '../integrations/google-calendar.js'; // Register Google Calendar integration
@@ -224,14 +225,8 @@ integrationsRouter.delete('/:id', async (c) => {
     throw new NotFoundError('Integration', id);
   }
 
-  // Revoke credentials in Durable Object
-  const doId = c.env.API_KEYS.idFromName(user.id);
-  const apiKeysDO = c.env.API_KEYS.get(doId);
-
-  await apiKeysDO.fetch(new Request('http://internal/revoke', {
-    method: 'POST',
-    body: JSON.stringify({ service: integration.service }),
-  }));
+  // Revoke credentials in unified credentials table
+  await revokeCredential(c.env, user.id, integration.service);
 
   // Delete integration record (cascades to sync_logs and synced_entities)
   await db.deleteIntegration(c.env.DB, id);

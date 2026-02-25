@@ -4,6 +4,7 @@ import type { Env, Variables } from '../env.js';
 import { telegramScopeKey, SLASH_COMMANDS } from '@agent-ops/shared';
 import * as db from '../lib/db.js';
 import * as telegramService from '../services/telegram.js';
+import { getCredential } from '../services/credentials.js';
 import { dispatchOrchestratorPrompt } from '../lib/workflow-runtime.js';
 
 // ─── Forward / Quote Formatting ──────────────────────────────────────────────
@@ -68,14 +69,15 @@ export const telegramRouter = new Hono<{ Bindings: Env; Variables: Variables }>(
 telegramRouter.post('/webhook/:userId', async (c) => {
   const userId = c.req.param('userId');
 
-  const telegramData = await db.getUserTelegramToken(
-    c.env.DB, userId, c.env.ENCRYPTION_KEY,
-  );
-  if (!telegramData) {
+  const [credResult, config] = await Promise.all([
+    getCredential(c.env, userId, 'telegram'),
+    db.getUserTelegramConfig(c.env.DB, userId),
+  ]);
+  if (!credResult.ok || !config) {
     return c.json({ error: 'No telegram config' }, 404);
   }
 
-  const { config, botToken } = telegramData;
+  const botToken = credResult.credential.accessToken;
 
   // Resolve the current orchestrator session ID (supports rotated IDs)
   const orchSession = await db.getOrchestratorSession(c.env.DB, userId);
@@ -482,7 +484,7 @@ telegramApiRouter.post('/', async (c) => {
 
   const workerUrl = new URL(c.req.url).origin;
   const result = await telegramService.setupTelegramBot(
-    c.env.DB, c.env.ENCRYPTION_KEY, user.id, botToken, workerUrl,
+    c.env, user.id, botToken, workerUrl,
   );
 
   if (!result.ok) {
@@ -506,7 +508,7 @@ telegramApiRouter.get('/', async (c) => {
  */
 telegramApiRouter.delete('/', async (c) => {
   const user = c.get('user');
-  await telegramService.disconnectTelegramBot(c.env.DB, c.env.ENCRYPTION_KEY, user.id);
+  await telegramService.disconnectTelegramBot(c.env, user.id);
   return c.json({ success: true });
 });
 

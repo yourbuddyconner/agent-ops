@@ -1,6 +1,6 @@
 import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
-import { encryptString } from '../lib/crypto.js';
+import { storeCredential } from '../services/credentials.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -252,13 +252,11 @@ export async function handleGitHubCallback(
     });
   }
 
-  // Encrypt and store OAuth token
-  const encryptedToken = await encryptString(tokenData.access_token, env.ENCRYPTION_KEY);
-  await db.upsertOAuthToken(env.DB, {
-    id: crypto.randomUUID(),
-    userId: user.id,
-    provider: 'github',
-    encryptedAccessToken: encryptedToken,
+  // Store OAuth credential
+  await storeCredential(env, user.id, 'github', {
+    access_token: tokenData.access_token,
+  }, {
+    credentialType: 'oauth2',
     scopes: tokenData.scope || 'repo read:user user:email',
   });
 
@@ -343,23 +341,21 @@ export async function handleGoogleCallback(
     });
   }
 
-  // Encrypt and store Google OAuth tokens
+  // Store Google OAuth credential
   if (tokenData.access_token) {
-    const encryptedAccessToken = await encryptString(tokenData.access_token, env.ENCRYPTION_KEY);
-    const encryptedRefreshToken = tokenData.refresh_token
-      ? await encryptString(tokenData.refresh_token, env.ENCRYPTION_KEY)
-      : undefined;
+    const credentialData: Record<string, string> = {
+      access_token: tokenData.access_token,
+    };
+    if (tokenData.refresh_token) {
+      credentialData.refresh_token = tokenData.refresh_token;
+    }
 
     const expiresAt = tokenData.expires_in
       ? new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
       : undefined;
 
-    await db.upsertOAuthToken(env.DB, {
-      id: crypto.randomUUID(),
-      userId: user.id,
-      provider: 'google',
-      encryptedAccessToken,
-      encryptedRefreshToken,
+    await storeCredential(env, user.id, 'google', credentialData, {
+      credentialType: 'oauth2',
       scopes: 'openid email profile',
       expiresAt,
     });

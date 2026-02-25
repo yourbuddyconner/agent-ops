@@ -22,10 +22,6 @@ MODAL_BACKEND_URL = "${MODAL_BACKEND_URL}"
 
 # Durable Objects
 [[durable_objects.bindings]]
-name = "API_KEYS"
-class_name = "APIKeysDurableObject"
-
-[[durable_objects.bindings]]
 name = "SESSIONS"
 class_name = "SessionAgentDO"
 
@@ -45,6 +41,10 @@ new_sqlite_classes = ["SessionAgentDO"]
 [[migrations]]
 tag = "v2"
 new_classes = ["WorkflowExecutorDO"]
+
+[[migrations]]
+tag = "v3"
+deleted_classes = ["APIKeysDurableObject"]
 
 # D1 Database
 [[d1_databases]]

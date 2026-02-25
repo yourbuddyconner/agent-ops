@@ -1,7 +1,9 @@
 import { Bot } from 'grammy';
 import type { D1Database } from '@cloudflare/workers-types';
 import { SLASH_COMMANDS } from '@agent-ops/shared';
+import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
+import { storeCredential, getCredential, revokeCredential } from '../services/credentials.js';
 
 // ─── Setup Telegram Bot ─────────────────────────────────────────────────────
 
@@ -10,8 +12,7 @@ export type SetupTelegramResult =
   | { ok: false; error: string };
 
 export async function setupTelegramBot(
-  database: D1Database,
-  encryptionKey: string,
+  env: Env,
   userId: string,
   botToken: string,
   workerUrl: string,
@@ -31,14 +32,19 @@ export async function setupTelegramBot(
     return { ok: false, error: 'Invalid bot token — could not reach Telegram API' };
   }
 
-  // Save config with encrypted token
-  const config = await db.saveUserTelegramConfig(database, {
+  // Store bot token in unified credentials table
+  await storeCredential(env, userId, 'telegram', { bot_token: trimmedToken }, {
+    credentialType: 'bot_token',
+  });
+
+  // Save metadata (without the encrypted token)
+  const config = await db.saveUserTelegramConfig(env.DB, {
     id: crypto.randomUUID(),
     userId,
     botToken: trimmedToken,
     botUsername: botInfo.username || botInfo.first_name,
     botInfo: JSON.stringify(botInfo),
-    encryptionKey,
+    encryptionKey: env.ENCRYPTION_KEY,
   });
 
   // Register webhook with Telegram
@@ -54,7 +60,7 @@ export async function setupTelegramBot(
   });
 
   // Update webhook status
-  await db.updateTelegramWebhookStatus(database, userId, webhookUrl, true);
+  await db.updateTelegramWebhookStatus(env.DB, userId, webhookUrl, true);
 
   return { ok: true, config: { ...config, webhookActive: true } as any, webhookUrl };
 }
@@ -62,19 +68,20 @@ export async function setupTelegramBot(
 // ─── Disconnect Telegram Bot ────────────────────────────────────────────────
 
 export async function disconnectTelegramBot(
-  database: D1Database,
-  encryptionKey: string,
+  env: Env,
   userId: string,
 ): Promise<void> {
-  const telegramData = await db.getUserTelegramToken(database, userId, encryptionKey);
-  if (telegramData) {
+  const credResult = await getCredential(env, userId, 'telegram');
+  if (credResult.ok) {
     try {
-      const bot = new Bot(telegramData.botToken);
+      const bot = new Bot(credResult.credential.accessToken);
       await bot.api.deleteWebhook();
     } catch {
       // Best effort — token may be revoked
     }
   }
 
-  await db.deleteUserTelegramConfig(database, userId);
+  // Remove credential and metadata
+  await revokeCredential(env, userId, 'telegram');
+  await db.deleteUserTelegramConfig(env.DB, userId);
 }

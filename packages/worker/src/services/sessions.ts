@@ -2,9 +2,9 @@ import { ForbiddenError, NotFoundError, ValidationError, webManualScopeKey } fro
 import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
 import { signJWT } from '../lib/jwt.js';
-import { decryptString } from '../lib/crypto.js';
 import { buildDoWebSocketUrl } from '../lib/do-ws-url.js';
 import { generateRunnerToken, assembleProviderEnv, assembleCredentialEnv, assembleCustomProviders, assembleGitHubEnv } from '../lib/env-assembly.js';
+import { getCredential } from '../services/credentials.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -31,9 +31,9 @@ export function assertSessionShareable(session: Awaited<ReturnType<typeof db.ass
 
 export async function getGitHubTokenIfConnected(env: Env, userId: string): Promise<string | null> {
   try {
-    const oauthToken = await db.getOAuthToken(env.DB, userId, 'github');
-    if (!oauthToken) return null;
-    return await decryptString(oauthToken.encryptedAccessToken, env.ENCRYPTION_KEY);
+    const result = await getCredential(env, userId, 'github');
+    if (!result.ok) return null;
+    return result.credential.accessToken;
   } catch {
     return null;
   }

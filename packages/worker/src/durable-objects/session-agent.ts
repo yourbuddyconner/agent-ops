@@ -1,9 +1,9 @@
 import type { Env } from '../env.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getOAuthToken, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramToken, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels } from '../lib/db.js';
+import { getCredential } from '../services/credentials.js';
 import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
 import { listTriggers, getTrigger, deleteTrigger, createTrigger, getTriggerForRun, updateTriggerLastRun, findScheduleTriggerByNameAndWorkflow, findScheduleTriggersByWorkflow, findScheduleTriggersByName, updateTriggerFull } from '../lib/db/triggers.js';
 import { getExecution, getExecutionWithWorkflowName, getExecutionForAuth, getExecutionSteps, getExecutionOwnerAndStatus, checkIdempotencyKey, createExecution, completeExecutionFull, upsertExecutionStep, listExecutions } from '../lib/db/executions.js';
-import { decryptString } from '../lib/crypto.js';
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 import { sendTelegramMessage, sendTelegramPhoto } from '../routes/telegram.js';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
@@ -2891,12 +2891,9 @@ export class SessionAgentDO {
         // Inject git credentials if the parent doesn't have them (e.g. orchestrator)
         if (!childSpawnRequest.envVars.GITHUB_TOKEN) {
           try {
-            const oauthToken = await getOAuthToken(this.env.DB, userId, 'github');
-            if (oauthToken) {
-              childSpawnRequest.envVars.GITHUB_TOKEN = await decryptString(
-                oauthToken.encryptedAccessToken,
-                this.env.ENCRYPTION_KEY,
-              );
+            const ghResult = await getCredential(this.env, userId, 'github');
+            if (ghResult.ok) {
+              childSpawnRequest.envVars.GITHUB_TOKEN = ghResult.credential.accessToken;
             }
           } catch (err) {
             console.warn('[SessionAgentDO] Failed to fetch GitHub token for child:', err);
@@ -6118,9 +6115,9 @@ export class SessionAgentDO {
     // Try the current prompt author first (for multiplayer attribution)
     const promptAuthorId = this.getStateValue('currentPromptAuthorId');
     if (promptAuthorId) {
-      const authorToken = await getOAuthToken(this.env.DB, promptAuthorId, 'github');
-      if (authorToken) {
-        return decryptString(authorToken.encryptedAccessToken, this.env.ENCRYPTION_KEY);
+      const authorResult = await getCredential(this.env, promptAuthorId, 'github');
+      if (authorResult.ok) {
+        return authorResult.credential.accessToken;
       }
     }
 
@@ -6128,10 +6125,10 @@ export class SessionAgentDO {
     const userId = this.getStateValue('userId');
     if (!userId) return null;
 
-    const oauthToken = await getOAuthToken(this.env.DB, userId, 'github');
-    if (!oauthToken) return null;
+    const result = await getCredential(this.env, userId, 'github');
+    if (!result.ok) return null;
 
-    return decryptString(oauthToken.encryptedAccessToken, this.env.ENCRYPTION_KEY);
+    return result.credential.accessToken;
   }
 
   /**
@@ -7304,19 +7301,20 @@ export class SessionAgentDO {
 
       switch (channelType) {
         case 'telegram': {
-          const telegramData = await getUserTelegramToken(this.env.DB, userId, this.env.ENCRYPTION_KEY);
-          if (!telegramData) {
+          const tgCred = await getCredential(this.env, userId, 'telegram');
+          if (!tgCred.ok) {
             this.sendToRunner({ type: 'channel-reply-result', requestId, error: 'No Telegram config for user' } as any);
             return;
           }
+          const botToken = tgCred.credential.accessToken;
           let ok: boolean;
           if (imageBase64) {
             ok = await sendTelegramPhoto(
-              telegramData.botToken, channelId, imageBase64,
+              botToken, channelId, imageBase64,
               imageMimeType || 'image/jpeg', message || undefined,
             );
           } else {
-            ok = await sendTelegramMessage(telegramData.botToken, channelId, message);
+            ok = await sendTelegramMessage(botToken, channelId, message);
           }
           if (!ok) {
             this.sendToRunner({ type: 'channel-reply-result', requestId, error: 'Telegram API error' } as any);
@@ -7415,12 +7413,12 @@ export class SessionAgentDO {
     try {
       switch (pending.channelType) {
         case 'telegram': {
-          const telegramData = await getUserTelegramToken(this.env.DB, userId, this.env.ENCRYPTION_KEY);
-          if (!telegramData) {
+          const autoTgCred = await getCredential(this.env, userId, 'telegram');
+          if (!autoTgCred.ok) {
             console.log('[SessionAgentDO] Auto channel reply: no Telegram config, skipping');
             return;
           }
-          const ok = await sendTelegramMessage(telegramData.botToken, pending.channelId, pending.resultContent);
+          const ok = await sendTelegramMessage(autoTgCred.credential.accessToken, pending.channelId, pending.resultContent);
           if (ok) {
             console.log(`[SessionAgentDO] Auto channel reply sent to ${pending.channelType}:${pending.channelId}`);
             sent = true;

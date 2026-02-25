@@ -1,9 +1,8 @@
 import type { DurableObjectState } from '@cloudflare/workers-types';
 import type { Env } from '../env.js';
-import { decryptString } from '../lib/crypto.js';
 import { getExecutionWithWorkflow, updateExecutionRuntimeState, resumeExecution, cancelExecutionWithReason, type ExecutionWithWorkflowRow } from '../lib/db/executions.js';
 import { getUserIdleTimeout, getUserGitConfig } from '../lib/db/users.js';
-import { getOAuthToken } from '../lib/db/oauth.js';
+import { getCredential } from '../services/credentials.js';
 import { getSession, getSessionGitState, updateSessionStatus } from '../lib/db/sessions.js';
 
 interface EnqueueRequest {
@@ -321,13 +320,13 @@ export class WorkflowExecutorDO implements DurableObject {
     envVars.GIT_USER_NAME = gitUserRow?.gitName || gitUserRow?.name || gitUserRow?.githubUsername || 'Agent Ops User';
     envVars.GIT_USER_EMAIL = gitUserRow?.gitEmail || gitUserRow?.email || 'agent-ops@example.local';
 
-    const oauthRow = await getOAuthToken(this.env.DB, params.userId, 'github');
+    const ghResult = await getCredential(this.env, params.userId, 'github');
 
-    if (oauthRow?.encryptedAccessToken) {
+    if (ghResult.ok) {
       try {
-        envVars.GITHUB_TOKEN = await decryptString(oauthRow.encryptedAccessToken, this.env.ENCRYPTION_KEY);
+        envVars.GITHUB_TOKEN = ghResult.credential.accessToken;
       } catch (error) {
-        console.warn('[WorkflowExecutorDO] Failed to decrypt GitHub token for workflow session', error);
+        console.warn('[WorkflowExecutorDO] Failed to get GitHub token for workflow session', error);
       }
     }
 
