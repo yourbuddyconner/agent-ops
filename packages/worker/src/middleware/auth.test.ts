@@ -16,8 +16,8 @@ describe('extractBearerToken', () => {
     expect(extractBearerToken(req)).toBe('ws-token-123');
   });
 
-  it('falls back to legacy query token', () => {
+  it('ignores token in query params', () => {
     const req = new Request('https://example.com/api/sessions/1/ws?role=client&token=legacy-token');
-    expect(extractBearerToken(req)).toBe('legacy-token');
+    expect(extractBearerToken(req)).toBeNull();
   });
 });

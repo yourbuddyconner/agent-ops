@@ -4,9 +4,6 @@ export function extractBearerToken(req: Request): string | null {
     return authHeader.slice(7);
   }
 
-  const urlToken = new URL(req.url).searchParams.get('token');
-  if (urlToken) return urlToken;
-
   const protocolHeader = req.headers.get('Sec-WebSocket-Protocol');
   if (!protocolHeader) return null;
 

@@ -56,8 +56,6 @@ export function useWebSocket(url: string | null, options: UseWebSocketOptions = 
 
     const wsUrlStr = getWebSocketUrl(url);
     const wsUrl = new URL(wsUrlStr);
-    wsUrl.searchParams.delete('token');
-    wsUrl.searchParams.delete('userId');
 
     const ws = new WebSocket(wsUrl.toString(), ['agent-ops', `bearer.${token}`]);
 
