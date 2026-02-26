@@ -263,7 +263,7 @@ You can also `curl` the deployed API directly for testing routes.
 ### Git Conventions
 
 - Commit code upon completion of each bean.
-- Do NOT add "Co-Authored-by" trailers mentioning AI models (e.g., Opus, Claude) in commit messages
+- Do NOT add "Co-Authored-by" trailers mentioning AI models (e.g., Opus, Claude) in commit messages PRs, or comments.
 
 ## Implementation Phases (from V1.md)
 
