@@ -1,5 +1,5 @@
-import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
+import Database, { type Database as DatabaseType } from 'better-sqlite3';
+import { type BetterSQLite3Database, drizzle } from 'drizzle-orm/better-sqlite3';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +11,7 @@ const __dirname = path.dirname(__filename);
  * Creates an in-memory SQLite database with all migrations applied,
  * returning a Drizzle instance compatible with the schema tables.
  */
-export function createTestDb() {
+export function createTestDb(): { db: BetterSQLite3Database; sqlite: DatabaseType } {
   const sqlite = new Database(':memory:');
   sqlite.pragma('journal_mode = WAL');
   sqlite.pragma('foreign_keys = ON');
