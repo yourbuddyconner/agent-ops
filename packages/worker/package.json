@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "db:migrate": "wrangler d1 migrations apply agent-ops-db --local",
     "db:migrate:prod": "wrangler d1 migrations apply agent-ops-db --remote",
-    "db:seed": "wrangler d1 execute agent-ops-db --local --file=scripts/seed-test-data.sql"
+    "db:seed": "wrangler d1 execute agent-ops-db --local --file=scripts/seed-test-data.sql",
+    "test": "vitest run"
   },
   "dependencies": {
     "@agent-ops/shared": "workspace:*",
@@ -24,8 +25,11 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240117.0",
+    "@types/better-sqlite3": "^7.6.8",
+    "better-sqlite3": "^11.0.0",
     "drizzle-kit": "^0.31.9",
     "typescript": "^5.3.3",
+    "vitest": "^4.0.18",
     "wrangler": "^3.28.0"
   }
 }

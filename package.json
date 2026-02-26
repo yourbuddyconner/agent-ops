@@ -9,9 +9,13 @@
     "build": "pnpm --filter @agent-ops/worker build",
     "deploy": "pnpm --filter @agent-ops/worker deploy",
     "db:migrate": "pnpm --filter @agent-ops/worker db:migrate",
-    "typecheck": "tsc --build"
+    "typecheck": "tsc --build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run"
   },
   "devDependencies": {
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.18"
   }
 }
