@@ -59,14 +59,14 @@ function useSessionStatus(sessionId: string | null) {
   useEffect(() => {
     if (!sessionId) return;
 
-    const { token, user } = useAuthStore.getState();
-    if (!token || !user) return;
+    const { token } = useAuthStore.getState();
+    if (!token) return;
 
     const wsUrlStr = getWebSocketUrl(`/api/sessions/${sessionId}/ws?role=client`);
     const wsUrl = new URL(wsUrlStr);
-    wsUrl.searchParams.set('userId', user.id);
-    wsUrl.searchParams.set('token', token);
-    const ws = new WebSocket(wsUrl.toString());
+    wsUrl.searchParams.delete('userId');
+    wsUrl.searchParams.delete('token');
+    const ws = new WebSocket(wsUrl.toString(), ['agent-ops', `bearer.${token}`]);
     wsRef.current = ws;
 
     const closeIfReady = () => {

@@ -47,23 +47,17 @@ export function useWebSocket(url: string | null, options: UseWebSocketOptions = 
     onErrorRef.current = onError;
   }, [onMessage, onConnect, onDisconnect, onError]);
 
-  const user = useAuthStore((state) => state.user);
   const token = useAuthStore((state) => state.token);
 
-  // Extract stable primitives from user to avoid reconnecting on object reference change
-  const userId = user?.id;
-
   const connect = useCallback(() => {
-    if (!url || !userId || !token) return;
+    if (!url || !token) return;
 
     setStatus('connecting');
 
     const wsUrlStr = getWebSocketUrl(url);
     const wsUrl = new URL(wsUrlStr);
-    wsUrl.searchParams.set('userId', userId);
-    wsUrl.searchParams.set('token', token);
 
-    const ws = new WebSocket(wsUrl.toString());
+    const ws = new WebSocket(wsUrl.toString(), ['agent-ops', `bearer.${token}`]);
 
     ws.onopen = () => {
       setStatus('connected');
@@ -107,7 +101,7 @@ export function useWebSocket(url: string | null, options: UseWebSocketOptions = 
     };
 
     wsRef.current = ws;
-  }, [url, userId, token, reconnect, maxReconnectAttempts]);
+  }, [url, token, reconnect, maxReconnectAttempts]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -135,14 +129,14 @@ export function useWebSocket(url: string | null, options: UseWebSocketOptions = 
   }, []);
 
   useEffect(() => {
-    if (url && userId && token) {
+    if (url && token) {
       connect();
     }
 
     return () => {
       disconnect();
     };
-  }, [url, userId, token, connect, disconnect]);
+  }, [url, token, connect, disconnect]);
 
   return {
     status,
