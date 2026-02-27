@@ -49,7 +49,7 @@ channelsRouter.post('/prompt', zValidator('json', promptSchema), async (c) => {
 
   // Lookup channel binding by scope key
   if (scopeKey) {
-    const binding = await db.getChannelBindingByScopeKey(c.env.DB, scopeKey);
+    const binding = await db.getChannelBindingByScopeKey(c.get('db'), scopeKey);
     if (binding) {
       // Route directly to bound session's DO
       const doId = c.env.SESSIONS.idFromName(binding.sessionId);

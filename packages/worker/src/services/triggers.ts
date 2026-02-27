@@ -3,6 +3,7 @@ import type { Env } from '../env.js';
 import { checkWorkflowConcurrency, enqueueWorkflowExecution } from './executions.js';
 import { dispatchOrchestratorPrompt } from './orchestrator.js';
 import { sha256Hex, createWorkflowSession } from '../lib/workflow-runtime.js';
+import { getDb } from '../lib/drizzle.js';
 import {
   scheduleTarget,
   deriveRepoFullName,
@@ -46,6 +47,7 @@ export async function runWorkflowManually(
   params: ManualRunParams,
   workerOrigin: string,
 ): Promise<ManualRunResult> {
+  const appDb = getDb(env.DB);
   const { userId, workflowId, variables = {} } = params;
   const repoUrl = params.repoUrl?.trim() || undefined;
   const branch = params.branch?.trim() || undefined;
@@ -58,7 +60,7 @@ export async function runWorkflowManually(
     throw new NotFoundError('Workflow', workflowId);
   }
 
-  const concurrency = await checkWorkflowConcurrency(env.DB, userId);
+  const concurrency = await checkWorkflowConcurrency(appDb, userId);
   if (!concurrency.allowed) {
     return {
       ok: false,
@@ -90,7 +92,7 @@ export async function runWorkflowManually(
   const executionId = crypto.randomUUID();
   const now = new Date().toISOString();
   const workflowHash = await sha256Hex(String(workflow.data ?? '{}'));
-  const sessionId = await createWorkflowSession(env.DB, {
+  const sessionId = await createWorkflowSession(appDb, {
     userId,
     workflowId: workflow.id,
     executionId,
@@ -172,6 +174,7 @@ export async function runTrigger(
   },
   workerOrigin: string,
 ): Promise<TriggerRunResult> {
+  const appDb = getDb(env.DB);
   const row = await getTriggerForRun(env.DB, userId, triggerId);
 
   if (!row) {
@@ -194,7 +197,7 @@ export async function runTrigger(
 
     const now = new Date().toISOString();
     if (dispatch.dispatched) {
-      await updateTriggerLastRun(env.DB, triggerId, now);
+      await updateTriggerLastRun(appDb, triggerId, now);
     }
 
     if (!dispatch.dispatched) {
@@ -222,7 +225,7 @@ export async function runTrigger(
     throw new ValidationError('Trigger is not linked to a workflow');
   }
 
-  const concurrency = await checkWorkflowConcurrency(env.DB, userId);
+  const concurrency = await checkWorkflowConcurrency(appDb, userId);
   if (!concurrency.allowed) {
     return {
       ok: false,
@@ -280,7 +283,7 @@ export async function runTrigger(
   const branch = body.branch?.trim() || undefined;
   const ref = body.ref?.trim() || undefined;
   const sourceRepoFullName = deriveRepoFullName(repoUrl as string | undefined, body.sourceRepoFullName as string | undefined);
-  const sessionId = await createWorkflowSession(env.DB, {
+  const sessionId = await createWorkflowSession(appDb, {
     userId,
     workflowId: row.wf_id,
     executionId,
@@ -317,7 +320,7 @@ export async function runTrigger(
     workerOrigin,
   });
 
-  await updateTriggerLastRun(env.DB, triggerId, now);
+  await updateTriggerLastRun(appDb, triggerId, now);
 
   return {
     ok: true,

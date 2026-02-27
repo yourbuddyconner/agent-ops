@@ -38,10 +38,10 @@ integrationsRouter.get('/', async (c) => {
   const user = c.get('user');
 
   // Get user's own integrations
-  const userIntegrations = await db.getUserIntegrations(c.env.DB, user.id);
+  const userIntegrations = await db.getUserIntegrations(c.get('db'), user.id);
 
   // Get org-scope integrations (visible to all members)
-  const orgIntegrations = await db.getOrgIntegrations(c.env.DB, user.id);
+  const orgIntegrations = await db.getOrgIntegrations(c.get('db'), user.id);
 
   // Don't expose sensitive data
   const sanitized = [
@@ -115,7 +115,7 @@ integrationsRouter.get('/:id', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const integration = await db.getIntegration(c.env.DB, id);
+  const integration = await db.getIntegration(c.get('db'), id);
 
   if (!integration) {
     throw new NotFoundError('Integration', id);
@@ -161,7 +161,7 @@ integrationsRouter.get('/:id/sync/:syncId', async (c) => {
   const user = c.get('user');
   const { id, syncId } = c.req.param();
 
-  const integration = await db.getIntegration(c.env.DB, id);
+  const integration = await db.getIntegration(c.get('db'), id);
 
   if (!integration) {
     throw new NotFoundError('Integration', id);
@@ -171,7 +171,7 @@ integrationsRouter.get('/:id/sync/:syncId', async (c) => {
     throw new NotFoundError('Integration', id);
   }
 
-  const syncLog = await db.getSyncLog(c.env.DB, syncId);
+  const syncLog = await db.getSyncLog(c.get('db'), syncId);
 
   if (!syncLog || syncLog.integrationId !== id) {
     throw new NotFoundError('Sync', syncId);
@@ -189,7 +189,7 @@ integrationsRouter.get('/:id/entities/:type', async (c) => {
   const { id, type } = c.req.param();
   const { limit, cursor } = c.req.query();
 
-  const integration = await db.getIntegration(c.env.DB, id);
+  const integration = await db.getIntegration(c.get('db'), id);
 
   if (!integration) {
     throw new NotFoundError('Integration', id);
@@ -199,7 +199,7 @@ integrationsRouter.get('/:id/entities/:type', async (c) => {
     throw new NotFoundError('Integration', id);
   }
 
-  const result = await db.getSyncedEntities(c.env.DB, id, type, {
+  const result = await db.getSyncedEntities(c.get('db'), id, type, {
     limit: limit ? parseInt(limit) : undefined,
     cursor,
   });
@@ -215,7 +215,7 @@ integrationsRouter.delete('/:id', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const integration = await db.getIntegration(c.env.DB, id);
+  const integration = await db.getIntegration(c.get('db'), id);
 
   if (!integration) {
     throw new NotFoundError('Integration', id);
@@ -229,7 +229,7 @@ integrationsRouter.delete('/:id', async (c) => {
   await revokeCredential(c.env, user.id, integration.service);
 
   // Delete integration record (cascades to sync_logs and synced_entities)
-  await db.deleteIntegration(c.env.DB, id);
+  await db.deleteIntegration(c.get('db'), id);
 
   return c.json({ success: true });
 });

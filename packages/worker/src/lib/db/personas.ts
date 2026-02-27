@@ -1,24 +1,22 @@
 import type { D1Database } from '@cloudflare/workers-types';
+import type { AppDb } from '../drizzle.js';
 import type { AgentPersona, AgentPersonaFile, PersonaVisibility } from '@agent-ops/shared';
-import { eq, and, or, sql, desc, asc } from 'drizzle-orm';
+import { eq, and, sql, asc } from 'drizzle-orm';
 import { getDb } from '../drizzle.js';
 import { agentPersonas, agentPersonaFiles, orgRepoPersonaDefaults } from '../schema/index.js';
-import { users } from '../schema/users.js';
 
 export async function createPersona(
-  db: D1Database,
+  db: AppDb,
   data: { id: string; name: string; slug: string; description?: string; icon?: string; defaultModel?: string; visibility?: PersonaVisibility; isDefault?: boolean; createdBy: string }
 ): Promise<AgentPersona> {
-  const drizzle = getDb(db);
-
   if (data.isDefault) {
-    await drizzle
+    await db
       .update(agentPersonas)
       .set({ isDefault: false })
       .where(and(eq(agentPersonas.orgId, 'default'), eq(agentPersonas.isDefault, true)));
   }
 
-  await drizzle.insert(agentPersonas).values({
+  await db.insert(agentPersonas).values({
     id: data.id,
     name: data.name,
     slug: data.slug,
@@ -132,46 +130,47 @@ export async function getPersonaWithFiles(db: D1Database, id: string): Promise<A
 }
 
 export async function updatePersona(
-  db: D1Database,
+  db: AppDb,
   id: string,
   updates: Partial<Pick<AgentPersona, 'name' | 'slug' | 'description' | 'icon' | 'defaultModel' | 'visibility' | 'isDefault'>>
 ): Promise<void> {
-  // Dynamic SET clauses — keep as raw SQL for flexibility
-  const sets: string[] = [];
-  const params: (string | number | null)[] = [];
+  const setValues: Record<string, unknown> = {};
 
-  if (updates.name !== undefined) { sets.push('name = ?'); params.push(updates.name); }
-  if (updates.slug !== undefined) { sets.push('slug = ?'); params.push(updates.slug); }
-  if (updates.description !== undefined) { sets.push('description = ?'); params.push(updates.description || null); }
-  if (updates.icon !== undefined) { sets.push('icon = ?'); params.push(updates.icon || null); }
-  if (updates.defaultModel !== undefined) { sets.push('default_model = ?'); params.push(updates.defaultModel || null); }
-  if (updates.visibility !== undefined) { sets.push('visibility = ?'); params.push(updates.visibility); }
+  if (updates.name !== undefined) setValues.name = updates.name;
+  if (updates.slug !== undefined) setValues.slug = updates.slug;
+  if (updates.description !== undefined) setValues.description = updates.description || null;
+  if (updates.icon !== undefined) setValues.icon = updates.icon || null;
+  if (updates.defaultModel !== undefined) setValues.defaultModel = updates.defaultModel || null;
+  if (updates.visibility !== undefined) setValues.visibility = updates.visibility;
   if (updates.isDefault !== undefined) {
     if (updates.isDefault) {
-      await db.prepare("UPDATE agent_personas SET is_default = 0 WHERE org_id = 'default' AND is_default = 1").run();
+      await db
+        .update(agentPersonas)
+        .set({ isDefault: false })
+        .where(and(eq(agentPersonas.orgId, 'default'), eq(agentPersonas.isDefault, true)));
     }
-    sets.push('is_default = ?');
-    params.push(updates.isDefault ? 1 : 0);
+    setValues.isDefault = updates.isDefault;
   }
 
-  if (sets.length === 0) return;
+  if (Object.keys(setValues).length === 0) return;
 
-  sets.push("updated_at = datetime('now')");
-  await db.prepare(`UPDATE agent_personas SET ${sets.join(', ')} WHERE id = ?`).bind(...params, id).run();
+  setValues.updatedAt = sql`datetime('now')`;
+  await db
+    .update(agentPersonas)
+    .set(setValues)
+    .where(eq(agentPersonas.id, id));
 }
 
-export async function deletePersona(db: D1Database, id: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.delete(agentPersonas).where(eq(agentPersonas.id, id));
+export async function deletePersona(db: AppDb, id: string): Promise<void> {
+  await db.delete(agentPersonas).where(eq(agentPersonas.id, id));
 }
 
 // Persona File Operations
 export async function upsertPersonaFile(
-  db: D1Database,
+  db: AppDb,
   data: { id: string; personaId: string; filename: string; content: string; sortOrder?: number }
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.insert(agentPersonaFiles).values({
+  await db.insert(agentPersonaFiles).values({
     id: data.id,
     personaId: data.personaId,
     filename: data.filename,
@@ -187,16 +186,14 @@ export async function upsertPersonaFile(
   });
 }
 
-export async function deletePersonaFile(db: D1Database, id: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.delete(agentPersonaFiles).where(eq(agentPersonaFiles.id, id));
+export async function deletePersonaFile(db: AppDb, id: string): Promise<void> {
+  await db.delete(agentPersonaFiles).where(eq(agentPersonaFiles.id, id));
 }
 
 // Repo-Persona Default Operations
-export async function setRepoPersonaDefault(db: D1Database, orgRepoId: string, personaId: string): Promise<void> {
+export async function setRepoPersonaDefault(db: AppDb, orgRepoId: string, personaId: string): Promise<void> {
   const id = crypto.randomUUID();
-  const drizzle = getDb(db);
-  await drizzle.insert(orgRepoPersonaDefaults).values({
+  await db.insert(orgRepoPersonaDefaults).values({
     id,
     orgRepoId,
     personaId,
@@ -206,9 +203,8 @@ export async function setRepoPersonaDefault(db: D1Database, orgRepoId: string, p
   });
 }
 
-export async function getRepoPersonaDefault(db: D1Database, orgRepoId: string): Promise<string | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getRepoPersonaDefault(db: AppDb, orgRepoId: string): Promise<string | null> {
+  const row = await db
     .select({ personaId: orgRepoPersonaDefaults.personaId })
     .from(orgRepoPersonaDefaults)
     .where(eq(orgRepoPersonaDefaults.orgRepoId, orgRepoId))
@@ -216,7 +212,6 @@ export async function getRepoPersonaDefault(db: D1Database, orgRepoId: string): 
   return row?.personaId || null;
 }
 
-export async function deleteRepoPersonaDefault(db: D1Database, orgRepoId: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.delete(orgRepoPersonaDefaults).where(eq(orgRepoPersonaDefaults.orgRepoId, orgRepoId));
+export async function deleteRepoPersonaDefault(db: AppDb, orgRepoId: string): Promise<void> {
+  await db.delete(orgRepoPersonaDefaults).where(eq(orgRepoPersonaDefaults.orgRepoId, orgRepoId));
 }

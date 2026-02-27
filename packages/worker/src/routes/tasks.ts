@@ -48,7 +48,7 @@ tasksRouter.post('/:sessionId/tasks', zValidator('json', createTaskSchema), asyn
   const { sessionId } = c.req.param();
   const body = c.req.valid('json');
 
-  const task = await db.createSessionTask(c.env.DB, {
+  const task = await db.createSessionTask(c.get('db'), {
     orchestratorSessionId: sessionId,
     sessionId: body.sessionId,
     title: body.title,

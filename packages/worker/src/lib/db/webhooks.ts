@@ -1,7 +1,11 @@
 import type { D1Database } from '@cloudflare/workers-types';
+import { eq, and, or, sql } from 'drizzle-orm';
+import type { AppDb } from '../drizzle.js';
+import { sessionGitState } from '../schema/index.js';
 
 // ─── Data Access ─────────────────────────────────────────────────────────────
 
+// lookupWebhookTrigger uses json_extract + JOIN — stays as raw SQL
 export async function lookupWebhookTrigger(db: D1Database, webhookPath: string) {
   return db.prepare(`
     SELECT t.*, w.id as workflow_id, w.name as workflow_name, w.user_id, w.version, w.data
@@ -23,24 +27,92 @@ export async function lookupWebhookTrigger(db: D1Database, webhookPath: string) 
 }
 
 export async function findSessionsByPR(
-  db: D1Database,
+  db: AppDb,
   repoFullName: string,
   prNumber: number
 ) {
-  return db.prepare(
-    `SELECT session_id FROM session_git_state
-     WHERE source_repo_full_name = ?
-       AND (pr_number = ? OR source_pr_number = ?)`
-  ).bind(repoFullName, prNumber, prNumber).all<{ session_id: string }>();
+  const rows = await db
+    .select({ session_id: sessionGitState.sessionId })
+    .from(sessionGitState)
+    .where(
+      and(
+        eq(sessionGitState.sourceRepoFullName, repoFullName),
+        or(eq(sessionGitState.prNumber, prNumber), eq(sessionGitState.sourcePrNumber, prNumber)),
+      )
+    );
+  return { results: rows };
 }
 
 export async function findSessionsByRepoBranch(
-  db: D1Database,
+  db: AppDb,
   repoFullName: string,
   branch: string
 ) {
-  return db.prepare(
-    `SELECT session_id, commit_count FROM session_git_state
-     WHERE source_repo_full_name = ? AND branch = ?`
-  ).bind(repoFullName, branch).all<{ session_id: string; commit_count: number }>();
+  const rows = await db
+    .select({
+      session_id: sessionGitState.sessionId,
+      commit_count: sessionGitState.commitCount,
+    })
+    .from(sessionGitState)
+    .where(
+      and(eq(sessionGitState.sourceRepoFullName, repoFullName), eq(sessionGitState.branch, branch))
+    );
+  return { results: rows };
+}
+
+// ─── Cron Reconciliation Helpers ────────────────────────────────────────────
+
+export interface TrackedGitHubResourceRow {
+  session_id: string;
+  user_id: string;
+  session_status: string;
+  source_repo_full_name: string | null;
+  source_repo_url: string | null;
+  tracked_pr_number: number | string;
+  pr_state: string | null;
+  pr_title: string | null;
+  pr_url: string | null;
+  pr_merged_at: string | null;
+}
+
+export async function getTrackedGitHubResources(db: D1Database): Promise<TrackedGitHubResourceRow[]> {
+  const result = await db.prepare(
+    `SELECT
+       g.session_id,
+       s.user_id,
+       s.status as session_status,
+       g.source_repo_full_name,
+       g.source_repo_url,
+       COALESCE(g.pr_number, g.source_pr_number) as tracked_pr_number,
+       g.pr_state,
+       g.pr_title,
+       g.pr_url,
+       g.pr_merged_at
+     FROM session_git_state g
+     JOIN sessions s ON s.id = g.session_id
+     WHERE s.status != 'archived'
+       AND COALESCE(g.pr_number, g.source_pr_number) IS NOT NULL
+       AND (g.pr_state IS NULL OR g.pr_state IN ('open', 'draft'))
+     ORDER BY g.updated_at DESC`
+  ).all<TrackedGitHubResourceRow>();
+  return result.results || [];
+}
+
+export async function getIntegrationsNeedingSync(db: D1Database): Promise<{
+  id: string;
+  user_id: string;
+  service: string;
+  config: string;
+}[]> {
+  const result = await db.prepare(`
+    SELECT id, user_id, service, config
+    FROM integrations
+    WHERE status = 'active'
+      AND (
+        (json_extract(config, '$.syncFrequency') = 'hourly')
+        OR (json_extract(config, '$.syncFrequency') = 'daily' AND strftime('%H', 'now') = '00')
+      )
+      AND (last_synced_at IS NULL OR datetime(last_synced_at, '+1 hour') < datetime('now'))
+  `).all();
+  return (result.results || []) as any;
 }

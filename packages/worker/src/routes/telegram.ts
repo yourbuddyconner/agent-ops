@@ -71,7 +71,7 @@ telegramRouter.post('/webhook/:userId', async (c) => {
 
   const [credResult, config] = await Promise.all([
     getCredential(c.env, userId, 'telegram'),
-    db.getUserTelegramConfig(c.env.DB, userId),
+    db.getUserTelegramConfig(c.get('db'), userId),
   ]);
   if (!credResult.ok || !config) {
     return c.json({ error: 'No telegram config' }, 404);
@@ -191,7 +191,7 @@ telegramRouter.post('/webhook/:userId', async (c) => {
 
     // Check for channel binding
     const scopeKey = telegramScopeKey(userId, chatId);
-    const binding = await db.getChannelBindingByScopeKey(c.env.DB, scopeKey);
+    const binding = await db.getChannelBindingByScopeKey(c.get('db'), scopeKey);
 
     if (binding) {
       console.log(`[Telegram] Bound session dispatch: session=${binding.sessionId} chatId=${chatId} queueMode=${binding.queueMode}`);
@@ -272,7 +272,7 @@ telegramRouter.post('/webhook/:userId', async (c) => {
 
     // Route same as text — channel binding first, then orchestrator fallback
     const scopeKey = telegramScopeKey(userId, chatId);
-    const binding = await db.getChannelBindingByScopeKey(c.env.DB, scopeKey);
+    const binding = await db.getChannelBindingByScopeKey(c.get('db'), scopeKey);
 
     if (binding) {
       const doId = c.env.SESSIONS.idFromName(binding.sessionId);
@@ -348,7 +348,7 @@ telegramRouter.post('/webhook/:userId', async (c) => {
     const content = caption || `[Voice note, ${duration}s]`;
 
     const scopeKey = telegramScopeKey(userId, chatId);
-    const binding = await db.getChannelBindingByScopeKey(c.env.DB, scopeKey);
+    const binding = await db.getChannelBindingByScopeKey(c.get('db'), scopeKey);
 
     if (binding) {
       const doId = c.env.SESSIONS.idFromName(binding.sessionId);
@@ -424,7 +424,7 @@ telegramRouter.post('/webhook/:userId', async (c) => {
     const content = caption || `[Audio: ${audio.title || audio.file_name || 'untitled'}, ${audio.duration}s]`;
 
     const scopeKey = telegramScopeKey(userId, chatId);
-    const binding = await db.getChannelBindingByScopeKey(c.env.DB, scopeKey);
+    const binding = await db.getChannelBindingByScopeKey(c.get('db'), scopeKey);
 
     if (binding) {
       const doId = c.env.SESSIONS.idFromName(binding.sessionId);
@@ -499,7 +499,7 @@ telegramApiRouter.post('/', async (c) => {
  */
 telegramApiRouter.get('/', async (c) => {
   const user = c.get('user');
-  const config = await db.getUserTelegramConfig(c.env.DB, user.id);
+  const config = await db.getUserTelegramConfig(c.get('db'), user.id);
   return c.json({ config });
 });
 

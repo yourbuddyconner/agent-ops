@@ -1,6 +1,8 @@
 import { ForbiddenError, NotFoundError, ValidationError, webManualScopeKey } from '@agent-ops/shared';
 import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
+import type { AppDb } from '../lib/drizzle.js';
+import { getDb } from '../lib/drizzle.js';
 import { signJWT } from '../lib/jwt.js';
 import { buildDoWebSocketUrl } from '../lib/do-ws-url.js';
 import { generateRunnerToken, assembleProviderEnv, assembleCredentialEnv, assembleCustomProviders, assembleGitHubEnv } from '../lib/env-assembly.js';
@@ -153,7 +155,8 @@ export async function refreshOpenChildPullRequestStates(
         const nextTitle = refreshedTitle ?? child.prTitle;
 
         if (refreshedState !== child.prState || refreshedUrl !== child.prUrl || (nextTitle && nextTitle !== child.prTitle)) {
-          await db.updateSessionGitState(env.DB, child.id, {
+          const appDb = getDb(env.DB);
+          await db.updateSessionGitState(appDb, child.id, {
             prState: refreshedState,
             prUrl: refreshedUrl,
             ...(nextTitle ? { prTitle: nextTitle } : {}),
@@ -208,16 +211,17 @@ export async function createSession(
   params: CreateSessionParams,
   requestContext: CreateSessionRequestContext,
 ): Promise<CreateSessionResult> {
+  const appDb = getDb(env.DB);
   const sessionId = crypto.randomUUID();
   const runnerToken = generateRunnerToken();
 
   // Ensure user exists in DB
-  await db.getOrCreateUser(env.DB, { id: params.userId, email: params.userEmail });
+  await db.getOrCreateUser(appDb, { id: params.userId, email: params.userEmail });
 
   // Check concurrency limits (skip for orchestrator/workflow sessions)
   const isOrchestratorSession = params.parentSessionId?.startsWith('orchestrator:');
   if (!isOrchestratorSession) {
-    const concurrency = await db.checkSessionConcurrency(env.DB, params.userId);
+    const concurrency = await db.checkSessionConcurrency(appDb, params.userId);
     if (!concurrency.allowed) {
       return {
         ok: false,
@@ -253,7 +257,7 @@ export async function createSession(
   }
 
   // Create session record
-  const session = await db.createSession(env.DB, {
+  const session = await db.createSession(appDb, {
     id: sessionId,
     userId: params.userId,
     workspace: params.workspace,
@@ -271,7 +275,7 @@ export async function createSession(
     if (match) sourceRepoFullName = match[1];
   }
 
-  await db.createSessionGitState(env.DB, {
+  await db.createSessionGitState(appDb, {
     sessionId,
     sourceType,
     sourcePrNumber: params.sourcePrNumber,
@@ -291,12 +295,12 @@ export async function createSession(
   });
 
   // Build environment variables for the sandbox
-  const providerVars = await assembleProviderEnv(env.DB, env);
-  const credentialVars = await assembleCredentialEnv(env.DB, env, params.userId);
+  const providerVars = await assembleProviderEnv(appDb, env);
+  const credentialVars = await assembleCredentialEnv(appDb, env, params.userId);
   const envVars: Record<string, string> = { ...providerVars, ...credentialVars };
 
   // Custom LLM providers
-  const customProviders = await assembleCustomProviders(env.DB, env.ENCRYPTION_KEY);
+  const customProviders = await assembleCustomProviders(appDb, env.ENCRYPTION_KEY);
 
   // If repo URL provided, decrypt GitHub token and add repo/git env vars
   if (params.repoUrl) {
@@ -312,7 +316,7 @@ export async function createSession(
   }
 
   // Fetch user's idle timeout preference
-  const userRow = await db.getUserById(env.DB, params.userId);
+  const userRow = await db.getUserById(appDb, params.userId);
   const idleTimeoutSeconds = userRow?.idleTimeoutSeconds ?? 900;
   const uiQueueMode = userRow?.uiQueueMode ?? 'followup';
   const idleTimeoutMs = idleTimeoutSeconds * 1000;
@@ -359,15 +363,15 @@ export async function createSession(
     }));
   } catch (err) {
     console.error('Failed to initialize SessionAgentDO:', err);
-    await db.updateSessionStatus(env.DB, sessionId, 'error', undefined, `Failed to initialize session: ${err instanceof Error ? err.message : String(err)}`);
+    await db.updateSessionStatus(appDb, sessionId, 'error', undefined, `Failed to initialize session: ${err instanceof Error ? err.message : String(err)}`);
     throw err;
   }
 
   // Auto-create web channel binding
   try {
-    const orgSettings = await db.getOrgSettings(env.DB);
+    const orgSettings = await db.getOrgSettings(appDb);
     if (orgSettings) {
-      await db.createChannelBinding(env.DB, {
+      await db.createChannelBinding(appDb, {
         id: crypto.randomUUID(),
         sessionId,
         channelType: 'web',
@@ -398,7 +402,7 @@ export async function createSession(
 // ─── Get Session Participants With Owner ─────────────────────────────────────
 
 export async function getSessionParticipantsWithOwner(
-  database: import('@cloudflare/workers-types').D1Database,
+  database: AppDb,
   sessionId: string,
   ownerUserId: string,
 ) {
@@ -429,7 +433,8 @@ export async function getSessionWithStatus(
   sessionId: string,
   userId: string,
 ) {
-  const session = await db.assertSessionAccess(env.DB, sessionId, userId, 'viewer');
+  const appDb = getDb(env.DB);
+  const session = await db.assertSessionAccess(appDb, sessionId, userId, 'viewer');
 
   // Get live status from DO
   const doId = env.SESSIONS.idFromName(sessionId);
@@ -487,7 +492,8 @@ export async function issueSandboxToken(
   sessionId: string,
   userId: string,
 ) {
-  const session = await db.assertSessionAccess(env.DB, sessionId, userId, 'viewer');
+  const appDb = getDb(env.DB);
+  const session = await db.assertSessionAccess(appDb, sessionId, userId, 'viewer');
 
   if (session.status === 'terminated' || session.status === 'error' || session.status === 'archived') {
     return { error: 'Session is not running' as const, status: 503 as const };
@@ -537,7 +543,8 @@ export async function sendSessionMessage(
   userEmail: string,
   content: string,
 ): Promise<{ messageId: string }> {
-  const session = await db.assertSessionAccess(env.DB, sessionId, userId, 'collaborator');
+  const appDb = getDb(env.DB);
+  const session = await db.assertSessionAccess(appDb, sessionId, userId, 'collaborator');
 
   if (session.status === 'terminated') {
     throw new ValidationError('Session has been terminated');
@@ -577,7 +584,8 @@ export async function terminateSession(
   sessionId: string,
   userId: string,
 ): Promise<void> {
-  await db.assertSessionAccess(env.DB, sessionId, userId, 'owner');
+  const appDb = getDb(env.DB);
+  await db.assertSessionAccess(appDb, sessionId, userId, 'owner');
 
   const doId = env.SESSIONS.idFromName(sessionId);
   const sessionDO = env.SESSIONS.get(doId);
@@ -588,7 +596,7 @@ export async function terminateSession(
     body: JSON.stringify({ reason: 'user_stopped' }),
   }));
 
-  await db.updateSessionStatus(env.DB, sessionId, 'terminated');
+  await db.updateSessionStatus(appDb, sessionId, 'terminated');
 }
 
 // ─── Bulk Delete Sessions ───────────────────────────────────────────────────
@@ -598,7 +606,8 @@ export async function bulkDeleteSessions(
   userId: string,
   sessionIds: string[],
 ): Promise<{ deleted: number; errors: { sessionId: string; error: string }[] }> {
-  const ownedIds = await db.filterOwnedSessionIds(env.DB, sessionIds, userId);
+  const appDb = getDb(env.DB);
+  const ownedIds = await db.filterOwnedSessionIds(appDb, sessionIds, userId);
   const validIds = sessionIds.filter((id) => ownedIds.includes(id));
 
   if (validIds.length === 0) {
@@ -633,8 +642,8 @@ export async function bulkDeleteSessions(
     })
   );
 
-  await db.bulkDeleteSessionRecords(env.DB, validIds, userId);
-  await db.bulkDeleteSessionMessages(env.DB, validIds);
+  await db.bulkDeleteSessionRecords(appDb, validIds, userId);
+  await db.bulkDeleteSessionMessages(appDb, validIds);
 
   return { deleted: validIds.length, errors };
 }
@@ -647,7 +656,8 @@ export async function getEnrichedChildSessions(
   userId: string,
   opts: { limit?: number; cursor?: string; status?: string; hideTerminated?: boolean },
 ) {
-  await db.assertSessionAccess(env.DB, parentSessionId, userId, 'viewer');
+  const appDb = getDb(env.DB);
+  await db.assertSessionAccess(appDb, parentSessionId, userId, 'viewer');
 
   const excludeStatuses = opts.hideTerminated ? ['terminated', 'archived', 'error'] : undefined;
 
@@ -672,7 +682,7 @@ export async function getEnrichedChildSessions(
 // ─── Join Session Via Share Link ────────────────────────────────────────────
 
 export async function joinSessionViaShareLink(
-  database: import('@cloudflare/workers-types').D1Database,
+  database: AppDb,
   token: string,
   userId: string,
 ): Promise<{ sessionId: string; role: string } | null> {
@@ -700,7 +710,7 @@ export async function joinSessionViaShareLink(
 // ─── Add Session Participant ────────────────────────────────────────────────
 
 export async function addSessionParticipant(
-  database: import('@cloudflare/workers-types').D1Database,
+  database: AppDb,
   sessionId: string,
   ownerUserId: string,
   target: { userId?: string; email?: string },

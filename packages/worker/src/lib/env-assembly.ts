@@ -1,6 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { Env } from '../env.js';
 import * as db from './db.js';
+import type { AppDb } from './drizzle.js';
 import { decryptString } from './crypto.js';
 import { getCredential } from '../services/credentials.js';
 
@@ -19,7 +20,7 @@ export function generateRunnerToken(): string {
  * Assemble LLM provider API keys from org DB keys, falling back to env vars.
  */
 export async function assembleProviderEnv(
-  database: D1Database,
+  database: AppDb,
   env: Env
 ): Promise<Record<string, string>> {
   const envVars: Record<string, string> = {};
@@ -51,7 +52,7 @@ export async function assembleProviderEnv(
  * Assemble user-level credential env vars (1Password, etc.).
  */
 export async function assembleCredentialEnv(
-  database: D1Database,
+  database: AppDb,
   env: Env,
   userId: string
 ): Promise<Record<string, string>> {
@@ -79,7 +80,7 @@ export async function assembleCredentialEnv(
  * Fetch all custom LLM providers with decrypted keys.
  */
 export async function assembleCustomProviders(
-  database: D1Database,
+  database: AppDb,
   encryptionKey: string
 ): Promise<Array<{
   providerId: string;

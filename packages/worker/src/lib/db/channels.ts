@@ -1,7 +1,6 @@
-import type { D1Database } from '@cloudflare/workers-types';
+import type { AppDb } from '../drizzle.js';
 import type { UserIdentityLink, ChannelBinding, ChannelType, QueueMode } from '@agent-ops/shared';
 import { eq, and, desc } from 'drizzle-orm';
-import { getDb } from '../drizzle.js';
 import { userIdentityLinks, channelBindings } from '../schema/index.js';
 
 function rowToIdentityLink(row: typeof userIdentityLinks.$inferSelect): UserIdentityLink {
@@ -38,11 +37,10 @@ function rowToChannelBinding(row: typeof channelBindings.$inferSelect): ChannelB
 // Identity Links
 
 export async function createIdentityLink(
-  db: D1Database,
+  db: AppDb,
   data: { id: string; userId: string; provider: string; externalId: string; externalName?: string; teamId?: string },
 ): Promise<UserIdentityLink> {
-  const drizzle = getDb(db);
-  await drizzle.insert(userIdentityLinks).values({
+  await db.insert(userIdentityLinks).values({
     id: data.id,
     userId: data.userId,
     provider: data.provider,
@@ -62,9 +60,8 @@ export async function createIdentityLink(
   };
 }
 
-export async function getUserIdentityLinks(db: D1Database, userId: string): Promise<UserIdentityLink[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+export async function getUserIdentityLinks(db: AppDb, userId: string): Promise<UserIdentityLink[]> {
+  const rows = await db
     .select()
     .from(userIdentityLinks)
     .where(eq(userIdentityLinks.userId, userId))
@@ -72,21 +69,19 @@ export async function getUserIdentityLinks(db: D1Database, userId: string): Prom
   return rows.map(rowToIdentityLink);
 }
 
-export async function deleteIdentityLink(db: D1Database, id: string, userId: string): Promise<boolean> {
+export async function deleteIdentityLink(db: AppDb, id: string, userId: string): Promise<boolean> {
   const result = await db
-    .prepare('DELETE FROM user_identity_links WHERE id = ? AND user_id = ?')
-    .bind(id, userId)
-    .run();
+    .delete(userIdentityLinks)
+    .where(and(eq(userIdentityLinks.id, id), eq(userIdentityLinks.userId, userId)));
   return (result.meta?.changes ?? 0) > 0;
 }
 
 export async function resolveUserByExternalId(
-  db: D1Database,
+  db: AppDb,
   provider: string,
   externalId: string,
 ): Promise<string | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+  const row = await db
     .select({ userId: userIdentityLinks.userId })
     .from(userIdentityLinks)
     .where(and(eq(userIdentityLinks.provider, provider), eq(userIdentityLinks.externalId, externalId)))
@@ -97,7 +92,7 @@ export async function resolveUserByExternalId(
 // Channel Bindings
 
 export async function createChannelBinding(
-  db: D1Database,
+  db: AppDb,
   data: {
     id: string;
     sessionId: string;
@@ -116,9 +111,8 @@ export async function createChannelBinding(
 ): Promise<ChannelBinding> {
   const queueMode = data.queueMode || 'followup';
   const collectDebounceMs = data.collectDebounceMs ?? 3000;
-  const drizzle = getDb(db);
 
-  await drizzle.insert(channelBindings).values({
+  await db.insert(channelBindings).values({
     id: data.id,
     sessionId: data.sessionId,
     channelType: data.channelType,
@@ -152,9 +146,8 @@ export async function createChannelBinding(
   };
 }
 
-export async function getChannelBindingByScopeKey(db: D1Database, scopeKey: string): Promise<ChannelBinding | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getChannelBindingByScopeKey(db: AppDb, scopeKey: string): Promise<ChannelBinding | null> {
+  const row = await db
     .select()
     .from(channelBindings)
     .where(eq(channelBindings.scopeKey, scopeKey))
@@ -162,9 +155,8 @@ export async function getChannelBindingByScopeKey(db: D1Database, scopeKey: stri
   return row ? rowToChannelBinding(row) : null;
 }
 
-export async function getSessionChannelBindings(db: D1Database, sessionId: string): Promise<ChannelBinding[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+export async function getSessionChannelBindings(db: AppDb, sessionId: string): Promise<ChannelBinding[]> {
+  const rows = await db
     .select()
     .from(channelBindings)
     .where(eq(channelBindings.sessionId, sessionId))
@@ -172,9 +164,8 @@ export async function getSessionChannelBindings(db: D1Database, sessionId: strin
   return rows.map(rowToChannelBinding);
 }
 
-export async function listUserChannelBindings(db: D1Database, userId: string): Promise<ChannelBinding[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+export async function listUserChannelBindings(db: AppDb, userId: string): Promise<ChannelBinding[]> {
+  const rows = await db
     .select()
     .from(channelBindings)
     .where(eq(channelBindings.userId, userId))
@@ -182,23 +173,21 @@ export async function listUserChannelBindings(db: D1Database, userId: string): P
   return rows.map(rowToChannelBinding);
 }
 
-export async function deleteChannelBinding(db: D1Database, id: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.delete(channelBindings).where(eq(channelBindings.id, id));
+export async function deleteChannelBinding(db: AppDb, id: string): Promise<void> {
+  await db.delete(channelBindings).where(eq(channelBindings.id, id));
 }
 
 export async function updateChannelBindingQueueMode(
-  db: D1Database,
+  db: AppDb,
   id: string,
   queueMode: QueueMode,
   collectDebounceMs?: number,
 ): Promise<void> {
-  const drizzle = getDb(db);
   const setValues: Record<string, unknown> = { queueMode };
   if (collectDebounceMs !== undefined) {
     setValues.collectDebounceMs = collectDebounceMs;
   }
-  await drizzle
+  await db
     .update(channelBindings)
     .set(setValues)
     .where(eq(channelBindings.id, id));

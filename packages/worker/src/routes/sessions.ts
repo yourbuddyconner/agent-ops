@@ -110,7 +110,7 @@ sessionsRouter.get('/available-models', async (c) => {
   }
 
   try {
-    const models = await db.getUserDiscoveredModels(c.env.DB, user.id);
+    const models = await db.getUserDiscoveredModels(c.get('db'), user.id);
     if (models && models.length > 0) {
       return c.json({ models });
     }
@@ -129,7 +129,7 @@ sessionsRouter.post('/join/:token', async (c) => {
   const user = c.get('user');
   const { token } = c.req.param();
 
-  const result = await sessionService.joinSessionViaShareLink(c.env.DB, token, user.id);
+  const result = await sessionService.joinSessionViaShareLink(c.get('db'), token, user.id);
   if (!result) {
     return c.json({ error: 'Invalid, expired, or exhausted share link' }, 400);
   }
@@ -157,9 +157,9 @@ sessionsRouter.get('/:id/git-state', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
+  await db.assertSessionAccess(c.get('db'), id, user.id, 'viewer');
 
-  const gitState = await db.getSessionGitState(c.env.DB, id);
+  const gitState = await db.getSessionGitState(c.get('db'), id);
 
   return c.json({ gitState });
 });
@@ -192,7 +192,7 @@ sessionsRouter.get('/:id/tunnels', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
+  await db.assertSessionAccess(c.get('db'), id, user.id, 'viewer');
 
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
@@ -217,7 +217,7 @@ sessionsRouter.delete('/:id/tunnels/:name', async (c) => {
   const user = c.get('user');
   const { id, name } = c.req.param();
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'collaborator');
+  await db.assertSessionAccess(c.get('db'), id, user.id, 'collaborator');
 
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
@@ -263,7 +263,7 @@ sessionsRouter.post('/:id/clear-queue', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'collaborator');
+  await db.assertSessionAccess(c.get('db'), id, user.id, 'collaborator');
 
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
@@ -283,9 +283,9 @@ sessionsRouter.get('/:id/messages', async (c) => {
   const { id } = c.req.param();
   const { limit, after } = c.req.query();
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
+  await db.assertSessionAccess(c.get('db'), id, user.id, 'viewer');
 
-  const messages = await db.getSessionMessages(c.env.DB, id, {
+  const messages = await db.getSessionMessages(c.get('db'), id, {
     limit: limit ? parseInt(limit) : undefined,
     after,
   });
@@ -310,7 +310,7 @@ sessionsRouter.get('/:id/ws', async (c) => {
 
   if (role === 'client') {
     const user = c.get('user');
-    await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
+    await db.assertSessionAccess(c.get('db'), id, user.id, 'viewer');
 
     // Never trust user identity in URL params from the browser.
     // Rebuild request URL so DO receives server-derived userId.
@@ -337,7 +337,7 @@ sessionsRouter.get('/:id/events', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
+  await db.assertSessionAccess(c.get('db'), id, user.id, 'viewer');
 
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -375,7 +375,7 @@ sessionsRouter.post('/:id/hibernate', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'collaborator');
+  await db.assertSessionAccess(c.get('db'), id, user.id, 'collaborator');
 
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
@@ -394,7 +394,7 @@ sessionsRouter.post('/:id/wake', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'collaborator');
+  await db.assertSessionAccess(c.get('db'), id, user.id, 'collaborator');
 
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
@@ -449,9 +449,9 @@ sessionsRouter.get('/:id/audit-log', async (c) => {
   const { id } = c.req.param();
   const { limit, after, eventType } = c.req.query();
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
+  await db.assertSessionAccess(c.get('db'), id, user.id, 'viewer');
 
-  const entries = await db.getSessionAuditLog(c.env.DB, id, {
+  const entries = await db.getSessionAuditLog(c.get('db'), id, {
     limit: limit ? parseInt(limit) : undefined,
     after,
     eventType,
@@ -467,9 +467,9 @@ sessionsRouter.get('/:id/files-changed', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
+  await db.assertSessionAccess(c.get('db'), id, user.id, 'viewer');
 
-  const files = await db.getSessionFilesChanged(c.env.DB, id);
+  const files = await db.getSessionFilesChanged(c.get('db'), id);
   return c.json({ files });
 });
 
@@ -486,9 +486,9 @@ sessionsRouter.patch('/:id', zValidator('json', updateSessionSchema), async (c) 
   const { id } = c.req.param();
   const body = c.req.valid('json');
 
-  await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  await db.assertSessionAccess(c.get('db'), id, user.id, 'owner');
 
-  await db.updateSessionTitle(c.env.DB, id, body.title);
+  await db.updateSessionTitle(c.get('db'), id, body.title);
   return c.json({ success: true });
 });
 
@@ -513,10 +513,10 @@ sessionsRouter.get('/:id/participants', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'viewer');
+  const session = await db.assertSessionAccess(c.get('db'), id, user.id, 'viewer');
   sessionService.assertSessionShareable(session);
 
-  const allParticipants = await sessionService.getSessionParticipantsWithOwner(c.env.DB, id, session.userId);
+  const allParticipants = await sessionService.getSessionParticipantsWithOwner(c.get('db'), id, session.userId);
 
   return c.json({ participants: allParticipants });
 });
@@ -535,7 +535,7 @@ sessionsRouter.post('/:id/participants', zValidator('json', addParticipantSchema
   const { id } = c.req.param();
   const body = c.req.valid('json');
 
-  await sessionService.addSessionParticipant(c.env.DB, id, user.id, { userId: body.userId, email: body.email }, body.role);
+  await sessionService.addSessionParticipant(c.get('db'), id, user.id, { userId: body.userId, email: body.email }, body.role);
   return c.json({ success: true });
 });
 
@@ -546,10 +546,10 @@ sessionsRouter.delete('/:id/participants/:userId', async (c) => {
   const user = c.get('user');
   const { id, userId: targetUserId } = c.req.param();
 
-  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  const session = await db.assertSessionAccess(c.get('db'), id, user.id, 'owner');
   sessionService.assertSessionShareable(session);
 
-  await db.removeSessionParticipant(c.env.DB, id, targetUserId);
+  await db.removeSessionParticipant(c.get('db'), id, targetUserId);
 
   return c.json({ success: true });
 });
@@ -570,10 +570,10 @@ sessionsRouter.post('/:id/share-link', zValidator('json', createShareLinkSchema)
   const { id } = c.req.param();
   const body = c.req.valid('json');
 
-  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  const session = await db.assertSessionAccess(c.get('db'), id, user.id, 'owner');
   sessionService.assertSessionShareable(session);
 
-  const link = await db.createShareLink(c.env.DB, id, body.role, user.id, body.expiresAt, body.maxUses);
+  const link = await db.createShareLink(c.get('db'), id, body.role, user.id, body.expiresAt, body.maxUses);
 
   return c.json({ shareLink: link }, 201);
 });
@@ -585,10 +585,10 @@ sessionsRouter.get('/:id/share-links', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  const session = await db.assertSessionAccess(c.get('db'), id, user.id, 'owner');
   sessionService.assertSessionShareable(session);
 
-  const links = await db.getSessionShareLinks(c.env.DB, id);
+  const links = await db.getSessionShareLinks(c.get('db'), id);
 
   return c.json({ shareLinks: links });
 });
@@ -600,10 +600,10 @@ sessionsRouter.delete('/:id/share-link/:linkId', async (c) => {
   const user = c.get('user');
   const { id, linkId } = c.req.param();
 
-  const session = await db.assertSessionAccess(c.env.DB, id, user.id, 'owner');
+  const session = await db.assertSessionAccess(c.get('db'), id, user.id, 'owner');
   sessionService.assertSessionShareable(session);
 
-  await db.deactivateShareLink(c.env.DB, linkId);
+  await db.deactivateShareLink(c.get('db'), linkId);
 
   return c.json({ success: true });
 });

@@ -16,6 +16,15 @@ vi.mock('../lib/crypto.js', () => ({
   decryptStringPBKDF2: vi.fn(),
 }));
 
+// Mock the drizzle layer so we can verify getDb() return value is threaded through
+const { fakeDrizzleDb } = vi.hoisted(() => {
+  const fakeDrizzleDb = { __drizzle: true } as any;
+  return { fakeDrizzleDb };
+});
+vi.mock('../lib/drizzle.js', () => ({
+  getDb: vi.fn().mockReturnValue(fakeDrizzleDb),
+}));
+
 import * as credentialDb from '../lib/db/credentials.js';
 import { encryptStringPBKDF2, decryptStringPBKDF2 } from '../lib/crypto.js';
 import {
@@ -170,7 +179,7 @@ describe('storeCredential', () => {
       'test-key',
     );
     expect(mockDb.upsertCredential).toHaveBeenCalledWith(
-      fakeEnv.DB,
+      fakeDrizzleDb,
       expect.objectContaining({
         userId: 'user-1',
         provider: 'github',
@@ -189,7 +198,7 @@ describe('storeCredential', () => {
     await storeCredential(fakeEnv, 'user-1', 'custom', { token: 'tok' });
 
     expect(mockDb.upsertCredential).toHaveBeenCalledWith(
-      fakeEnv.DB,
+      fakeDrizzleDb,
       expect.objectContaining({ credentialType: 'api_key' }),
     );
   });
@@ -201,7 +210,7 @@ describe('revokeCredential', () => {
 
     await revokeCredential(fakeEnv, 'user-1', 'github');
 
-    expect(mockDb.deleteCredential).toHaveBeenCalledWith(fakeEnv.DB, 'user-1', 'github');
+    expect(mockDb.deleteCredential).toHaveBeenCalledWith(fakeDrizzleDb, 'user-1', 'github');
   });
 });
 
@@ -230,7 +239,7 @@ describe('hasCredential', () => {
     const result = await hasCredential(fakeEnv, 'user-1', 'github');
 
     expect(result).toBe(true);
-    expect(mockDb.hasCredential).toHaveBeenCalledWith(fakeEnv.DB, 'user-1', 'github');
+    expect(mockDb.hasCredential).toHaveBeenCalledWith(fakeDrizzleDb, 'user-1', 'github');
   });
 
   it('returns false when DB returns false', async () => {

@@ -24,7 +24,7 @@ adminRouter.use('*', adminMiddleware);
 // --- Org Settings ---
 
 adminRouter.get('/', async (c) => {
-  const settings = await getOrgSettings(c.env.DB);
+  const settings = await getOrgSettings(c.get('db'));
   return c.json(settings);
 });
 
@@ -50,7 +50,7 @@ adminRouter.put('/', async (c) => {
     }
   }
 
-  const settings = await updateOrgSettings(c.env.DB, body);
+  const settings = await updateOrgSettings(c.get('db'), body);
   return c.json(settings);
 });
 
@@ -59,7 +59,7 @@ adminRouter.put('/', async (c) => {
 const VALID_PROVIDERS = ['anthropic', 'openai', 'google', 'parallel'] as const;
 
 adminRouter.get('/llm-keys', async (c) => {
-  const keys = await listOrgApiKeys(c.env.DB);
+  const keys = await listOrgApiKeys(c.get('db'));
   return c.json(keys);
 });
 
@@ -75,21 +75,21 @@ adminRouter.put('/llm-keys/:provider', async (c) => {
   }
 
   const user = c.get('user');
-  await adminService.setOrgLlmKey(c.env.DB, c.env.ENCRYPTION_KEY, { provider, key, setBy: user.id });
+  await adminService.setOrgLlmKey(c.get('db'), c.env.ENCRYPTION_KEY, { provider, key, setBy: user.id });
 
   return c.json({ ok: true });
 });
 
 adminRouter.delete('/llm-keys/:provider', async (c) => {
   const provider = c.req.param('provider');
-  await deleteOrgApiKey(c.env.DB, provider);
+  await deleteOrgApiKey(c.get('db'), provider);
   return c.json({ ok: true });
 });
 
 // --- Invites ---
 
 adminRouter.get('/invites', async (c) => {
-  const invites = await listInvites(c.env.DB);
+  const invites = await listInvites(c.get('db'));
   return c.json(invites);
 });
 
@@ -97,20 +97,20 @@ adminRouter.post('/invites', async (c) => {
   const { email, role } = await c.req.json<{ email?: string; role?: 'admin' | 'member' }>();
   const user = c.get('user');
 
-  const invite = await adminService.createInvite(c.env.DB, { email, role, invitedBy: user.id });
+  const invite = await adminService.createInvite(c.get('db'), { email, role, invitedBy: user.id });
   return c.json(invite, 201);
 });
 
 adminRouter.delete('/invites/:id', async (c) => {
   const id = c.req.param('id');
-  await deleteInvite(c.env.DB, id);
+  await deleteInvite(c.get('db'), id);
   return c.json({ ok: true });
 });
 
 // --- Users ---
 
 adminRouter.get('/users', async (c) => {
-  const users = await listUsers(c.env.DB);
+  const users = await listUsers(c.get('db'));
   return c.json(users);
 });
 
@@ -122,7 +122,7 @@ adminRouter.patch('/users/:id', async (c) => {
     throw new ValidationError('Valid role is required (admin or member)');
   }
 
-  const result = await adminService.updateUserRoleSafe(c.env.DB, userId, role);
+  const result = await adminService.updateUserRoleSafe(c.get('db'), userId, role);
   if (!result.ok) {
     throw new ValidationError('Cannot demote the last admin');
   }
@@ -134,7 +134,7 @@ adminRouter.delete('/users/:id', async (c) => {
   const userId = c.req.param('id');
   const currentUser = c.get('user');
 
-  const result = await adminService.deleteUserSafe(c.env.DB, userId, currentUser.id);
+  const result = await adminService.deleteUserSafe(c.get('db'), userId, currentUser.id);
   if (!result.ok) {
     if (result.error === 'self_delete') {
       throw new ValidationError('Cannot delete yourself');
@@ -153,7 +153,7 @@ const BUILT_IN_PROVIDER_IDS = ['anthropic', 'openai', 'google', 'parallel'];
 const PROVIDER_ID_REGEX = /^[a-z0-9-]+$/;
 
 adminRouter.get('/custom-providers', async (c) => {
-  const providers = await listCustomProviders(c.env.DB);
+  const providers = await listCustomProviders(c.get('db'));
   return c.json(providers);
 });
 
@@ -193,7 +193,7 @@ adminRouter.put('/custom-providers/:providerId', async (c) => {
   }
 
   const user = c.get('user');
-  await adminService.upsertCustomProviderWithEncryption(c.env.DB, c.env.ENCRYPTION_KEY, {
+  await adminService.upsertCustomProviderWithEncryption(c.get('db'), c.env.ENCRYPTION_KEY, {
     providerId,
     displayName: body.displayName.trim(),
     baseUrl: body.baseUrl.trim(),
@@ -207,6 +207,6 @@ adminRouter.put('/custom-providers/:providerId', async (c) => {
 
 adminRouter.delete('/custom-providers/:providerId', async (c) => {
   const providerId = c.req.param('providerId');
-  await deleteCustomProvider(c.env.DB, providerId);
+  await deleteCustomProvider(c.get('db'), providerId);
   return c.json({ ok: true });
 });

@@ -1,5 +1,7 @@
 import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
+import type { AppDb } from '../lib/drizzle.js';
+import { getDb } from '../lib/drizzle.js';
 import { buildDoWebSocketUrl } from '../lib/do-ws-url.js';
 import { buildOrchestratorPersonaFiles } from '../lib/orchestrator-persona.js';
 import { generateRunnerToken, assembleProviderEnv, assembleCredentialEnv } from '../lib/env-assembly.js';
@@ -18,12 +20,13 @@ export async function restartOrchestratorSession(
   identity: { id: string; name: string; handle: string; customInstructions?: string | null },
   requestUrl?: string
 ): Promise<{ sessionId: string }> {
+  const appDb = getDb(env.DB);
   const personaFiles = buildOrchestratorPersonaFiles(identity as any);
 
   const sessionId = `orchestrator:${userId}:${crypto.randomUUID()}`;
   const runnerToken = generateRunnerToken();
 
-  await db.createSession(env.DB, {
+  await db.createSession(appDb, {
     id: sessionId,
     userId,
     workspace: 'orchestrator',
@@ -33,8 +36,8 @@ export async function restartOrchestratorSession(
   });
 
   // Build env vars (LLM keys + orchestrator flag)
-  const providerVars = await assembleProviderEnv(env.DB, env);
-  const credentialVars = await assembleCredentialEnv(env.DB, env, userId);
+  const providerVars = await assembleProviderEnv(appDb, env);
+  const credentialVars = await assembleCredentialEnv(appDb, env, userId);
   const envVars: Record<string, string> = {
     IS_ORCHESTRATOR: 'true',
     ...providerVars,
@@ -48,7 +51,7 @@ export async function restartOrchestratorSession(
   });
 
   // Fetch user preferences (idle timeout, queue mode, model preferences)
-  const userRow = await db.getUserById(env.DB, userId);
+  const userRow = await db.getUserById(appDb, userId);
   const idleTimeoutSeconds = userRow?.idleTimeoutSeconds ?? 900;
   const uiQueueMode = userRow?.uiQueueMode ?? 'followup';
   const idleTimeoutMs = idleTimeoutSeconds * 1000;
@@ -59,7 +62,7 @@ export async function restartOrchestratorSession(
     initialModel = userRow.modelPreferences[0];
   } else {
     try {
-      const orgSettings = await db.getOrgSettings(env.DB);
+      const orgSettings = await db.getOrgSettings(appDb);
       if (orgSettings.modelPreferences && orgSettings.modelPreferences.length > 0) {
         initialModel = orgSettings.modelPreferences[0];
       }
@@ -106,7 +109,7 @@ export async function restartOrchestratorSession(
     }));
   } catch (err) {
     console.error('Failed to initialize orchestrator DO:', err);
-    await db.updateSessionStatus(env.DB, sessionId, 'error', undefined,
+    await db.updateSessionStatus(appDb, sessionId, 'error', undefined,
       `Failed to initialize orchestrator: ${err instanceof Error ? err.message : String(err)}`);
     throw err;
   }
@@ -135,7 +138,8 @@ export async function onboardOrchestrator(
   params: OnboardOrchestratorParams,
   requestUrl: string,
 ): Promise<OnboardOrchestratorResult> {
-  let identity = await db.getOrchestratorIdentity(env.DB, userId);
+  const appDb = getDb(env.DB);
+  let identity = await db.getOrchestratorIdentity(appDb, userId);
   const existingSession = await db.getOrchestratorSession(env.DB, userId);
 
   if (identity && existingSession && !TERMINAL_STATUSES.has(existingSession.status)) {
@@ -143,16 +147,16 @@ export async function onboardOrchestrator(
   }
 
   // Ensure user exists in DB
-  await db.getOrCreateUser(env.DB, { id: userId, email: userEmail });
+  await db.getOrCreateUser(appDb, { id: userId, email: userEmail });
 
   if (!identity) {
-    const handleTaken = await db.getOrchestratorIdentityByHandle(env.DB, params.handle);
+    const handleTaken = await db.getOrchestratorIdentityByHandle(appDb, params.handle);
     if (handleTaken) {
       return { ok: false, reason: 'handle_taken' };
     }
 
     const identityId = crypto.randomUUID();
-    identity = await db.createOrchestratorIdentity(env.DB, {
+    identity = await db.createOrchestratorIdentity(appDb, {
       id: identityId,
       userId,
       name: params.name,
@@ -161,16 +165,16 @@ export async function onboardOrchestrator(
       customInstructions: params.customInstructions,
     });
   } else {
-    await db.updateOrchestratorIdentity(env.DB, identity.id, {
+    await db.updateOrchestratorIdentity(appDb, identity.id, {
       name: params.name,
       handle: params.handle,
       customInstructions: params.customInstructions,
     });
-    identity = (await db.getOrchestratorIdentity(env.DB, userId))!;
+    identity = (await db.getOrchestratorIdentity(appDb, userId))!;
   }
 
   const result = await restartOrchestratorSession(env, userId, userEmail, identity, requestUrl);
-  const session = await db.getSession(env.DB, result.sessionId);
+  const session = await db.getSession(appDb, result.sessionId);
   return { ok: true, sessionId: result.sessionId, identity, session };
 }
 
@@ -184,9 +188,10 @@ export interface OrchestratorInfo {
   needsRestart: boolean;
 }
 
-export async function getOrchestratorInfo(database: import('@cloudflare/workers-types').D1Database, userId: string): Promise<OrchestratorInfo> {
+export async function getOrchestratorInfo(env: Env, userId: string): Promise<OrchestratorInfo> {
+  const database = getDb(env.DB);
   const identity = await db.getOrchestratorIdentity(database, userId);
-  const session = await db.getOrchestratorSession(database, userId);
+  const session = await db.getOrchestratorSession(env.DB, userId);
   const sessionId = session?.id ?? `orchestrator:${userId}`;
   const needsRestart = !!identity && (!session || TERMINAL_STATUSES.has(session.status));
 
@@ -207,7 +212,7 @@ export type UpdateIdentityResult =
   | { ok: false; error: 'handle_taken' };
 
 export async function updateOrchestratorIdentity(
-  database: import('@cloudflare/workers-types').D1Database,
+  database: AppDb,
   userId: string,
   updates: { name?: string; handle?: string; avatar?: string; customInstructions?: string },
 ): Promise<UpdateIdentityResult> {

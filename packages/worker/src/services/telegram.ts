@@ -1,9 +1,9 @@
 import { Bot } from 'grammy';
-import type { D1Database } from '@cloudflare/workers-types';
 import { SLASH_COMMANDS } from '@agent-ops/shared';
 import type { UserTelegramConfig } from '@agent-ops/shared';
 import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
+import { getDb } from '../lib/drizzle.js';
 import { storeCredential, getCredential, revokeCredential } from '../services/credentials.js';
 
 // ─── Setup Telegram Bot ─────────────────────────────────────────────────────
@@ -38,8 +38,9 @@ export async function setupTelegramBot(
     credentialType: 'bot_token',
   });
 
+  const appDb = getDb(env.DB);
   // Save metadata (token is in credentials table, not here)
-  const config = await db.saveUserTelegramConfig(env.DB, {
+  const config = await db.saveUserTelegramConfig(appDb, {
     id: crypto.randomUUID(),
     userId,
     botUsername: botInfo.username || botInfo.first_name,
@@ -59,7 +60,7 @@ export async function setupTelegramBot(
   });
 
   // Update webhook status
-  await db.updateTelegramWebhookStatus(env.DB, userId, webhookUrl, true);
+  await db.updateTelegramWebhookStatus(appDb, userId, webhookUrl, true);
 
   return { ok: true, config: { ...config, webhookActive: true } as any, webhookUrl };
 }
@@ -82,5 +83,6 @@ export async function disconnectTelegramBot(
 
   // Remove credential and metadata
   await revokeCredential(env, userId, 'telegram');
-  await db.deleteUserTelegramConfig(env.DB, userId);
+  const appDb = getDb(env.DB);
+  await db.deleteUserTelegramConfig(appDb, userId);
 }

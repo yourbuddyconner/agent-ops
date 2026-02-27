@@ -15,10 +15,10 @@ authRouter.get('/me', async (c) => {
   const authUser = c.get('user');
 
   const [fullUser, hasGitHub, hasGoogle, orgSettings] = await Promise.all([
-    db.getUserById(c.env.DB, authUser.id),
+    db.getUserById(c.get('db'), authUser.id),
     hasCredential(c.env, authUser.id, 'github'),
     hasCredential(c.env, authUser.id, 'google'),
-    db.getOrgSettings(c.env.DB),
+    db.getOrgSettings(c.get('db')),
   ]);
 
   let user = fullUser ?? authUser;
@@ -35,7 +35,7 @@ authRouter.get('/me', async (c) => {
     if (!fullUser.gitEmail && inferredGitEmail) backfill.gitEmail = inferredGitEmail;
 
     if (backfill.gitName || backfill.gitEmail) {
-      const updated = await db.backfillGitConfig(c.env.DB, fullUser.id, backfill);
+      const updated = await db.backfillGitConfig(c.get('db'), fullUser.id, backfill);
       if (updated) user = updated;
     }
   }
@@ -73,7 +73,7 @@ authRouter.patch('/me', async (c) => {
     throw new ValidationError(result.error.issues[0]?.message ?? 'Invalid input');
   }
 
-  const updated = await db.updateUserProfile(c.env.DB, authUser.id, result.data);
+  const updated = await db.updateUserProfile(c.get('db'), authUser.id, result.data);
 
   return c.json({ user: updated });
 });
@@ -142,7 +142,7 @@ authRouter.post('/logout', async (c) => {
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     const tokenHash = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 
-    await db.deleteAuthSession(c.env.DB, tokenHash);
+    await db.deleteAuthSession(c.get('db'), tokenHash);
   }
 
   return c.json({ success: true });

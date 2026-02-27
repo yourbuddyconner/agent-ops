@@ -29,7 +29,7 @@ agentRouter.get('/:sessionId/health', async (c) => {
   const user = c.get('user');
   const { sessionId } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -51,7 +51,7 @@ agentRouter.get('/:sessionId/project', async (c) => {
   const user = c.get('user');
   const { sessionId } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -72,7 +72,7 @@ agentRouter.get('/:sessionId/providers', async (c) => {
   const user = c.get('user');
   const { sessionId } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -93,7 +93,7 @@ agentRouter.get('/:sessionId/models', async (c) => {
   const user = c.get('user');
   const { sessionId } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -114,7 +114,7 @@ agentRouter.get('/:sessionId/commands', async (c) => {
   const user = c.get('user');
   const { sessionId } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -136,7 +136,7 @@ agentRouter.post('/:sessionId/commands/:name', async (c) => {
   const { sessionId, name } = c.req.param();
   const body = await c.req.json().catch(() => ({}));
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -160,7 +160,7 @@ agentRouter.post('/:sessionId/share', async (c) => {
   const user = c.get('user');
   const { sessionId } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -186,7 +186,7 @@ agentRouter.post('/:sessionId/summarize', async (c) => {
   const user = c.get('user');
   const { sessionId } = c.req.param();
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -210,7 +210,7 @@ agentRouter.all('/:sessionId/proxy/*', async (c) => {
   const { sessionId } = c.req.param();
   const path = c.req.path.replace(`/agent/${sessionId}/proxy/`, '');
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }

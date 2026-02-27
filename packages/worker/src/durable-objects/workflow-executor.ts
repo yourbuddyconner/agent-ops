@@ -1,5 +1,7 @@
 import type { DurableObjectState } from '@cloudflare/workers-types';
 import type { Env } from '../env.js';
+import type { AppDb } from '../lib/drizzle.js';
+import { getDb } from '../lib/drizzle.js';
 import { getExecutionWithWorkflow, updateExecutionRuntimeState, resumeExecution, cancelExecutionWithReason, type ExecutionWithWorkflowRow } from '../lib/db/executions.js';
 import { getUserIdleTimeout, getUserGitConfig } from '../lib/db/users.js';
 import { getCredential } from '../services/credentials.js';
@@ -65,6 +67,9 @@ export class WorkflowExecutorDO implements DurableObject {
     this.state = state;
     this.env = env;
   }
+
+  /** Drizzle AppDb instance wrapping the D1 binding. */
+  private get appDb(): AppDb { return getDb(this.env.DB); }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -163,7 +168,7 @@ export class WorkflowExecutorDO implements DurableObject {
 
     const nextStatus = row.status === 'pending' && promptDispatchedAt ? 'running' : row.status;
 
-    await updateExecutionRuntimeState(this.env.DB, body.executionId, JSON.stringify(nextState), nextStatus);
+    await updateExecutionRuntimeState(this.appDb, body.executionId, JSON.stringify(nextState), nextStatus);
 
     await this.publishEnqueuedEvent(
       body.executionId,
@@ -207,7 +212,7 @@ export class WorkflowExecutorDO implements DurableObject {
     executionId: string;
     workerOrigin: string;
   }): Promise<EnsureSessionResult> {
-    const session = await getSession(this.env.DB, params.sessionId);
+    const session = await getSession(this.appDb, params.sessionId);
 
     if (!session) {
       return { ok: false, error: `Session ${params.sessionId} not found` };
@@ -241,7 +246,7 @@ export class WorkflowExecutorDO implements DurableObject {
       const runnerToken = this.generateRunnerToken();
       const doWsUrl = this.buildDoWsUrl(params.workerOrigin, params.sessionId);
 
-      const idleTimeoutSeconds = await getUserIdleTimeout(this.env.DB, params.userId);
+      const idleTimeoutSeconds = await getUserIdleTimeout(this.appDb, params.userId);
       const idleTimeoutMs = idleTimeoutSeconds * 1000;
 
       const envVars = await this.buildSandboxEnvVars({
@@ -263,7 +268,7 @@ export class WorkflowExecutorDO implements DurableObject {
         envVars,
       };
 
-      await updateSessionStatus(this.env.DB, params.sessionId, 'initializing');
+      await updateSessionStatus(this.appDb, params.sessionId, 'initializing');
 
       const doId = this.env.SESSIONS.idFromName(params.sessionId);
       const sessionDO = this.env.SESSIONS.get(doId);
@@ -315,7 +320,7 @@ export class WorkflowExecutorDO implements DurableObject {
     if (this.env.OPENAI_API_KEY) envVars.OPENAI_API_KEY = this.env.OPENAI_API_KEY;
     if (this.env.GOOGLE_API_KEY) envVars.GOOGLE_API_KEY = this.env.GOOGLE_API_KEY;
 
-    const gitUserRow = await getUserGitConfig(this.env.DB, params.userId);
+    const gitUserRow = await getUserGitConfig(this.appDb, params.userId);
 
     envVars.GIT_USER_NAME = gitUserRow?.gitName || gitUserRow?.name || gitUserRow?.githubUsername || 'Agent Ops User';
     envVars.GIT_USER_EMAIL = gitUserRow?.gitEmail || gitUserRow?.email || 'agent-ops@example.local';
@@ -330,7 +335,7 @@ export class WorkflowExecutorDO implements DurableObject {
       }
     }
 
-    const gitState = await getSessionGitState(this.env.DB, params.sessionId);
+    const gitState = await getSessionGitState(this.appDb, params.sessionId);
 
     if (gitState?.sourceRepoUrl) {
       envVars.REPO_URL = gitState.sourceRepoUrl;
@@ -621,14 +626,14 @@ export class WorkflowExecutorDO implements DurableObject {
         }
       }
 
-      await resumeExecution(this.env.DB, body.executionId, JSON.stringify(nextState));
+      await resumeExecution(this.appDb, body.executionId, JSON.stringify(nextState));
 
       await this.publishLifecycleEvent(row.user_id, row.workflow_id, body.executionId, 'resumed', null);
       return Response.json({ ok: true, executionId: body.executionId, status: 'running' });
     }
 
     const reason = body.reason || 'approval_denied';
-    await cancelExecutionWithReason(this.env.DB, body.executionId, {
+    await cancelExecutionWithReason(this.appDb, body.executionId, {
       runtimeState: JSON.stringify(nextState),
       reason,
       completedAt: now,
@@ -658,7 +663,7 @@ export class WorkflowExecutorDO implements DurableObject {
     const now = new Date().toISOString();
     const reason = body.reason || 'cancelled_by_user';
 
-    await cancelExecutionWithReason(this.env.DB, body.executionId, {
+    await cancelExecutionWithReason(this.appDb, body.executionId, {
       runtimeState: JSON.stringify(existingState),
       reason,
       completedAt: now,

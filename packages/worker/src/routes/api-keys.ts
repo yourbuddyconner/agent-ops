@@ -49,7 +49,7 @@ async function hashToken(token: string): Promise<string> {
  */
 apiKeysRouter.get('/', async (c) => {
   const user = c.get('user');
-  const keys = await db.listApiTokens(c.env.DB, user.id);
+  const keys = await db.listApiTokens(c.get('db'), user.id);
   return c.json({ keys });
 });
 
@@ -79,7 +79,7 @@ apiKeysRouter.post('/', zValidator('json', createKeySchema), async (c) => {
     expiresAt = expDate.toISOString();
   }
 
-  await db.insertApiToken(c.env.DB, { id, userId: user.id, name, tokenHash, prefix, expiresAt });
+  await db.insertApiToken(c.get('db'), { id, userId: user.id, name, tokenHash, prefix, expiresAt });
 
   const key: APIKeyWithToken = {
     id,
@@ -102,7 +102,7 @@ apiKeysRouter.delete('/:id', async (c) => {
   const user = c.get('user');
   const id = c.req.param('id');
 
-  const revoked = await db.revokeApiToken(c.env.DB, id, user.id);
+  const revoked = await db.revokeApiToken(c.get('db'), id, user.id);
   if (!revoked) {
     throw new NotFoundError('API key not found');
   }

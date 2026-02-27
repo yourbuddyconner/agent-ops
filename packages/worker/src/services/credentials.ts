@@ -1,6 +1,7 @@
 import type { Env } from '../env.js';
 import { encryptStringPBKDF2, decryptStringPBKDF2 } from '../lib/crypto.js';
 import * as credentialDb from '../lib/db/credentials.js';
+import { getDb } from '../lib/drizzle.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -96,7 +97,8 @@ async function refreshGoogleToken(
   const expiresAt = new Date(Date.now() + refreshed.expires_in * 1000).toISOString();
   const encrypted = await encryptCredentialData(newData, env.ENCRYPTION_KEY);
 
-  await credentialDb.upsertCredential(env.DB, {
+  const db = getDb(env.DB);
+  await credentialDb.upsertCredential(db, {
     id: crypto.randomUUID(),
     userId,
     provider,
@@ -149,7 +151,8 @@ export async function getCredential(
   provider: string,
   options?: { forceRefresh?: boolean },
 ): Promise<CredentialResult> {
-  const row = await credentialDb.getCredentialRow(env.DB, userId, provider);
+  const db = getDb(env.DB);
+  const row = await credentialDb.getCredentialRow(db, userId, provider);
   if (!row) {
     return {
       ok: false,
@@ -215,8 +218,9 @@ export async function storeCredential(
   },
 ): Promise<void> {
   const encrypted = await encryptCredentialData(credentialData, env.ENCRYPTION_KEY);
+  const db = getDb(env.DB);
 
-  await credentialDb.upsertCredential(env.DB, {
+  await credentialDb.upsertCredential(db, {
     id: crypto.randomUUID(),
     userId,
     provider,
@@ -232,7 +236,8 @@ export async function revokeCredential(
   userId: string,
   provider: string,
 ): Promise<void> {
-  await credentialDb.deleteCredential(env.DB, userId, provider);
+  const db = getDb(env.DB);
+  await credentialDb.deleteCredential(db, userId, provider);
 }
 
 export async function listCredentials(
@@ -245,7 +250,8 @@ export async function listCredentials(
   expiresAt?: string;
   createdAt: string;
 }>> {
-  const rows = await credentialDb.listCredentialsByUser(env.DB, userId);
+  const db = getDb(env.DB);
+  const rows = await credentialDb.listCredentialsByUser(db, userId);
   return rows.map((row) => ({
     provider: row.provider,
     credentialType: row.credentialType,
@@ -274,5 +280,6 @@ export async function hasCredential(
   userId: string,
   provider: string,
 ): Promise<boolean> {
-  return credentialDb.hasCredential(env.DB, userId, provider);
+  const db = getDb(env.DB);
+  return credentialDb.hasCredential(db, userId, provider);
 }

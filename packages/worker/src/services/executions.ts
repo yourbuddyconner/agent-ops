@@ -1,7 +1,8 @@
-import type { D1Database } from '@cloudflare/workers-types';
 import { NotFoundError, UnauthorizedError, ValidationError } from '@agent-ops/shared';
 import type { Env } from '../env.js';
 import { countActiveExecutions, countActiveExecutionsGlobal } from '../lib/db/executions.js';
+import type { AppDb } from '../lib/drizzle.js';
+import { getDb } from '../lib/drizzle.js';
 import {
   markWorkflowApprovalNotificationsRead,
   getExecutionOwnerAndStatus,
@@ -50,7 +51,7 @@ type EnqueueResponseBody = {
 // ─── Workflow Concurrency ───────────────────────────────────────────────────
 
 export async function checkWorkflowConcurrency(
-  database: D1Database,
+  database: AppDb,
   userId: string,
   limits: { perUser?: number; global?: number } = {},
 ): Promise<{ allowed: boolean; reason?: string; activeUser: number; activeGlobal: number }> {
@@ -190,11 +191,12 @@ export interface CompleteExecutionParams {
 }
 
 export async function completeExecution(
-  database: D1Database,
+  env: Env,
   executionId: string,
   userId: string,
   params: CompleteExecutionParams,
 ): Promise<{ status: string; completedAt: string }> {
+  const database = getDb(env.DB);
   const execution = await getExecutionOwnerAndStatus(database, executionId);
 
   if (!execution) {
@@ -222,7 +224,7 @@ export async function completeExecution(
   if (params.steps?.length) {
     for (const step of params.steps) {
       const attempt = step.attempt ?? 1;
-      await upsertExecutionStep(database, executionId, {
+      await upsertExecutionStep(env.DB, executionId, {
         stepId: step.stepId,
         attempt,
         status: step.status,
@@ -252,7 +254,8 @@ export async function handleApproval(
   userId: string,
   params: HandleApprovalParams,
 ): Promise<{ status: string }> {
-  const execution = await getExecutionOwnerAndStatus(env.DB, executionId) as { user_id: string; status: string } | null;
+  const db = getDb(env.DB);
+  const execution = await getExecutionOwnerAndStatus(db, executionId) as { user_id: string; status: string } | null;
 
   if (!execution) {
     throw new NotFoundError('Execution', executionId);
@@ -282,7 +285,7 @@ export async function handleApproval(
   }
 
   const result = await response.json<{ ok: boolean; status: string }>();
-  await markWorkflowApprovalNotificationsRead(env.DB, userId, executionId);
+  await markWorkflowApprovalNotificationsRead(db, userId, executionId);
   return { status: result.status };
 }
 
@@ -294,7 +297,8 @@ export async function cancelExecution(
   userId: string,
   reason?: string,
 ): Promise<{ status: string }> {
-  const execution = await getExecutionOwnerAndStatus(env.DB, executionId) as { user_id: string; status: string } | null;
+  const db = getDb(env.DB);
+  const execution = await getExecutionOwnerAndStatus(db, executionId) as { user_id: string; status: string } | null;
 
   if (!execution) {
     throw new NotFoundError('Execution', executionId);
@@ -344,10 +348,11 @@ export interface ExecutionStepView {
 }
 
 export async function getExecutionStepsWithOrder(
-  database: D1Database,
+  env: Env,
   executionId: string,
   userId: string,
 ): Promise<ExecutionStepView[]> {
+  const database = getDb(env.DB);
   const execution = await getExecutionForAuth(database, executionId);
 
   if (!execution) {
@@ -358,7 +363,7 @@ export async function getExecutionStepsWithOrder(
   }
 
   const workflowStepOrder = buildWorkflowStepOrderMap(execution.workflow_snapshot);
-  const result = await getExecutionSteps(database, executionId);
+  const result = await getExecutionSteps(env.DB, executionId);
 
   return result.results
     .map((row) => ({
@@ -410,7 +415,7 @@ export async function getExecutionStepsWithOrder(
 // ─── Update Execution Status (with validation) ─────────────────────────────
 
 export async function updateExecutionStatusChecked(
-  database: D1Database,
+  database: AppDb,
   executionId: string,
   userId: string,
   status: string,

@@ -1,4 +1,5 @@
 import type { D1Database, R2Bucket, DurableObjectNamespace } from '@cloudflare/workers-types';
+import type { AppDb } from './lib/drizzle.js';
 
 export interface Env {
   // Durable Objects
@@ -57,4 +58,5 @@ export interface Variables {
     role: 'admin' | 'member';
   };
   requestId: string;
+  db: AppDb;
 }

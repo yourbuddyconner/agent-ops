@@ -1,6 +1,5 @@
-import type { D1Database } from '@cloudflare/workers-types';
+import type { AppDb } from '../drizzle.js';
 import { eq, and, isNull, sql, desc } from 'drizzle-orm';
-import { getDb } from '../drizzle.js';
 import { apiTokens } from '../schema/index.js';
 
 export interface ApiTokenRow {
@@ -12,9 +11,8 @@ export interface ApiTokenRow {
   expiresAt: string | null;
 }
 
-export async function listApiTokens(db: D1Database, userId: string): Promise<ApiTokenRow[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+export async function listApiTokens(db: AppDb, userId: string): Promise<ApiTokenRow[]> {
+  const rows = await db
     .select({
       id: apiTokens.id,
       name: apiTokens.name,
@@ -31,11 +29,10 @@ export async function listApiTokens(db: D1Database, userId: string): Promise<Api
 }
 
 export async function insertApiToken(
-  db: D1Database,
+  db: AppDb,
   params: { id: string; userId: string; name: string; tokenHash: string; prefix: string; expiresAt: string | null }
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.insert(apiTokens).values({
+  await db.insert(apiTokens).values({
     id: params.id,
     userId: params.userId,
     name: params.name,
@@ -46,14 +43,11 @@ export async function insertApiToken(
   });
 }
 
-export async function revokeApiToken(db: D1Database, id: string, userId: string): Promise<boolean> {
+export async function revokeApiToken(db: AppDb, id: string, userId: string): Promise<boolean> {
   const result = await db
-    .prepare(
-      `UPDATE api_tokens SET revoked_at = datetime('now')
-       WHERE id = ? AND user_id = ? AND revoked_at IS NULL`
-    )
-    .bind(id, userId)
-    .run();
+    .update(apiTokens)
+    .set({ revokedAt: sql`datetime('now')` })
+    .where(and(eq(apiTokens.id, id), eq(apiTokens.userId, userId), isNull(apiTokens.revokedAt)));
 
   return (result.meta?.changes ?? 0) > 0;
 }

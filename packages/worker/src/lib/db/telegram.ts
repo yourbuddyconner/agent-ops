@@ -1,15 +1,13 @@
-import type { D1Database } from '@cloudflare/workers-types';
+import type { AppDb } from '../drizzle.js';
 import type { UserTelegramConfig } from '@agent-ops/shared';
 import { eq, sql } from 'drizzle-orm';
-import { getDb } from '../drizzle.js';
 import { userTelegramConfig } from '../schema/index.js';
 
 export async function getUserTelegramConfig(
-  db: D1Database,
+  db: AppDb,
   userId: string,
 ): Promise<UserTelegramConfig | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+  const row = await db
     .select({
       id: userTelegramConfig.id,
       userId: userTelegramConfig.userId,
@@ -32,7 +30,7 @@ export async function getUserTelegramConfig(
 }
 
 export async function saveUserTelegramConfig(
-  db: D1Database,
+  db: AppDb,
   data: {
     id: string;
     userId: string;
@@ -41,9 +39,8 @@ export async function saveUserTelegramConfig(
   },
 ): Promise<UserTelegramConfig> {
   const now = new Date().toISOString();
-  const drizzle = getDb(db);
 
-  await drizzle.insert(userTelegramConfig).values({
+  await db.insert(userTelegramConfig).values({
     id: data.id,
     userId: data.userId,
     botUsername: data.botUsername,
@@ -71,13 +68,12 @@ export async function saveUserTelegramConfig(
 }
 
 export async function updateTelegramWebhookStatus(
-  db: D1Database,
+  db: AppDb,
   userId: string,
   webhookUrl: string,
   active: boolean,
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(userTelegramConfig)
     .set({
       webhookUrl,
@@ -88,12 +84,11 @@ export async function updateTelegramWebhookStatus(
 }
 
 export async function deleteUserTelegramConfig(
-  db: D1Database,
+  db: AppDb,
   userId: string,
 ): Promise<boolean> {
   const result = await db
-    .prepare('DELETE FROM user_telegram_config WHERE user_id = ?')
-    .bind(userId)
-    .run();
+    .delete(userTelegramConfig)
+    .where(eq(userTelegramConfig.userId, userId));
   return (result.meta?.changes ?? 0) > 0;
 }

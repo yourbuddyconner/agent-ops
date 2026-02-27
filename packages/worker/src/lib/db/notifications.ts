@@ -1,7 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { MailboxMessage, UserNotificationPreference } from '@agent-ops/shared';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
-import { getDb } from '../drizzle.js';
+import type { AppDb } from '../drizzle.js';
 import { mailboxMessages, userNotificationPreferences } from '../schema/index.js';
 import { normalizeNotificationEventType } from './constants.js';
 
@@ -58,7 +58,7 @@ function drizzleRowToPreference(row: typeof userNotificationPreferences.$inferSe
 // ─── Mailbox Operations ─────────────────────────────────────────────────────
 
 export async function createMailboxMessage(
-  db: D1Database,
+  db: AppDb,
   data: {
     fromSessionId?: string;
     fromUserId?: string;
@@ -71,11 +71,10 @@ export async function createMailboxMessage(
     replyToId?: string;
   },
 ): Promise<MailboxMessage> {
-  const drizzle = getDb(db);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
-  await drizzle.insert(mailboxMessages).values({
+  await db.insert(mailboxMessages).values({
     id,
     fromSessionId: data.fromSessionId || null,
     fromUserId: data.fromUserId || null,
@@ -211,9 +210,8 @@ export async function getUserInbox(
   return { messages, cursor, hasMore };
 }
 
-export async function getUserInboxCount(db: D1Database, userId: string): Promise<number> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getUserInboxCount(db: AppDb, userId: string): Promise<number> {
+  const row = await db
     .select({ count: sql<number>`count(*)` })
     .from(mailboxMessages)
     .where(and(eq(mailboxMessages.toUserId, userId), eq(mailboxMessages.read, false)))
@@ -221,9 +219,8 @@ export async function getUserInboxCount(db: D1Database, userId: string): Promise
   return row?.count ?? 0;
 }
 
-export async function markSessionMailboxRead(db: D1Database, sessionId: string): Promise<number> {
-  const drizzle = getDb(db);
-  const result = await drizzle
+export async function markSessionMailboxRead(db: AppDb, sessionId: string): Promise<number> {
+  const result = await db
     .update(mailboxMessages)
     .set({
       read: true,
@@ -233,9 +230,8 @@ export async function markSessionMailboxRead(db: D1Database, sessionId: string):
   return (result as any).meta?.changes ?? 0;
 }
 
-export async function markInboxMessageRead(db: D1Database, messageId: string, userId: string): Promise<boolean> {
-  const drizzle = getDb(db);
-  const result = await drizzle
+export async function markInboxMessageRead(db: AppDb, messageId: string, userId: string): Promise<boolean> {
+  const result = await db
     .update(mailboxMessages)
     .set({
       read: true,
@@ -345,7 +341,7 @@ export async function isNotificationWebEnabled(
 }
 
 export async function enqueueNotification(
-  db: D1Database,
+  db: AppDb,
   data: {
     fromSessionId?: string;
     fromUserId?: string;
@@ -440,7 +436,7 @@ export async function getSessionNotificationQueue(
 }
 
 export async function acknowledgeSessionNotificationQueue(
-  db: D1Database,
+  db: AppDb,
   sessionId: string,
 ): Promise<number> {
   return markSessionMailboxRead(db, sessionId);
@@ -454,7 +450,7 @@ export async function getUserNotifications(
   return getUserInbox(db, userId, opts);
 }
 
-export async function getUserNotificationCount(db: D1Database, userId: string): Promise<number> {
+export async function getUserNotificationCount(db: AppDb, userId: string): Promise<number> {
   return getUserInboxCount(db, userId);
 }
 
@@ -467,7 +463,7 @@ export async function getNotificationThread(
 }
 
 export async function markNotificationRead(
-  db: D1Database,
+  db: AppDb,
   messageId: string,
   userId: string,
 ): Promise<boolean> {
@@ -475,11 +471,10 @@ export async function markNotificationRead(
 }
 
 export async function markNonActionableNotificationsRead(
-  db: D1Database,
+  db: AppDb,
   userId: string,
 ): Promise<number> {
-  const drizzle = getDb(db);
-  const result = await drizzle
+  const result = await db
     .update(mailboxMessages)
     .set({
       read: true,
@@ -496,11 +491,10 @@ export async function markNonActionableNotificationsRead(
 }
 
 export async function markAllNotificationsRead(
-  db: D1Database,
+  db: AppDb,
   userId: string,
 ): Promise<number> {
-  const drizzle = getDb(db);
-  const result = await drizzle
+  const result = await db
     .update(mailboxMessages)
     .set({
       read: true,
@@ -511,12 +505,11 @@ export async function markAllNotificationsRead(
 }
 
 export async function markWorkflowApprovalNotificationsRead(
-  db: D1Database,
+  db: AppDb,
   userId: string,
   executionId: string,
 ): Promise<number> {
-  const drizzle = getDb(db);
-  const result = await drizzle
+  const result = await db
     .update(mailboxMessages)
     .set({
       read: true,
@@ -544,11 +537,10 @@ export async function markNotificationThreadRead(
 // ─── Notification Preferences ───────────────────────────────────────────────
 
 export async function getNotificationPreferences(
-  db: D1Database,
+  db: AppDb,
   userId: string,
 ): Promise<UserNotificationPreference[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+  const rows = await db
     .select()
     .from(userNotificationPreferences)
     .where(eq(userNotificationPreferences.userId, userId))
@@ -561,18 +553,17 @@ export async function getNotificationPreferences(
 }
 
 export async function upsertNotificationPreference(
-  db: D1Database,
+  db: AppDb,
   userId: string,
   messageType: string,
   eventType: string | undefined,
   prefs: { webEnabled?: boolean; slackEnabled?: boolean; emailEnabled?: boolean },
 ): Promise<UserNotificationPreference> {
-  const drizzle = getDb(db);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const normalizedEventType = normalizeNotificationEventType(eventType);
 
-  await drizzle
+  await db
     .insert(userNotificationPreferences)
     .values({
       id,
@@ -595,7 +586,7 @@ export async function upsertNotificationPreference(
       },
     });
 
-  const row = await drizzle
+  const row = await db
     .select()
     .from(userNotificationPreferences)
     .where(

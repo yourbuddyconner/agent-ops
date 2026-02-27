@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
+import { getDb } from '../lib/drizzle.js';
 
 export const notificationQueueRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -27,7 +28,7 @@ async function resolveTargetUserId(
 ): Promise<{ toUserId?: string; error?: string }> {
   let toUserId = body.toUserId;
   if (body.toHandle && !toUserId && !body.toSessionId) {
-    const identity = await db.getOrchestratorIdentityByHandle(env.DB, body.toHandle);
+    const identity = await db.getOrchestratorIdentityByHandle(getDb(env.DB), body.toHandle);
     if (!identity) {
       return { error: `Handle @${body.toHandle} not found` };
     }
@@ -53,7 +54,7 @@ async function listSessionNotifications(c: Context<{ Bindings: Env; Variables: V
 
 async function markSessionNotificationsRead(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const { sessionId } = c.req.param();
-  const count = await db.acknowledgeSessionNotificationQueue(c.env.DB, sessionId);
+  const count = await db.acknowledgeSessionNotificationQueue(c.get('db'), sessionId);
   return c.json({ success: true, count });
 }
 
@@ -80,7 +81,7 @@ notificationQueueRouter.post('/notifications/emit', zValidator('json', emitNotif
     return c.json({ error: 'Must specify toSessionId, toUserId, or toHandle' }, 400);
   }
 
-  const notification = await db.enqueueNotification(c.env.DB, {
+  const notification = await db.enqueueNotification(c.get('db'), {
     fromSessionId: body.fromSessionId,
     fromUserId: body.fromUserId,
     toSessionId: body.toSessionId,

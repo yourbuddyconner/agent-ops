@@ -1,6 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { OrchestratorIdentity, OrchestratorMemory, OrchestratorMemoryCategory, AgentSession } from '@agent-ops/shared';
 import { eq, and, desc, sql } from 'drizzle-orm';
+import type { AppDb } from '../drizzle.js';
 import { getDb } from '../drizzle.js';
 import { orchestratorIdentities, orchestratorMemories } from '../schema/index.js';
 import { getSession } from './sessions.js';
@@ -59,9 +60,8 @@ function rowToMemory(row: typeof orchestratorMemories.$inferSelect): Orchestrato
 
 // ─── Orchestrator Identity Operations ───────────────────────────────────────
 
-export async function getOrchestratorIdentity(db: D1Database, userId: string, orgId: string = 'default'): Promise<OrchestratorIdentity | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getOrchestratorIdentity(db: AppDb, userId: string, orgId: string = 'default'): Promise<OrchestratorIdentity | null> {
+  const row = await db
     .select()
     .from(orchestratorIdentities)
     .where(and(eq(orchestratorIdentities.userId, userId), eq(orchestratorIdentities.orgId, orgId)))
@@ -69,9 +69,8 @@ export async function getOrchestratorIdentity(db: D1Database, userId: string, or
   return row ? rowToIdentity(row) : null;
 }
 
-export async function getOrchestratorIdentityByHandle(db: D1Database, handle: string, orgId: string = 'default'): Promise<OrchestratorIdentity | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getOrchestratorIdentityByHandle(db: AppDb, handle: string, orgId: string = 'default'): Promise<OrchestratorIdentity | null> {
+  const row = await db
     .select()
     .from(orchestratorIdentities)
     .where(and(eq(orchestratorIdentities.handle, handle), eq(orchestratorIdentities.orgId, orgId)))
@@ -80,13 +79,12 @@ export async function getOrchestratorIdentityByHandle(db: D1Database, handle: st
 }
 
 export async function createOrchestratorIdentity(
-  db: D1Database,
+  db: AppDb,
   data: { id: string; userId: string; name: string; handle: string; avatar?: string; customInstructions?: string; orgId?: string }
 ): Promise<OrchestratorIdentity> {
-  const drizzle = getDb(db);
   const orgId = data.orgId || 'default';
 
-  await drizzle.insert(orchestratorIdentities).values({
+  await db.insert(orchestratorIdentities).values({
     id: data.id,
     userId: data.userId,
     orgId,
@@ -111,24 +109,25 @@ export async function createOrchestratorIdentity(
   };
 }
 
-// Raw SQL: dynamic SET clauses
 export async function updateOrchestratorIdentity(
-  db: D1Database,
+  db: AppDb,
   id: string,
   updates: Partial<Pick<OrchestratorIdentity, 'name' | 'handle' | 'avatar' | 'customInstructions'>>
 ): Promise<void> {
-  const sets: string[] = [];
-  const params: (string | null)[] = [];
+  const setValues: Record<string, unknown> = {};
 
-  if (updates.name !== undefined) { sets.push('name = ?'); params.push(updates.name); }
-  if (updates.handle !== undefined) { sets.push('handle = ?'); params.push(updates.handle); }
-  if (updates.avatar !== undefined) { sets.push('avatar = ?'); params.push(updates.avatar || null); }
-  if (updates.customInstructions !== undefined) { sets.push('custom_instructions = ?'); params.push(updates.customInstructions || null); }
+  if (updates.name !== undefined) setValues.name = updates.name;
+  if (updates.handle !== undefined) setValues.handle = updates.handle;
+  if (updates.avatar !== undefined) setValues.avatar = updates.avatar || null;
+  if (updates.customInstructions !== undefined) setValues.customInstructions = updates.customInstructions || null;
 
-  if (sets.length === 0) return;
+  if (Object.keys(setValues).length === 0) return;
 
-  sets.push("updated_at = datetime('now')");
-  await db.prepare(`UPDATE orchestrator_identities SET ${sets.join(', ')} WHERE id = ?`).bind(...params, id).run();
+  setValues.updatedAt = sql`datetime('now')`;
+  await db
+    .update(orchestratorIdentities)
+    .set(setValues)
+    .where(eq(orchestratorIdentities.id, id));
 }
 
 // ─── Orchestrator Memory Operations ─────────────────────────────────────────
@@ -153,7 +152,7 @@ export async function listOrchestratorMemories(
 
     if (!ftsQuery) {
       // Query was all punctuation — fall through to non-FTS path
-      return listOrchestratorMemoriesPlain(db, userId, options.category, limit);
+      return listOrchestratorMemoriesPlain(getDb(db), userId, options.category, limit);
     }
 
     let query = `
@@ -174,23 +173,22 @@ export async function listOrchestratorMemories(
     return (result.results || []).map((row: any) => rowToMemory(row as typeof orchestratorMemories.$inferSelect));
   }
 
-  return listOrchestratorMemoriesPlain(db, userId, options.category, limit);
+  return listOrchestratorMemoriesPlain(getDb(db), userId, options.category, limit);
 }
 
 async function listOrchestratorMemoriesPlain(
-  db: D1Database,
+  db: AppDb,
   userId: string,
   category?: string,
   limit: number = 50,
 ): Promise<OrchestratorMemory[]> {
-  const drizzle = getDb(db);
   const conditions = [eq(orchestratorMemories.userId, userId)];
 
   if (category) {
     conditions.push(eq(orchestratorMemories.category, category));
   }
 
-  const rows = await drizzle
+  const rows = await db
     .select()
     .from(orchestratorMemories)
     .where(and(...conditions))
@@ -298,14 +296,14 @@ export async function deleteOrchestratorMemory(db: D1Database, id: string, userI
   return (result.meta?.changes ?? 0) > 0;
 }
 
-// Raw SQL: UPDATE with MIN() expression
-export async function boostMemoryRelevance(db: D1Database, id: string): Promise<void> {
+export async function boostMemoryRelevance(db: AppDb, id: string): Promise<void> {
   await db
-    .prepare(
-      "UPDATE orchestrator_memories SET relevance = MIN(relevance + 0.1, 2.0), last_accessed_at = datetime('now') WHERE id = ?"
-    )
-    .bind(id)
-    .run();
+    .update(orchestratorMemories)
+    .set({
+      relevance: sql`MIN(${orchestratorMemories.relevance} + 0.1, 2.0)`,
+      lastAccessedAt: sql`datetime('now')`,
+    })
+    .where(eq(orchestratorMemories.id, id));
 }
 
 // ─── Orchestrator Session Helpers ───────────────────────────────────────────
@@ -320,7 +318,7 @@ export async function getOrchestratorSession(db: D1Database, userId: string): Pr
   if (row) return mapSessionRow(row);
   // Fallback: check for legacy fixed-ID session (may be in terminal state for restart detection)
   const legacyId = `orchestrator:${userId}`;
-  return getSession(db, legacyId);
+  return getSession(getDb(db), legacyId);
 }
 
 // Raw SQL: NOT EXISTS subquery + JOIN

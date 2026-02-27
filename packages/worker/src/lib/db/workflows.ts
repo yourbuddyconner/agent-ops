@@ -1,7 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { ValidationError } from '@agent-ops/shared';
 import { eq, and, or, sql, desc } from 'drizzle-orm';
-import { getDb } from '../drizzle.js';
+import type { AppDb } from '../drizzle.js';
 import { workflows, triggers, workflowMutationProposals, workflowVersionHistory } from '../schema/index.js';
 import { sha256Hex } from '../workflow-runtime.js';
 
@@ -118,9 +118,8 @@ export interface ProposalRow {
 
 // ─── Data Access ─────────────────────────────────────────────────────────────
 
-export async function listWorkflows(db: D1Database, userId: string) {
-  const drizzle = getDb(db);
-  return { results: await drizzle
+export async function listWorkflows(db: AppDb, userId: string) {
+  return { results: await db
     .select({
       id: workflows.id,
       slug: workflows.slug,
@@ -139,25 +138,46 @@ export async function listWorkflows(db: D1Database, userId: string) {
   };
 }
 
-export async function getWorkflowByIdOrSlug(db: D1Database, userId: string, idOrSlug: string) {
-  // OR condition — keep as raw SQL
-  return db.prepare(`
-    SELECT id, slug, name, description, version, data, enabled, tags, created_at, updated_at
-    FROM workflows
-    WHERE (id = ? OR slug = ?) AND user_id = ?
-  `).bind(idOrSlug, idOrSlug, userId).first();
+export async function getWorkflowByIdOrSlug(db: AppDb, userId: string, idOrSlug: string) {
+  return db
+    .select({
+      id: workflows.id,
+      slug: workflows.slug,
+      name: workflows.name,
+      description: workflows.description,
+      version: workflows.version,
+      data: workflows.data,
+      enabled: workflows.enabled,
+      tags: workflows.tags,
+      created_at: workflows.createdAt,
+      updated_at: workflows.updatedAt,
+    })
+    .from(workflows)
+    .where(and(or(eq(workflows.id, idOrSlug), eq(workflows.slug, idOrSlug)), eq(workflows.userId, userId)))
+    .get();
 }
 
-export async function getWorkflowByIdOrSlugTyped<T>(db: D1Database, userId: string, idOrSlug: string) {
-  return db.prepare(`
-    SELECT id, slug, name, description, version, data, enabled, tags, created_at, updated_at
-    FROM workflows
-    WHERE (id = ? OR slug = ?) AND user_id = ?
-  `).bind(idOrSlug, idOrSlug, userId).first<T>();
+export async function getWorkflowByIdOrSlugTyped<T>(db: AppDb, userId: string, idOrSlug: string) {
+  return db
+    .select({
+      id: workflows.id,
+      slug: workflows.slug,
+      name: workflows.name,
+      description: workflows.description,
+      version: workflows.version,
+      data: workflows.data,
+      enabled: workflows.enabled,
+      tags: workflows.tags,
+      created_at: workflows.createdAt,
+      updated_at: workflows.updatedAt,
+    })
+    .from(workflows)
+    .where(and(or(eq(workflows.id, idOrSlug), eq(workflows.slug, idOrSlug)), eq(workflows.userId, userId)))
+    .get() as T | undefined;
 }
 
 export async function upsertWorkflow(
-  db: D1Database,
+  db: AppDb,
   params: {
     id: string;
     userId: string;
@@ -169,43 +189,42 @@ export async function upsertWorkflow(
     now: string;
   }
 ) {
-  // ON CONFLICT(id) with excluded refs — use raw SQL since Drizzle data column isn't JSON mode here
-  await db.prepare(`
-    INSERT INTO workflows (id, user_id, slug, name, description, version, data, enabled, updated_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      slug = excluded.slug,
-      name = excluded.name,
-      description = excluded.description,
-      version = excluded.version,
-      data = excluded.data,
-      updated_at = excluded.updated_at
-  `).bind(
-    params.id,
-    params.userId,
-    params.slug,
-    params.name,
-    params.description,
-    params.version,
-    params.data,
-    params.now,
-    params.now
-  ).run();
+  await db.insert(workflows).values({
+    id: params.id,
+    userId: params.userId,
+    slug: params.slug,
+    name: params.name,
+    description: params.description,
+    version: params.version,
+    data: sql`${params.data}`,
+    enabled: true,
+    updatedAt: params.now,
+    createdAt: params.now,
+  }).onConflictDoUpdate({
+    target: workflows.id,
+    set: {
+      slug: sql`excluded.slug`,
+      name: sql`excluded.name`,
+      description: sql`excluded.description`,
+      version: sql`excluded.version`,
+      data: sql`excluded.data`,
+      updatedAt: sql`excluded.updated_at`,
+    },
+  });
 }
 
-export async function getExistingWorkflowIds(db: D1Database, userId: string) {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+export async function getExistingWorkflowIds(db: AppDb, userId: string) {
+  const rows = await db
     .select({ id: workflows.id })
     .from(workflows)
     .where(eq(workflows.userId, userId));
   return new Set(rows.map((r) => r.id));
 }
 
-export async function deleteWorkflowById(db: D1Database, workflowId: string, userId: string) {
-  return db.prepare(`
-    DELETE FROM workflows WHERE id = ? AND user_id = ?
-  `).bind(workflowId, userId).run();
+export async function deleteWorkflowById(db: AppDb, workflowId: string, userId: string) {
+  return db
+    .delete(workflows)
+    .where(and(eq(workflows.id, workflowId), eq(workflows.userId, userId)));
 }
 
 export async function updateWorkflow(db: D1Database, workflowId: string, setClauses: string[], values: unknown[]) {
@@ -214,9 +233,8 @@ export async function updateWorkflow(db: D1Database, workflowId: string, setClau
   `).bind(...values).run();
 }
 
-export async function getWorkflowById(db: D1Database, workflowId: string) {
-  const drizzle = getDb(db);
-  return drizzle
+export async function getWorkflowById(db: AppDb, workflowId: string) {
+  return db
     .select({
       id: workflows.id,
       slug: workflows.slug,
@@ -234,23 +252,24 @@ export async function getWorkflowById(db: D1Database, workflowId: string) {
     .get();
 }
 
-export async function deleteWorkflowTriggers(db: D1Database, workflowId: string, userId: string) {
-  const drizzle = getDb(db);
-  await drizzle
+export async function deleteWorkflowTriggers(db: AppDb, workflowId: string, userId: string) {
+  await db
     .delete(triggers)
     .where(and(eq(triggers.workflowId, workflowId), eq(triggers.userId, userId)));
 }
 
-export async function deleteWorkflowByIdOrSlug(db: D1Database, idOrSlug: string, userId: string) {
-  return db.prepare(`
-    DELETE FROM workflows WHERE (id = ? OR slug = ?) AND user_id = ?
-  `).bind(idOrSlug, idOrSlug, userId).run();
+export async function deleteWorkflowByIdOrSlug(db: AppDb, idOrSlug: string, userId: string) {
+  return db
+    .delete(workflows)
+    .where(and(or(eq(workflows.id, idOrSlug), eq(workflows.slug, idOrSlug)), eq(workflows.userId, userId)));
 }
 
-export async function getWorkflowOwnerCheck(db: D1Database, userId: string, idOrSlug: string) {
-  return db.prepare(`
-    SELECT id FROM workflows WHERE (id = ? OR slug = ?) AND user_id = ?
-  `).bind(idOrSlug, idOrSlug, userId).first<{ id: string }>();
+export async function getWorkflowOwnerCheck(db: AppDb, userId: string, idOrSlug: string) {
+  return db
+    .select({ id: workflows.id })
+    .from(workflows)
+    .where(and(or(eq(workflows.id, idOrSlug), eq(workflows.slug, idOrSlug)), eq(workflows.userId, userId)))
+    .get();
 }
 
 // ─── Execution History ───────────────────────────────────────────────────────
@@ -275,7 +294,7 @@ export async function listWorkflowExecutions(
 // ─── Version History ─────────────────────────────────────────────────────────
 
 export async function saveWorkflowHistorySnapshot(
-  db: D1Database,
+  db: AppDb,
   params: {
     workflowId: string;
     workflowVersion: string | null;
@@ -290,63 +309,72 @@ export async function saveWorkflowHistorySnapshot(
   const workflowHash = normalizeHash(await sha256Hex(params.workflowData));
   const createdAt = params.createdAt || new Date().toISOString();
 
-  // ON CONFLICT DO NOTHING — use raw SQL
-  await db.prepare(`
-    INSERT INTO workflow_version_history
-      (id, workflow_id, workflow_version, workflow_hash, workflow_data, source, source_proposal_id, notes, created_by, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(workflow_id, workflow_hash) DO NOTHING
-  `).bind(
-    crypto.randomUUID(),
-    params.workflowId,
-    params.workflowVersion,
+  await db.insert(workflowVersionHistory).values({
+    id: crypto.randomUUID(),
+    workflowId: params.workflowId,
+    workflowVersion: params.workflowVersion,
     workflowHash,
-    params.workflowData,
-    params.source,
-    params.sourceProposalId || null,
-    params.notes || null,
-    params.createdBy || null,
+    workflowData: sql`${params.workflowData}`,
+    source: params.source,
+    sourceProposalId: params.sourceProposalId || null,
+    notes: params.notes || null,
+    createdBy: params.createdBy || null,
     createdAt,
-  ).run();
+  }).onConflictDoNothing({
+    target: [workflowVersionHistory.workflowId, workflowVersionHistory.workflowHash],
+  });
 
   return workflowHash;
 }
 
-export async function getWorkflowForHistory(db: D1Database, userId: string, idOrSlug: string) {
-  return db.prepare(`
-    SELECT id, version, data, updated_at
-    FROM workflows
-    WHERE (id = ? OR slug = ?) AND user_id = ?
-  `).bind(idOrSlug, idOrSlug, userId).first<{
-    id: string;
-    version: string | null;
-    data: string;
-    updated_at: string;
-  }>();
+export async function getWorkflowForHistory(db: AppDb, userId: string, idOrSlug: string) {
+  return db
+    .select({
+      id: workflows.id,
+      version: workflows.version,
+      data: workflows.data,
+      updated_at: workflows.updatedAt,
+    })
+    .from(workflows)
+    .where(and(or(eq(workflows.id, idOrSlug), eq(workflows.slug, idOrSlug)), eq(workflows.userId, userId)))
+    .get();
 }
 
 export async function listWorkflowHistory(
-  db: D1Database,
+  db: AppDb,
   workflowId: string,
   opts: { limit?: number; offset?: number } = {}
 ) {
-  return db.prepare(`
-    SELECT id, workflow_id, workflow_version, workflow_hash, workflow_data, source, source_proposal_id, notes, created_by, created_at
-    FROM workflow_version_history
-    WHERE workflow_id = ?
-    ORDER BY created_at DESC
-    LIMIT ? OFFSET ?
-  `).bind(workflowId, opts.limit ?? 50, opts.offset ?? 0).all();
+  const rows = await db
+    .select({
+      id: workflowVersionHistory.id,
+      workflow_id: workflowVersionHistory.workflowId,
+      workflow_version: workflowVersionHistory.workflowVersion,
+      workflow_hash: workflowVersionHistory.workflowHash,
+      workflow_data: workflowVersionHistory.workflowData,
+      source: workflowVersionHistory.source,
+      source_proposal_id: workflowVersionHistory.sourceProposalId,
+      notes: workflowVersionHistory.notes,
+      created_by: workflowVersionHistory.createdBy,
+      created_at: workflowVersionHistory.createdAt,
+    })
+    .from(workflowVersionHistory)
+    .where(eq(workflowVersionHistory.workflowId, workflowId))
+    .orderBy(desc(workflowVersionHistory.createdAt))
+    .limit(opts.limit ?? 50)
+    .offset(opts.offset ?? 0);
+
+  return { results: rows };
 }
 
 // ─── Proposals ───────────────────────────────────────────────────────────────
 
-export async function getWorkflowForProposalCheck(db: D1Database, userId: string, idOrSlug: string) {
-  return db.prepare(`
-    SELECT id, data
-    FROM workflows
-    WHERE (id = ? OR slug = ?) AND user_id = ?
-  `).bind(idOrSlug, idOrSlug, userId).first<{ id: string; data: string }>();
+export async function getWorkflowForProposalCheck(db: AppDb, userId: string, idOrSlug: string) {
+  return db
+    .select({ id: workflows.id, data: workflows.data })
+    .from(workflows)
+    .where(and(or(eq(workflows.id, idOrSlug), eq(workflows.slug, idOrSlug)), eq(workflows.userId, userId)))
+    .get();
 }
 
 export async function listWorkflowProposals(
@@ -374,7 +402,7 @@ export async function listWorkflowProposals(
 }
 
 export async function insertProposal(
-  db: D1Database,
+  db: AppDb,
   params: {
     id: string;
     workflowId: string;
@@ -387,8 +415,7 @@ export async function insertProposal(
     now: string;
   }
 ) {
-  const drizzle = getDb(db);
-  await drizzle.insert(workflowMutationProposals).values({
+  await db.insert(workflowMutationProposals).values({
     id: params.id,
     workflowId: params.workflowId,
     executionId: params.executionId,
@@ -403,9 +430,8 @@ export async function insertProposal(
   });
 }
 
-export async function getProposalForReview(db: D1Database, proposalId: string, workflowId: string) {
-  const drizzle = getDb(db);
-  return drizzle
+export async function getProposalForReview(db: AppDb, proposalId: string, workflowId: string) {
+  return db
     .select({ id: workflowMutationProposals.id, status: workflowMutationProposals.status })
     .from(workflowMutationProposals)
     .where(and(eq(workflowMutationProposals.id, proposalId), eq(workflowMutationProposals.workflowId, workflowId)))
@@ -413,57 +439,54 @@ export async function getProposalForReview(db: D1Database, proposalId: string, w
 }
 
 export async function updateProposalStatus(
-  db: D1Database,
+  db: AppDb,
   proposalId: string,
   status: string,
   reviewNotes: string | null,
   now: string
 ) {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(workflowMutationProposals)
     .set({ status, reviewNotes, updatedAt: now })
     .where(eq(workflowMutationProposals.id, proposalId));
 }
 
-export async function getProposalForApply(db: D1Database, proposalId: string, workflowId: string) {
-  return db.prepare(`
-    SELECT id, workflow_id, base_workflow_hash, proposal_json, status, expires_at, review_notes
-    FROM workflow_mutation_proposals
-    WHERE id = ? AND workflow_id = ?
-  `).bind(proposalId, workflowId).first<{
-    id: string;
-    workflow_id: string;
-    base_workflow_hash: string;
-    proposal_json: string;
-    status: string;
-    expires_at: string | null;
-    review_notes: string | null;
-  }>();
+export async function getProposalForApply(db: AppDb, proposalId: string, workflowId: string) {
+  return db
+    .select({
+      id: workflowMutationProposals.id,
+      workflow_id: workflowMutationProposals.workflowId,
+      base_workflow_hash: workflowMutationProposals.baseWorkflowHash,
+      proposal_json: workflowMutationProposals.proposalJson,
+      status: workflowMutationProposals.status,
+      expires_at: workflowMutationProposals.expiresAt,
+      review_notes: workflowMutationProposals.reviewNotes,
+    })
+    .from(workflowMutationProposals)
+    .where(and(eq(workflowMutationProposals.id, proposalId), eq(workflowMutationProposals.workflowId, workflowId)))
+    .get();
 }
 
 export async function applyWorkflowUpdate(
-  db: D1Database,
+  db: AppDb,
   workflowId: string,
   data: string,
   version: string,
   now: string
 ) {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(workflows)
     .set({ data, version, updatedAt: now })
     .where(eq(workflows.id, workflowId));
 }
 
 export async function markProposalApplied(
-  db: D1Database,
+  db: AppDb,
   proposalId: string,
   reviewNotes: string | null,
   now: string
 ) {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(workflowMutationProposals)
     .set({ status: 'applied', reviewNotes, updatedAt: now })
     .where(eq(workflowMutationProposals.id, proposalId));
@@ -471,27 +494,26 @@ export async function markProposalApplied(
 
 // ─── Rollback ────────────────────────────────────────────────────────────────
 
-export async function getWorkflowForRollback(db: D1Database, userId: string, idOrSlug: string) {
-  return db.prepare(`
-    SELECT id, slug, name, description, version, data, enabled, tags, created_at
-    FROM workflows
-    WHERE (id = ? OR slug = ?) AND user_id = ?
-  `).bind(idOrSlug, idOrSlug, userId).first<{
-    id: string;
-    slug: string | null;
-    name: string;
-    description: string | null;
-    version: string | null;
-    data: string;
-    enabled: number;
-    tags: string | null;
-    created_at: string;
-  }>();
+export async function getWorkflowForRollback(db: AppDb, userId: string, idOrSlug: string) {
+  return db
+    .select({
+      id: workflows.id,
+      slug: workflows.slug,
+      name: workflows.name,
+      description: workflows.description,
+      version: workflows.version,
+      data: workflows.data,
+      enabled: workflows.enabled,
+      tags: workflows.tags,
+      created_at: workflows.createdAt,
+    })
+    .from(workflows)
+    .where(and(or(eq(workflows.id, idOrSlug), eq(workflows.slug, idOrSlug)), eq(workflows.userId, userId)))
+    .get();
 }
 
-export async function getHistoryByHash(db: D1Database, workflowId: string, hash: string) {
-  const drizzle = getDb(db);
-  return drizzle
+export async function getHistoryByHash(db: AppDb, workflowId: string, hash: string) {
+  return db
     .select({
       workflow_version: workflowVersionHistory.workflowVersion,
       workflow_hash: workflowVersionHistory.workflowHash,

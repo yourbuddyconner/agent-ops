@@ -1,7 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { eq, and } from 'drizzle-orm';
-import { getDb } from '../drizzle.js';
-import { triggers } from '../schema/index.js';
+import { eq, and, or } from 'drizzle-orm';
+import type { AppDb } from '../drizzle.js';
+import { triggers, workflows } from '../schema/index.js';
 
 // ─── Pure Helpers ────────────────────────────────────────────────────────────
 
@@ -33,7 +33,7 @@ export function deriveRepoFullName(repoUrl?: string, sourceRepoFullName?: string
 // ─── Data Access (Drizzle) ──────────────────────────────────────────────────
 
 export async function createTrigger(
-  db: D1Database,
+  db: AppDb,
   params: {
     id: string;
     userId: string;
@@ -46,8 +46,7 @@ export async function createTrigger(
     now: string;
   }
 ) {
-  const drizzle = getDb(db);
-  await drizzle.insert(triggers).values({
+  await db.insert(triggers).values({
     id: params.id,
     userId: params.userId,
     workflowId: params.workflowId,
@@ -61,9 +60,8 @@ export async function createTrigger(
   });
 }
 
-export async function getTriggerForUpdate(db: D1Database, userId: string, triggerId: string) {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getTriggerForUpdate(db: AppDb, userId: string, triggerId: string) {
+  const row = await db
     .select({
       config: triggers.config,
       workflowId: triggers.workflowId,
@@ -77,39 +75,35 @@ export async function getTriggerForUpdate(db: D1Database, userId: string, trigge
   return { config: row.config, workflow_id: row.workflowId } as { config: string; workflow_id: string | null };
 }
 
-export async function deleteTrigger(db: D1Database, triggerId: string, userId: string) {
-  const drizzle = getDb(db);
-  return drizzle
+export async function deleteTrigger(db: AppDb, triggerId: string, userId: string) {
+  return db
     .delete(triggers)
     .where(and(eq(triggers.id, triggerId), eq(triggers.userId, userId)));
 }
 
-export async function enableTrigger(db: D1Database, triggerId: string, userId: string, now: string) {
-  const drizzle = getDb(db);
-  return drizzle
+export async function enableTrigger(db: AppDb, triggerId: string, userId: string, now: string) {
+  return db
     .update(triggers)
     .set({ enabled: true, updatedAt: now })
     .where(and(eq(triggers.id, triggerId), eq(triggers.userId, userId)));
 }
 
-export async function disableTrigger(db: D1Database, triggerId: string, userId: string, now: string) {
-  const drizzle = getDb(db);
-  return drizzle
+export async function disableTrigger(db: AppDb, triggerId: string, userId: string, now: string) {
+  return db
     .update(triggers)
     .set({ enabled: false, updatedAt: now })
     .where(and(eq(triggers.id, triggerId), eq(triggers.userId, userId)));
 }
 
-export async function updateTriggerLastRun(db: D1Database, triggerId: string, now: string) {
-  const drizzle = getDb(db);
-  await drizzle
+export async function updateTriggerLastRun(db: AppDb, triggerId: string, now: string) {
+  await db
     .update(triggers)
     .set({ lastRunAt: now })
     .where(eq(triggers.id, triggerId));
 }
 
 export async function updateTriggerFull(
-  db: D1Database,
+  db: AppDb,
   triggerId: string,
   userId: string,
   params: {
@@ -122,8 +116,7 @@ export async function updateTriggerFull(
     now: string;
   },
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(triggers)
     .set({
       workflowId: params.workflowId,
@@ -158,10 +151,12 @@ export async function getTrigger(db: D1Database, userId: string, triggerId: stri
   `).bind(triggerId, userId).first();
 }
 
-export async function getWorkflowForTrigger(db: D1Database, userId: string, workflowIdOrSlug: string) {
-  return db.prepare(`
-    SELECT id FROM workflows WHERE (id = ? OR slug = ?) AND user_id = ?
-  `).bind(workflowIdOrSlug, workflowIdOrSlug, userId).first<{ id: string }>();
+export async function getWorkflowForTrigger(db: AppDb, userId: string, workflowIdOrSlug: string) {
+  return db
+    .select({ id: workflows.id })
+    .from(workflows)
+    .where(and(or(eq(workflows.id, workflowIdOrSlug), eq(workflows.slug, workflowIdOrSlug)), eq(workflows.userId, userId)))
+    .get();
 }
 
 export async function checkWebhookPathUniqueness(
@@ -280,4 +275,47 @@ export async function findScheduleTriggersByName(
     ORDER BY datetime(updated_at) DESC
     LIMIT ?
   `).bind(userId, name, limit).all<Record<string, unknown>>();
+}
+
+// ─── Cron Dispatch Helpers ──────────────────────────────────────────────────
+
+export async function getActiveScheduleTriggers(db: D1Database): Promise<{
+  trigger_id: string;
+  user_id: string;
+  workflow_id: string | null;
+  config: string;
+  workflow_enabled: number | null;
+  workflow_name: string | null;
+  workflow_version: string | null;
+  workflow_data: string | null;
+}[]> {
+  const result = await db.prepare(`
+    SELECT
+      t.id as trigger_id,
+      t.user_id,
+      t.workflow_id,
+      t.config,
+      w.enabled as workflow_enabled,
+      w.name as workflow_name,
+      w.version as workflow_version,
+      w.data as workflow_data
+    FROM triggers t
+    LEFT JOIN workflows w ON t.workflow_id = w.id
+    WHERE t.type = 'schedule'
+      AND t.enabled = 1
+  `).all();
+  return (result.results || []) as any;
+}
+
+export async function insertScheduleTick(
+  db: D1Database,
+  triggerId: string,
+  tickBucket: string,
+): Promise<boolean> {
+  const result = await db.prepare(`
+    INSERT INTO workflow_schedule_ticks (id, trigger_id, tick_bucket)
+    VALUES (?, ?, ?)
+    ON CONFLICT(trigger_id, tick_bucket) DO NOTHING
+  `).bind(crypto.randomUUID(), triggerId, tickBucket).run();
+  return (result.meta?.changes ?? 0) > 0;
 }

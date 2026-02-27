@@ -1,5 +1,6 @@
 import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
+import { getDb } from '../lib/drizzle.js';
 import { checkWorkflowConcurrency, enqueueWorkflowExecution } from './executions.js';
 import { sha256Hex, createWorkflowSession } from '../lib/workflow-runtime.js';
 
@@ -31,6 +32,7 @@ export async function handleGenericWebhook(
   query: Record<string, string>,
   workerOrigin: string,
 ): Promise<{ result: GenericWebhookResult; statusCode: number } | null> {
+  const appDb = getDb(env.DB);
   // Look up trigger by webhook path
   const trigger = await db.lookupWebhookTrigger(env.DB, webhookPath);
 
@@ -142,7 +144,7 @@ export async function handleGenericWebhook(
     };
   }
 
-  const concurrency = await checkWorkflowConcurrency(env.DB, trigger.user_id);
+  const concurrency = await checkWorkflowConcurrency(appDb, trigger.user_id);
   if (!concurrency.allowed) {
     return {
       result: {
@@ -161,7 +163,7 @@ export async function handleGenericWebhook(
   const executionId = crypto.randomUUID();
   const now = new Date().toISOString();
   const workflowHash = await sha256Hex(String(trigger.data ?? '{}'));
-  const sessionId = await createWorkflowSession(env.DB, {
+  const sessionId = await createWorkflowSession(appDb, {
     userId: trigger.user_id,
     workflowId: trigger.workflow_id,
     executionId,
@@ -194,7 +196,7 @@ export async function handleGenericWebhook(
     workerOrigin,
   });
 
-  await db.updateTriggerLastRun(env.DB, trigger.id, now);
+  await db.updateTriggerLastRun(appDb, trigger.id, now);
 
   return {
     result: {
@@ -225,7 +227,8 @@ export async function handlePullRequestWebhook(env: Env, payload: any): Promise<
 
   if (!repoFullName || !prNumber) return;
 
-  const rows = await db.findSessionsByPR(env.DB, repoFullName, prNumber);
+  const appDb = getDb(env.DB);
+  const rows = await db.findSessionsByPR(appDb, repoFullName, prNumber);
 
   if (!rows.results || rows.results.length === 0) return;
 
@@ -243,7 +246,7 @@ export async function handlePullRequestWebhook(env: Env, payload: any): Promise<
   for (const row of rows.results) {
     const sessionId = row.session_id;
 
-    await db.updateSessionGitState(env.DB, sessionId, {
+    await db.updateSessionGitState(appDb, sessionId, {
       prState: prState as any,
       prTitle: pr.title,
       prUrl: pr.html_url,
@@ -281,12 +284,13 @@ export async function handlePushWebhook(env: Env, payload: any): Promise<void> {
 
   const branch = ref.replace('refs/heads/', '');
 
-  const rows = await db.findSessionsByRepoBranch(env.DB, repoFullName, branch);
+  const appDb = getDb(env.DB);
+  const rows = await db.findSessionsByRepoBranch(appDb, repoFullName, branch);
 
   if (!rows.results || rows.results.length === 0) return;
 
   for (const row of rows.results) {
-    await db.updateSessionGitState(env.DB, row.session_id, {
+    await db.updateSessionGitState(appDb, row.session_id, {
       commitCount: row.commit_count + commitCount,
     });
 

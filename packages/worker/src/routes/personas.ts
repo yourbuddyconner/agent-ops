@@ -72,7 +72,7 @@ personasRouter.post('/', zValidator('json', createPersonaSchema), async (c) => {
 
   const personaId = crypto.randomUUID();
 
-  const persona = await db.createPersona(c.env.DB, {
+  const persona = await db.createPersona(c.get('db'), {
     id: personaId,
     name: body.name,
     slug: body.slug,
@@ -87,7 +87,7 @@ personasRouter.post('/', zValidator('json', createPersonaSchema), async (c) => {
   // Create inline files if provided
   if (body.files?.length) {
     for (const file of body.files) {
-      await db.upsertPersonaFile(c.env.DB, {
+      await db.upsertPersonaFile(c.get('db'), {
         id: crypto.randomUUID(),
         personaId,
         filename: file.filename,
@@ -134,7 +134,7 @@ personasRouter.put('/:id', zValidator('json', updatePersonaSchema), async (c) =>
     throw new ForbiddenError('Only admins can set a default persona');
   }
 
-  await db.updatePersona(c.env.DB, id, body);
+  await db.updatePersona(c.get('db'), id, body);
   return c.json({ ok: true });
 });
 
@@ -155,7 +155,7 @@ personasRouter.delete('/:id', async (c) => {
     throw new ForbiddenError('Only the creator or an admin can delete this persona');
   }
 
-  await db.deletePersona(c.env.DB, id);
+  await db.deletePersona(c.get('db'), id);
   return c.json({ ok: true });
 });
 
@@ -188,13 +188,13 @@ personasRouter.put('/:id/files', zValidator('json', bulkFilesSchema), async (c) 
   // Delete existing files
   if (persona.files?.length) {
     for (const f of persona.files) {
-      await db.deletePersonaFile(c.env.DB, f.id);
+      await db.deletePersonaFile(c.get('db'), f.id);
     }
   }
 
   // Insert new files
   for (const file of files) {
-    await db.upsertPersonaFile(c.env.DB, {
+    await db.upsertPersonaFile(c.get('db'), {
       id: crypto.randomUUID(),
       personaId: id,
       filename: file.filename,
@@ -230,7 +230,7 @@ personasRouter.post('/:id/files', zValidator('json', singleFileSchema), async (c
     throw new ForbiddenError('Only the creator or an admin can edit this persona');
   }
 
-  await db.upsertPersonaFile(c.env.DB, {
+  await db.upsertPersonaFile(c.get('db'), {
     id: crypto.randomUUID(),
     personaId: id,
     filename: body.filename,
@@ -258,6 +258,6 @@ personasRouter.delete('/:id/files/:fileId', async (c) => {
     throw new ForbiddenError('Only the creator or an admin can edit this persona');
   }
 
-  await db.deletePersonaFile(c.env.DB, fileId);
+  await db.deletePersonaFile(c.get('db'), fileId);
   return c.json({ ok: true });
 });

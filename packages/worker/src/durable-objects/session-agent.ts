@@ -1,4 +1,6 @@
 import type { Env } from '../env.js';
+import type { AppDb } from '../lib/drizzle.js';
+import { getDb } from '../lib/drizzle.js';
 import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels } from '../lib/db.js';
 import { getCredential } from '../services/credentials.js';
 import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
@@ -537,6 +539,9 @@ export class SessionAgentDO {
     handled: boolean;
   } | null = null;
 
+  /** Drizzle AppDb instance wrapping the D1 binding. */
+  private get appDb(): AppDb { return getDb(this.env.DB); }
+
   /** Returns the channel metadata for the currently active prompt, if any. */
   private get activeChannel(): { channelType: string; channelId: string } | null {
     if (this.pendingChannelReply) {
@@ -589,7 +594,7 @@ export class SessionAgentDO {
     if (cached) return cached;
 
     try {
-      const userRow = await getUserById(this.env.DB, userId);
+      const userRow = await getUserById(this.appDb, userId);
       if (!userRow) return undefined;
       const details: CachedUserDetails = {
         id: userRow.id,
@@ -616,7 +621,7 @@ export class SessionAgentDO {
       return ownerDetails.modelPreferences;
     }
     try {
-      const orgSettings = await getOrgSettings(this.env.DB);
+      const orgSettings = await getOrgSettings(this.appDb);
       return orgSettings.modelPreferences;
     } catch (err) {
       console.error('[SessionAgentDO] Failed to fetch org settings for model preferences:', err);
@@ -792,7 +797,7 @@ export class SessionAgentDO {
     // Cache user details for author attribution (only fetch if not already cached)
     if (!this.userDetailsCache.has(userId)) {
       try {
-        const user = await getUserById(this.env.DB, userId);
+        const user = await getUserById(this.appDb, userId);
         if (user) {
           this.userDetailsCache.set(userId, {
             id: user.id,
@@ -2367,7 +2372,7 @@ export class SessionAgentDO {
           // Persist to D1 so the settings typeahead works without a running session
           const userId = this.getStateValue('userId');
           if (userId) {
-            updateUserDiscoveredModels(this.env.DB, userId, JSON.stringify(msg.models))
+            updateUserDiscoveredModels(this.appDb, userId, JSON.stringify(msg.models))
               .catch((err: unknown) => console.error('[SessionAgentDO] Failed to cache models to D1:', err));
           }
         }
@@ -2458,7 +2463,7 @@ export class SessionAgentDO {
           if (msg.commitCount !== undefined) gitUpdates.commitCount = msg.commitCount;
 
           if (Object.keys(gitUpdates).length > 0) {
-            updateSessionGitState(this.env.DB, sessionId, gitUpdates as any).catch((err) =>
+            updateSessionGitState(this.appDb, sessionId, gitUpdates as any).catch((err) =>
               console.error('[SessionAgentDO] Failed to update git state in D1:', err),
             );
           }
@@ -2478,7 +2483,7 @@ export class SessionAgentDO {
         // Runner reports a PR was created
         const sessionIdPr = this.getStateValue('sessionId');
         if (sessionIdPr && msg.number) {
-          updateSessionGitState(this.env.DB, sessionIdPr, {
+          updateSessionGitState(this.appDb, sessionIdPr, {
             prNumber: msg.number,
             prTitle: msg.title,
             prUrl: msg.url,
@@ -2507,7 +2512,7 @@ export class SessionAgentDO {
         const filesChanged = (msg as any).files as Array<{ path: string; status: string; additions?: number; deletions?: number }> | undefined;
         if (sessionIdFc && Array.isArray(filesChanged)) {
           for (const file of filesChanged) {
-            upsertSessionFileChanged(this.env.DB, sessionIdFc, {
+            upsertSessionFileChanged(this.appDb, sessionIdFc, {
               filePath: file.path,
               status: file.status,
               additions: file.additions,
@@ -2540,7 +2545,7 @@ export class SessionAgentDO {
         const newTitle = msg.title || msg.content;
         if (sessionIdTitle && newTitle) {
           this.setStateValue('title', newTitle);
-          updateSessionTitle(this.env.DB, sessionIdTitle, newTitle).catch((err) =>
+          updateSessionTitle(this.appDb, sessionIdTitle, newTitle).catch((err) =>
             console.error('[SessionAgentDO] Failed to update session title:', err),
           );
         }
@@ -2809,7 +2814,7 @@ export class SessionAgentDO {
       const parentSpawnRequest = JSON.parse(spawnRequestStr);
 
       // Query parent's git state to use as defaults for the child
-      const parentGitState = await getSessionGitState(this.env.DB, parentSessionId);
+      const parentGitState = await getSessionGitState(this.appDb, parentSessionId);
 
       // Merge: explicit params override parent defaults
       const mergedRepoUrl = params.repoUrl || parentGitState?.sourceRepoUrl || undefined;
@@ -2827,7 +2832,7 @@ export class SessionAgentDO {
         .join('');
 
       // Create child session in D1
-      await createSession(this.env.DB, {
+      await createSession(this.appDb, {
         id: childSessionId,
         userId,
         workspace: params.workspace,
@@ -2844,7 +2849,7 @@ export class SessionAgentDO {
           if (match) derivedRepoFullName = match[1];
         }
 
-        await createSessionGitState(this.env.DB, {
+        await createSessionGitState(this.appDb, {
           sessionId: childSessionId,
           sourceType: (mergedSourceType as any) || 'branch',
           sourceRepoUrl: mergedRepoUrl,
@@ -2903,7 +2908,7 @@ export class SessionAgentDO {
         // Inject git user identity if missing
         if (!childSpawnRequest.envVars.GIT_USER_NAME || !childSpawnRequest.envVars.GIT_USER_EMAIL) {
           try {
-            const userRow = await getUserById(this.env.DB, userId);
+            const userRow = await getUserById(this.appDb, userId);
             if (userRow) {
               if (!childSpawnRequest.envVars.GIT_USER_NAME) {
                 childSpawnRequest.envVars.GIT_USER_NAME = userRow.gitName || userRow.name || userRow.githubUsername || 'Agent Ops User';
@@ -2960,7 +2965,7 @@ export class SessionAgentDO {
       const userId = this.getStateValue('userId')!;
 
       // Verify target session belongs to the same user
-      const targetSession = await getSession(this.env.DB, targetSessionId);
+      const targetSession = await getSession(this.appDb, targetSessionId);
       if (!targetSession || targetSession.userId !== userId) {
         this.sendToRunner({ type: 'session-message-result', requestId, error: 'Session not found or access denied' });
         return;
@@ -2998,7 +3003,7 @@ export class SessionAgentDO {
       const userId = this.getStateValue('userId')!;
 
       // Verify target session belongs to the same user
-      const targetSession = await getSession(this.env.DB, targetSessionId);
+      const targetSession = await getSession(this.appDb, targetSessionId);
       if (!targetSession || targetSession.userId !== userId) {
         this.sendToRunner({ type: 'session-messages-result', requestId, error: 'Session not found or access denied' });
         return;
@@ -3031,7 +3036,7 @@ export class SessionAgentDO {
       const userId = this.getStateValue('userId')!;
 
       // Verify target session belongs to the same user
-      const targetSession = await getSession(this.env.DB, targetSessionId);
+      const targetSession = await getSession(this.appDb, targetSessionId);
       if (!targetSession || targetSession.userId !== userId) {
         this.sendToRunner({ type: 'forward-messages-result', requestId, error: 'Session not found or access denied' });
         return;
@@ -3124,7 +3129,7 @@ export class SessionAgentDO {
       const userId = this.getStateValue('userId')!;
 
       // Verify the child belongs to this parent session
-      const childSession = await getSession(this.env.DB, childSessionId);
+      const childSession = await getSession(this.appDb, childSessionId);
       if (!childSession || childSession.userId !== userId) {
         this.sendToRunner({ type: 'terminate-child-result', requestId, error: 'Child session not found or access denied' });
         return;
@@ -3177,7 +3182,7 @@ export class SessionAgentDO {
 
       // Boost relevance for accessed memories
       for (const mem of memories) {
-        boostMemoryRelevance(this.env.DB, mem.id).catch(() => {});
+        boostMemoryRelevance(this.appDb, mem.id).catch(() => {});
       }
 
       this.sendToRunner({ type: 'memory-read-result', requestId, memories } as any);
@@ -3261,7 +3266,7 @@ export class SessionAgentDO {
   private async handleWorkflowList(requestId: string) {
     try {
       const userId = this.getStateValue('userId')!;
-      const result = await listWorkflows(this.env.DB, userId);
+      const result = await listWorkflows(this.appDb, userId);
 
       const workflows = (result.results || []).map((row) => {
         let data: Record<string, unknown> = {};
@@ -3323,7 +3328,7 @@ export class SessionAgentDO {
       const version = (params.version || '1.0.0').trim() || '1.0.0';
       const now = new Date().toISOString();
 
-      await upsertWorkflow(this.env.DB, {
+      await upsertWorkflow(this.appDb, {
         id: workflowId,
         userId,
         slug,
@@ -3393,7 +3398,7 @@ export class SessionAgentDO {
         return;
       }
 
-      const workflow = await getWorkflowByIdOrSlug(this.env.DB, userId, workflowLookupId) as {
+      const workflow = await getWorkflowByIdOrSlug(this.appDb, userId, workflowLookupId) as {
         id: string;
         name: string;
         version: string | null;
@@ -3405,7 +3410,7 @@ export class SessionAgentDO {
         return;
       }
 
-      const concurrency = await checkWorkflowConcurrency(this.env.DB, userId);
+      const concurrency = await checkWorkflowConcurrency(this.appDb, userId);
       if (!concurrency.allowed) {
         this.sendToRunner({
           type: 'workflow-run-result',
@@ -3446,7 +3451,7 @@ export class SessionAgentDO {
       const ref = repoContext?.ref?.trim() || undefined;
       const workerOrigin = this.deriveWorkerOriginFromSpawnRequest();
       const sourceRepoFullName = this.deriveRepoFullName(repoUrl, repoContext?.sourceRepoFullName);
-      const sessionId = await createWorkflowSession(this.env.DB, {
+      const sessionId = await createWorkflowSession(this.appDb, {
         userId,
         workflowId: workflow.id,
         executionId,
@@ -3516,7 +3521,7 @@ export class SessionAgentDO {
 
       let workflowFilterId: string | null = null;
       if (workflowId) {
-        const workflow = await getWorkflowOwnerCheck(this.env.DB, userId, workflowId);
+        const workflow = await getWorkflowOwnerCheck(this.appDb, userId, workflowId);
         if (!workflow) {
           this.sendToRunner({ type: 'workflow-executions-result', requestId, executions: [] } as any);
           return;
@@ -3583,7 +3588,7 @@ export class SessionAgentDO {
   private async resolveWorkflowIdForUser(userId: string, workflowIdOrSlug?: string | null): Promise<string | null> {
     const lookup = (workflowIdOrSlug || '').trim();
     if (!lookup) return null;
-    const row = await getWorkflowOwnerCheck(this.env.DB, userId, lookup);
+    const row = await getWorkflowOwnerCheck(this.appDb, userId, lookup);
     return row?.id || null;
   }
 
@@ -3596,7 +3601,7 @@ export class SessionAgentDO {
         return;
       }
 
-      const existing = await getWorkflowByIdOrSlug(this.env.DB, userId, workflowIdOrSlug) as Record<string, unknown> | null;
+      const existing = await getWorkflowByIdOrSlug(this.appDb, userId, workflowIdOrSlug) as Record<string, unknown> | null;
 
       if (!existing) {
         this.sendToRunner({ type: 'workflow-api-result', requestId, error: `Workflow not found: ${workflowIdOrSlug}` } as any);
@@ -3609,8 +3614,8 @@ export class SessionAgentDO {
       }
 
       if (action === 'delete') {
-        await deleteWorkflowTriggers(this.env.DB, existing.id as string, userId);
-        await deleteWorkflowById(this.env.DB, existing.id as string, userId);
+        await deleteWorkflowTriggers(this.appDb, existing.id as string, userId);
+        await deleteWorkflowById(this.appDb, existing.id as string, userId);
         this.sendToRunner({ type: 'workflow-api-result', requestId, data: { success: true } } as any);
         return;
       }
@@ -3703,7 +3708,7 @@ export class SessionAgentDO {
       values.push(existing.id);
 
       await updateWorkflow(this.env.DB, existing.id as string, updates, values);
-      const updated = await getWorkflowById(this.env.DB, existing.id as string) as Record<string, unknown> | null;
+      const updated = await getWorkflowById(this.appDb, existing.id as string) as Record<string, unknown> | null;
 
       this.sendToRunner({
         type: 'workflow-api-result',
@@ -3770,7 +3775,7 @@ export class SessionAgentDO {
           this.sendToRunner({ type: 'trigger-api-result', requestId, error: 'triggerId is required' } as any);
           return;
         }
-        const result = await deleteTrigger(this.env.DB, triggerId, userId);
+        const result = await deleteTrigger(this.appDb, triggerId, userId);
         if ((result.meta?.changes || 0) === 0) {
           this.sendToRunner({ type: 'trigger-api-result', requestId, error: `Trigger not found: ${triggerId}` } as any);
           return;
@@ -3902,7 +3907,7 @@ export class SessionAgentDO {
           ? (typeof existing?.id === 'string' ? existing.id : triggerId)
           : crypto.randomUUID();
         if (shouldUpdate) {
-          await updateTriggerFull(this.env.DB, targetTriggerId, userId, {
+          await updateTriggerFull(this.appDb, targetTriggerId, userId, {
             workflowId,
             name: nextName,
             enabled: nextEnabled,
@@ -3912,7 +3917,7 @@ export class SessionAgentDO {
             now,
           });
         } else {
-          await createTrigger(this.env.DB, {
+          await createTrigger(this.appDb, {
             id: targetTriggerId,
             userId,
             workflowId,
@@ -3986,7 +3991,7 @@ export class SessionAgentDO {
           });
           const now = new Date().toISOString();
           if (dispatch.dispatched) {
-            await updateTriggerLastRun(this.env.DB, triggerId, now);
+            await updateTriggerLastRun(this.appDb, triggerId, now);
           }
           this.sendToRunner({
             type: 'trigger-api-result',
@@ -4015,7 +4020,7 @@ export class SessionAgentDO {
           return;
         }
 
-        const concurrency = await checkWorkflowConcurrency(this.env.DB, userId);
+        const concurrency = await checkWorkflowConcurrency(this.appDb, userId);
         if (!concurrency.allowed) {
           this.sendToRunner({
             type: 'trigger-api-result',
@@ -4079,7 +4084,7 @@ export class SessionAgentDO {
           repoUrl,
           typeof payload?.sourceRepoFullName === 'string' ? payload.sourceRepoFullName : undefined,
         );
-        const sessionId = await createWorkflowSession(this.env.DB, {
+        const sessionId = await createWorkflowSession(this.appDb, {
           userId,
           workflowId: row.wf_id,
           executionId,
@@ -4107,7 +4112,7 @@ export class SessionAgentDO {
           initiatorUserId: userId,
         });
 
-        await updateTriggerLastRun(this.env.DB, triggerId, now);
+        await updateTriggerLastRun(this.appDb, triggerId, now);
 
         const dispatched = await enqueueWorkflowExecution(this.env, {
           executionId,
@@ -4189,7 +4194,7 @@ export class SessionAgentDO {
       }
 
       if (action === 'steps') {
-        const execution = await getExecutionForAuth(this.env.DB, executionId);
+        const execution = await getExecutionForAuth(this.appDb, executionId);
 
         if (!execution || execution.user_id !== userId) {
           this.sendToRunner({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
@@ -4287,7 +4292,7 @@ export class SessionAgentDO {
           return;
         }
 
-        const execution = await getExecutionOwnerAndStatus(this.env.DB, executionId) as { user_id: string; status: string } | null;
+        const execution = await getExecutionOwnerAndStatus(this.appDb, executionId) as { user_id: string; status: string } | null;
         if (!execution || execution.user_id !== userId) {
           this.sendToRunner({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
           return;
@@ -4323,7 +4328,7 @@ export class SessionAgentDO {
 
       if (action === 'cancel') {
         const reason = typeof payload?.reason === 'string' ? payload.reason : undefined;
-        const execution = await getExecutionOwnerAndStatus(this.env.DB, executionId) as { user_id: string; status: string } | null;
+        const execution = await getExecutionOwnerAndStatus(this.appDb, executionId) as { user_id: string; status: string } | null;
         if (!execution || execution.user_id !== userId) {
           this.sendToRunner({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
           return;
@@ -4414,7 +4419,7 @@ export class SessionAgentDO {
       }
     }
 
-    await completeExecutionFull(this.env.DB, executionId, {
+    await completeExecutionFull(this.appDb, executionId, {
       status: nextStatus,
       outputs: outputsJson,
       steps: stepsJson,
@@ -4454,14 +4459,14 @@ export class SessionAgentDO {
       }
     } else {
       try {
-        await markWorkflowApprovalNotificationsRead(this.env.DB, execution.user_id, executionId);
+        await markWorkflowApprovalNotificationsRead(this.appDb, execution.user_id, executionId);
       } catch (notifyError) {
         console.error('[SessionAgentDO] Failed to clear workflow approval notifications:', notifyError);
       }
     }
 
     if (nextStatus !== 'waiting_approval' && currentSessionId) {
-      const sessionRow = await getSession(this.env.DB, currentSessionId);
+      const sessionRow = await getSession(this.appDb, currentSessionId);
 
       if (sessionRow?.purpose === 'workflow') {
         this.ctx.waitUntil(this.handleStop(`workflow_execution_${nextStatus}`));
@@ -4853,12 +4858,12 @@ export class SessionAgentDO {
       const sessionId = this.getStateValue('sessionId')!;
 
       let bindings = userId
-        ? await listUserChannelBindings(this.env.DB, userId)
+        ? await listUserChannelBindings(this.appDb, userId)
         : [];
 
       // Fallback to session-scoped bindings if user-level bindings are unavailable.
       if (bindings.length === 0) {
-        bindings = await getSessionChannelBindings(this.env.DB, sessionId);
+        bindings = await getSessionChannelBindings(this.appDb, sessionId);
       }
 
       // Deduplicate by destination while preserving recency ordering.
@@ -4992,7 +4997,7 @@ export class SessionAgentDO {
   private async handleGetSessionStatus(requestId: string, targetSessionId: string) {
     try {
       const userId = this.getStateValue('userId')!;
-      const session = await getSession(this.env.DB, targetSessionId);
+      const session = await getSession(this.appDb, targetSessionId);
       if (!session || session.userId !== userId) {
         this.sendToRunner({ type: 'get-session-status-result', requestId, error: 'Session not found or access denied' } as any);
         return;
@@ -5285,7 +5290,7 @@ export class SessionAgentDO {
     if (body.sandboxId && body.tunnelUrls) {
       this.setStateValue('status', 'running');
       this.markRunningStarted();
-      updateSessionStatus(this.env.DB, body.sessionId, 'running', body.sandboxId).catch((err) =>
+      updateSessionStatus(this.appDb, body.sessionId, 'running', body.sandboxId).catch((err) =>
         console.error('[SessionAgentDO] Failed to sync status to D1:', err),
       );
       this.broadcastToClients({
@@ -5367,7 +5372,7 @@ export class SessionAgentDO {
       this.markRunningStarted();
 
       // Sync status to D1 so sessions list shows correct status
-      updateSessionStatus(this.env.DB, sessionId!, 'running', result.sandboxId).catch((err) =>
+      updateSessionStatus(this.appDb, sessionId!, 'running', result.sandboxId).catch((err) =>
         console.error('[SessionAgentDO] Failed to sync status to D1:', err),
       );
 
@@ -5388,7 +5393,7 @@ export class SessionAgentDO {
       const errorText = `Failed to create sandbox: ${err instanceof Error ? err.message : String(err)}`;
       this.setStateValue('status', 'error');
       if (sessionId) {
-        updateSessionStatus(this.env.DB, sessionId, 'error', undefined, errorText).catch((e) =>
+        updateSessionStatus(this.appDb, sessionId, 'error', undefined, errorText).catch((e) =>
           console.error('[SessionAgentDO] Failed to sync error status to D1:', e),
         );
       }
@@ -5514,7 +5519,7 @@ export class SessionAgentDO {
 
     // Sync status to D1
     if (sessionId) {
-      updateSessionStatus(this.env.DB, sessionId, 'terminated').catch((e) =>
+      updateSessionStatus(this.appDb, sessionId, 'terminated').catch((e) =>
         console.error('[SessionAgentDO] Failed to sync terminated status to D1:', e),
       );
     }
@@ -5647,7 +5652,7 @@ export class SessionAgentDO {
     try {
       const sessionId = this.getStateValue('sessionId');
       if (!sessionId) return;
-      const session = await getSession(this.env.DB, sessionId);
+      const session = await getSession(this.appDb, sessionId);
       const parentSessionId = session?.parentSessionId;
       if (!parentSessionId) return;
       const childTitle = session?.title || session?.workspace || `Child ${sessionId.slice(0, 8)}`;
@@ -6147,7 +6152,7 @@ export class SessionAgentDO {
     }
 
     const sessionId = this.getStateValue('sessionId');
-    const gitState = sessionId ? await getSessionGitState(this.env.DB, sessionId) : null;
+    const gitState = sessionId ? await getSessionGitState(this.appDb, sessionId) : null;
     const repoUrl = gitState?.sourceRepoUrl;
     if (!repoUrl) {
       throw new Error('No repository URL found for this session');
@@ -6180,7 +6185,7 @@ export class SessionAgentDO {
       }
 
       // Get repo URL from git state
-      const gitState = sessionId ? await getSessionGitState(this.env.DB, sessionId) : null;
+      const gitState = sessionId ? await getSessionGitState(this.appDb, sessionId) : null;
       const repoUrl = gitState?.sourceRepoUrl;
       if (!repoUrl) {
         throw new Error('No repository URL found for this session');
@@ -6236,7 +6241,7 @@ export class SessionAgentDO {
 
       // Update D1 git state with PR info
       if (sessionId) {
-        updateSessionGitState(this.env.DB, sessionId, {
+        updateSessionGitState(this.appDb, sessionId, {
           branch: msg.branch,
           baseBranch,
           prNumber: prData.number,
@@ -6307,7 +6312,7 @@ export class SessionAgentDO {
       }
 
       // Get repo URL from git state
-      const gitState = sessionId ? await getSessionGitState(this.env.DB, sessionId) : null;
+      const gitState = sessionId ? await getSessionGitState(this.appDb, sessionId) : null;
       const repoUrl = gitState?.sourceRepoUrl;
       if (!repoUrl) {
         throw new Error('No repository URL found for this session');
@@ -6364,7 +6369,7 @@ export class SessionAgentDO {
           prTitle: prData.title,
           prState: prData.state,
         };
-        updateSessionGitState(this.env.DB, sessionId, gitUpdates as any).catch((err) =>
+        updateSessionGitState(this.appDb, sessionId, gitUpdates as any).catch((err) =>
           console.error('[SessionAgentDO] Failed to update git state after PR update:', err),
         );
       }
@@ -6462,7 +6467,7 @@ export class SessionAgentDO {
         data: { status: 'hibernating' },
       });
       if (sessionId) {
-        updateSessionStatus(this.env.DB, sessionId, 'hibernating').catch((e) =>
+        updateSessionStatus(this.appDb, sessionId, 'hibernating').catch((e) =>
           console.error('[SessionAgentDO] Failed to sync hibernating status to D1:', e),
         );
       }
@@ -6499,7 +6504,7 @@ export class SessionAgentDO {
           data: { status: 'terminated', sandboxRunning: false },
         });
         if (sessionId) {
-          updateSessionStatus(this.env.DB, sessionId, 'terminated').catch((e) =>
+          updateSessionStatus(this.appDb, sessionId, 'terminated').catch((e) =>
             console.error('[SessionAgentDO] Failed to sync terminated status to D1:', e),
           );
         }
@@ -6534,7 +6539,7 @@ export class SessionAgentDO {
       });
 
       if (sessionId) {
-        updateSessionStatus(this.env.DB, sessionId, 'hibernated').catch((e) =>
+        updateSessionStatus(this.appDb, sessionId, 'hibernated').catch((e) =>
           console.error('[SessionAgentDO] Failed to sync hibernated status to D1:', e),
         );
       }
@@ -6561,7 +6566,7 @@ export class SessionAgentDO {
       const errorText = `Failed to hibernate: ${err instanceof Error ? err.message : String(err)}`;
       this.setStateValue('status', 'error');
       if (sessionId) {
-        updateSessionStatus(this.env.DB, sessionId, 'error', undefined, errorText).catch((e) =>
+        updateSessionStatus(this.appDb, sessionId, 'error', undefined, errorText).catch((e) =>
           console.error('[SessionAgentDO] Failed to sync error status to D1:', e),
         );
       }
@@ -6601,7 +6606,7 @@ export class SessionAgentDO {
       console.error(`[SessionAgentDO] ${errorText}`);
       this.setStateValue('status', 'error');
       if (sessionId) {
-        updateSessionStatus(this.env.DB, sessionId, 'error', undefined, errorText).catch((e) =>
+        updateSessionStatus(this.appDb, sessionId, 'error', undefined, errorText).catch((e) =>
           console.error('[SessionAgentDO] Failed to sync error status to D1:', e),
         );
       }
@@ -6617,7 +6622,7 @@ export class SessionAgentDO {
         data: { status: 'restoring' },
       });
       if (sessionId) {
-        updateSessionStatus(this.env.DB, sessionId, 'restoring').catch((e) =>
+        updateSessionStatus(this.appDb, sessionId, 'restoring').catch((e) =>
           console.error('[SessionAgentDO] Failed to sync restoring status to D1:', e),
         );
       }
@@ -6654,7 +6659,7 @@ export class SessionAgentDO {
       this.rescheduleIdleAlarm();
 
       if (sessionId) {
-        updateSessionStatus(this.env.DB, sessionId, 'running', result.sandboxId).catch((e) =>
+        updateSessionStatus(this.appDb, sessionId, 'running', result.sandboxId).catch((e) =>
           console.error('[SessionAgentDO] Failed to sync running status to D1:', e),
         );
       }
@@ -6675,7 +6680,7 @@ export class SessionAgentDO {
       const errorText = `Failed to restore session: ${err instanceof Error ? err.message : String(err)}`;
       this.setStateValue('status', 'error');
       if (sessionId) {
-        updateSessionStatus(this.env.DB, sessionId, 'error', undefined, errorText).catch((e) =>
+        updateSessionStatus(this.appDb, sessionId, 'error', undefined, errorText).catch((e) =>
           console.error('[SessionAgentDO] Failed to sync error status to D1:', e),
         );
       }
@@ -6906,7 +6911,7 @@ export class SessionAgentDO {
     const uncachedIds = userIds.filter((id) => !this.userDetailsCache.has(id));
     if (uncachedIds.length > 0) {
       try {
-        const users = await getUsersByIds(this.env.DB, uncachedIds);
+        const users = await getUsersByIds(this.appDb, uncachedIds);
         for (const user of users) {
           this.userDetailsCache.set(user.id, {
             id: user.id,
@@ -6984,7 +6989,7 @@ export class SessionAgentDO {
       );
       if (!webEnabled) return;
 
-      await createMailboxMessage(this.env.DB, {
+      await createMailboxMessage(this.appDb, {
         fromSessionId: this.getStateValue('sessionId') || undefined,
         toUserId,
         messageType,
@@ -7022,7 +7027,7 @@ export class SessionAgentDO {
     const elapsedSeconds = Math.floor((Date.now() - startMs) / 1000);
     if (elapsedSeconds > 0) {
       try {
-        await addActiveSeconds(this.env.DB, sessionId, elapsedSeconds);
+        await addActiveSeconds(this.appDb, sessionId, elapsedSeconds);
       } catch (err) {
         console.error('[SessionAgentDO] Failed to flush active seconds:', err);
       }
@@ -7057,7 +7062,7 @@ export class SessionAgentDO {
       const messageCount = (msgRow?.count as number) ?? 0;
       const toolCallCount = (toolRow?.count as number) ?? 0;
 
-      await updateSessionMetrics(this.env.DB, sessionId, { messageCount, toolCallCount });
+      await updateSessionMetrics(this.appDb, sessionId, { messageCount, toolCallCount });
 
       // Also flush active seconds if currently running
       const status = this.getStateValue('status');
@@ -7150,7 +7155,7 @@ export class SessionAgentDO {
       // Resolve @handle to userId if provided
       let toUserId = msg.toUserId;
       if (msg.toHandle && !toUserId && !msg.toSessionId) {
-        const identity = await getOrchestratorIdentityByHandle(this.env.DB, msg.toHandle);
+        const identity = await getOrchestratorIdentityByHandle(this.appDb, msg.toHandle);
         if (!identity) {
           this.sendToRunner({ type: 'mailbox-send-result', requestId, error: `Handle @${msg.toHandle} not found` } as any);
           return;
@@ -7158,7 +7163,7 @@ export class SessionAgentDO {
         toUserId = identity.userId;
       }
 
-      const message = await createMailboxMessage(this.env.DB, {
+      const message = await createMailboxMessage(this.appDb, {
         fromSessionId: sessionId || undefined,
         fromUserId: userId || undefined,
         toSessionId: msg.toSessionId,
@@ -7192,7 +7197,7 @@ export class SessionAgentDO {
 
       // Auto-mark as read
       if (messages.length > 0) {
-        await markSessionMailboxRead(this.env.DB, sessionId);
+        await markSessionMailboxRead(this.appDb, sessionId);
       }
 
       this.sendToRunner({ type: 'mailbox-check-result', requestId, messages } as any);
@@ -7212,12 +7217,12 @@ export class SessionAgentDO {
       // Determine orchestrator session ID: own session for orchestrators,
       // or look up parent for child sessions
       let orchestratorSessionId = sessionId;
-      const session = await getSession(this.env.DB, sessionId);
+      const session = await getSession(this.appDb, sessionId);
       if (session?.parentSessionId) {
         orchestratorSessionId = session.parentSessionId;
       }
 
-      const task = await createSessionTask(this.env.DB, {
+      const task = await createSessionTask(this.appDb, {
         orchestratorSessionId,
         sessionId: msg.sessionId,
         title: msg.title!,
@@ -7241,7 +7246,7 @@ export class SessionAgentDO {
       }
 
       let orchestratorSessionId = sessionId;
-      const session = await getSession(this.env.DB, sessionId);
+      const session = await getSession(this.appDb, sessionId);
       if (session?.parentSessionId) {
         orchestratorSessionId = session.parentSessionId;
       }

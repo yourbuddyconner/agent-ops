@@ -1,4 +1,3 @@
-import type { D1Database } from '@cloudflare/workers-types';
 import { encryptString } from '../lib/crypto.js';
 import {
   setOrgApiKey,
@@ -8,12 +7,13 @@ import {
   deleteUser,
   upsertCustomProvider,
 } from '../lib/db.js';
+import type { AppDb } from '../lib/drizzle.js';
 import type { Invite, UserRole } from '@agent-ops/shared';
 
 // ─── LLM Key Management ────────────────────────────────────────────────────
 
 export async function setOrgLlmKey(
-  db: D1Database,
+  db: AppDb,
   encryptionKey: string,
   params: { provider: string; key: string; setBy: string },
 ): Promise<void> {
@@ -29,7 +29,7 @@ export async function setOrgLlmKey(
 // ─── Invite Management ──────────────────────────────────────────────────────
 
 export async function createInvite(
-  db: D1Database,
+  db: AppDb,
   params: { email?: string; role?: UserRole; invitedBy: string },
 ): Promise<Invite> {
   const bytes = new Uint8Array(9);
@@ -58,7 +58,7 @@ export type UpdateRoleResult =
   | { ok: false; error: 'last_admin' };
 
 export async function updateUserRoleSafe(
-  db: D1Database,
+  db: AppDb,
   userId: string,
   role: UserRole,
 ): Promise<UpdateRoleResult> {
@@ -82,7 +82,7 @@ export type DeleteUserResult =
   | { ok: false; error: 'self_delete' | 'last_admin' };
 
 export async function deleteUserSafe(
-  db: D1Database,
+  db: AppDb,
   userId: string,
   requesterId: string,
 ): Promise<DeleteUserResult> {
@@ -106,7 +106,7 @@ export async function deleteUserSafe(
 // ─── Custom Provider Management ─────────────────────────────────────────────
 
 export async function upsertCustomProviderWithEncryption(
-  db: D1Database,
+  db: AppDb,
   encryptionKey: string,
   params: {
     providerId: string;

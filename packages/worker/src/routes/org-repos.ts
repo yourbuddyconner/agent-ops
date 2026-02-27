@@ -25,7 +25,7 @@ orgReposAdminRouter.post('/', zValidator('json', createRepoSchema), async (c) =>
   const body = c.req.valid('json');
   const id = crypto.randomUUID();
 
-  const repo = await db.createOrgRepository(c.env.DB, {
+  const repo = await db.createOrgRepository(c.get('db'), {
     id,
     fullName: body.fullName,
     description: body.description,
@@ -51,12 +51,12 @@ orgReposAdminRouter.put('/:id', zValidator('json', updateRepoSchema), async (c) 
   const { id } = c.req.param();
   const body = c.req.valid('json');
 
-  const repo = await db.getOrgRepository(c.env.DB, id);
+  const repo = await db.getOrgRepository(c.get('db'), id);
   if (!repo) {
     return c.json({ error: 'Repository not found' }, 404);
   }
 
-  await db.updateOrgRepository(c.env.DB, id, body);
+  await db.updateOrgRepository(c.get('db'), id, body);
   return c.json({ ok: true });
 });
 
@@ -66,7 +66,7 @@ orgReposAdminRouter.put('/:id', zValidator('json', updateRepoSchema), async (c) 
  */
 orgReposAdminRouter.delete('/:id', async (c) => {
   const { id } = c.req.param();
-  await db.deleteOrgRepository(c.env.DB, id);
+  await db.deleteOrgRepository(c.get('db'), id);
   return c.json({ ok: true });
 });
 
@@ -82,12 +82,12 @@ orgReposAdminRouter.put('/:id/persona-default', zValidator('json', setPersonaDef
   const { id } = c.req.param();
   const { personaId } = c.req.valid('json');
 
-  const repo = await db.getOrgRepository(c.env.DB, id);
+  const repo = await db.getOrgRepository(c.get('db'), id);
   if (!repo) {
     return c.json({ error: 'Repository not found' }, 404);
   }
 
-  await db.setRepoPersonaDefault(c.env.DB, id, personaId);
+  await db.setRepoPersonaDefault(c.get('db'), id, personaId);
   return c.json({ ok: true });
 });
 
@@ -97,7 +97,7 @@ orgReposAdminRouter.put('/:id/persona-default', zValidator('json', setPersonaDef
  */
 orgReposAdminRouter.delete('/:id/persona-default', async (c) => {
   const { id } = c.req.param();
-  await db.deleteRepoPersonaDefault(c.env.DB, id);
+  await db.deleteRepoPersonaDefault(c.get('db'), id);
   return c.json({ ok: true });
 });
 

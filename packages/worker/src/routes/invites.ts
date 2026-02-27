@@ -12,7 +12,7 @@ export const invitesRouter = new Hono<{ Bindings: Env; Variables: Variables }>()
 invitesRouter.get('/:code', async (c) => {
   const code = c.req.param('code');
 
-  const invite = await getInviteByCodeAny(c.env.DB, code);
+  const invite = await getInviteByCodeAny(c.get('db'), code);
   if (!invite) {
     throw new NotFoundError('Invite not found');
   }
@@ -20,7 +20,7 @@ invitesRouter.get('/:code', async (c) => {
   const isExpired = new Date(invite.expiresAt) < new Date();
   const isAccepted = !!invite.acceptedAt;
 
-  const orgSettings = await getOrgSettings(c.env.DB);
+  const orgSettings = await getOrgSettings(c.get('db'));
 
   return c.json({
     code: invite.code,
@@ -40,13 +40,13 @@ invitesApiRouter.post('/:code/accept', async (c) => {
   const code = c.req.param('code');
   const user = c.get('user');
 
-  const invite = await getInviteByCode(c.env.DB, code);
+  const invite = await getInviteByCode(c.get('db'), code);
   if (!invite) {
     throw new NotFoundError('Invite not found or already used');
   }
 
-  await markInviteAccepted(c.env.DB, invite.id, user.id);
-  await updateUserRole(c.env.DB, user.id, invite.role);
+  await markInviteAccepted(c.get('db'), invite.id, user.id);
+  await updateUserRole(c.get('db'), user.id, invite.role);
 
   return c.json({ ok: true, role: invite.role });
 });

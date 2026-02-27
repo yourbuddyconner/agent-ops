@@ -1,6 +1,5 @@
-import type { D1Database } from '@cloudflare/workers-types';
+import type { AppDb } from '../drizzle.js';
 import { eq, and, sql } from 'drizzle-orm';
-import { getDb } from '../drizzle.js';
 import { credentials } from '../schema/index.js';
 
 export interface CredentialRow {
@@ -16,12 +15,11 @@ export interface CredentialRow {
 }
 
 export async function getCredentialRow(
-  db: D1Database,
+  db: AppDb,
   userId: string,
   provider: string,
 ): Promise<CredentialRow | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+  const row = await db
     .select()
     .from(credentials)
     .where(and(eq(credentials.userId, userId), eq(credentials.provider, provider)))
@@ -30,7 +28,7 @@ export async function getCredentialRow(
 }
 
 export async function upsertCredential(
-  db: D1Database,
+  db: AppDb,
   data: {
     id: string;
     userId: string;
@@ -41,8 +39,7 @@ export async function upsertCredential(
     expiresAt?: string | null;
   },
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .insert(credentials)
     .values({
       id: data.id,
@@ -66,18 +63,17 @@ export async function upsertCredential(
 }
 
 export async function deleteCredential(
-  db: D1Database,
+  db: AppDb,
   userId: string,
   provider: string,
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .delete(credentials)
     .where(and(eq(credentials.userId, userId), eq(credentials.provider, provider)));
 }
 
 export async function listCredentialsByUser(
-  db: D1Database,
+  db: AppDb,
   userId: string,
 ): Promise<Array<{
   provider: string;
@@ -87,8 +83,7 @@ export async function listCredentialsByUser(
   createdAt: string;
   updatedAt: string;
 }>> {
-  const drizzle = getDb(db);
-  return drizzle
+  return db
     .select({
       provider: credentials.provider,
       credentialType: credentials.credentialType,
@@ -102,12 +97,11 @@ export async function listCredentialsByUser(
 }
 
 export async function hasCredential(
-  db: D1Database,
+  db: AppDb,
   userId: string,
   provider: string,
 ): Promise<boolean> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+  const row = await db
     .select({ id: credentials.id })
     .from(credentials)
     .where(and(eq(credentials.userId, userId), eq(credentials.provider, provider)))

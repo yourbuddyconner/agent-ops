@@ -119,7 +119,7 @@ dashboardRouter.get('/adoption', async (c) => {
   const periodStr = c.req.query('period') || '30';
   const period = Math.min(Math.max(parseInt(periodStr), 1), 365);
 
-  const metrics = await db.getAdoptionMetrics(c.env.DB, period);
+  const metrics = await db.getAdoptionMetrics(c.get('db'), period);
 
   return c.json(metrics);
 });

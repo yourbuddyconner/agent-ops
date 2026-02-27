@@ -1,6 +1,6 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { eq, and, sql, inArray } from 'drizzle-orm';
-import { getDb } from '../drizzle.js';
+import type { AppDb } from '../drizzle.js';
 import { workflowExecutions, workflowExecutionSteps } from '../schema/index.js';
 
 // ─── Pure Helpers ────────────────────────────────────────────────────────────
@@ -125,9 +125,8 @@ export async function getExecutionWithWorkflowName(
   }>();
 }
 
-export async function getExecutionForAuth(db: D1Database, executionId: string) {
-  const drizzle = getDb(db);
-  return drizzle
+export async function getExecutionForAuth(db: AppDb, executionId: string) {
+  return db
     .select({
       id: workflowExecutions.id,
       user_id: workflowExecutions.userId,
@@ -151,9 +150,8 @@ export async function getExecutionSteps(db: D1Database, executionId: string) {
   `).bind(executionId).all();
 }
 
-export async function getExecutionOwnerAndStatus(db: D1Database, executionId: string) {
-  const drizzle = getDb(db);
-  return drizzle
+export async function getExecutionOwnerAndStatus(db: AppDb, executionId: string) {
+  return db
     .select({ user_id: workflowExecutions.userId, status: workflowExecutions.status })
     .from(workflowExecutions)
     .where(eq(workflowExecutions.id, executionId))
@@ -161,7 +159,7 @@ export async function getExecutionOwnerAndStatus(db: D1Database, executionId: st
 }
 
 export async function completeExecution(
-  db: D1Database,
+  db: AppDb,
   executionId: string,
   params: {
     status: string;
@@ -171,8 +169,7 @@ export async function completeExecution(
     completedAt: string;
   }
 ) {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(workflowExecutions)
     .set({
       status: params.status,
@@ -224,9 +221,8 @@ export async function upsertExecutionStep(
   ).run();
 }
 
-export async function updateExecutionStatus(db: D1Database, executionId: string, status: string) {
-  const drizzle = getDb(db);
-  await drizzle
+export async function updateExecutionStatus(db: AppDb, executionId: string, status: string) {
+  await db
     .update(workflowExecutions)
     .set({ status })
     .where(eq(workflowExecutions.id, executionId));
@@ -288,9 +284,8 @@ export async function checkIdempotencyKey(db: D1Database, workflowId: string, id
 
 // ─── Concurrency (from workflow-runtime.ts) ──────────────────────────────────
 
-export async function countActiveExecutions(db: D1Database, userId: string): Promise<number> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function countActiveExecutions(db: AppDb, userId: string): Promise<number> {
+  const row = await db
     .select({ count: sql<number>`COUNT(*)` })
     .from(workflowExecutions)
     .where(and(
@@ -301,9 +296,8 @@ export async function countActiveExecutions(db: D1Database, userId: string): Pro
   return row?.count ?? 0;
 }
 
-export async function countActiveExecutionsGlobal(db: D1Database): Promise<number> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function countActiveExecutionsGlobal(db: AppDb): Promise<number> {
+  const row = await db
     .select({ count: sql<number>`COUNT(*)` })
     .from(workflowExecutions)
     .where(inArray(workflowExecutions.status, ['pending', 'running', 'waiting_approval']))
@@ -357,37 +351,34 @@ export async function getExecutionWithWorkflow(
 }
 
 export async function updateExecutionRuntimeState(
-  db: D1Database,
+  db: AppDb,
   executionId: string,
   runtimeState: string,
   status: string,
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(workflowExecutions)
     .set({ runtimeState, status })
     .where(eq(workflowExecutions.id, executionId));
 }
 
 export async function resumeExecution(
-  db: D1Database,
+  db: AppDb,
   executionId: string,
   runtimeState: string,
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(workflowExecutions)
     .set({ status: 'running', resumeToken: null, runtimeState, error: null })
     .where(eq(workflowExecutions.id, executionId));
 }
 
 export async function cancelExecutionWithReason(
-  db: D1Database,
+  db: AppDb,
   executionId: string,
   params: { runtimeState: string; reason: string; completedAt: string },
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(workflowExecutions)
     .set({
       status: 'cancelled',
@@ -400,7 +391,7 @@ export async function cancelExecutionWithReason(
 }
 
 export async function completeExecutionFull(
-  db: D1Database,
+  db: AppDb,
   executionId: string,
   params: {
     status: string;
@@ -411,8 +402,7 @@ export async function completeExecutionFull(
     completedAt?: string | null;
   },
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(workflowExecutions)
     .set({
       status: params.status,
@@ -423,4 +413,116 @@ export async function completeExecutionFull(
       completedAt: params.completedAt ?? null,
     })
     .where(eq(workflowExecutions.id, executionId));
+}
+
+// ─── Cron Reconciliation Helpers ────────────────────────────────────────────
+
+export async function getTimedOutApprovals(
+  db: D1Database,
+  cutoff: string,
+): Promise<{ id: string; user_id: string }[]> {
+  const result = await db.prepare(`
+    SELECT id, user_id
+    FROM workflow_executions
+    WHERE status = 'waiting_approval'
+      AND started_at <= ?
+  `).bind(cutoff).all<{ id: string; user_id: string }>();
+  return result.results || [];
+}
+
+export async function finalizeExecution(
+  db: AppDb,
+  executionId: string,
+  params: {
+    status: string;
+    error?: string | null;
+    outputs?: string | null;
+    steps?: string | null;
+    resumeToken?: string | null;
+    completedAt: string | null;
+  },
+): Promise<void> {
+  await db
+    .update(workflowExecutions)
+    .set({
+      status: params.status,
+      error: params.error ?? null,
+      outputs: params.outputs ?? null,
+      steps: params.steps ?? null,
+      resumeToken: params.resumeToken !== undefined ? params.resumeToken ?? null : undefined,
+      completedAt: params.completedAt,
+    })
+    .where(eq(workflowExecutions.id, executionId));
+}
+
+export async function getStaleWorkflowExecutions(db: D1Database): Promise<{
+  id: string;
+  user_id: string;
+  status: string;
+  runtime_state: string | null;
+  session_id: string | null;
+  workflow_id: string | null;
+  workflow_name: string | null;
+  session_status: string;
+}[]> {
+  const result = await db.prepare(`
+    SELECT
+      e.id,
+      e.user_id,
+      e.status,
+      e.runtime_state,
+      e.session_id,
+      e.workflow_id,
+      w.name AS workflow_name,
+      s.status AS session_status
+    FROM workflow_executions e
+    LEFT JOIN workflows w ON w.id = e.workflow_id
+    JOIN sessions s ON s.id = e.session_id
+    WHERE e.status IN ('pending', 'running', 'waiting_approval')
+      AND COALESCE(s.purpose, 'interactive') = 'workflow'
+      AND s.status IN ('terminated', 'error', 'hibernated')
+  `).all();
+  return (result.results || []) as any;
+}
+
+export async function persistStepTrace(
+  db: D1Database,
+  executionId: string,
+  steps: Array<{
+    stepId: string;
+    status: string;
+    attempt?: number;
+    startedAt?: string;
+    completedAt?: string;
+    input?: unknown;
+    output?: unknown;
+    error?: string;
+  }>,
+): Promise<void> {
+  for (const step of steps) {
+    const attempt = step.attempt && step.attempt > 0 ? step.attempt : 1;
+    await db.prepare(`
+      INSERT INTO workflow_execution_steps
+        (id, execution_id, step_id, attempt, status, input_json, output_json, error, started_at, completed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(execution_id, step_id, attempt) DO UPDATE SET
+        status = excluded.status,
+        input_json = COALESCE(excluded.input_json, workflow_execution_steps.input_json),
+        output_json = COALESCE(excluded.output_json, workflow_execution_steps.output_json),
+        error = excluded.error,
+        started_at = COALESCE(excluded.started_at, workflow_execution_steps.started_at),
+        completed_at = COALESCE(excluded.completed_at, workflow_execution_steps.completed_at)
+    `).bind(
+      crypto.randomUUID(),
+      executionId,
+      step.stepId,
+      attempt,
+      step.status,
+      step.input !== undefined ? JSON.stringify(step.input) : null,
+      step.output !== undefined ? JSON.stringify(step.output) : null,
+      step.error || null,
+      step.startedAt || null,
+      step.completedAt || null,
+    ).run();
+  }
 }

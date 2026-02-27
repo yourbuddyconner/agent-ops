@@ -1,14 +1,12 @@
-import type { D1Database } from '@cloudflare/workers-types';
+import type { AppDb } from '../drizzle.js';
 import { eq, and, gt, isNull, sql } from 'drizzle-orm';
-import { getDb } from '../drizzle.js';
 import { authSessions, users, invites } from '../schema/index.js';
 
 export async function createAuthSession(
-  db: D1Database,
+  db: AppDb,
   data: { id: string; userId: string; tokenHash: string; provider: string; expiresAt: string }
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.insert(authSessions).values({
+  await db.insert(authSessions).values({
     id: data.id,
     userId: data.userId,
     tokenHash: data.tokenHash,
@@ -18,11 +16,10 @@ export async function createAuthSession(
 }
 
 export async function getAuthSessionByTokenHash(
-  db: D1Database,
+  db: AppDb,
   tokenHash: string
 ): Promise<{ id: string; email: string } | null> {
-  const drizzle = getDb(db);
-  const result = await drizzle
+  const result = await db
     .select({ id: users.id, email: users.email })
     .from(authSessions)
     .innerJoin(users, eq(authSessions.userId, users.id))
@@ -30,7 +27,7 @@ export async function getAuthSessionByTokenHash(
     .get();
 
   if (result) {
-    await drizzle
+    await db
       .update(authSessions)
       .set({ lastUsedAt: sql`datetime('now')` })
       .where(eq(authSessions.tokenHash, tokenHash));
@@ -39,22 +36,19 @@ export async function getAuthSessionByTokenHash(
   return result || null;
 }
 
-export async function deleteAuthSession(db: D1Database, tokenHash: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.delete(authSessions).where(eq(authSessions.tokenHash, tokenHash));
+export async function deleteAuthSession(db: AppDb, tokenHash: string): Promise<void> {
+  await db.delete(authSessions).where(eq(authSessions.tokenHash, tokenHash));
 }
 
-export async function deleteUserAuthSessions(db: D1Database, userId: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.delete(authSessions).where(eq(authSessions.userId, userId));
+export async function deleteUserAuthSessions(db: AppDb, userId: string): Promise<void> {
+  await db.delete(authSessions).where(eq(authSessions.userId, userId));
 }
 
 export async function getValidInviteByCode(
-  db: D1Database,
+  db: AppDb,
   code: string
 ): Promise<{ id: string } | null> {
-  const drizzle = getDb(db);
-  const result = await drizzle
+  const result = await db
     .select({ id: invites.id })
     .from(invites)
     .where(and(eq(invites.code, code), isNull(invites.acceptedAt), gt(invites.expiresAt, sql`datetime('now')`)))
@@ -63,11 +57,10 @@ export async function getValidInviteByCode(
 }
 
 export async function getValidInviteByEmail(
-  db: D1Database,
+  db: AppDb,
   email: string
 ): Promise<{ id: string } | null> {
-  const drizzle = getDb(db);
-  const result = await drizzle
+  const result = await db
     .select({ id: invites.id })
     .from(invites)
     .where(and(eq(invites.email, email), isNull(invites.acceptedAt), gt(invites.expiresAt, sql`datetime('now')`)))

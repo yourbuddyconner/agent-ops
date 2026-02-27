@@ -1,7 +1,7 @@
-import type { D1Database } from '@cloudflare/workers-types';
 import type { Integration, SyncStatusResponse } from '@agent-ops/shared';
 import { eq, and, ne, desc, gt, sql, asc } from 'drizzle-orm';
-import { getDb, toDate } from '../drizzle.js';
+import type { AppDb } from '../drizzle.js';
+import { toDate } from '../drizzle.js';
 import { integrations, syncLogs, syncedEntities } from '../schema/index.js';
 
 function rowToIntegration(row: typeof integrations.$inferSelect): Integration {
@@ -19,11 +19,10 @@ function rowToIntegration(row: typeof integrations.$inferSelect): Integration {
 }
 
 export async function createIntegration(
-  db: D1Database,
+  db: AppDb,
   data: { id: string; userId: string; service: string; config: Record<string, unknown> }
 ): Promise<Integration> {
-  const drizzle = getDb(db);
-  await drizzle.insert(integrations).values({
+  await db.insert(integrations).values({
     id: data.id,
     userId: data.userId,
     service: data.service,
@@ -44,13 +43,12 @@ export async function createIntegration(
   };
 }
 
-export async function getIntegration(db: D1Database, id: string): Promise<Integration | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle.select().from(integrations).where(eq(integrations.id, id)).get();
+export async function getIntegration(db: AppDb, id: string): Promise<Integration | null> {
+  const row = await db.select().from(integrations).where(eq(integrations.id, id)).get();
   return row ? rowToIntegration(row) : null;
 }
 
-export async function getOrgIntegrations(db: D1Database, excludeUserId: string): Promise<Array<{
+export async function getOrgIntegrations(db: AppDb, excludeUserId: string): Promise<Array<{
   id: string;
   service: string;
   status: string;
@@ -59,8 +57,7 @@ export async function getOrgIntegrations(db: D1Database, excludeUserId: string):
   lastSyncedAt: Date | null;
   createdAt: Date;
 }>> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+  const rows = await db
     .select()
     .from(integrations)
     .where(and(eq(integrations.scope, 'org'), ne(integrations.userId, excludeUserId)))
@@ -77,9 +74,8 @@ export async function getOrgIntegrations(db: D1Database, excludeUserId: string):
   }));
 }
 
-export async function getUserIntegrations(db: D1Database, userId: string): Promise<Integration[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+export async function getUserIntegrations(db: AppDb, userId: string): Promise<Integration[]> {
+  const rows = await db
     .select()
     .from(integrations)
     .where(eq(integrations.userId, userId))
@@ -88,13 +84,12 @@ export async function getUserIntegrations(db: D1Database, userId: string): Promi
 }
 
 export async function updateIntegrationStatus(
-  db: D1Database,
+  db: AppDb,
   id: string,
   status: Integration['status'],
   errorMessage?: string
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(integrations)
     .set({
       status,
@@ -104,9 +99,8 @@ export async function updateIntegrationStatus(
     .where(eq(integrations.id, id));
 }
 
-export async function updateIntegrationSyncTime(db: D1Database, id: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+export async function updateIntegrationSyncTime(db: AppDb, id: string): Promise<void> {
+  await db
     .update(integrations)
     .set({
       lastSyncedAt: sql`datetime('now')`,
@@ -115,18 +109,16 @@ export async function updateIntegrationSyncTime(db: D1Database, id: string): Pro
     .where(eq(integrations.id, id));
 }
 
-export async function deleteIntegration(db: D1Database, id: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.delete(integrations).where(eq(integrations.id, id));
+export async function deleteIntegration(db: AppDb, id: string): Promise<void> {
+  await db.delete(integrations).where(eq(integrations.id, id));
 }
 
 // Sync log operations
 export async function createSyncLog(
-  db: D1Database,
+  db: AppDb,
   data: { id: string; integrationId: string }
 ): Promise<SyncStatusResponse> {
-  const drizzle = getDb(db);
-  await drizzle.insert(syncLogs).values({
+  await db.insert(syncLogs).values({
     id: data.id,
     integrationId: data.integrationId,
     status: 'pending',
@@ -141,33 +133,27 @@ export async function createSyncLog(
 }
 
 export async function updateSyncLog(
-  db: D1Database,
+  db: AppDb,
   id: string,
   data: { status: string; recordsSynced?: number; errors?: unknown[] }
 ): Promise<void> {
-  // CASE expression for conditional completed_at — keep as raw SQL
   await db
-    .prepare(
-      `UPDATE sync_logs SET
-        status = ?,
-        records_synced = COALESCE(?, records_synced),
-        errors = ?,
-        completed_at = CASE WHEN ? IN ('completed', 'failed') THEN datetime('now') ELSE completed_at END
-      WHERE id = ?`
-    )
-    .bind(
-      data.status,
-      data.recordsSynced ?? null,
-      data.errors ? JSON.stringify(data.errors) : null,
-      data.status,
-      id
-    )
-    .run();
+    .update(syncLogs)
+    .set({
+      status: data.status,
+      recordsSynced: data.recordsSynced !== undefined
+        ? data.recordsSynced
+        : sql`${syncLogs.recordsSynced}`,
+      errors: data.errors ? sql`${JSON.stringify(data.errors)}` : null,
+      completedAt: ['completed', 'failed'].includes(data.status)
+        ? sql`datetime('now')`
+        : sql`${syncLogs.completedAt}`,
+    })
+    .where(eq(syncLogs.id, id));
 }
 
-export async function getSyncLog(db: D1Database, id: string): Promise<SyncStatusResponse | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle.select().from(syncLogs).where(eq(syncLogs.id, id)).get();
+export async function getSyncLog(db: AppDb, id: string): Promise<SyncStatusResponse | null> {
+  const row = await db.select().from(syncLogs).where(eq(syncLogs.id, id)).get();
   if (!row) return null;
 
   return {
@@ -190,12 +176,11 @@ export async function getSyncLog(db: D1Database, id: string): Promise<SyncStatus
 
 // Synced entity operations
 export async function upsertSyncedEntity(
-  db: D1Database,
+  db: AppDb,
   data: { integrationId: string; entityType: string; externalId: string; data: unknown }
 ): Promise<void> {
   const id = `${data.integrationId}:${data.entityType}:${data.externalId}`;
-  const drizzle = getDb(db);
-  await drizzle.insert(syncedEntities).values({
+  await db.insert(syncedEntities).values({
     id,
     integrationId: data.integrationId,
     entityType: data.entityType,
@@ -212,13 +197,12 @@ export async function upsertSyncedEntity(
 }
 
 export async function getSyncedEntities(
-  db: D1Database,
+  db: AppDb,
   integrationId: string,
   entityType: string,
   options: { limit?: number; cursor?: string } = {}
 ): Promise<{ entities: unknown[]; cursor?: string; hasMore: boolean }> {
   const limit = options.limit || 100;
-  const drizzle = getDb(db);
 
   const conditions = [
     eq(syncedEntities.integrationId, integrationId),
@@ -228,7 +212,7 @@ export async function getSyncedEntities(
     conditions.push(gt(syncedEntities.externalId, options.cursor));
   }
 
-  const rows = await drizzle
+  const rows = await db
     .select()
     .from(syncedEntities)
     .where(and(...conditions))

@@ -1,7 +1,8 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { Message } from '@agent-ops/shared';
 import { eq, and, gt, asc } from 'drizzle-orm';
-import { getDb, toDate } from '../drizzle.js';
+import type { AppDb } from '../drizzle.js';
+import { toDate } from '../drizzle.js';
 import { messages } from '../schema/index.js';
 
 export async function saveMessage(
@@ -16,19 +17,18 @@ export async function saveMessage(
 }
 
 export async function getSessionMessages(
-  db: D1Database,
+  db: AppDb,
   sessionId: string,
   options: { limit?: number; after?: string } = {}
 ): Promise<Message[]> {
   const limit = options.limit || 100;
-  const drizzle = getDb(db);
 
   const conditions = [eq(messages.sessionId, sessionId)];
   if (options.after) {
     conditions.push(gt(messages.createdAt, options.after));
   }
 
-  const rows = await drizzle
+  const rows = await db
     .select()
     .from(messages)
     .where(and(...conditions))

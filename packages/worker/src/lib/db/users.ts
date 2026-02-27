@@ -1,7 +1,6 @@
-import type { D1Database } from '@cloudflare/workers-types';
+import type { AppDb } from '../drizzle.js';
 import type { User, UserRole, QueueMode } from '@agent-ops/shared';
 import { eq, sql, asc, inArray } from 'drizzle-orm';
-import { getDb } from '../drizzle.js';
 import { toDate } from '../drizzle.js';
 import { users } from '../schema/index.js';
 
@@ -26,17 +25,16 @@ function rowToUser(row: typeof users.$inferSelect): User {
 }
 
 export async function getOrCreateUser(
-  db: D1Database,
+  db: AppDb,
   data: { id: string; email: string; name?: string; avatarUrl?: string }
 ): Promise<User> {
-  const drizzle = getDb(db);
-  const existing = await drizzle.select().from(users).where(eq(users.id, data.id)).get();
+  const existing = await db.select().from(users).where(eq(users.id, data.id)).get();
 
   if (existing) {
     return rowToUser(existing);
   }
 
-  await drizzle.insert(users).values({
+  await db.insert(users).values({
     id: data.id,
     email: data.email,
     name: data.name || null,
@@ -54,25 +52,22 @@ export async function getOrCreateUser(
   };
 }
 
-export async function findUserByGitHubId(db: D1Database, githubId: string): Promise<User | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle.select().from(users).where(eq(users.githubId, githubId)).get();
+export async function findUserByGitHubId(db: AppDb, githubId: string): Promise<User | null> {
+  const row = await db.select().from(users).where(eq(users.githubId, githubId)).get();
   return row ? rowToUser(row) : null;
 }
 
-export async function findUserByEmail(db: D1Database, email: string): Promise<User | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle.select().from(users).where(eq(users.email, email)).get();
+export async function findUserByEmail(db: AppDb, email: string): Promise<User | null> {
+  const row = await db.select().from(users).where(eq(users.email, email)).get();
   return row ? rowToUser(row) : null;
 }
 
 export async function updateUserGitHub(
-  db: D1Database,
+  db: AppDb,
   userId: string,
   data: { githubId: string; githubUsername: string; name?: string; avatarUrl?: string }
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(users)
     .set({
       githubId: data.githubId,
@@ -84,14 +79,13 @@ export async function updateUserGitHub(
     .where(eq(users.id, userId));
 }
 
-export async function getUserById(db: D1Database, userId: string): Promise<User | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle.select().from(users).where(eq(users.id, userId)).get();
+export async function getUserById(db: AppDb, userId: string): Promise<User | null> {
+  const row = await db.select().from(users).where(eq(users.id, userId)).get();
   return row ? rowToUser(row) : null;
 }
 
 export async function updateUserProfile(
-  db: D1Database,
+  db: AppDb,
   userId: string,
   data: {
     name?: string;
@@ -103,88 +97,78 @@ export async function updateUserProfile(
     uiQueueMode?: QueueMode;
   },
 ): Promise<User | null> {
+  const setValues: Record<string, unknown> = { updatedAt: sql`datetime('now')` };
+
+  if (data.name !== undefined) setValues.name = sql`COALESCE(${data.name}, ${users.name})`;
+  if (data.gitName !== undefined) setValues.gitName = sql`COALESCE(${data.gitName}, ${users.gitName})`;
+  if (data.gitEmail !== undefined) setValues.gitEmail = sql`COALESCE(${data.gitEmail}, ${users.gitEmail})`;
+  if (data.onboardingCompleted !== undefined) setValues.onboardingCompleted = data.onboardingCompleted;
+  if (data.idleTimeoutSeconds !== undefined) setValues.idleTimeoutSeconds = sql`COALESCE(${data.idleTimeoutSeconds}, ${users.idleTimeoutSeconds})`;
+  if (data.modelPreferences !== undefined) setValues.modelPreferences = sql`COALESCE(${JSON.stringify(data.modelPreferences)}, ${users.modelPreferences})`;
+  if (data.uiQueueMode !== undefined) setValues.uiQueueMode = sql`COALESCE(${data.uiQueueMode}, ${users.uiQueueMode})`;
+
   await db
-    .prepare(
-      "UPDATE users SET name = COALESCE(?, name), git_name = COALESCE(?, git_name), git_email = COALESCE(?, git_email), onboarding_completed = COALESCE(?, onboarding_completed), idle_timeout_seconds = COALESCE(?, idle_timeout_seconds), model_preferences = COALESCE(?, model_preferences), ui_queue_mode = COALESCE(?, ui_queue_mode), updated_at = datetime('now') WHERE id = ?"
-    )
-    .bind(
-      data.name ?? null,
-      data.gitName ?? null,
-      data.gitEmail ?? null,
-      data.onboardingCompleted !== undefined ? (data.onboardingCompleted ? 1 : 0) : null,
-      data.idleTimeoutSeconds ?? null,
-      data.modelPreferences !== undefined ? JSON.stringify(data.modelPreferences) : null,
-      data.uiQueueMode ?? null,
-      userId,
-    )
-    .run();
+    .update(users)
+    .set(setValues)
+    .where(eq(users.id, userId));
 
   return getUserById(db, userId);
 }
 
 export async function backfillGitConfig(
-  db: D1Database,
+  db: AppDb,
   userId: string,
   data: { gitName?: string; gitEmail?: string }
 ): Promise<User | null> {
-  const sets: string[] = [];
-  const binds: (string | null)[] = [];
+  const setValues: Record<string, unknown> = {};
 
   if (data.gitName) {
-    sets.push('git_name = COALESCE(git_name, ?)');
-    binds.push(data.gitName);
+    setValues.gitName = sql`COALESCE(${users.gitName}, ${data.gitName})`;
   }
   if (data.gitEmail) {
-    sets.push('git_email = COALESCE(git_email, ?)');
-    binds.push(data.gitEmail);
+    setValues.gitEmail = sql`COALESCE(${users.gitEmail}, ${data.gitEmail})`;
   }
 
-  if (sets.length === 0) return getUserById(db, userId);
+  if (Object.keys(setValues).length === 0) return getUserById(db, userId);
 
-  sets.push("updated_at = datetime('now')");
-  binds.push(userId);
+  setValues.updatedAt = sql`datetime('now')`;
 
   await db
-    .prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`)
-    .bind(...binds)
-    .run();
+    .update(users)
+    .set(setValues)
+    .where(eq(users.id, userId));
 
   return getUserById(db, userId);
 }
 
-export async function updateUserRole(db: D1Database, userId: string, role: UserRole): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+export async function updateUserRole(db: AppDb, userId: string, role: UserRole): Promise<void> {
+  await db
     .update(users)
     .set({ role, updatedAt: sql`datetime('now')` })
     .where(eq(users.id, userId));
 }
 
-export async function getUserCount(db: D1Database): Promise<number> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getUserCount(db: AppDb): Promise<number> {
+  const row = await db
     .select({ count: sql<number>`COUNT(*)` })
     .from(users)
     .get();
   return row?.count ?? 0;
 }
 
-export async function listUsers(db: D1Database): Promise<User[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle.select().from(users).orderBy(asc(users.createdAt));
+export async function listUsers(db: AppDb): Promise<User[]> {
+  const rows = await db.select().from(users).orderBy(asc(users.createdAt));
   return rows.map(rowToUser);
 }
 
-export async function deleteUser(db: D1Database, userId: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.delete(users).where(eq(users.id, userId));
+export async function deleteUser(db: AppDb, userId: string): Promise<void> {
+  await db.delete(users).where(eq(users.id, userId));
 }
 
 // ─── DO Helpers ──────────────────────────────────────────────────────────────
 
-export async function getUserIdleTimeout(db: D1Database, userId: string): Promise<number> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getUserIdleTimeout(db: AppDb, userId: string): Promise<number> {
+  const row = await db
     .select({ idleTimeoutSeconds: users.idleTimeoutSeconds })
     .from(users)
     .where(eq(users.id, userId))
@@ -193,7 +177,7 @@ export async function getUserIdleTimeout(db: D1Database, userId: string): Promis
 }
 
 export async function getUserGitConfig(
-  db: D1Database,
+  db: AppDb,
   userId: string,
 ): Promise<{
   name: string | null;
@@ -202,8 +186,7 @@ export async function getUserGitConfig(
   gitName: string | null;
   gitEmail: string | null;
 } | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+  const row = await db
     .select({
       name: users.name,
       email: users.email,
@@ -217,19 +200,17 @@ export async function getUserGitConfig(
   return row || null;
 }
 
-export async function getUsersByIds(db: D1Database, userIds: string[]): Promise<User[]> {
+export async function getUsersByIds(db: AppDb, userIds: string[]): Promise<User[]> {
   if (userIds.length === 0) return [];
-  const drizzle = getDb(db);
-  const rows = await drizzle.select().from(users).where(inArray(users.id, userIds));
+  const rows = await db.select().from(users).where(inArray(users.id, userIds));
   return rows.map(rowToUser);
 }
 
 export async function getUserDiscoveredModels(
-  db: D1Database,
+  db: AppDb,
   userId: string,
 ): Promise<unknown[] | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+  const row = await db
     .select({ discoveredModels: users.discoveredModels })
     .from(users)
     .where(eq(users.id, userId))
@@ -240,12 +221,11 @@ export async function getUserDiscoveredModels(
 }
 
 export async function updateUserDiscoveredModels(
-  db: D1Database,
+  db: AppDb,
   userId: string,
   modelsJson: string,
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(users)
     .set({ discoveredModels: sql`${modelsJson}` })
     .where(eq(users.id, userId));

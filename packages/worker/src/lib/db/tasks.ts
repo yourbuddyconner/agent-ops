@@ -1,7 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { SessionTask } from '@agent-ops/shared';
-import { eq, sql } from 'drizzle-orm';
-import { getDb } from '../drizzle.js';
+import { eq, and, sql } from 'drizzle-orm';
+import type { AppDb } from '../drizzle.js';
 import { sessionTasks, sessionTaskDependencies } from '../schema/index.js';
 
 function mapTaskRow(row: any): SessionTask {
@@ -22,7 +22,7 @@ function mapTaskRow(row: any): SessionTask {
 }
 
 export async function createSessionTask(
-  db: D1Database,
+  db: AppDb,
   data: {
     orchestratorSessionId: string;
     sessionId?: string;
@@ -36,9 +36,8 @@ export async function createSessionTask(
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const status = data.blockedBy?.length ? 'blocked' : (data.status || 'pending');
-  const drizzle = getDb(db);
 
-  await drizzle.insert(sessionTasks).values({
+  await db.insert(sessionTasks).values({
     id,
     orchestratorSessionId: data.orchestratorSessionId,
     sessionId: data.sessionId || null,
@@ -52,7 +51,7 @@ export async function createSessionTask(
 
   if (data.blockedBy?.length) {
     for (const blockedById of data.blockedBy) {
-      await drizzle.insert(sessionTaskDependencies).values({
+      await db.insert(sessionTaskDependencies).values({
         taskId: id,
         blockedByTaskId: blockedById,
       });
@@ -194,21 +193,19 @@ export async function updateSessionTask(
   return row ? mapTaskRow(row) : null;
 }
 
-export async function addTaskDependency(db: D1Database, taskId: string, blockedByTaskId: string): Promise<void> {
-  // INSERT OR IGNORE — keep as raw SQL
+export async function addTaskDependency(db: AppDb, taskId: string, blockedByTaskId: string): Promise<void> {
+  await db.insert(sessionTaskDependencies).values({
+    taskId,
+    blockedByTaskId,
+  }).onConflictDoNothing();
   await db
-    .prepare('INSERT OR IGNORE INTO session_task_dependencies (task_id, blocked_by_task_id) VALUES (?, ?)')
-    .bind(taskId, blockedByTaskId)
-    .run();
-  await db
-    .prepare("UPDATE session_tasks SET status = 'blocked', updated_at = datetime('now') WHERE id = ? AND status = 'pending'")
-    .bind(taskId)
-    .run();
+    .update(sessionTasks)
+    .set({ status: 'blocked', updatedAt: sql`datetime('now')` })
+    .where(and(eq(sessionTasks.id, taskId), eq(sessionTasks.status, 'pending')));
 }
 
-export async function getTaskDependencies(db: D1Database, taskId: string): Promise<string[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+export async function getTaskDependencies(db: AppDb, taskId: string): Promise<string[]> {
+  const rows = await db
     .select({ blockedByTaskId: sessionTaskDependencies.blockedByTaskId })
     .from(sessionTaskDependencies)
     .where(eq(sessionTaskDependencies.taskId, taskId));

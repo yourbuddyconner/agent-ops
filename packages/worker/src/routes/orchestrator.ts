@@ -47,7 +47,7 @@ const createMemorySchema = z.object({
 orchestratorRouter.get('/orchestrator', async (c) => {
   const user = c.get('user');
 
-  const info = await orchestratorService.getOrchestratorInfo(c.env.DB, user.id);
+  const info = await orchestratorService.getOrchestratorInfo(c.env, user.id);
   return c.json(info);
 });
 
@@ -89,7 +89,7 @@ orchestratorRouter.post('/orchestrator', zValidator('json', createOrchestratorSc
  */
 orchestratorRouter.get('/orchestrator/identity', async (c) => {
   const user = c.get('user');
-  const identity = await db.getOrchestratorIdentity(c.env.DB, user.id);
+  const identity = await db.getOrchestratorIdentity(c.get('db'), user.id);
   if (!identity) {
     return c.json({ error: 'Orchestrator not set up' }, 404);
   }
@@ -103,7 +103,7 @@ orchestratorRouter.put('/orchestrator/identity', zValidator('json', updateIdenti
   const user = c.get('user');
   const body = c.req.valid('json');
 
-  const result = await orchestratorService.updateOrchestratorIdentity(c.env.DB, user.id, body);
+  const result = await orchestratorService.updateOrchestratorIdentity(c.get('db'), user.id, body);
   if (!result.ok) {
     if (result.error === 'not_found') {
       return c.json({ error: 'Orchestrator not set up' }, 404);
@@ -128,7 +128,7 @@ orchestratorRouter.get('/orchestrator/check-handle', async (c) => {
   if (!handle) {
     return c.json({ error: 'handle query param required' }, 400);
   }
-  const existing = await db.getOrchestratorIdentityByHandle(c.env.DB, handle);
+  const existing = await db.getOrchestratorIdentityByHandle(c.get('db'), handle);
   const user = c.get('user');
   const available = !existing || existing.userId === user.id;
   return c.json({ available, handle });
@@ -206,7 +206,7 @@ async function listNotifications(c: Context<{ Bindings: Env; Variables: Variable
 
 async function getNotificationCount(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const user = c.get('user');
-  const count = await db.getUserNotificationCount(c.env.DB, user.id);
+  const count = await db.getUserNotificationCount(c.get('db'), user.id);
   return c.json({ count });
 }
 
@@ -232,7 +232,7 @@ async function markNotificationRead(c: Context<{ Bindings: Env; Variables: Varia
   const user = c.get('user');
   const { messageId } = c.req.param();
 
-  const success = await db.markNotificationRead(c.env.DB, messageId, user.id);
+  const success = await db.markNotificationRead(c.get('db'), messageId, user.id);
   if (!success) {
     return c.json({ error: 'Message not found or already read' }, 404);
   }
@@ -266,7 +266,7 @@ async function replyToNotification(c: Context<{ Bindings: Env; Variables: Variab
   }
 
   const isRecipient = rootMessage.toUserId === user.id;
-  const reply = await db.enqueueNotification(c.env.DB, {
+  const reply = await db.enqueueNotification(c.get('db'), {
     fromUserId: user.id,
     toSessionId: isRecipient ? rootMessage.fromSessionId : rootMessage.toSessionId,
     toUserId: isRecipient ? rootMessage.fromUserId : rootMessage.toUserId,
@@ -287,13 +287,13 @@ orchestratorRouter.put('/notifications/:messageId/read', markNotificationRead);
 
 orchestratorRouter.put('/notifications/read-non-actionable', async (c) => {
   const user = c.get('user');
-  const count = await db.markNonActionableNotificationsRead(c.env.DB, user.id);
+  const count = await db.markNonActionableNotificationsRead(c.get('db'), user.id);
   return c.json({ success: true, count });
 });
 
 orchestratorRouter.put('/notifications/read-all', async (c) => {
   const user = c.get('user');
-  const count = await db.markAllNotificationsRead(c.env.DB, user.id);
+  const count = await db.markAllNotificationsRead(c.get('db'), user.id);
   return c.json({ success: true, count });
 });
 
@@ -303,7 +303,7 @@ orchestratorRouter.post('/notifications/:messageId/reply', replyToNotification);
 
 orchestratorRouter.get('/notification-preferences', async (c) => {
   const user = c.get('user');
-  const preferences = await db.getNotificationPreferences(c.env.DB, user.id);
+  const preferences = await db.getNotificationPreferences(c.get('db'), user.id);
   return c.json({ preferences });
 });
 
@@ -321,7 +321,7 @@ orchestratorRouter.put('/notification-preferences', async (c) => {
     return c.json({ error: 'messageType is required' }, 400);
   }
 
-  const pref = await db.upsertNotificationPreference(c.env.DB, user.id, body.messageType, body.eventType, {
+  const pref = await db.upsertNotificationPreference(c.get('db'), user.id, body.messageType, body.eventType, {
     webEnabled: body.webEnabled,
     slackEnabled: body.slackEnabled,
     emailEnabled: body.emailEnabled,
@@ -334,8 +334,8 @@ orchestratorRouter.put('/notification-preferences', async (c) => {
 
 orchestratorRouter.get('/org-agents', async (c) => {
   try {
-    const orgSettings = await db.getOrgSettings(c.env.DB);
-    const agents = await db.getOrgAgents(c.env.DB, orgSettings.id);
+    const orgSettings = await db.getOrgSettings(c.get('db'));
+    const agents = await db.getOrgAgents(c.get('db'), orgSettings.id);
     return c.json({ agents });
   } catch {
     return c.json({ agents: [] });
@@ -346,7 +346,7 @@ orchestratorRouter.get('/org-agents', async (c) => {
 
 orchestratorRouter.get('/identity-links', async (c) => {
   const user = c.get('user');
-  const links = await db.getUserIdentityLinks(c.env.DB, user.id);
+  const links = await db.getUserIdentityLinks(c.get('db'), user.id);
   return c.json({ links });
 });
 
@@ -356,7 +356,7 @@ orchestratorRouter.post('/identity-links', zValidator('json', createIdentityLink
 
   const id = crypto.randomUUID();
   try {
-    const link = await db.createIdentityLink(c.env.DB, {
+    const link = await db.createIdentityLink(c.get('db'), {
       id,
       userId: user.id,
       provider: body.provider,
@@ -377,7 +377,7 @@ orchestratorRouter.delete('/identity-links/:id', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const deleted = await db.deleteIdentityLink(c.env.DB, id, user.id);
+  const deleted = await db.deleteIdentityLink(c.get('db'), id, user.id);
   if (!deleted) {
     return c.json({ error: 'Identity link not found' }, 404);
   }

@@ -16,6 +16,7 @@ import type {
   SessionPurpose,
 } from '@agent-ops/shared';
 import { eq, and, or, ne, lt, gt, desc, asc, sql, inArray, isNull, isNotNull, not } from 'drizzle-orm';
+import type { AppDb } from '../drizzle.js';
 import { getDb, toDate } from '../drizzle.js';
 import {
   sessions,
@@ -121,13 +122,12 @@ function rowToShareLink(row: typeof sessionShareLinks.$inferSelect): SessionShar
 // ─── Session CRUD ───────────────────────────────────────────────────────────
 
 export async function createSession(
-  db: D1Database,
+  db: AppDb,
   data: { id: string; userId: string; workspace: string; title?: string; parentSessionId?: string; containerId?: string; metadata?: Record<string, unknown>; personaId?: string; isOrchestrator?: boolean; purpose?: SessionPurpose }
 ): Promise<AgentSession> {
-  const drizzle = getDb(db);
   const purpose = data.purpose || (data.isOrchestrator ? 'orchestrator' : 'interactive');
 
-  await drizzle.insert(sessions).values({
+  await db.insert(sessions).values({
     id: data.id,
     userId: data.userId,
     workspace: data.workspace,
@@ -158,9 +158,8 @@ export async function createSession(
   };
 }
 
-export async function getSession(db: D1Database, id: string): Promise<AgentSession | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getSession(db: AppDb, id: string): Promise<AgentSession | null> {
+  const row = await db
     .select()
     .from(sessions)
     .where(eq(sessions.id, id))
@@ -237,7 +236,7 @@ export async function getUserSessions(
 
   // Fetch participants for all sessions in batch
   const sessionIds = pageRows.map((row: any) => row.id);
-  const participantsBySession = await getParticipantsForSessions(db, sessionIds);
+  const participantsBySession = await getParticipantsForSessions(getDb(db), sessionIds);
 
   const mappedSessions = pageRows.map((row: any) => {
     // Map with snake_case raw SQL row (not Drizzle camelCase)
@@ -276,13 +275,12 @@ export async function getUserSessions(
 }
 
 async function getParticipantsForSessions(
-  db: D1Database,
+  db: AppDb,
   sessionIds: string[]
 ): Promise<Map<string, SessionParticipantSummary[]>> {
   if (sessionIds.length === 0) return new Map();
 
-  const drizzle = getDb(db);
-  const rows = await drizzle
+  const rows = await db
     .select({
       sessionId: sessionParticipants.sessionId,
       userId: sessionParticipants.userId,
@@ -314,14 +312,13 @@ async function getParticipantsForSessions(
 }
 
 export async function updateSessionStatus(
-  db: D1Database,
+  db: AppDb,
   id: string,
   status: AgentSession['status'],
   containerId?: string,
   errorMessage?: string
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(sessions)
     .set({
       status,
@@ -332,19 +329,17 @@ export async function updateSessionStatus(
     .where(eq(sessions.id, id));
 }
 
-export async function deleteSession(db: D1Database, id: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.delete(sessions).where(eq(sessions.id, id));
+export async function deleteSession(db: AppDb, id: string): Promise<void> {
+  await db.delete(sessions).where(eq(sessions.id, id));
 }
 
 // Session metrics (flushed from DO)
 export async function updateSessionMetrics(
-  db: D1Database,
+  db: AppDb,
   id: string,
   metrics: { messageCount: number; toolCallCount: number }
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(sessions)
     .set({
       messageCount: metrics.messageCount,
@@ -355,13 +350,12 @@ export async function updateSessionMetrics(
 }
 
 export async function addActiveSeconds(
-  db: D1Database,
+  db: AppDb,
   id: string,
   seconds: number
 ): Promise<void> {
   if (seconds <= 0) return;
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(sessions)
     .set({
       activeSeconds: sql`${sessions.activeSeconds} + ${Math.round(seconds)}`,
@@ -370,9 +364,8 @@ export async function addActiveSeconds(
 }
 
 // Session title update
-export async function updateSessionTitle(db: D1Database, sessionId: string, title: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+export async function updateSessionTitle(db: AppDb, sessionId: string, title: string): Promise<void> {
+  await db
     .update(sessions)
     .set({
       title,
@@ -384,7 +377,7 @@ export async function updateSessionTitle(db: D1Database, sessionId: string, titl
 // ─── Session Git State ──────────────────────────────────────────────────────
 
 export async function createSessionGitState(
-  db: D1Database,
+  db: AppDb,
   data: {
     sessionId: string;
     sourceType?: SessionSourceType;
@@ -397,10 +390,9 @@ export async function createSessionGitState(
     baseBranch?: string;
   }
 ): Promise<SessionGitState> {
-  const drizzle = getDb(db);
   const id = crypto.randomUUID();
 
-  await drizzle.insert(sessionGitState).values({
+  await db.insert(sessionGitState).values({
     id,
     sessionId: data.sessionId,
     sourceType: data.sourceType || null,
@@ -438,7 +430,7 @@ export async function createSessionGitState(
 }
 
 export async function updateSessionGitState(
-  db: D1Database,
+  db: AppDb,
   sessionId: string,
   updates: Partial<{
     branch: string;
@@ -470,16 +462,14 @@ export async function updateSessionGitState(
 
   setValues.updatedAt = sql`datetime('now')`;
 
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(sessionGitState)
     .set(setValues)
     .where(eq(sessionGitState.sessionId, sessionId));
 }
 
-export async function getSessionGitState(db: D1Database, sessionId: string): Promise<SessionGitState | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getSessionGitState(db: AppDb, sessionId: string): Promise<SessionGitState | null> {
+  const row = await db
     .select()
     .from(sessionGitState)
     .where(eq(sessionGitState.sessionId, sessionId))
@@ -487,9 +477,8 @@ export async function getSessionGitState(db: D1Database, sessionId: string): Pro
   return row ? rowToGitState(row) : null;
 }
 
-export async function getAdoptionMetrics(db: D1Database, periodDays: number): Promise<AdoptionMetrics> {
-  const drizzle = getDb(db);
-  const result = await drizzle
+export async function getAdoptionMetrics(db: AppDb, periodDays: number): Promise<AdoptionMetrics> {
+  const result = await db
     .select({
       totalPrsCreated: sql<number>`COUNT(CASE WHEN ${sessionGitState.prNumber} IS NOT NULL AND ${sessionGitState.agentAuthored} = 1 THEN 1 END)`,
       totalPrsMerged: sql<number>`COUNT(CASE WHEN ${sessionGitState.prState} = 'merged' AND ${sessionGitState.agentAuthored} = 1 THEN 1 END)`,
@@ -593,13 +582,11 @@ export async function getChildSessions(
 // ─── Session Concurrency ────────────────────────────────────────────────────
 
 export async function checkSessionConcurrency(
-  db: D1Database,
+  db: AppDb,
   userId: string
 ): Promise<ConcurrencyCheckResult> {
-  const drizzle = getDb(db);
-
   // Get user's custom limit (NULL = default)
-  const user = await drizzle
+  const user = await db
     .select({ maxActiveSessions: users.maxActiveSessions })
     .from(users)
     .where(eq(users.id, userId))
@@ -608,7 +595,7 @@ export async function checkSessionConcurrency(
   const limit = user?.maxActiveSessions ?? DEFAULT_MAX_ACTIVE_SESSIONS;
 
   // Count active sessions (exclude orchestrator and workflow sessions)
-  const result = await drizzle
+  const result = await db
     .select({ count: sql<number>`COUNT(*)` })
     .from(sessions)
     .where(
@@ -641,29 +628,31 @@ export async function checkSessionConcurrency(
 // ─── Session Files Changed ──────────────────────────────────────────────────
 
 export async function upsertSessionFileChanged(
-  db: D1Database,
+  db: AppDb,
   sessionId: string,
   file: { filePath: string; status: string; additions?: number; deletions?: number }
 ): Promise<void> {
   const id = `${sessionId}:${file.filePath}`;
-  // INSERT OR ... ON CONFLICT with custom update-set is simpler with raw SQL
-  await db
-    .prepare(
-      `INSERT INTO session_files_changed (id, session_id, file_path, status, additions, deletions)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(session_id, file_path) DO UPDATE SET
-         status = excluded.status,
-         additions = excluded.additions,
-         deletions = excluded.deletions,
-         updated_at = datetime('now')`
-    )
-    .bind(id, sessionId, file.filePath, file.status, file.additions ?? 0, file.deletions ?? 0)
-    .run();
+  await db.insert(sessionFilesChanged).values({
+    id,
+    sessionId,
+    filePath: file.filePath,
+    status: file.status,
+    additions: file.additions ?? 0,
+    deletions: file.deletions ?? 0,
+  }).onConflictDoUpdate({
+    target: [sessionFilesChanged.sessionId, sessionFilesChanged.filePath],
+    set: {
+      status: sql`excluded.status`,
+      additions: sql`excluded.additions`,
+      deletions: sql`excluded.deletions`,
+      updatedAt: sql`datetime('now')`,
+    },
+  });
 }
 
-export async function getSessionFilesChanged(db: D1Database, sessionId: string): Promise<SessionFileChanged[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+export async function getSessionFilesChanged(db: AppDb, sessionId: string): Promise<SessionFileChanged[]> {
+  const rows = await db
     .select()
     .from(sessionFilesChanged)
     .where(eq(sessionFilesChanged.sessionId, sessionId))
@@ -683,9 +672,8 @@ export async function getSessionFilesChanged(db: D1Database, sessionId: string):
 
 // ─── Session Participants ───────────────────────────────────────────────────
 
-export async function getSessionParticipants(db: D1Database, sessionId: string): Promise<SessionParticipant[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+export async function getSessionParticipants(db: AppDb, sessionId: string): Promise<SessionParticipant[]> {
+  const rows = await db
     .select({
       id: sessionParticipants.id,
       sessionId: sessionParticipants.sessionId,
@@ -716,38 +704,36 @@ export async function getSessionParticipants(db: D1Database, sessionId: string):
 }
 
 export async function addSessionParticipant(
-  db: D1Database,
+  db: AppDb,
   sessionId: string,
   userId: string,
   role: SessionParticipantRole = 'collaborator',
   addedBy?: string
 ): Promise<void> {
   const id = crypto.randomUUID();
-  // INSERT ... ON CONFLICT DO NOTHING — keep as raw SQL per migration rules
-  await db
-    .prepare(
-      `INSERT INTO session_participants (id, session_id, user_id, role, added_by)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(session_id, user_id) DO NOTHING`
-    )
-    .bind(id, sessionId, userId, role, addedBy || null)
-    .run();
+  await db.insert(sessionParticipants).values({
+    id,
+    sessionId,
+    userId,
+    role,
+    addedBy: addedBy || null,
+  }).onConflictDoNothing({
+    target: [sessionParticipants.sessionId, sessionParticipants.userId],
+  });
 }
 
-export async function removeSessionParticipant(db: D1Database, sessionId: string, userId: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+export async function removeSessionParticipant(db: AppDb, sessionId: string, userId: string): Promise<void> {
+  await db
     .delete(sessionParticipants)
     .where(and(eq(sessionParticipants.sessionId, sessionId), eq(sessionParticipants.userId, userId)));
 }
 
 export async function getSessionParticipant(
-  db: D1Database,
+  db: AppDb,
   sessionId: string,
   userId: string
 ): Promise<SessionParticipant | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+  const row = await db
     .select({
       id: sessionParticipants.id,
       sessionId: sessionParticipants.sessionId,
@@ -778,9 +764,8 @@ export async function getSessionParticipant(
   };
 }
 
-export async function isSessionParticipant(db: D1Database, sessionId: string, userId: string): Promise<boolean> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function isSessionParticipant(db: AppDb, sessionId: string, userId: string): Promise<boolean> {
+  const row = await db
     .select({ id: sessionParticipants.id })
     .from(sessionParticipants)
     .where(and(eq(sessionParticipants.sessionId, sessionId), eq(sessionParticipants.userId, userId)))
@@ -791,18 +776,17 @@ export async function isSessionParticipant(db: D1Database, sessionId: string, us
 // ─── Session Share Links ────────────────────────────────────────────────────
 
 export async function createShareLink(
-  db: D1Database,
+  db: AppDb,
   sessionId: string,
   role: SessionParticipantRole,
   createdBy: string,
   expiresAt?: string,
   maxUses?: number
 ): Promise<SessionShareLink> {
-  const drizzle = getDb(db);
   const id = crypto.randomUUID();
   const token = generateShareToken();
 
-  await drizzle.insert(sessionShareLinks).values({
+  await db.insert(sessionShareLinks).values({
     id,
     sessionId,
     token,
@@ -826,9 +810,8 @@ export async function createShareLink(
   };
 }
 
-export async function getShareLink(db: D1Database, token: string): Promise<SessionShareLink | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getShareLink(db: AppDb, token: string): Promise<SessionShareLink | null> {
+  const row = await db
     .select()
     .from(sessionShareLinks)
     .where(and(eq(sessionShareLinks.token, token), eq(sessionShareLinks.active, true)))
@@ -838,9 +821,8 @@ export async function getShareLink(db: D1Database, token: string): Promise<Sessi
   return rowToShareLink(row);
 }
 
-export async function getShareLinkById(db: D1Database, id: string): Promise<SessionShareLink | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getShareLinkById(db: AppDb, id: string): Promise<SessionShareLink | null> {
+  const row = await db
     .select()
     .from(sessionShareLinks)
     .where(eq(sessionShareLinks.id, id))
@@ -850,9 +832,8 @@ export async function getShareLinkById(db: D1Database, id: string): Promise<Sess
   return rowToShareLink(row);
 }
 
-export async function getSessionShareLinks(db: D1Database, sessionId: string): Promise<SessionShareLink[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+export async function getSessionShareLinks(db: AppDb, sessionId: string): Promise<SessionShareLink[]> {
+  const rows = await db
     .select()
     .from(sessionShareLinks)
     .where(eq(sessionShareLinks.sessionId, sessionId))
@@ -862,7 +843,7 @@ export async function getSessionShareLinks(db: D1Database, sessionId: string): P
 }
 
 export async function redeemShareLink(
-  db: D1Database,
+  db: AppDb,
   token: string,
   userId: string
 ): Promise<{ sessionId: string; role: SessionParticipantRole } | null> {
@@ -876,8 +857,7 @@ export async function redeemShareLink(
   if (link.maxUses !== undefined && link.maxUses !== null && link.useCount >= link.maxUses) return null;
 
   // Increment use count
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .update(sessionShareLinks)
     .set({ useCount: sql`${sessionShareLinks.useCount} + 1` })
     .where(eq(sessionShareLinks.token, token));
@@ -888,9 +868,8 @@ export async function redeemShareLink(
   return { sessionId: link.sessionId, role: link.role };
 }
 
-export async function deactivateShareLink(db: D1Database, id: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+export async function deactivateShareLink(db: AppDb, id: string): Promise<void> {
+  await db
     .update(sessionShareLinks)
     .set({ active: false })
     .where(eq(sessionShareLinks.id, id));
@@ -907,7 +886,7 @@ export function roleAtLeast(role: SessionParticipantRole, required: SessionParti
  * Returns the session if accessible, throws NotFoundError otherwise.
  */
 export async function assertSessionAccess(
-  database: D1Database,
+  database: AppDb,
   sessionId: string,
   userId: string,
   requiredRole: SessionParticipantRole = 'viewer'
@@ -982,13 +961,12 @@ export async function batchInsertAuditLog(
 // ─── Bulk Operations ─────────────────────────────────────────────────────
 
 export async function filterOwnedSessionIds(
-  db: D1Database,
+  db: AppDb,
   sessionIds: string[],
   userId: string
 ): Promise<string[]> {
   if (sessionIds.length === 0) return [];
-  const drizzle = getDb(db);
-  const rows = await drizzle
+  const rows = await db
     .select({ id: sessions.id })
     .from(sessions)
     .where(and(inArray(sessions.id, sessionIds), eq(sessions.userId, userId)));
@@ -996,34 +974,31 @@ export async function filterOwnedSessionIds(
 }
 
 export async function bulkDeleteSessionRecords(
-  db: D1Database,
+  db: AppDb,
   sessionIds: string[],
   userId: string
 ): Promise<void> {
   if (sessionIds.length === 0) return;
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .delete(sessions)
     .where(and(inArray(sessions.id, sessionIds), eq(sessions.userId, userId)));
 }
 
 export async function bulkDeleteSessionMessages(
-  db: D1Database,
+  db: AppDb,
   sessionIds: string[]
 ): Promise<void> {
   if (sessionIds.length === 0) return;
-  const drizzle = getDb(db);
-  await drizzle
+  await db
     .delete(messages)
     .where(inArray(messages.sessionId, sessionIds));
 }
 
 export async function getSessionAuditLog(
-  db: D1Database,
+  db: AppDb,
   sessionId: string,
   options: { limit?: number; after?: string; eventType?: string } = {}
 ): Promise<AuditLogEntry[]> {
-  const drizzle = getDb(db);
   const queryLimit = options.limit || 200;
 
   const conditions = [eq(sessionAuditLog.sessionId, sessionId)];
@@ -1036,7 +1011,7 @@ export async function getSessionAuditLog(
     conditions.push(eq(sessionAuditLog.eventType, options.eventType));
   }
 
-  const rows = await drizzle
+  const rows = await db
     .select()
     .from(sessionAuditLog)
     .where(and(...conditions))
@@ -1052,4 +1027,49 @@ export async function getSessionAuditLog(
     metadata: row.metadata || undefined,
     createdAt: row.createdAt,
   }));
+}
+
+// ─── Cron Archive Helpers ────────────────────────────────────────────────────
+
+export async function getArchivableSessions(
+  db: D1Database,
+  cutoff: string,
+  limit: number = 50,
+): Promise<string[]> {
+  const rows = await db.prepare(
+    `SELECT id FROM sessions
+     WHERE status IN ('terminated', 'error')
+       AND is_orchestrator = 0
+       AND last_active_at < ?
+     LIMIT ?`
+  ).bind(cutoff, limit).all<{ id: string }>();
+  return rows.results?.map((r) => r.id) ?? [];
+}
+
+export async function markSessionsArchived(
+  db: D1Database,
+  ids: string[],
+): Promise<void> {
+  if (ids.length === 0) return;
+  const placeholders = ids.map(() => '?').join(',');
+  await db.prepare(
+    `UPDATE sessions SET status = 'archived' WHERE id IN (${placeholders}) AND status IN ('terminated', 'error')`
+  ).bind(...ids).run();
+}
+
+export async function countActiveUserSessions(
+  db: AppDb,
+  userId: string,
+): Promise<number> {
+  const row = await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(sessions)
+    .where(
+      and(
+        eq(sessions.userId, userId),
+        inArray(sessions.status, ACTIVE_SESSION_STATUSES),
+      )
+    )
+    .get();
+  return row?.count ?? 0;
 }

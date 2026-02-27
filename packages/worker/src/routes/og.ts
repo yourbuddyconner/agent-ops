@@ -34,12 +34,12 @@ export const ogRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 ogRouter.get('/meta/session/:id', async (c) => {
   const { id } = c.req.param();
 
-  const session = await getSession(c.env.DB, id);
+  const session = await getSession(c.get('db'), id);
   if (!session) {
     return c.json({ error: 'Session not found' }, 404);
   }
 
-  const gitState = await getSessionGitState(c.env.DB, id);
+  const gitState = await getSessionGitState(c.get('db'), id);
 
   const sessionName = session.title || session.workspace || 'Untitled Session';
   const title = `Join session: ${sessionName}`;
@@ -62,7 +62,7 @@ ogRouter.get('/meta/session/:id', async (c) => {
 ogRouter.get('/meta/session-token/:token', async (c) => {
   const { token } = c.req.param();
 
-  const link = await getShareLink(c.env.DB, token);
+  const link = await getShareLink(c.get('db'), token);
   if (!link) {
     return c.json({ error: 'Invalid share link' }, 404);
   }
@@ -79,12 +79,12 @@ ogRouter.get('/meta/session-token/:token', async (c) => {
 ogRouter.get('/image/session/:id', async (c) => {
   const { id } = c.req.param();
 
-  const session = await getSession(c.env.DB, id);
+  const session = await getSession(c.get('db'), id);
   if (!session) {
     return c.json({ error: 'Session not found' }, 404);
   }
 
-  const gitState = await getSessionGitState(c.env.DB, id);
+  const gitState = await getSessionGitState(c.get('db'), id);
 
   const sessionName = session.title || session.workspace || 'Untitled Session';
   const title = `Join session: ${sessionName}`;
@@ -264,12 +264,12 @@ ogRouter.get('/image/session/:id', async (c) => {
 ogRouter.get('/meta/invite/:code', async (c) => {
   const { code } = c.req.param();
 
-  const invite = await getInviteByCodeAny(c.env.DB, code);
+  const invite = await getInviteByCodeAny(c.get('db'), code);
   if (!invite) {
     return c.json({ error: 'Invite not found' }, 404);
   }
 
-  const orgSettings = await getOrgSettings(c.env.DB);
+  const orgSettings = await getOrgSettings(c.get('db'));
   const orgName = orgSettings.name || 'Agent Ops';
 
   const isExpired = new Date(invite.expiresAt) < new Date();
@@ -297,12 +297,12 @@ ogRouter.get('/meta/invite/:code', async (c) => {
 ogRouter.get('/image/invite/:code', async (c) => {
   const { code } = c.req.param();
 
-  const invite = await getInviteByCodeAny(c.env.DB, code);
+  const invite = await getInviteByCodeAny(c.get('db'), code);
   if (!invite) {
     return c.json({ error: 'Invite not found' }, 404);
   }
 
-  const orgSettings = await getOrgSettings(c.env.DB);
+  const orgSettings = await getOrgSettings(c.get('db'));
   const orgName = orgSettings.name || 'Agent Ops';
   const roleLabel = `Invited as ${invite.role}`;
 

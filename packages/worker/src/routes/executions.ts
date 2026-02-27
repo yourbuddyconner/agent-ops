@@ -121,7 +121,7 @@ executionsRouter.get('/:id/steps', async (c) => {
   const { id } = c.req.param();
   const user = c.get('user');
 
-  const steps = await executionService.getExecutionStepsWithOrder(c.env.DB, id, user.id);
+  const steps = await executionService.getExecutionStepsWithOrder(c.env, id, user.id);
   return c.json({ steps });
 });
 
@@ -134,7 +134,7 @@ executionsRouter.post('/:id/complete', zValidator('json', completionSchema), asy
   const body = c.req.valid('json');
   const user = c.get('user');
 
-  const result = await executionService.completeExecution(c.env.DB, id, user.id, body);
+  const result = await executionService.completeExecution(c.env, id, user.id, body);
   return c.json({ success: true, status: result.status, completedAt: result.completedAt });
 });
 
@@ -147,7 +147,7 @@ executionsRouter.post('/:id/status', async (c) => {
   const user = c.get('user');
   const body = await c.req.json();
 
-  await executionService.updateExecutionStatusChecked(c.env.DB, id, user.id, body.status);
+  await executionService.updateExecutionStatusChecked(c.get('db'), id, user.id, body.status);
   return c.json({ success: true, status: body.status });
 });
 

@@ -1,5 +1,7 @@
-import type { D1Database } from '@cloudflare/workers-types';
 import { NotFoundError, ValidationError } from '@agent-ops/shared';
+import type { Env } from '../env.js';
+import type { AppDb } from '../lib/drizzle.js';
+import { getDb } from '../lib/drizzle.js';
 import { sha256Hex } from '../lib/workflow-runtime.js';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
 import {
@@ -45,7 +47,7 @@ export interface SyncWorkflowParams {
 }
 
 export async function syncWorkflow(
-  database: D1Database,
+  database: AppDb,
   userId: string,
   params: SyncWorkflowParams,
 ): Promise<{ id: string }> {
@@ -81,7 +83,7 @@ export async function syncWorkflow(
 // ─── Sync All Workflows ─────────────────────────────────────────────────────
 
 export async function syncAllWorkflows(
-  database: D1Database,
+  database: AppDb,
   userId: string,
   workflows: SyncWorkflowParams[],
 ): Promise<{ synced: number }> {
@@ -169,11 +171,12 @@ function formatWorkflowRow(row: Record<string, unknown>): WorkflowResponse {
 }
 
 export async function updateWorkflow(
-  database: D1Database,
+  env: Env,
   userId: string,
   workflowIdOrSlug: string,
   body: UpdateWorkflowParams,
 ): Promise<{ workflow: WorkflowResponse }> {
+  const database = getDb(env.DB);
   const existing = await getWorkflowByIdOrSlug(database, userId, workflowIdOrSlug);
 
   if (!existing) {
@@ -220,7 +223,7 @@ export async function updateWorkflow(
   values.push(new Date().toISOString());
   values.push(existing.id); // For WHERE clause
 
-  await dbUpdateWorkflow(database, existing.id as string, updates, values);
+  await dbUpdateWorkflow(env.DB, existing.id as string, updates, values);
 
   const updated = await getWorkflowById(database, existing.id as string);
 
@@ -239,7 +242,7 @@ export async function updateWorkflow(
 // ─── Delete Workflow ────────────────────────────────────────────────────────
 
 export async function deleteWorkflow(
-  database: D1Database,
+  database: AppDb,
   userId: string,
   workflowIdOrSlug: string,
 ): Promise<void> {
@@ -264,7 +267,7 @@ export interface CreateProposalParams {
 }
 
 export async function createProposal(
-  database: D1Database,
+  database: AppDb,
   userId: string,
   workflowIdOrSlug: string,
   params: CreateProposalParams,
@@ -321,7 +324,7 @@ export async function createProposal(
 // ─── Review Proposal ────────────────────────────────────────────────────────
 
 export async function reviewProposal(
-  database: D1Database,
+  database: AppDb,
   userId: string,
   workflowIdOrSlug: string,
   proposalId: string,
@@ -360,7 +363,7 @@ export interface ApplyProposalOpts {
 }
 
 export async function applyProposal(
-  database: D1Database,
+  database: AppDb,
   userId: string,
   workflowIdOrSlug: string,
   proposalId: string,
@@ -486,7 +489,7 @@ export interface RollbackWorkflowOpts {
 }
 
 export async function rollbackWorkflow(
-  database: D1Database,
+  database: AppDb,
   userId: string,
   workflowIdOrSlug: string,
   targetWorkflowHash: string,
@@ -571,7 +574,7 @@ export async function rollbackWorkflow(
 // ─── Get Workflow History With Snapshot ──────────────────────────────────────
 
 export async function getWorkflowHistoryWithSnapshot(
-  database: D1Database,
+  database: AppDb,
   userId: string,
   idOrSlug: string,
   opts: { limit?: number; offset?: number } = {},

@@ -1,5 +1,6 @@
 import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
+import { getDb } from '../lib/drizzle.js';
 import { storeCredential } from '../services/credentials.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -27,20 +28,21 @@ export async function isEmailAllowed(
   email: string,
   inviteCode?: string,
 ): Promise<boolean> {
+  const appDb = getDb(env.DB);
   const emailLower = email.toLowerCase();
 
   // Existing users always bypass signup gating
-  const existingUser = await db.findUserByEmail(env.DB, emailLower);
+  const existingUser = await db.findUserByEmail(appDb, emailLower);
   if (existingUser) return true;
 
   // If a valid invite code is provided, always allow
   if (inviteCode) {
-    const invite = await db.getValidInviteByCode(env.DB, inviteCode);
+    const invite = await db.getValidInviteByCode(appDb, inviteCode);
     if (invite) return true;
   }
 
   try {
-    const orgSettings = await db.getOrgSettings(env.DB);
+    const orgSettings = await db.getOrgSettings(appDb);
     const domainGating = orgSettings.domainGatingEnabled;
     const emailAllowlist = orgSettings.emailAllowlistEnabled;
 
@@ -62,7 +64,7 @@ export async function isEmailAllowed(
     }
 
     // Check for a valid invite by email
-    const invite = await db.getValidInviteByEmail(env.DB, emailLower);
+    const invite = await db.getValidInviteByEmail(appDb, emailLower);
     if (invite) return true;
   } catch {
     // DB not available or table doesn't exist yet — fall through to env var
@@ -84,18 +86,19 @@ async function finalizeUserLogin(
   email: string,
   provider: 'github' | 'google',
 ): Promise<string> {
+  const appDb = getDb(env.DB);
   // Accept invite by code (if provided), or fall back to email-based invite
   if (inviteCode) {
-    const invite = await db.getInviteByCode(env.DB, inviteCode);
+    const invite = await db.getInviteByCode(appDb, inviteCode);
     if (invite) {
-      await db.markInviteAccepted(env.DB, invite.id, user.id);
-      await db.updateUserRole(env.DB, user.id, invite.role);
+      await db.markInviteAccepted(appDb, invite.id, user.id);
+      await db.updateUserRole(appDb, user.id, invite.role);
     }
   } else if (isNewUser) {
-    const invite = await db.getInviteByEmail(env.DB, email);
+    const invite = await db.getInviteByEmail(appDb, email);
     if (invite) {
-      await db.markInviteAccepted(env.DB, invite.id, user.id);
-      await db.updateUserRole(env.DB, user.id, invite.role);
+      await db.markInviteAccepted(appDb, invite.id, user.id);
+      await db.updateUserRole(appDb, user.id, invite.role);
     }
   }
 
@@ -104,7 +107,7 @@ async function finalizeUserLogin(
   const tokenHash = await hashToken(sessionToken);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  await db.createAuthSession(env.DB, {
+  await db.createAuthSession(appDb, {
     id: crypto.randomUUID(),
     userId: user.id,
     tokenHash,
@@ -205,16 +208,17 @@ export async function handleGitHubCallback(
 
   const githubId = String(profile.id);
 
+  const appDb = getDb(env.DB);
   // Find user by github_id, then by email, or create new
-  let user = await db.findUserByGitHubId(env.DB, githubId);
+  let user = await db.findUserByGitHubId(appDb, githubId);
   let isNewUser = false;
 
   if (!user) {
-    user = await db.findUserByEmail(env.DB, email);
+    user = await db.findUserByEmail(appDb, email);
   }
 
   if (!user) {
-    user = await db.getOrCreateUser(env.DB, {
+    user = await db.getOrCreateUser(appDb, {
       id: crypto.randomUUID(),
       email,
       name: profile.name || profile.login,
@@ -222,14 +226,14 @@ export async function handleGitHubCallback(
     });
     isNewUser = true;
 
-    const userCount = await db.getUserCount(env.DB);
+    const userCount = await db.getUserCount(appDb);
     if (userCount === 1) {
-      await db.updateUserRole(env.DB, user.id, 'admin');
+      await db.updateUserRole(appDb, user.id, 'admin');
     }
   }
 
   // Update GitHub-specific fields
-  await db.updateUserGitHub(env.DB, user.id, {
+  await db.updateUserGitHub(appDb, user.id, {
     githubId,
     githubUsername: profile.login,
     name: profile.name || undefined,
@@ -246,7 +250,7 @@ export async function handleGitHubCallback(
   const shouldUpdateGitEmail = !user.gitEmail
     || (shouldUseNoReply && (user.gitEmail === user.email || user.gitEmail === email));
   if (shouldUpdateGitName || shouldUpdateGitEmail) {
-    await db.updateUserProfile(env.DB, user.id, {
+    await db.updateUserProfile(appDb, user.id, {
       gitName: shouldUpdateGitName ? inferredGitName : user.gitName,
       gitEmail: shouldUpdateGitEmail ? inferredGitEmail : user.gitEmail,
     });
@@ -314,12 +318,13 @@ export async function handleGoogleCallback(
     return { ok: false, error: 'not_allowed' };
   }
 
+  const appDb = getDb(env.DB);
   // Find user by email or create new
-  let user = await db.findUserByEmail(env.DB, payload.email);
+  let user = await db.findUserByEmail(appDb, payload.email);
   let isNewUser = false;
 
   if (!user) {
-    user = await db.getOrCreateUser(env.DB, {
+    user = await db.getOrCreateUser(appDb, {
       id: crypto.randomUUID(),
       email: payload.email,
       name: payload.name,
@@ -327,15 +332,15 @@ export async function handleGoogleCallback(
     });
     isNewUser = true;
 
-    const userCount = await db.getUserCount(env.DB);
+    const userCount = await db.getUserCount(appDb);
     if (userCount === 1) {
-      await db.updateUserRole(env.DB, user.id, 'admin');
+      await db.updateUserRole(appDb, user.id, 'admin');
     }
   }
 
   // Auto-populate git config if not already set
   if (!user.gitName || !user.gitEmail) {
-    await db.updateUserProfile(env.DB, user.id, {
+    await db.updateUserProfile(appDb, user.id, {
       gitName: user.gitName || payload.name || undefined,
       gitEmail: user.gitEmail || payload.email || undefined,
     });

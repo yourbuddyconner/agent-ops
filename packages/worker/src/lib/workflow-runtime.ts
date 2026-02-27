@@ -9,7 +9,7 @@
  * and re-exports the moved functions for backward compatibility.
  */
 
-import type { D1Database } from '@cloudflare/workers-types';
+import type { AppDb } from './drizzle.js';
 import * as db from './db.js';
 
 // ─── Re-exports (backward compatibility) ───────────────────────────────────
@@ -34,7 +34,7 @@ function buildWorkflowWorkspace(workflowId: string, executionId: string): string
 }
 
 export async function createWorkflowSession(
-  database: D1Database,
+  database: AppDb,
   params: {
     userId: string;
     workflowId: string;

@@ -71,7 +71,7 @@ const rollbackWorkflowSchema = z.object({
 workflowsRouter.get('/', async (c) => {
   const user = c.get('user');
 
-  const result = await listWorkflows(c.env.DB, user.id);
+  const result = await listWorkflows(c.get('db'), user.id);
 
   const workflows = result.results.map((row) => ({
     id: row.id,
@@ -97,7 +97,7 @@ workflowsRouter.get('/:id', async (c) => {
   const { id } = c.req.param();
   const user = c.get('user');
 
-  const row = await getWorkflowByIdOrSlug(c.env.DB, user.id, id);
+  const row = await getWorkflowByIdOrSlug(c.get('db'), user.id, id);
 
   if (!row) {
     throw new NotFoundError('Workflow', id);
@@ -127,7 +127,7 @@ workflowsRouter.post('/sync', zValidator('json', syncWorkflowSchema), async (c) 
   const user = c.get('user');
   const body = c.req.valid('json');
 
-  const result = await workflowService.syncWorkflow(c.env.DB, user.id, body);
+  const result = await workflowService.syncWorkflow(c.get('db'), user.id, body);
   return c.json({ success: true, id: result.id });
 });
 
@@ -139,7 +139,7 @@ workflowsRouter.post('/sync-all', zValidator('json', syncAllWorkflowsSchema), as
   const user = c.get('user');
   const { workflows } = c.req.valid('json');
 
-  const result = await workflowService.syncAllWorkflows(c.env.DB, user.id, workflows);
+  const result = await workflowService.syncAllWorkflows(c.get('db'), user.id, workflows);
   return c.json({ success: true, synced: result.synced });
 });
 
@@ -152,7 +152,7 @@ workflowsRouter.put('/:id', zValidator('json', updateWorkflowSchema), async (c) 
   const user = c.get('user');
   const body = c.req.valid('json');
 
-  const result = await workflowService.updateWorkflow(c.env.DB, user.id, id, body);
+  const result = await workflowService.updateWorkflow(c.env, user.id, id, body);
   return c.json(result);
 });
 
@@ -164,7 +164,7 @@ workflowsRouter.delete('/:id', async (c) => {
   const { id } = c.req.param();
   const user = c.get('user');
 
-  await workflowService.deleteWorkflow(c.env.DB, user.id, id);
+  await workflowService.deleteWorkflow(c.get('db'), user.id, id);
   return c.json({ success: true });
 });
 
@@ -177,7 +177,7 @@ workflowsRouter.get('/:id/executions', async (c) => {
   const user = c.get('user');
   const { limit, offset } = c.req.query();
 
-  const workflow = await getWorkflowOwnerCheck(c.env.DB, user.id, id);
+  const workflow = await getWorkflowOwnerCheck(c.get('db'), user.id, id);
 
   if (!workflow) {
     throw new NotFoundError('Workflow', id);
@@ -217,7 +217,7 @@ workflowsRouter.get('/:id/history', async (c) => {
   const user = c.get('user');
   const { limit, offset } = c.req.query();
 
-  const result = await workflowService.getWorkflowHistoryWithSnapshot(c.env.DB, user.id, id, {
+  const result = await workflowService.getWorkflowHistoryWithSnapshot(c.get('db'), user.id, id, {
     limit: limit ? parseInt(limit, 10) : undefined,
     offset: offset ? parseInt(offset, 10) : undefined,
   });
@@ -238,7 +238,7 @@ workflowsRouter.get('/:id/proposals', async (c) => {
   const user = c.get('user');
   const { limit, offset, status } = c.req.query();
 
-  const workflow = await getWorkflowOwnerCheck(c.env.DB, user.id, id);
+  const workflow = await getWorkflowOwnerCheck(c.get('db'), user.id, id);
 
   if (!workflow) {
     throw new NotFoundError('Workflow', id);
@@ -277,7 +277,7 @@ workflowsRouter.post('/:id/proposals', zValidator('json', createProposalSchema),
   const user = c.get('user');
   const body = c.req.valid('json');
 
-  const result = await workflowService.createProposal(c.env.DB, user.id, id, body);
+  const result = await workflowService.createProposal(c.get('db'), user.id, id, body);
   return c.json(result, 201);
 });
 
@@ -290,7 +290,7 @@ workflowsRouter.post('/:id/proposals/:proposalId/review', zValidator('json', rev
   const user = c.get('user');
   const body = c.req.valid('json');
 
-  const result = await workflowService.reviewProposal(c.env.DB, user.id, id, proposalId, body.approve, body.notes);
+  const result = await workflowService.reviewProposal(c.get('db'), user.id, id, proposalId, body.approve, body.notes);
   return c.json({ success: true, status: result.status, reviewedAt: result.reviewedAt });
 });
 
@@ -303,7 +303,7 @@ workflowsRouter.post('/:id/proposals/:proposalId/apply', zValidator('json', appl
   const user = c.get('user');
   const body = c.req.valid('json');
 
-  const result = await workflowService.applyProposal(c.env.DB, user.id, id, proposalId, body);
+  const result = await workflowService.applyProposal(c.get('db'), user.id, id, proposalId, body);
 
   if (result.alreadyApplied) {
     return c.json({ success: true, status: 'applied', message: 'Proposal already applied' });
@@ -325,7 +325,7 @@ workflowsRouter.post('/:id/rollback', zValidator('json', rollbackWorkflowSchema)
   const user = c.get('user');
   const body = c.req.valid('json');
 
-  const result = await workflowService.rollbackWorkflow(c.env.DB, user.id, id, body.targetWorkflowHash, {
+  const result = await workflowService.rollbackWorkflow(c.get('db'), user.id, id, body.targetWorkflowHash, {
     version: body.version,
     notes: body.notes,
   });

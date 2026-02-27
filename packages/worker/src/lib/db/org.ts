@@ -1,7 +1,8 @@
 import type { D1Database } from '@cloudflare/workers-types';
+import type { AppDb } from '../drizzle.js';
 import type { OrgSettings, OrgApiKey, Invite, UserRole, OrgRepository, OrchestratorIdentity, CustomProvider, CustomProviderModel } from '@agent-ops/shared';
 import { eq, and, isNull, gt, sql, desc, asc } from 'drizzle-orm';
-import { getDb, toDate } from '../drizzle.js';
+import { toDate } from '../drizzle.js';
 import { orgSettings, orgApiKeys, invites, orgRepositories, customProviders } from '../schema/index.js';
 import { orchestratorIdentities } from '../schema/orchestrator.js';
 
@@ -55,9 +56,8 @@ function rowToOrgRepository(row: any): OrgRepository {
 }
 
 // Org settings operations
-export async function getOrgSettings(db: D1Database): Promise<OrgSettings> {
-  const drizzle = getDb(db);
-  const row = await drizzle.select().from(orgSettings).where(eq(orgSettings.id, 'default')).get();
+export async function getOrgSettings(db: AppDb): Promise<OrgSettings> {
+  const row = await db.select().from(orgSettings).where(eq(orgSettings.id, 'default')).get();
   if (!row) {
     return {
       id: 'default',
@@ -73,32 +73,32 @@ export async function getOrgSettings(db: D1Database): Promise<OrgSettings> {
 }
 
 export async function updateOrgSettings(
-  db: D1Database,
+  db: AppDb,
   updates: Partial<Pick<OrgSettings, 'name' | 'allowedEmailDomain' | 'allowedEmails' | 'domainGatingEnabled' | 'emailAllowlistEnabled' | 'modelPreferences'>>
 ): Promise<OrgSettings> {
-  // Dynamic SET — keep as raw SQL
-  const sets: string[] = [];
-  const params: (string | number | null)[] = [];
+  const setValues: Record<string, unknown> = {};
 
-  if (updates.name !== undefined) { sets.push('name = ?'); params.push(updates.name); }
-  if (updates.allowedEmailDomain !== undefined) { sets.push('allowed_email_domain = ?'); params.push(updates.allowedEmailDomain || null); }
-  if (updates.allowedEmails !== undefined) { sets.push('allowed_emails = ?'); params.push(updates.allowedEmails || null); }
-  if (updates.domainGatingEnabled !== undefined) { sets.push('domain_gating_enabled = ?'); params.push(updates.domainGatingEnabled ? 1 : 0); }
-  if (updates.emailAllowlistEnabled !== undefined) { sets.push('email_allowlist_enabled = ?'); params.push(updates.emailAllowlistEnabled ? 1 : 0); }
-  if (updates.modelPreferences !== undefined) { sets.push('model_preferences = ?'); params.push(updates.modelPreferences ? JSON.stringify(updates.modelPreferences) : null); }
+  if (updates.name !== undefined) setValues.name = updates.name;
+  if (updates.allowedEmailDomain !== undefined) setValues.allowedEmailDomain = updates.allowedEmailDomain || null;
+  if (updates.allowedEmails !== undefined) setValues.allowedEmails = updates.allowedEmails || null;
+  if (updates.domainGatingEnabled !== undefined) setValues.domainGatingEnabled = updates.domainGatingEnabled;
+  if (updates.emailAllowlistEnabled !== undefined) setValues.emailAllowlistEnabled = updates.emailAllowlistEnabled;
+  if (updates.modelPreferences !== undefined) setValues.modelPreferences = updates.modelPreferences ? JSON.stringify(updates.modelPreferences) : null;
 
-  if (sets.length > 0) {
-    sets.push("updated_at = datetime('now')");
-    await db.prepare(`UPDATE org_settings SET ${sets.join(', ')} WHERE id = 'default'`).bind(...params).run();
+  if (Object.keys(setValues).length > 0) {
+    setValues.updatedAt = sql`datetime('now')`;
+    await db
+      .update(orgSettings)
+      .set(setValues)
+      .where(eq(orgSettings.id, 'default'));
   }
 
   return getOrgSettings(db);
 }
 
 // Org API key operations
-export async function listOrgApiKeys(db: D1Database): Promise<OrgApiKey[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+export async function listOrgApiKeys(db: AppDb): Promise<OrgApiKey[]> {
+  const rows = await db
     .select({
       id: orgApiKeys.id,
       provider: orgApiKeys.provider,
@@ -119,9 +119,8 @@ export async function listOrgApiKeys(db: D1Database): Promise<OrgApiKey[]> {
   }));
 }
 
-export async function getOrgApiKey(db: D1Database, provider: string): Promise<{ encryptedKey: string } | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getOrgApiKey(db: AppDb, provider: string): Promise<{ encryptedKey: string } | null> {
+  const row = await db
     .select({ encryptedKey: orgApiKeys.encryptedKey })
     .from(orgApiKeys)
     .where(eq(orgApiKeys.provider, provider))
@@ -130,11 +129,10 @@ export async function getOrgApiKey(db: D1Database, provider: string): Promise<{ 
 }
 
 export async function setOrgApiKey(
-  db: D1Database,
+  db: AppDb,
   params: { id: string; provider: string; encryptedKey: string; setBy: string }
 ): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.insert(orgApiKeys).values({
+  await db.insert(orgApiKeys).values({
     id: params.id,
     provider: params.provider,
     encryptedKey: params.encryptedKey,
@@ -149,15 +147,13 @@ export async function setOrgApiKey(
   });
 }
 
-export async function deleteOrgApiKey(db: D1Database, provider: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.delete(orgApiKeys).where(eq(orgApiKeys.provider, provider));
+export async function deleteOrgApiKey(db: AppDb, provider: string): Promise<void> {
+  await db.delete(orgApiKeys).where(eq(orgApiKeys.provider, provider));
 }
 
 // Custom provider operations
-export async function listCustomProviders(db: D1Database): Promise<CustomProvider[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+export async function listCustomProviders(db: AppDb): Promise<CustomProvider[]> {
+  const rows = await db
     .select()
     .from(customProviders)
     .orderBy(asc(customProviders.displayName));
@@ -175,15 +171,14 @@ export async function listCustomProviders(db: D1Database): Promise<CustomProvide
   }));
 }
 
-export async function getAllCustomProvidersWithKeys(db: D1Database): Promise<Array<{
+export async function getAllCustomProvidersWithKeys(db: AppDb): Promise<Array<{
   providerId: string;
   displayName: string;
   baseUrl: string;
   encryptedKey: string | null;
   models: CustomProviderModel[];
 }>> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+  const rows = await db
     .select({
       providerId: customProviders.providerId,
       displayName: customProviders.displayName,
@@ -203,38 +198,40 @@ export async function getAllCustomProvidersWithKeys(db: D1Database): Promise<Arr
 }
 
 export async function upsertCustomProvider(
-  db: D1Database,
+  db: AppDb,
   params: { id: string; providerId: string; displayName: string; baseUrl: string; encryptedKey: string | null; models: string; setBy: string }
 ): Promise<void> {
-  // models comes as pre-stringified JSON — use raw SQL for this upsert
-  await db
-    .prepare(
-      `INSERT INTO custom_providers (id, provider_id, display_name, base_url, encrypted_key, models, set_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(provider_id) DO UPDATE SET
-         display_name = excluded.display_name,
-         base_url = excluded.base_url,
-         encrypted_key = excluded.encrypted_key,
-         models = excluded.models,
-         set_by = excluded.set_by,
-         updated_at = datetime('now')`
-    )
-    .bind(params.id, params.providerId, params.displayName, params.baseUrl, params.encryptedKey, params.models, params.setBy)
-    .run();
+  await db.insert(customProviders).values({
+    id: params.id,
+    providerId: params.providerId,
+    displayName: params.displayName,
+    baseUrl: params.baseUrl,
+    encryptedKey: params.encryptedKey,
+    models: sql`${params.models}`,
+    setBy: params.setBy,
+  }).onConflictDoUpdate({
+    target: customProviders.providerId,
+    set: {
+      displayName: sql`excluded.display_name`,
+      baseUrl: sql`excluded.base_url`,
+      encryptedKey: sql`excluded.encrypted_key`,
+      models: sql`excluded.models`,
+      setBy: sql`excluded.set_by`,
+      updatedAt: sql`datetime('now')`,
+    },
+  });
 }
 
-export async function deleteCustomProvider(db: D1Database, providerId: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.delete(customProviders).where(eq(customProviders.providerId, providerId));
+export async function deleteCustomProvider(db: AppDb, providerId: string): Promise<void> {
+  await db.delete(customProviders).where(eq(customProviders.providerId, providerId));
 }
 
 // Invite operations
 export async function createInvite(
-  db: D1Database,
+  db: AppDb,
   params: { id: string; code: string; email?: string; role: UserRole; invitedBy: string; expiresAt: string }
 ): Promise<Invite> {
-  const drizzle = getDb(db);
-  await drizzle.insert(invites).values({
+  await db.insert(invites).values({
     id: params.id,
     code: params.code,
     email: params.email || null,
@@ -254,9 +251,8 @@ export async function createInvite(
   };
 }
 
-export async function getInviteByEmail(db: D1Database, email: string): Promise<Invite | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getInviteByEmail(db: AppDb, email: string): Promise<Invite | null> {
+  const row = await db
     .select()
     .from(invites)
     .where(and(eq(invites.email, email), isNull(invites.acceptedAt), gt(invites.expiresAt, sql`datetime('now')`)))
@@ -264,9 +260,8 @@ export async function getInviteByEmail(db: D1Database, email: string): Promise<I
   return row ? rowToInvite(row) : null;
 }
 
-export async function getInviteByCode(db: D1Database, code: string): Promise<Invite | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getInviteByCode(db: AppDb, code: string): Promise<Invite | null> {
+  const row = await db
     .select()
     .from(invites)
     .where(and(eq(invites.code, code), isNull(invites.acceptedAt), gt(invites.expiresAt, sql`datetime('now')`)))
@@ -274,9 +269,8 @@ export async function getInviteByCode(db: D1Database, code: string): Promise<Inv
   return row ? rowToInvite(row) : null;
 }
 
-export async function getInviteByCodeAny(db: D1Database, code: string): Promise<Invite | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle
+export async function getInviteByCodeAny(db: AppDb, code: string): Promise<Invite | null> {
+  const row = await db
     .select()
     .from(invites)
     .where(eq(invites.code, code))
@@ -284,20 +278,17 @@ export async function getInviteByCodeAny(db: D1Database, code: string): Promise<
   return row ? rowToInvite(row) : null;
 }
 
-export async function listInvites(db: D1Database): Promise<Invite[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle.select().from(invites).orderBy(desc(invites.createdAt));
+export async function listInvites(db: AppDb): Promise<Invite[]> {
+  const rows = await db.select().from(invites).orderBy(desc(invites.createdAt));
   return rows.map(rowToInvite);
 }
 
-export async function deleteInvite(db: D1Database, id: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.delete(invites).where(eq(invites.id, id));
+export async function deleteInvite(db: AppDb, id: string): Promise<void> {
+  await db.delete(invites).where(eq(invites.id, id));
 }
 
-export async function markInviteAccepted(db: D1Database, id: string, acceptedBy?: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle
+export async function markInviteAccepted(db: AppDb, id: string, acceptedBy?: string): Promise<void> {
+  await db
     .update(invites)
     .set({ acceptedAt: sql`datetime('now')`, acceptedBy: acceptedBy || null })
     .where(eq(invites.id, id));
@@ -305,15 +296,14 @@ export async function markInviteAccepted(db: D1Database, id: string, acceptedBy?
 
 // Org Repository Operations
 export async function createOrgRepository(
-  db: D1Database,
+  db: AppDb,
   data: { id: string; fullName: string; description?: string; defaultBranch?: string; language?: string }
 ): Promise<OrgRepository> {
   const parts = data.fullName.split('/');
   const owner = parts[0];
   const name = parts[1];
-  const drizzle = getDb(db);
 
-  await drizzle.insert(orgRepositories).values({
+  await db.insert(orgRepositories).values({
     id: data.id,
     owner,
     name,
@@ -373,41 +363,39 @@ export async function listOrgRepositories(db: D1Database, orgId: string = 'defau
   }));
 }
 
-export async function getOrgRepository(db: D1Database, id: string): Promise<OrgRepository | null> {
-  const drizzle = getDb(db);
-  const row = await drizzle.select().from(orgRepositories).where(eq(orgRepositories.id, id)).get();
+export async function getOrgRepository(db: AppDb, id: string): Promise<OrgRepository | null> {
+  const row = await db.select().from(orgRepositories).where(eq(orgRepositories.id, id)).get();
   return row ? rowToOrgRepository(row) : null;
 }
 
 export async function updateOrgRepository(
-  db: D1Database,
+  db: AppDb,
   id: string,
   updates: Partial<Pick<OrgRepository, 'description' | 'defaultBranch' | 'language' | 'enabled'>>
 ): Promise<void> {
-  // Dynamic SET — keep as raw SQL
-  const sets: string[] = [];
-  const params: (string | number | null)[] = [];
+  const setValues: Record<string, unknown> = {};
 
-  if (updates.description !== undefined) { sets.push('description = ?'); params.push(updates.description || null); }
-  if (updates.defaultBranch !== undefined) { sets.push('default_branch = ?'); params.push(updates.defaultBranch); }
-  if (updates.language !== undefined) { sets.push('language = ?'); params.push(updates.language || null); }
-  if (updates.enabled !== undefined) { sets.push('enabled = ?'); params.push(updates.enabled ? 1 : 0); }
+  if (updates.description !== undefined) setValues.description = updates.description || null;
+  if (updates.defaultBranch !== undefined) setValues.defaultBranch = updates.defaultBranch;
+  if (updates.language !== undefined) setValues.language = updates.language || null;
+  if (updates.enabled !== undefined) setValues.enabled = updates.enabled;
 
-  if (sets.length === 0) return;
+  if (Object.keys(setValues).length === 0) return;
 
-  sets.push("updated_at = datetime('now')");
-  await db.prepare(`UPDATE org_repositories SET ${sets.join(', ')} WHERE id = ?`).bind(...params, id).run();
+  setValues.updatedAt = sql`datetime('now')`;
+  await db
+    .update(orgRepositories)
+    .set(setValues)
+    .where(eq(orgRepositories.id, id));
 }
 
-export async function deleteOrgRepository(db: D1Database, id: string): Promise<void> {
-  const drizzle = getDb(db);
-  await drizzle.delete(orgRepositories).where(eq(orgRepositories.id, id));
+export async function deleteOrgRepository(db: AppDb, id: string): Promise<void> {
+  await db.delete(orgRepositories).where(eq(orgRepositories.id, id));
 }
 
 // Org Directory Helper
-export async function getOrgAgents(db: D1Database, orgId: string): Promise<OrchestratorIdentity[]> {
-  const drizzle = getDb(db);
-  const rows = await drizzle
+export async function getOrgAgents(db: AppDb, orgId: string): Promise<OrchestratorIdentity[]> {
+  const rows = await db
     .select()
     .from(orchestratorIdentities)
     .where(eq(orchestratorIdentities.orgId, orgId))

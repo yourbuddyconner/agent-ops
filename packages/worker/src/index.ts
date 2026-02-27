@@ -7,6 +7,7 @@ import { requestId } from 'hono/request-id';
 import type { Env, Variables } from './env.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { authMiddleware } from './middleware/auth.js';
+import { dbMiddleware } from './middleware/db.js';
 
 import { sessionsRouter } from './routes/sessions.js';
 import { integrationsRouter } from './routes/integrations.js';
@@ -37,8 +38,20 @@ import {
   getTerminatedOrchestratorSessions,
   markWorkflowApprovalNotificationsRead,
   updateSessionGitState,
+  getTimedOutApprovals,
+  finalizeExecution,
+  getStaleWorkflowExecutions,
+  persistStepTrace,
+  getActiveScheduleTriggers,
+  insertScheduleTick,
+  updateTriggerLastRun,
+  getArchivableSessions,
+  markSessionsArchived,
+  getTrackedGitHubResources,
+  getIntegrationsNeedingSync,
 } from './lib/db.js';
 import { getCredential } from './services/credentials.js';
+import { getDb } from './lib/drizzle.js';
 import {
   checkWorkflowConcurrency,
   createWorkflowSession,
@@ -57,6 +70,7 @@ const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // Global middleware
 app.use('*', requestId());
+app.use('*', dbMiddleware);
 app.use('*', logger());
 app.use('*', secureHeaders());
 app.use(
@@ -141,21 +155,12 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (event, env, ctx) 
   console.log('Running scheduled sync check:', event.cron);
 
   // Query for integrations that need syncing
-  const integrations = await env.DB.prepare(`
-    SELECT id, user_id, service, config
-    FROM integrations
-    WHERE status = 'active'
-      AND (
-        (json_extract(config, '$.syncFrequency') = 'hourly')
-        OR (json_extract(config, '$.syncFrequency') = 'daily' AND strftime('%H', 'now') = '00')
-      )
-      AND (last_synced_at IS NULL OR datetime(last_synced_at, '+1 hour') < datetime('now'))
-  `).all();
+  const integrationsToSync = await getIntegrationsNeedingSync(env.DB);
 
-  console.log(`Found ${integrations.results?.length || 0} integrations to sync`);
+  console.log(`Found ${integrationsToSync.length} integrations to sync`);
 
   // Trigger syncs by calling back into this worker's own fetch handler
-  for (const integration of integrations.results || []) {
+  for (const integration of integrationsToSync) {
     ctx.waitUntil(
       Promise.resolve(
         app.fetch(
@@ -207,19 +212,6 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (event, env, ctx) 
 const MAX_GITHUB_RESOURCES_PER_RUN = 100;
 const LIVE_NOTIFY_SESSION_STATUSES = new Set(['initializing', 'running', 'idle', 'restoring', 'hibernating']);
 
-interface TrackedGitHubResourceRow {
-  session_id: string;
-  user_id: string;
-  session_status: string;
-  source_repo_full_name: string | null;
-  source_repo_url: string | null;
-  tracked_pr_number: number | string;
-  pr_state: string | null;
-  pr_title: string | null;
-  pr_url: string | null;
-  pr_merged_at: string | null;
-}
-
 interface TrackedGitHubResource {
   owner: string;
   repo: string;
@@ -262,27 +254,8 @@ function mapGitHubPullRequestState(
 }
 
 async function reconcileGitHubResources(env: Env): Promise<void> {
-  const rowsRes = await env.DB.prepare(
-    `SELECT
-       g.session_id,
-       s.user_id,
-       s.status as session_status,
-       g.source_repo_full_name,
-       g.source_repo_url,
-       COALESCE(g.pr_number, g.source_pr_number) as tracked_pr_number,
-       g.pr_state,
-       g.pr_title,
-       g.pr_url,
-       g.pr_merged_at
-     FROM session_git_state g
-     JOIN sessions s ON s.id = g.session_id
-     WHERE s.status != 'archived'
-       AND COALESCE(g.pr_number, g.source_pr_number) IS NOT NULL
-       AND (g.pr_state IS NULL OR g.pr_state IN ('open', 'draft'))
-     ORDER BY g.updated_at DESC`
-  ).all<TrackedGitHubResourceRow>();
-
-  const rows = rowsRes.results || [];
+  const db = getDb(env.DB);
+  const rows = await getTrackedGitHubResources(env.DB);
   if (rows.length === 0) return;
 
   const resourceMap = new Map<string, TrackedGitHubResource>();
@@ -434,7 +407,7 @@ async function reconcileGitHubResources(env: Env): Promise<void> {
       if (!changed) continue;
 
       try {
-        await updateSessionGitState(env.DB, link.sessionId, {
+        await updateSessionGitState(db, link.sessionId, {
           prState: nextState as any,
           prTitle: prPayload.title,
           prUrl: prPayload.html_url,
@@ -591,62 +564,25 @@ async function fetchWorkflowResultEnvelope(
   }
 }
 
-async function persistStepTrace(
-  env: Env,
-  executionId: string,
-  steps: NonNullable<WorkflowResultEnvelope['steps']>,
-): Promise<void> {
-  for (const step of steps) {
-    const attempt = step.attempt && step.attempt > 0 ? step.attempt : 1;
-    await env.DB.prepare(`
-      INSERT INTO workflow_execution_steps
-        (id, execution_id, step_id, attempt, status, input_json, output_json, error, started_at, completed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(execution_id, step_id, attempt) DO UPDATE SET
-        status = excluded.status,
-        input_json = COALESCE(excluded.input_json, workflow_execution_steps.input_json),
-        output_json = COALESCE(excluded.output_json, workflow_execution_steps.output_json),
-        error = excluded.error,
-        started_at = COALESCE(excluded.started_at, workflow_execution_steps.started_at),
-        completed_at = COALESCE(excluded.completed_at, workflow_execution_steps.completed_at)
-    `).bind(
-      crypto.randomUUID(),
-      executionId,
-      step.stepId,
-      attempt,
-      step.status,
-      step.input !== undefined ? JSON.stringify(step.input) : null,
-      step.output !== undefined ? JSON.stringify(step.output) : null,
-      step.error || null,
-      step.startedAt || null,
-      step.completedAt || null,
-    ).run();
-  }
-}
+// persistStepTrace is now in lib/db/executions.ts
 
 async function expireWaitingApprovalExecutions(env: Env): Promise<number> {
+  const db = getDb(env.DB);
   const now = new Date();
   const cutoff = new Date(now.getTime() - (24 * 60 * 60 * 1000)).toISOString();
   const nowIso = now.toISOString();
 
-  const result = await env.DB.prepare(`
-    SELECT id, user_id
-    FROM workflow_executions
-    WHERE status = 'waiting_approval'
-      AND started_at <= ?
-  `).bind(cutoff).all<{ id: string; user_id: string }>();
+  const rows = await getTimedOutApprovals(env.DB, cutoff);
 
   let expired = 0;
-  for (const row of result.results || []) {
-    await env.DB.prepare(`
-      UPDATE workflow_executions
-      SET status = 'cancelled',
-          error = 'approval_timeout',
-          resume_token = NULL,
-          completed_at = ?
-      WHERE id = ?
-    `).bind(nowIso, row.id).run();
-    await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
+  for (const row of rows) {
+    await finalizeExecution(db, row.id, {
+      status: 'cancelled',
+      error: 'approval_timeout',
+      resumeToken: null,
+      completedAt: nowIso,
+    });
+    await markWorkflowApprovalNotificationsRead(db, row.user_id, row.id);
     expired++;
   }
 
@@ -654,77 +590,35 @@ async function expireWaitingApprovalExecutions(env: Env): Promise<number> {
 }
 
 async function reconcileWorkflowExecutions(env: Env): Promise<void> {
+  const db = getDb(env.DB);
   const now = new Date().toISOString();
   const approvalsExpired = await expireWaitingApprovalExecutions(env);
-  const result = await env.DB.prepare(`
-    SELECT
-      e.id,
-      e.user_id,
-      e.status,
-      e.runtime_state,
-      e.session_id,
-      e.workflow_id,
-      w.name AS workflow_name,
-      s.status AS session_status
-    FROM workflow_executions e
-    LEFT JOIN workflows w ON w.id = e.workflow_id
-    JOIN sessions s ON s.id = e.session_id
-    WHERE e.status IN ('pending', 'running', 'waiting_approval')
-      AND COALESCE(s.purpose, 'interactive') = 'workflow'
-      AND s.status IN ('terminated', 'error', 'hibernated')
-  `).all<{
-    id: string;
-    user_id: string;
-    status: string;
-    runtime_state: string | null;
-    session_id: string | null;
-    workflow_id: string | null;
-    workflow_name: string | null;
-    session_status: string;
-  }>();
+  const rows = await getStaleWorkflowExecutions(env.DB);
 
   let completed = 0;
   let waitingApproval = 0;
   let cancelled = 0;
   let failed = 0;
 
-  for (const row of result.results || []) {
+  for (const row of rows) {
     if (row.session_status === 'error') {
-      await env.DB.prepare(`
-        UPDATE workflow_executions
-        SET status = 'failed',
-            error = ?,
-            completed_at = ?
-        WHERE id = ?
-      `).bind('workflow_session_error', now, row.id).run();
-      await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
+      await finalizeExecution(db, row.id, { status: 'failed', error: 'workflow_session_error', completedAt: now });
+      await markWorkflowApprovalNotificationsRead(db, row.user_id, row.id);
       failed++;
       continue;
     }
 
     if (row.session_status === 'hibernated') {
-      await env.DB.prepare(`
-        UPDATE workflow_executions
-        SET status = 'failed',
-            error = ?,
-            completed_at = ?
-        WHERE id = ?
-      `).bind('workflow_session_hibernated', now, row.id).run();
-      await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
+      await finalizeExecution(db, row.id, { status: 'failed', error: 'workflow_session_hibernated', completedAt: now });
+      await markWorkflowApprovalNotificationsRead(db, row.user_id, row.id);
       failed++;
       continue;
     }
 
     const promptDispatched = hasPromptDispatch(row.runtime_state);
     if (!promptDispatched) {
-      await env.DB.prepare(`
-        UPDATE workflow_executions
-        SET status = 'failed',
-            error = ?,
-            completed_at = ?
-        WHERE id = ?
-      `).bind('workflow_session_terminated_before_dispatch', now, row.id).run();
-      await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
+      await finalizeExecution(db, row.id, { status: 'failed', error: 'workflow_session_terminated_before_dispatch', completedAt: now });
+      await markWorkflowApprovalNotificationsRead(db, row.user_id, row.id);
       failed++;
       continue;
     }
@@ -734,20 +628,14 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
       : null;
 
     if (!envelope) {
-      await env.DB.prepare(`
-        UPDATE workflow_executions
-        SET status = 'completed',
-            error = NULL,
-            completed_at = ?
-        WHERE id = ?
-      `).bind(now, row.id).run();
-      await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
+      await finalizeExecution(db, row.id, { status: 'completed', completedAt: now });
+      await markWorkflowApprovalNotificationsRead(db, row.user_id, row.id);
       completed++;
       continue;
     }
 
     if (envelope.steps?.length) {
-      await persistStepTrace(env, row.id, envelope.steps);
+      await persistStepTrace(env.DB, row.id, envelope.steps);
     }
 
     const outputsJson = envelope.output ? JSON.stringify(envelope.output) : null;
@@ -756,30 +644,13 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
     if (envelope.status === 'needs_approval') {
       const resumeToken = envelope.requiresApproval?.resumeToken;
       if (!resumeToken) {
-        await env.DB.prepare(`
-          UPDATE workflow_executions
-          SET status = 'failed',
-              outputs = ?,
-              steps = ?,
-              error = ?,
-              completed_at = ?
-          WHERE id = ?
-        `).bind(outputsJson, stepsJson, 'approval_resume_token_missing', now, row.id).run();
-        await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
+        await finalizeExecution(db, row.id, { status: 'failed', outputs: outputsJson, steps: stepsJson, error: 'approval_resume_token_missing', completedAt: now });
+        await markWorkflowApprovalNotificationsRead(db, row.user_id, row.id);
         failed++;
         continue;
       }
 
-      await env.DB.prepare(`
-        UPDATE workflow_executions
-        SET status = 'waiting_approval',
-            outputs = ?,
-            steps = ?,
-            resume_token = ?,
-            error = NULL,
-            completed_at = NULL
-        WHERE id = ?
-      `).bind(outputsJson, stepsJson, resumeToken, row.id).run();
+      await finalizeExecution(db, row.id, { status: 'waiting_approval', outputs: outputsJson, steps: stepsJson, resumeToken, completedAt: null });
       await enqueueWorkflowApprovalNotificationIfMissing(env.DB, {
         toUserId: row.user_id,
         executionId: row.id,
@@ -793,45 +664,21 @@ async function reconcileWorkflowExecutions(env: Env): Promise<void> {
     }
 
     if (envelope.status === 'cancelled') {
-      await env.DB.prepare(`
-        UPDATE workflow_executions
-        SET status = 'cancelled',
-            outputs = ?,
-            steps = ?,
-            error = ?,
-            completed_at = ?
-        WHERE id = ?
-      `).bind(outputsJson, stepsJson, envelope.error || 'workflow_cancelled', now, row.id).run();
-      await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
+      await finalizeExecution(db, row.id, { status: 'cancelled', outputs: outputsJson, steps: stepsJson, error: envelope.error || 'workflow_cancelled', completedAt: now });
+      await markWorkflowApprovalNotificationsRead(db, row.user_id, row.id);
       cancelled++;
       continue;
     }
 
     if (envelope.status === 'failed') {
-      await env.DB.prepare(`
-        UPDATE workflow_executions
-        SET status = 'failed',
-            outputs = ?,
-            steps = ?,
-            error = ?,
-            completed_at = ?
-        WHERE id = ?
-      `).bind(outputsJson, stepsJson, envelope.error || 'workflow_failed', now, row.id).run();
-      await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
+      await finalizeExecution(db, row.id, { status: 'failed', outputs: outputsJson, steps: stepsJson, error: envelope.error || 'workflow_failed', completedAt: now });
+      await markWorkflowApprovalNotificationsRead(db, row.user_id, row.id);
       failed++;
       continue;
     }
 
-    await env.DB.prepare(`
-      UPDATE workflow_executions
-      SET status = 'completed',
-          outputs = ?,
-          steps = ?,
-          error = NULL,
-          completed_at = ?
-      WHERE id = ?
-    `).bind(outputsJson, stepsJson, now, row.id).run();
-    await markWorkflowApprovalNotificationsRead(env.DB, row.user_id, row.id);
+    await finalizeExecution(db, row.id, { status: 'completed', outputs: outputsJson, steps: stepsJson, completedAt: now });
+    await markWorkflowApprovalNotificationsRead(db, row.user_id, row.id);
     completed++;
   }
 
@@ -952,37 +799,15 @@ function cronMatchesNow(cron: string, now: Date, timeZone: string = 'UTC'): bool
 }
 
 async function dispatchScheduledWorkflows(event: ScheduledController, env: Env): Promise<void> {
+  const db = getDb(env.DB);
   const now = new Date();
   const tickBucket = now.toISOString().slice(0, 16); // UTC minute precision
 
-  const result = await env.DB.prepare(`
-    SELECT
-      t.id as trigger_id,
-      t.user_id,
-      t.workflow_id,
-      t.config,
-      w.enabled as workflow_enabled,
-      w.name as workflow_name,
-      w.version as workflow_version,
-      w.data as workflow_data
-    FROM triggers t
-    LEFT JOIN workflows w ON t.workflow_id = w.id
-    WHERE t.type = 'schedule'
-      AND t.enabled = 1
-  `).all<{
-    trigger_id: string;
-    user_id: string;
-    workflow_id: string | null;
-    config: string;
-    workflow_enabled: number | null;
-    workflow_name: string | null;
-    workflow_version: string | null;
-    workflow_data: string | null;
-  }>();
+  const activeTriggers = await getActiveScheduleTriggers(env.DB);
 
   let dispatched = 0;
 
-  for (const row of result.results || []) {
+  for (const row of activeTriggers) {
     let config: {
       cron?: string;
       timezone?: string;
@@ -1007,7 +832,7 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
         continue;
       }
 
-      const concurrency = await checkWorkflowConcurrency(env.DB, row.user_id);
+      const concurrency = await checkWorkflowConcurrency(db, row.user_id);
       if (!concurrency.allowed) {
         console.warn(
           `Skipping scheduled workflow dispatch for trigger ${row.trigger_id}: ${concurrency.reason} (activeUser=${concurrency.activeUser}, activeGlobal=${concurrency.activeGlobal})`,
@@ -1015,19 +840,14 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
         continue;
       }
 
-      const tickInsert = await env.DB.prepare(`
-        INSERT INTO workflow_schedule_ticks (id, trigger_id, tick_bucket)
-        VALUES (?, ?, ?)
-        ON CONFLICT(trigger_id, tick_bucket) DO NOTHING
-      `).bind(crypto.randomUUID(), row.trigger_id, tickBucket).run();
-
-      if ((tickInsert.meta.changes ?? 0) === 0) {
+      const tickInserted = await insertScheduleTick(env.DB, row.trigger_id, tickBucket);
+      if (!tickInserted) {
         continue;
       }
 
       const executionId = crypto.randomUUID();
       const workflowHash = await sha256Hex(String(row.workflow_data ?? '{}'));
-      const sessionId = await createWorkflowSession(env.DB, {
+      const sessionId = await createWorkflowSession(db, {
         userId: row.user_id,
         workflowId: row.workflow_id,
         executionId,
@@ -1070,9 +890,7 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
         row.user_id
       ).run();
 
-      await env.DB.prepare(`
-        UPDATE triggers SET last_run_at = ? WHERE id = ?
-      `).bind(now.toISOString(), row.trigger_id).run();
+      await updateTriggerLastRun(db, row.trigger_id, now.toISOString());
 
       await enqueueWorkflowExecution(env, {
         executionId,
@@ -1091,13 +909,8 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
       continue;
     }
 
-    const tickInsert = await env.DB.prepare(`
-      INSERT INTO workflow_schedule_ticks (id, trigger_id, tick_bucket)
-      VALUES (?, ?, ?)
-      ON CONFLICT(trigger_id, tick_bucket) DO NOTHING
-    `).bind(crypto.randomUUID(), row.trigger_id, tickBucket).run();
-
-    if ((tickInsert.meta.changes ?? 0) === 0) {
+    const orchTickInserted = await insertScheduleTick(env.DB, row.trigger_id, tickBucket);
+    if (!orchTickInserted) {
       continue;
     }
 
@@ -1115,9 +928,7 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
       continue;
     }
 
-    await env.DB.prepare(`
-      UPDATE triggers SET last_run_at = ? WHERE id = ?
-    `).bind(now.toISOString(), row.trigger_id).run();
+    await updateTriggerLastRun(db, row.trigger_id, now.toISOString());
     dispatched++;
   }
 
@@ -1132,17 +943,7 @@ async function dispatchScheduledWorkflows(event: ScheduledController, env: Env):
 async function archiveTerminatedSessions(env: Env): Promise<void> {
   const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
 
-  const rows = await env.DB.prepare(
-    `SELECT id FROM sessions
-     WHERE status IN ('terminated', 'error')
-       AND is_orchestrator = 0
-       AND last_active_at < ?
-     LIMIT 50`
-  )
-    .bind(cutoff)
-    .all<{ id: string }>();
-
-  const sessionIds = rows.results?.map((r) => r.id) ?? [];
+  const sessionIds = await getArchivableSessions(env.DB, cutoff, 50);
   if (sessionIds.length === 0) return;
 
   console.log(`Archiving ${sessionIds.length} terminated sessions older than 7 days`);
@@ -1207,12 +1008,7 @@ async function archiveTerminatedSessions(env: Env): Promise<void> {
   if (archivedIds.length === 0) return;
 
   // Batch-update status to 'archived' (re-check status to avoid race conditions)
-  const placeholders = archivedIds.map(() => '?').join(',');
-  await env.DB.prepare(
-    `UPDATE sessions SET status = 'archived' WHERE id IN (${placeholders}) AND status IN ('terminated', 'error')`
-  )
-    .bind(...archivedIds)
-    .run();
+  await markSessionsArchived(env.DB, archivedIds);
 
   console.log(`Archived ${archivedIds.length} sessions (workspace volumes deleted: ${deletedCount})`);
 }

@@ -30,7 +30,7 @@ filesRouter.get('/find', async (c) => {
     throw new ValidationError('query is required');
   }
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -66,7 +66,7 @@ filesRouter.get('/search', async (c) => {
     throw new ValidationError('query is required');
   }
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -110,7 +110,7 @@ filesRouter.get('/read', async (c) => {
     throw new ValidationError('path is required');
   }
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -144,7 +144,7 @@ filesRouter.get('/list', async (c) => {
 
   const dirPath = path || '/';
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -190,7 +190,7 @@ filesRouter.get('/backup', async (c) => {
     throw new ValidationError('sessionId is required');
   }
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -220,7 +220,7 @@ filesRouter.get('/backup/:key', async (c) => {
     throw new ValidationError('sessionId is required');
   }
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }
@@ -255,7 +255,7 @@ filesRouter.post('/backup', async (c) => {
     throw new ValidationError('sessionId, path, and content are required');
   }
 
-  const session = await db.getSession(c.env.DB, sessionId);
+  const session = await db.getSession(c.get('db'), sessionId);
   if (!session || session.userId !== user.id) {
     throw new NotFoundError('Session', sessionId);
   }

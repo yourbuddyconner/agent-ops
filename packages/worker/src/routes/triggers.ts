@@ -227,7 +227,7 @@ triggersRouter.post('/', zValidator('json', createTriggerSchema), async (c) => {
   const requiresLinkedWorkflow = requiresWorkflow(body.config);
   let workflowId: string | null = null;
   if (requiresLinkedWorkflow || body.workflowId) {
-    const workflow = await getWorkflowForTrigger(c.env.DB, user.id, body.workflowId || '');
+    const workflow = await getWorkflowForTrigger(c.get('db'), user.id, body.workflowId || '');
 
     if (!workflow) {
       if (requiresLinkedWorkflow) {
@@ -249,7 +249,7 @@ triggersRouter.post('/', zValidator('json', createTriggerSchema), async (c) => {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
-  await createTrigger(c.env.DB, {
+  await createTrigger(c.get('db'), {
     id,
     userId: user.id,
     workflowId,
@@ -293,7 +293,7 @@ triggersRouter.patch('/:id', zValidator('json', updateTriggerSchema), async (c) 
   const user = c.get('user');
   const body = c.req.valid('json');
 
-  const existing = await getTriggerForUpdate(c.env.DB, user.id, id);
+  const existing = await getTriggerForUpdate(c.get('db'), user.id, id);
 
   if (!existing) {
     throw new NotFoundError('Trigger', id);
@@ -312,7 +312,7 @@ triggersRouter.patch('/:id', zValidator('json', updateTriggerSchema), async (c) 
   }
 
   if (nextWorkflowId) {
-    const workflow = await getWorkflowForTrigger(c.env.DB, user.id, nextWorkflowId);
+    const workflow = await getWorkflowForTrigger(c.get('db'), user.id, nextWorkflowId);
 
     if (!workflow) {
       throw new NotFoundError('Workflow', nextWorkflowId);
@@ -372,7 +372,7 @@ triggersRouter.delete('/:id', async (c) => {
   const { id } = c.req.param();
   const user = c.get('user');
 
-  const result = await deleteTrigger(c.env.DB, id, user.id);
+  const result = await deleteTrigger(c.get('db'), id, user.id);
 
   if (result.meta.changes === 0) {
     throw new NotFoundError('Trigger', id);
@@ -388,7 +388,7 @@ triggersRouter.post('/:id/enable', async (c) => {
   const { id } = c.req.param();
   const user = c.get('user');
 
-  const result = await enableTrigger(c.env.DB, id, user.id, new Date().toISOString());
+  const result = await enableTrigger(c.get('db'), id, user.id, new Date().toISOString());
 
   if (result.meta.changes === 0) {
     throw new NotFoundError('Trigger', id);
@@ -404,7 +404,7 @@ triggersRouter.post('/:id/disable', async (c) => {
   const { id } = c.req.param();
   const user = c.get('user');
 
-  const result = await disableTrigger(c.env.DB, id, user.id, new Date().toISOString());
+  const result = await disableTrigger(c.get('db'), id, user.id, new Date().toISOString());
 
   if (result.meta.changes === 0) {
     throw new NotFoundError('Trigger', id);

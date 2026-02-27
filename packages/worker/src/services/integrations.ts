@@ -2,6 +2,7 @@ import { IntegrationError, ValidationError, ErrorCodes } from '@agent-ops/shared
 import type { IntegrationService } from '@agent-ops/shared';
 import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
+import { getDb } from '../lib/drizzle.js';
 import { integrationRegistry } from '../integrations/base.js';
 import { storeCredential, getCredential } from '../services/credentials.js';
 import '../integrations/github.js';
@@ -30,8 +31,9 @@ export async function configureIntegration(
   userEmail: string,
   params: ConfigureIntegrationParams,
 ): Promise<ConfigureIntegrationResult> {
+  const appDb = getDb(env.DB);
   // Check if integration already exists
-  const existing = await db.getUserIntegrations(env.DB, userId);
+  const existing = await db.getUserIntegrations(appDb, userId);
   if (existing.some((i) => i.service === params.service)) {
     throw new IntegrationError(
       `Integration for ${params.service} already exists`,
@@ -57,7 +59,7 @@ export async function configureIntegration(
   }
 
   // Ensure user exists
-  await db.getOrCreateUser(env.DB, { id: userId, email: userEmail });
+  await db.getOrCreateUser(appDb, { id: userId, email: userEmail });
 
   // Store credentials in unified credentials table
   await storeCredential(env, userId, params.service, params.credentials, {
@@ -67,7 +69,7 @@ export async function configureIntegration(
 
   // Create integration record (without credentials)
   const integrationId = crypto.randomUUID();
-  const created = await db.createIntegration(env.DB, {
+  const created = await db.createIntegration(appDb, {
     id: integrationId,
     userId,
     service: params.service,
@@ -75,7 +77,7 @@ export async function configureIntegration(
   });
 
   // Update status to active
-  await db.updateIntegrationStatus(env.DB, integrationId, 'active');
+  await db.updateIntegrationStatus(appDb, integrationId, 'active');
 
   return {
     ok: true,
@@ -103,7 +105,8 @@ export async function triggerIntegrationSync(
   params: TriggerSyncParams,
   ctx: { waitUntil: (promise: Promise<unknown>) => void },
 ): Promise<{ syncId: string }> {
-  const integration = await db.getIntegration(env.DB, integrationId);
+  const appDb = getDb(env.DB);
+  const integration = await db.getIntegration(appDb, integrationId);
   if (!integration) {
     throw new (await import('@agent-ops/shared')).NotFoundError('Integration', integrationId);
   }
@@ -129,37 +132,37 @@ export async function triggerIntegrationSync(
 
   // Create sync log
   const syncId = crypto.randomUUID();
-  await db.createSyncLog(env.DB, { id: syncId, integrationId });
+  await db.createSyncLog(appDb, { id: syncId, integrationId });
 
   // Run sync in background
   ctx.waitUntil(
     (async () => {
       try {
-        await db.updateSyncLog(env.DB, syncId, { status: 'running' });
+        await db.updateSyncLog(appDb, syncId, { status: 'running' });
 
         const result = await handler.sync({
           entities: params.entities || integration.config.entities,
           fullSync: params.fullSync,
         });
 
-        await db.updateSyncLog(env.DB, syncId, {
+        await db.updateSyncLog(appDb, syncId, {
           status: result.success ? 'completed' : 'failed',
           recordsSynced: result.recordsSynced,
           errors: result.errors,
         });
 
         if (result.success) {
-          await db.updateIntegrationSyncTime(env.DB, integrationId);
+          await db.updateIntegrationSyncTime(appDb, integrationId);
         } else {
-          await db.updateIntegrationStatus(env.DB, integrationId, 'error', result.errors[0]?.message);
+          await db.updateIntegrationStatus(appDb, integrationId, 'error', result.errors[0]?.message);
         }
       } catch (error) {
         console.error('Sync error:', error);
-        await db.updateSyncLog(env.DB, syncId, {
+        await db.updateSyncLog(appDb, syncId, {
           status: 'failed',
           errors: [{ entity: 'unknown', message: String(error), code: 'SYNC_ERROR' }],
         });
-        await db.updateIntegrationStatus(env.DB, integrationId, 'error', String(error));
+        await db.updateIntegrationStatus(appDb, integrationId, 'error', String(error));
       }
     })()
   );
