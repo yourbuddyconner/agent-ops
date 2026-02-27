@@ -129,6 +129,12 @@ export function useWebSocket(url: string | null, options: UseWebSocketOptions = 
   }, []);
 
   useEffect(() => {
+    // Reset reconnect counter whenever the connection target changes so that
+    // a prior session's exhausted retries don't prevent reconnection to a new
+    // session.  disconnect() intentionally sets the counter to maxReconnectAttempts
+    // to suppress retries during teardown, but we need a fresh budget here.
+    reconnectAttemptsRef.current = 0;
+
     if (url && token) {
       connect();
     }

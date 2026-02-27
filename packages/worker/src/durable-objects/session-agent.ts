@@ -907,7 +907,11 @@ export class SessionAgentDO {
       timestamp: new Date().toISOString(),
     });
 
-    return new Response(null, { status: 101, webSocket: client });
+    return new Response(null, {
+      status: 101,
+      webSocket: client,
+      headers: { 'Sec-WebSocket-Protocol': 'agent-ops' },
+    });
   }
 
   private async upgradeRunner(_request: Request, url: URL): Promise<Response> {
