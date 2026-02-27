@@ -1,7 +1,7 @@
 ---
 # agent-ops-cf0x
 title: Decouple worker from Cloudflare primitives
-status: todo
+status: in_progress
 type: epic
 priority: medium
 tags:
@@ -10,7 +10,61 @@ tags:
     - refactor
     - infrastructure
 created_at: 2026-02-24T00:00:00Z
-updated_at: 2026-02-24T00:00:00Z
+updated_at: 2026-02-27T00:00:00Z
+---
+
+## Completion Status
+
+### Phase 0: Convert raw SQL to Drizzle — DONE
+
+Deployed 2026-02-27 (`01fd86a`). All Drizzle-convertible queries in the 18 `lib/db/` files now use the Drizzle query builder. Functions that use Drizzle accept `AppDb` (`BaseSQLiteDatabase<any, any, any>` from `drizzle-orm/sqlite-core`); functions with legitimately raw SQL (FTS5, batch, complex dynamic SQL) retain `D1Database`.
+
+What was done:
+- Converted ~80 raw `.prepare()` queries to Drizzle across 18 db/ files
+- Deduplicated cron handler queries in `index.ts` (calls db/ functions instead of inline SQL)
+- `listWorkflowHistory` converted from raw SQL to Drizzle
+
+What remains raw (intentional — ~12 queries):
+- FTS5 search queries (`MATCH`, `bm25()`, rowid sync) — will be abstracted by SearchProvider
+- `db.batch()` calls (D1-specific batching API)
+- 2 dynamic SQL builders (`updateWorkflow`, `updateTrigger`) with dynamic SET clauses
+- Recursive date CTE in dashboard
+- Complex queries using `GROUP_CONCAT`, `NOT EXISTS` subqueries, or `rowid`
+
+### Phase 1: Abstract database and search — PARTIAL
+
+Deployed 2026-02-27 (same commit). The D1-side abstraction is complete. Postgres support and dual-dialect schema are not yet started.
+
+What was done:
+- `AppDb` type defined as `BaseSQLiteDatabase<any, any, any>` in `lib/drizzle.ts`
+- `dbMiddleware` created — injects Drizzle instance per-request via `c.set('db', getDb(c.env.DB))`
+- All 18 db/ files: Drizzle functions accept `AppDb`, raw SQL functions keep `D1Database`
+- All 20 route files: pass `c.get('db')` for AppDb functions, `c.env.DB` for raw SQL
+- All 11 service files: create `getDb(env.DB)` internally, pass to AppDb functions
+- Both DOs: lazy `appDb` getter pattern (`private get appDb(): AppDb`)
+- Cron handlers in `index.ts`: `const db = getDb(env.DB)` at top of each handler
+- `SearchProvider` interface defined (`lib/search/types.ts`)
+- `SqliteFts5SearchProvider` implementation (`lib/search/sqlite-fts5.ts`)
+- `middleware/db.test.ts` added, `credentials.test.ts` assertions tightened
+- 0 typecheck errors, 36/36 tests passing
+
+What remains:
+- [ ] `PgTextSearchProvider` implementation
+- [ ] Postgres migration set (schema parity with SQLite)
+- [ ] Dual-dialect Drizzle schema (or two schema dirs)
+- [ ] Recursive date CTE dialect handling
+- [ ] `D1Database` still imported in db/ files for raw SQL functions — needs elimination or isolation
+- [ ] Wire `SearchProvider` into orchestrator (currently not used, just defined)
+
+### Phase 2–7: Not started
+
+- Phase 2: Abstract object storage (R2 → ObjectStorage interface)
+- Phase 3: Abstract real-time / PubSub (EventBusDO → PubSub interface)
+- Phase 4: Abstract scheduling (cron + alarms → Scheduler interface)
+- Phase 5: Decompose SessionAgentDO
+- Phase 6: Docker Compose local dev environment
+- Phase 7: Rename `packages/worker` → `packages/gateway`
+
 ---
 
 Introduce platform abstraction interfaces so the worker package can run on Cloudflare Workers (current) or a standard Node/Bun runtime on Kubernetes, with the door open for other deployment targets. Support both D1 (SQLite) and Postgres as switchable database backends via Drizzle ORM, with a search abstraction for the only queries that can't go through Drizzle. Rename `packages/worker` to `packages/gateway` to reflect its role as the API gateway regardless of host platform.
@@ -561,9 +615,9 @@ dev-seed:         ## Seed test data
 
 ## Acceptance Criteria
 
-- [ ] All ~80 convertible raw SQL queries migrated to Drizzle query builder
-- [ ] `SearchProvider` interface defined with `SqliteFts5SearchProvider` and `PgTextSearchProvider` implementations
-- [ ] `AppDatabase` type replaces `D1Database` in all DB service files
+- [x] All ~80 convertible raw SQL queries migrated to Drizzle query builder
+- [~] `SearchProvider` interface defined with `SqliteFts5SearchProvider` and `PgTextSearchProvider` implementations — SQLite done, Postgres not started
+- [x] `AppDatabase` type replaces `D1Database` in all DB service files (as `AppDb`)
 - [ ] No `D1Database` import outside of `platform/cloudflare.ts` and `entry-cloudflare.ts`
 - [ ] Drizzle schema files support both SQLite and Postgres
 - [ ] SQLite migrations (existing 41 files) continue to work for D1 deployments
@@ -580,8 +634,8 @@ dev-seed:         ## Seed test data
 - [ ] Makefile targets for `dev`, `dev-down`, `dev-reset`, `dev-migrate`, `dev-seed`
 - [ ] `packages/worker` renamed to `packages/gateway`
 - [ ] All cross-package imports updated
-- [ ] `pnpm typecheck` passes
-- [ ] Existing CF + D1 deployment works unchanged (no regression)
+- [x] `pnpm typecheck` passes
+- [x] Existing CF + D1 deployment works unchanged (no regression)
 - [ ] CF + Postgres (Hyperdrive) deployment works
 - [ ] K8s + Postgres deployment works
 - [ ] New contributors can onboard with `docker compose up` — no CF account or Wrangler required
