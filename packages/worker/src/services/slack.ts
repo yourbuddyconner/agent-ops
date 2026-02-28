@@ -16,6 +16,7 @@ export async function installSlackApp(
   env: Env,
   installedBy: string,
   botToken: string,
+  signingSecret?: string,
   teamId?: string,
   teamName?: string,
 ): Promise<InstallSlackResult> {
@@ -65,6 +66,11 @@ export async function installSlackApp(
   // Encrypt bot token
   const encryptedBotToken = await encryptString(trimmedToken, env.ENCRYPTION_KEY);
 
+  // Encrypt signing secret if provided
+  const encryptedSigningSecret = signingSecret?.trim()
+    ? await encryptString(signingSecret.trim(), env.ENCRYPTION_KEY)
+    : undefined;
+
   const appDb = getDb(env.DB);
 
   // Upsert into org_slack_installs
@@ -75,6 +81,7 @@ export async function installSlackApp(
     botUserId,
     appId: authResult.app_id,
     encryptedBotToken,
+    encryptedSigningSecret,
     installedBy,
   });
 
@@ -131,6 +138,7 @@ export async function installSlackAppOAuth(
     env,
     installedBy,
     tokenResult.access_token!,
+    undefined, // signingSecret not available via OAuth flow
     tokenResult.team?.id,
     tokenResult.team?.name,
   );

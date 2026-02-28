@@ -9,6 +9,7 @@ export const orgSlackInstalls = sqliteTable('org_slack_installs', {
   botUserId: text().notNull(),
   appId: text(),
   encryptedBotToken: text().notNull(),
+  encryptedSigningSecret: text(),
   installedBy: text().notNull().references(() => users.id),
   createdAt: text().notNull().default(sql`(datetime('now'))`),
   updatedAt: text().notNull().default(sql`(datetime('now'))`),

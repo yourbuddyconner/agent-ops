@@ -19,6 +19,7 @@ export interface SlackInstallStatus {
   teamName?: string;
   botUserId?: string;
   appId?: string;
+  hasSigningSecret?: boolean;
   installedBy?: string;
   createdAt?: string;
 }
@@ -52,7 +53,7 @@ export function useInstallSlack() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (data: { botToken: string }) =>
+    mutationFn: (data: { botToken: string; signingSecret?: string }) =>
       api.post<{ install: SlackInstallStatus }>('/admin/slack', data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: slackKeys.all });

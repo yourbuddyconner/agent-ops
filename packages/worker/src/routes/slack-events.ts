@@ -40,30 +40,34 @@ slackEventsRouter.post('/slack/events', async (c) => {
     return c.json({ challenge: payload.challenge });
   }
 
-  // Verify signature
-  const rawHeaders: Record<string, string> = {};
-  c.req.raw.headers.forEach((value, key) => {
-    rawHeaders[key] = value;
-  });
-
-  if (c.env.SLACK_SIGNING_SECRET) {
-    const valid = await verifySlackSignature(rawHeaders, rawBody, c.env.SLACK_SIGNING_SECRET);
-    if (!valid) {
-      return c.json({ error: 'Invalid signature' }, 401);
-    }
-  }
-
   // Extract team_id from payload
   const teamId = payload.team_id as string | undefined;
   if (!teamId) {
     return c.json({ error: 'Missing team_id' }, 400);
   }
 
-  // Look up org-level Slack install
+  // Look up org-level Slack install (needed for signing secret + bot token)
   const install = await db.getOrgSlackInstall(c.get('db'), teamId);
   if (!install) {
     console.log(`[Slack] No org install found for team_id=${teamId}`);
     return c.json({ ok: true });
+  }
+
+  // Verify signature using signing secret from DB (fall back to env var)
+  const rawHeaders: Record<string, string> = {};
+  c.req.raw.headers.forEach((value, key) => {
+    rawHeaders[key] = value;
+  });
+
+  const signingSecret = install.encryptedSigningSecret
+    ? await decryptString(install.encryptedSigningSecret, c.env.ENCRYPTION_KEY)
+    : c.env.SLACK_SIGNING_SECRET;
+
+  if (signingSecret) {
+    const valid = await verifySlackSignature(rawHeaders, rawBody, signingSecret);
+    if (!valid) {
+      return c.json({ error: 'Invalid signature' }, 401);
+    }
   }
 
   // Decrypt bot token

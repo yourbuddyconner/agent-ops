@@ -18,6 +18,7 @@ slackAdminRouter.post('/', async (c) => {
   const user = c.get('user');
   const body = await c.req.json<{
     botToken?: string;
+    signingSecret?: string;
     code?: string;
     redirectUri?: string;
   }>();
@@ -30,7 +31,7 @@ slackAdminRouter.post('/', async (c) => {
     );
   } else if (body.botToken) {
     result = await slackService.installSlackApp(
-      c.env, user.id, body.botToken,
+      c.env, user.id, body.botToken, body.signingSecret,
     );
   } else {
     return c.json({ error: 'Either botToken or code+redirectUri is required' }, 400);
@@ -67,6 +68,7 @@ slackAdminRouter.get('/', async (c) => {
     teamName: install.teamName,
     botUserId: install.botUserId,
     appId: install.appId,
+    hasSigningSecret: !!install.encryptedSigningSecret,
     installedBy: install.installedBy,
     createdAt: install.createdAt,
   });

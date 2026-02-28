@@ -541,6 +541,7 @@ function SlackInstallSection() {
   const installSlack = useInstallSlack();
   const uninstallSlack = useUninstallSlack();
   const [botToken, setBotToken] = React.useState('');
+  const [signingSecret, setSigningSecret] = React.useState('');
   const [editing, setEditing] = React.useState(false);
   const [confirmUninstall, setConfirmUninstall] = React.useState(false);
 
@@ -550,10 +551,14 @@ function SlackInstallSection() {
     e.preventDefault();
     if (!botToken.trim()) return;
     installSlack.mutate(
-      { botToken: botToken.trim() },
+      {
+        botToken: botToken.trim(),
+        signingSecret: signingSecret.trim() || undefined,
+      },
       {
         onSuccess: () => {
           setBotToken('');
+          setSigningSecret('');
           setEditing(false);
         },
       }
@@ -583,7 +588,9 @@ function SlackInstallSection() {
                 <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
                   {installStatus.teamName || 'Slack Workspace'}
                 </p>
-                <p className="text-xs text-green-600 dark:text-green-400">Connected</p>
+                <p className="text-xs text-green-600 dark:text-green-400">
+                  Connected{installStatus.hasSigningSecret ? '' : ' · No signing secret'}
+                </p>
               </div>
               {confirmUninstall ? (
                 <div className="flex items-center gap-2">
@@ -629,6 +636,23 @@ function SlackInstallSection() {
                 Create a Slack app, install it to your workspace, and paste the Bot User OAuth Token here.
               </p>
             </div>
+            <div>
+              <label htmlFor="slack-signing-secret" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                Signing Secret
+              </label>
+              <input
+                id="slack-signing-secret"
+                type="password"
+                value={signingSecret}
+                onChange={(e) => setSigningSecret(e.target.value)}
+                placeholder="abc123..."
+                autoComplete="off"
+                className={inputClass}
+              />
+              <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+                Found under Basic Information &gt; App Credentials in your Slack app settings. Used to verify inbound events.
+              </p>
+            </div>
             {installSlack.isError && (
               <p className="text-sm text-red-600 dark:text-red-400">
                 {(installSlack.error as Error)?.message || 'Failed to install Slack app.'}
@@ -638,7 +662,7 @@ function SlackInstallSection() {
               <Button type="submit" disabled={!botToken.trim() || installSlack.isPending}>
                 {installSlack.isPending ? 'Installing...' : 'Install'}
               </Button>
-              <Button type="button" variant="secondary" onClick={() => { setEditing(false); setBotToken(''); }}>
+              <Button type="button" variant="secondary" onClick={() => { setEditing(false); setBotToken(''); setSigningSecret(''); }}>
                 Cancel
               </Button>
             </div>

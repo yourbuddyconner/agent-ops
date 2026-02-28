@@ -11,6 +11,7 @@ export interface OrgSlackInstall {
   botUserId: string;
   appId: string | null;
   encryptedBotToken: string;
+  encryptedSigningSecret: string | null;
   installedBy: string;
   createdAt: string;
   updatedAt: string;
@@ -60,6 +61,7 @@ export async function saveOrgSlackInstall(
     botUserId: string;
     appId?: string;
     encryptedBotToken: string;
+    encryptedSigningSecret?: string;
     installedBy: string;
   },
 ): Promise<OrgSlackInstall> {
@@ -72,6 +74,7 @@ export async function saveOrgSlackInstall(
     botUserId: data.botUserId,
     appId: data.appId || null,
     encryptedBotToken: data.encryptedBotToken,
+    encryptedSigningSecret: data.encryptedSigningSecret || null,
     installedBy: data.installedBy,
     createdAt: now,
     updatedAt: now,
@@ -82,6 +85,7 @@ export async function saveOrgSlackInstall(
       botUserId: sql`excluded.bot_user_id`,
       appId: sql`excluded.app_id`,
       encryptedBotToken: sql`excluded.encrypted_bot_token`,
+      encryptedSigningSecret: sql`excluded.encrypted_signing_secret`,
       installedBy: sql`excluded.installed_by`,
       updatedAt: sql`excluded.updated_at`,
     },
@@ -94,6 +98,7 @@ export async function saveOrgSlackInstall(
     botUserId: data.botUserId,
     appId: data.appId || null,
     encryptedBotToken: data.encryptedBotToken,
+    encryptedSigningSecret: data.encryptedSigningSecret || null,
     installedBy: data.installedBy,
     createdAt: now,
     updatedAt: now,
