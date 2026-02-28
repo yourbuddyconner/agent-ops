@@ -32,7 +32,10 @@ import { orchestratorRouter } from './routes/orchestrator.js';
 import { tasksRouter } from './routes/tasks.js';
 import { notificationQueueRouter } from './routes/mailbox.js';
 import { channelsRouter } from './routes/channels.js';
-import { telegramRouter, telegramApiRouter } from './routes/telegram.js';
+import { telegramApiRouter } from './routes/telegram.js';
+import { slackAdminRouter, slackUserRouter } from './routes/slack.js';
+import { slackEventsRouter } from './routes/slack-events.js';
+import { channelWebhooksRouter } from './routes/channel-webhooks.js';
 import {
   enqueueWorkflowApprovalNotificationIfMissing,
   getTerminatedOrchestratorSessions,
@@ -114,8 +117,9 @@ app.route('/og', ogRouter);
 // Public invite validation (no auth required)
 app.route('/invites', invitesRouter);
 
-// Telegram webhook (unauthenticated — Telegram sends updates here)
-app.route('/telegram', telegramRouter);
+// Channel webhooks (unauthenticated — platforms send updates here)
+app.route('/channels', channelWebhooksRouter);
+app.route('/channels', slackEventsRouter);
 
 // Protected API routes
 app.use('/api/*', authMiddleware);
@@ -139,6 +143,8 @@ app.route('/api/sessions', tasksRouter);
 app.route('/api', notificationQueueRouter);
 app.route('/api', channelsRouter);
 app.route('/api/me/telegram', telegramApiRouter);
+app.route('/api/admin/slack', slackAdminRouter);
+app.route('/api/me/slack', slackUserRouter);
 app.route('/api/invites', invitesApiRouter);
 
 // Agent container proxy (protected)

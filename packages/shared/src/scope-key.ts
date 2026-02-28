@@ -14,6 +14,10 @@ export function apiScopeKey(userId: string, idempotencyKey: string): string {
   return `user:${userId}:api:${idempotencyKey}`;
 }
 
+export function channelScopeKey(userId: string, channelType: string, channelId: string): string {
+  return `user:${userId}:${channelType}:${channelId}`;
+}
+
 export function telegramScopeKey(userId: string, chatId: string): string {
-  return `user:${userId}:telegram:${chatId}`;
+  return channelScopeKey(userId, 'telegram', chatId);
 }

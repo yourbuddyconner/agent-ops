@@ -16,6 +16,9 @@
   "files": [],
   "references": [
     { "path": "./packages/shared" },
+    { "path": "./packages/sdk" },
+    { "path": "./packages/channel-telegram" },
+    { "path": "./packages/channel-slack" },
     { "path": "./packages/worker" }
   ]
 }

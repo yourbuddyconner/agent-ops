@@ -1,10 +1,15 @@
-import { Bot } from 'grammy';
 import { SLASH_COMMANDS } from '@agent-ops/shared';
 import type { UserTelegramConfig } from '@agent-ops/shared';
 import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
 import { getDb } from '../lib/drizzle.js';
 import { storeCredential, getCredential, revokeCredential } from '../services/credentials.js';
+
+const TG_API = 'https://api.telegram.org';
+
+function botUrl(token: string, method: string): string {
+  return `${TG_API}/bot${token}/${method}`;
+}
 
 // ─── Setup Telegram Bot ─────────────────────────────────────────────────────
 
@@ -25,10 +30,17 @@ export async function setupTelegramBot(
   const trimmedToken = botToken.trim();
 
   // Validate token by calling getMe()
-  const bot = new Bot(trimmedToken);
-  let botInfo;
+  let botInfo: Record<string, unknown>;
   try {
-    botInfo = await bot.api.getMe();
+    const resp = await fetch(botUrl(trimmedToken, 'getMe'));
+    if (!resp.ok) {
+      return { ok: false, error: 'Invalid bot token — could not reach Telegram API' };
+    }
+    const data = (await resp.json()) as { ok: boolean; result?: Record<string, unknown> };
+    if (!data.ok || !data.result) {
+      return { ok: false, error: 'Invalid bot token — could not reach Telegram API' };
+    }
+    botInfo = data.result;
   } catch {
     return { ok: false, error: 'Invalid bot token — could not reach Telegram API' };
   }
@@ -43,19 +55,30 @@ export async function setupTelegramBot(
   const config = await db.saveUserTelegramConfig(appDb, {
     id: crypto.randomUUID(),
     userId,
-    botUsername: botInfo.username || botInfo.first_name,
+    botUsername: (botInfo.username as string) || (botInfo.first_name as string) || '',
     botInfo: JSON.stringify(botInfo),
   });
 
-  // Register webhook with Telegram
-  const webhookUrl = `${workerUrl}/telegram/webhook/${userId}`;
-  await bot.api.setWebhook(webhookUrl);
+  // Register webhook with Telegram (new channel-based URL)
+  const webhookUrl = `${workerUrl}/channels/telegram/webhook/${userId}`;
+  const webhookResp = await fetch(botUrl(trimmedToken, 'setWebhook'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: webhookUrl }),
+  });
+  if (!webhookResp.ok) {
+    console.error('Failed to set Telegram webhook:', await webhookResp.text().catch(() => ''));
+  }
 
   // Register bot commands
   const tgCommands = SLASH_COMMANDS
     .filter((cmd) => cmd.availableIn.includes('telegram'))
     .map((cmd) => ({ command: cmd.name, description: cmd.description }));
-  await bot.api.setMyCommands(tgCommands).catch(() => {
+  await fetch(botUrl(trimmedToken, 'setMyCommands'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ commands: tgCommands }),
+  }).catch(() => {
     // Best effort
   });
 
@@ -74,8 +97,10 @@ export async function disconnectTelegramBot(
   const credResult = await getCredential(env, userId, 'telegram');
   if (credResult.ok) {
     try {
-      const bot = new Bot(credResult.credential.accessToken);
-      await bot.api.deleteWebhook();
+      await fetch(botUrl(credResult.credential.accessToken, 'deleteWebhook'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
     } catch {
       // Best effort — token may be revoked
     }

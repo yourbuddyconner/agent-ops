@@ -844,7 +844,7 @@ export interface UserTelegramConfig {
 // ─── Slash Command Registry ──────────────────────────────────────────────────
 
 export type SlashCommandHandler = 'local' | 'websocket' | 'api' | 'opencode';
-export type SlashCommandChannel = 'ui' | 'telegram';
+export type SlashCommandChannel = 'ui' | 'telegram' | 'slack';
 export type SlashCommandCategory = 'Agent' | 'Session' | 'OpenCode';
 
 export interface SlashCommand {
@@ -857,15 +857,15 @@ export interface SlashCommand {
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
-  { name: 'help', description: 'List available commands', handler: 'local', availableIn: ['ui', 'telegram'], category: 'Session' },
+  { name: 'help', description: 'List available commands', handler: 'local', availableIn: ['ui', 'telegram', 'slack'], category: 'Session' },
   { name: 'model', description: 'Switch AI model', handler: 'local', availableIn: ['ui'], args: '[query]', category: 'Session' },
   { name: 'diff', description: 'Show git changes since session start', handler: 'websocket', availableIn: ['ui'], category: 'Agent' },
   { name: 'review', description: 'Code review of changed files', handler: 'websocket', availableIn: ['ui'], category: 'Agent' },
-  { name: 'stop', description: 'Abort current agent work', handler: 'websocket', availableIn: ['ui', 'telegram'], category: 'Agent' },
-  { name: 'clear', description: 'Clear prompt queue', handler: 'api', availableIn: ['ui', 'telegram'], category: 'Session' },
-  { name: 'status', description: 'Show session status + children', handler: 'api', availableIn: ['ui', 'telegram'], category: 'Session' },
-  { name: 'refresh', description: 'Restart orchestrator session', handler: 'api', availableIn: ['ui', 'telegram'], category: 'Session' },
-  { name: 'sessions', description: 'List child sessions with status', handler: 'api', availableIn: ['ui', 'telegram'], category: 'Session' },
+  { name: 'stop', description: 'Abort current agent work', handler: 'websocket', availableIn: ['ui', 'telegram', 'slack'], category: 'Agent' },
+  { name: 'clear', description: 'Clear prompt queue', handler: 'api', availableIn: ['ui', 'telegram', 'slack'], category: 'Session' },
+  { name: 'status', description: 'Show session status + children', handler: 'api', availableIn: ['ui', 'telegram', 'slack'], category: 'Session' },
+  { name: 'refresh', description: 'Restart orchestrator session', handler: 'api', availableIn: ['ui', 'telegram', 'slack'], category: 'Session' },
+  { name: 'sessions', description: 'List child sessions with status', handler: 'api', availableIn: ['ui', 'telegram', 'slack'], category: 'Session' },
   { name: 'undo', description: 'Undo last agent change', handler: 'opencode', availableIn: ['ui'], category: 'OpenCode' },
   { name: 'redo', description: 'Redo last undo', handler: 'opencode', availableIn: ['ui'], category: 'OpenCode' },
   { name: 'compact', description: 'Compact/summarize conversation', handler: 'opencode', availableIn: ['ui'], category: 'OpenCode' },

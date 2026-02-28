@@ -7,7 +7,8 @@ import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerC
 import { listTriggers, getTrigger, deleteTrigger, createTrigger, getTriggerForRun, updateTriggerLastRun, findScheduleTriggerByNameAndWorkflow, findScheduleTriggersByWorkflow, findScheduleTriggersByName, updateTriggerFull } from '../lib/db/triggers.js';
 import { getExecution, getExecutionWithWorkflowName, getExecutionForAuth, getExecutionSteps, getExecutionOwnerAndStatus, checkIdempotencyKey, createExecution, completeExecutionFull, upsertExecutionStep, listExecutions } from '../lib/db/executions.js';
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
-import { sendTelegramMessage, sendTelegramPhoto } from '../routes/telegram.js';
+import { channelRegistry } from '../channels/registry.js';
+import type { ChannelTarget, ChannelContext } from '@agent-ops/sdk';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
@@ -7308,46 +7309,53 @@ export class SessionAgentDO {
         return;
       }
 
-      switch (channelType) {
-        case 'telegram': {
-          const tgCred = await getCredential(this.env, userId, 'telegram');
-          if (!tgCred.ok) {
-            this.sendToRunner({ type: 'channel-reply-result', requestId, error: 'No Telegram config for user' } as any);
-            return;
-          }
-          const botToken = tgCred.credential.accessToken;
-          let ok: boolean;
-          if (imageBase64) {
-            ok = await sendTelegramPhoto(
-              botToken, channelId, imageBase64,
-              imageMimeType || 'image/jpeg', message || undefined,
-            );
-          } else {
-            ok = await sendTelegramMessage(botToken, channelId, message);
-          }
-          if (!ok) {
-            this.sendToRunner({ type: 'channel-reply-result', requestId, error: 'Telegram API error' } as any);
-            return;
-          }
-
-          // Mark auto-reply as handled so we don't double-send on complete
-          if (this.pendingChannelReply
-            && this.pendingChannelReply.channelType === channelType
-            && this.pendingChannelReply.channelId === channelId) {
-            this.pendingChannelReply.handled = true;
-          }
-
-          // Resolve follow-up reminder if this is a substantive reply (followUp !== false)
-          if (followUp !== false) {
-            this.resolveChannelFollowups(channelType, channelId);
-          }
-
-          this.sendToRunner({ type: 'channel-reply-result', requestId, success: true } as any);
-          break;
-        }
-        default:
-          this.sendToRunner({ type: 'channel-reply-result', requestId, error: `Unsupported channel type: ${channelType}` } as any);
+      const transport = channelRegistry.getTransport(channelType);
+      if (!transport) {
+        this.sendToRunner({ type: 'channel-reply-result', requestId, error: `Unsupported channel type: ${channelType}` } as any);
+        return;
       }
+
+      const credResult = await getCredential(this.env, userId, channelType);
+      if (!credResult.ok) {
+        this.sendToRunner({ type: 'channel-reply-result', requestId, error: `No ${channelType} config for user` } as any);
+        return;
+      }
+
+      const target: ChannelTarget = { channelType, channelId };
+      const ctx: ChannelContext = { token: credResult.credential.accessToken, userId };
+
+      // Build outbound message
+      const outbound: import('@agent-ops/sdk').OutboundMessage = imageBase64
+        ? {
+            markdown: message || undefined,
+            attachments: [{
+              type: 'image' as const,
+              url: `data:${imageMimeType || 'image/jpeg'};base64,${imageBase64}`,
+              mimeType: imageMimeType || 'image/jpeg',
+              caption: message || undefined,
+            }],
+          }
+        : { markdown: message };
+
+      const result = await transport.sendMessage(target, outbound, ctx);
+      if (!result.success) {
+        this.sendToRunner({ type: 'channel-reply-result', requestId, error: result.error || `${channelType} API error` } as any);
+        return;
+      }
+
+      // Mark auto-reply as handled so we don't double-send on complete
+      if (this.pendingChannelReply
+        && this.pendingChannelReply.channelType === channelType
+        && this.pendingChannelReply.channelId === channelId) {
+        this.pendingChannelReply.handled = true;
+      }
+
+      // Resolve follow-up reminder if this is a substantive reply (followUp !== false)
+      if (followUp !== false) {
+        this.resolveChannelFollowups(channelType, channelId);
+      }
+
+      this.sendToRunner({ type: 'channel-reply-result', requestId, success: true } as any);
 
       // Store image as a system message for web UI visibility
       if (imageBase64) {
@@ -7420,24 +7428,24 @@ export class SessionAgentDO {
 
     let sent = false;
     try {
-      switch (pending.channelType) {
-        case 'telegram': {
-          const autoTgCred = await getCredential(this.env, userId, 'telegram');
-          if (!autoTgCred.ok) {
-            console.log('[SessionAgentDO] Auto channel reply: no Telegram config, skipping');
-            return;
-          }
-          const ok = await sendTelegramMessage(autoTgCred.credential.accessToken, pending.channelId, pending.resultContent);
-          if (ok) {
-            console.log(`[SessionAgentDO] Auto channel reply sent to ${pending.channelType}:${pending.channelId}`);
-            sent = true;
-          } else {
-            console.error(`[SessionAgentDO] Auto channel reply failed for ${pending.channelType}:${pending.channelId}`);
-          }
-          break;
+      const transport = channelRegistry.getTransport(pending.channelType);
+      if (!transport) {
+        console.log(`[SessionAgentDO] Auto channel reply: unsupported channel type ${pending.channelType}`);
+      } else {
+        const credResult = await getCredential(this.env, userId, pending.channelType);
+        if (!credResult.ok) {
+          console.log(`[SessionAgentDO] Auto channel reply: no ${pending.channelType} config, skipping`);
+          return;
         }
-        default:
-          console.log(`[SessionAgentDO] Auto channel reply: unsupported channel type ${pending.channelType}`);
+        const target: ChannelTarget = { channelType: pending.channelType, channelId: pending.channelId };
+        const ctx: ChannelContext = { token: credResult.credential.accessToken, userId };
+        const result = await transport.sendMessage(target, { markdown: pending.resultContent }, ctx);
+        if (result.success) {
+          console.log(`[SessionAgentDO] Auto channel reply sent to ${pending.channelType}:${pending.channelId}`);
+          sent = true;
+        } else {
+          console.error(`[SessionAgentDO] Auto channel reply failed for ${pending.channelType}:${pending.channelId}: ${result.error}`);
+        }
       }
     } catch (err) {
       console.error('[SessionAgentDO] Auto channel reply error:', err);

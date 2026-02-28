@@ -2,6 +2,13 @@ import * as React from 'react';
 import { useIntegrations } from '@/api/integrations';
 import { useUserCredentials, useDeleteUserCredential } from '@/api/auth';
 import { useTelegramConfig, useDisconnectTelegram } from '@/api/orchestrator';
+import {
+  useSlackUserStatus,
+  useSlackWorkspaceUsers,
+  useInitiateSlackLink,
+  useVerifySlackLink,
+  useUnlinkSlack,
+} from '@/api/slack';
 import { IntegrationCard } from './integration-card';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -25,21 +32,31 @@ export function IntegrationList() {
   const { data, isLoading: integrationsLoading, error } = useIntegrations();
   const { data: credentials, isLoading: credentialsLoading } = useUserCredentials();
   const { data: telegramConfig, isLoading: telegramLoading } = useTelegramConfig();
+  const { data: slackStatus, isLoading: slackLoading } = useSlackUserStatus();
 
   const hasOnePassword = credentials?.some((c) => c.provider === '1password');
   const hasTelegram = !!telegramConfig;
+  const hasSlackInstalled = slackStatus?.installed;
 
-  const isLoading = integrationsLoading || credentialsLoading || telegramLoading;
+  const isLoading = integrationsLoading || credentialsLoading || telegramLoading || slackLoading;
 
   // Build a unified list of items to render
   const allItems = React.useMemo(() => {
-    const items: { key: string; type: '1password' | 'telegram' | 'api'; service: string; status: 'active' | 'pending' | 'error' | 'disconnected'; integration?: Integration }[] = [];
+    const items: { key: string; type: '1password' | 'telegram' | 'slack' | 'api'; service: string; status: 'active' | 'pending' | 'error' | 'disconnected'; integration?: Integration }[] = [];
 
     if (hasOnePassword) {
       items.push({ key: '1password', type: '1password', service: '1password', status: 'active' });
     }
     if (hasTelegram) {
       items.push({ key: 'telegram', type: 'telegram', service: 'telegram', status: 'active' });
+    }
+    if (hasSlackInstalled) {
+      items.push({
+        key: 'slack',
+        type: 'slack',
+        service: 'slack',
+        status: slackStatus?.linked ? 'active' : 'pending',
+      });
     }
     if (data?.integrations) {
       for (const integration of data.integrations) {
@@ -48,7 +65,7 @@ export function IntegrationList() {
     }
 
     return items;
-  }, [hasOnePassword, hasTelegram, data?.integrations]);
+  }, [hasOnePassword, hasTelegram, hasSlackInstalled, slackStatus?.linked, data?.integrations]);
 
   const filteredItems = React.useMemo(() => {
     return allItems.filter((item) => {
@@ -123,6 +140,9 @@ export function IntegrationList() {
             }
             if (item.type === 'telegram') {
               return <TelegramCard key={item.key} config={telegramConfig!} />;
+            }
+            if (item.type === 'slack') {
+              return <SlackCard key={item.key} />;
             }
             return <IntegrationCard key={item.key} integration={item.integration!} />;
           })}
@@ -207,6 +227,220 @@ function TelegramCard({ config }: { config: { botUsername: string; webhookActive
   );
 }
 
+// ─── Slack Identity Link Card ───────────────────────────────────────
+
+function SlackCard() {
+  const { data: status } = useSlackUserStatus();
+  const unlinkSlack = useUnlinkSlack();
+  const [linking, setLinking] = React.useState(false);
+
+  if (!status) return null;
+
+  if (status.linked) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300">
+              <SlackIcon className="h-5 w-5" />
+            </div>
+            <div>
+              <CardTitle className="text-base">Slack</CardTitle>
+              <p className="text-xs text-green-600 dark:text-green-400">
+                Linked{status.slackDisplayName ? ` as ${status.slackDisplayName}` : ''}
+                {status.teamName ? ` in ${status.teamName}` : ''}
+              </p>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              Messages route to your orchestrator
+            </p>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => unlinkSlack.mutate()}
+              disabled={unlinkSlack.isPending}
+            >
+              {unlinkSlack.isPending ? 'Unlinking...' : 'Unlink'}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300">
+            <SlackIcon className="h-5 w-5" />
+          </div>
+          <div>
+            <CardTitle className="text-base">Slack</CardTitle>
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              Not linked{status.teamName ? ` — ${status.teamName}` : ''}
+            </p>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {linking ? (
+          <SlackLinkFlow onClose={() => setLinking(false)} />
+        ) : (
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              Link your Slack account to receive messages
+            </p>
+            <Button variant="secondary" size="sm" onClick={() => setLinking(true)}>
+              Link Account
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SlackLinkFlow({ onClose }: { onClose: () => void }) {
+  const { data: workspaceUsers, isLoading: usersLoading } = useSlackWorkspaceUsers();
+  const initiateLink = useInitiateSlackLink();
+  const verifyLink = useVerifySlackLink();
+  const [step, setStep] = React.useState<'select' | 'verify'>('select');
+  const [search, setSearch] = React.useState('');
+  const [selectedUser, setSelectedUser] = React.useState<{ id: string; displayName: string } | null>(null);
+  const [code, setCode] = React.useState('');
+
+  const filteredUsers = React.useMemo(() => {
+    if (!workspaceUsers) return [];
+    if (!search.trim()) return workspaceUsers;
+    const q = search.toLowerCase();
+    return workspaceUsers.filter(
+      (u) =>
+        u.displayName.toLowerCase().includes(q) ||
+        u.realName.toLowerCase().includes(q)
+    );
+  }, [workspaceUsers, search]);
+
+  function handleSelectUser(user: { id: string; displayName: string; realName: string }) {
+    setSelectedUser({ id: user.id, displayName: user.displayName || user.realName });
+    initiateLink.mutate(
+      { slackUserId: user.id, slackDisplayName: user.displayName || user.realName },
+      {
+        onSuccess: () => setStep('verify'),
+      }
+    );
+  }
+
+  function handleVerify(e: React.FormEvent) {
+    e.preventDefault();
+    if (!code.trim()) return;
+    verifyLink.mutate(
+      { code: code.trim().toUpperCase() },
+      { onSuccess: onClose }
+    );
+  }
+
+  if (step === 'verify') {
+    return (
+      <div className="space-y-3">
+        <p className="text-xs text-neutral-500 dark:text-neutral-400">
+          A verification code was sent to <span className="font-medium text-neutral-700 dark:text-neutral-300">{selectedUser?.displayName}</span> via DM. Enter it below.
+        </p>
+        <form onSubmit={handleVerify} className="flex items-center gap-2">
+          <input
+            type="text"
+            value={code}
+            onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6))}
+            placeholder="AX7K2M"
+            maxLength={6}
+            autoFocus
+            className="w-28 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-center font-mono text-sm tracking-widest text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100"
+          />
+          <Button size="sm" type="submit" disabled={code.length !== 6 || verifyLink.isPending}>
+            {verifyLink.isPending ? 'Verifying...' : 'Verify'}
+          </Button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+          >
+            Cancel
+          </button>
+        </form>
+        {verifyLink.isError && (
+          <p className="text-xs text-red-600 dark:text-red-400">
+            {(verifyLink.error as Error)?.message || 'Invalid code. Please try again.'}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search workspace members..."
+          autoFocus
+          className="flex-1 rounded-md border border-neutral-300 bg-white px-2.5 py-1.5 text-xs text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100"
+        />
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+        >
+          Cancel
+        </button>
+      </div>
+      {usersLoading ? (
+        <div className="space-y-1">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="h-8 animate-pulse rounded bg-neutral-100 dark:bg-neutral-700" />
+          ))}
+        </div>
+      ) : (
+        <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700">
+          {filteredUsers.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-neutral-400">No users found</p>
+          ) : (
+            filteredUsers.map((user) => (
+              <button
+                key={user.id}
+                type="button"
+                onClick={() => handleSelectUser(user)}
+                disabled={initiateLink.isPending}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-neutral-50 disabled:opacity-50 dark:hover:bg-neutral-750"
+              >
+                {user.avatar ? (
+                  <img src={user.avatar} alt="" className="h-5 w-5 rounded" />
+                ) : (
+                  <div className="h-5 w-5 rounded bg-neutral-200 dark:bg-neutral-600" />
+                )}
+                <span className="font-medium text-neutral-900 dark:text-neutral-100">{user.displayName}</span>
+                {user.realName !== user.displayName && (
+                  <span className="text-neutral-400 dark:text-neutral-500">{user.realName}</span>
+                )}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+      {initiateLink.isError && (
+        <p className="text-xs text-red-600 dark:text-red-400">
+          {(initiateLink.error as Error)?.message || 'Failed to send verification code.'}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ─── Icons ──────────────────────────────────────────────────────────────
 
 function OnePasswordIcon({ className }: { className?: string }) {
@@ -221,6 +455,14 @@ function TelegramIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="currentColor">
       <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z" />
+    </svg>
+  );
+}
+
+function SlackIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zm10.122 2.521a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zm-1.268 0a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zm-2.523 10.122a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zm0-1.268a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" />
     </svg>
   );
 }

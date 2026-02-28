@@ -17,6 +17,7 @@ export * from './db/notifications.js';
 export * from './db/tasks.js';
 export * from './db/channels.js';
 export * from './db/telegram.js';
+export * from './db/slack.js';
 export * from './db/workflows.js';
 export * from './db/triggers.js';
 export * from './db/executions.js';

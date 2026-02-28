@@ -25,6 +25,7 @@ import type { UserRole, CustomProviderModel } from '@agent-ops/shared';
 import { Input } from '@/components/ui/input';
 import { useAvailableModels } from '@/api/sessions';
 import type { ProviderModels } from '@/api/sessions';
+import { useSlackInstallStatus, useInstallSlack, useUninstallSlack } from '@/api/slack';
 
 export const Route = createFileRoute('/settings/admin')({
   component: AdminSettingsPage,
@@ -63,6 +64,7 @@ function AdminSettingsPage() {
         <OrgModelPreferencesSection />
         <OrgReposSection />
         <LLMKeysSection />
+        <SlackInstallSection />
         <CustomProvidersSection />
         <AccessControlSection />
         <InvitesSection />
@@ -529,6 +531,133 @@ function OrgReposSection() {
         )}
       </div>
     </Section>
+  );
+}
+
+// --- Slack App Install ---
+
+function SlackInstallSection() {
+  const { data: installStatus, isLoading } = useSlackInstallStatus();
+  const installSlack = useInstallSlack();
+  const uninstallSlack = useUninstallSlack();
+  const [botToken, setBotToken] = React.useState('');
+  const [editing, setEditing] = React.useState(false);
+  const [confirmUninstall, setConfirmUninstall] = React.useState(false);
+
+  const isInstalled = installStatus?.installed;
+
+  function handleInstall(e: React.FormEvent) {
+    e.preventDefault();
+    if (!botToken.trim()) return;
+    installSlack.mutate(
+      { botToken: botToken.trim() },
+      {
+        onSuccess: () => {
+          setBotToken('');
+          setEditing(false);
+        },
+      }
+    );
+  }
+
+  function handleUninstall() {
+    uninstallSlack.mutate(undefined, {
+      onSuccess: () => setConfirmUninstall(false),
+    });
+  }
+
+  return (
+    <Section title="Slack">
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Install the Slack app for your organization. Once installed, team members can link their Slack accounts from the Integrations page.
+        </p>
+
+        {isLoading ? (
+          <div className="h-12 animate-pulse rounded-md bg-neutral-100 dark:bg-neutral-700" />
+        ) : isInstalled ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 dark:border-neutral-700 dark:bg-neutral-800/50">
+              <SlackIcon className="h-5 w-5 text-neutral-600 dark:text-neutral-300" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                  {installStatus.teamName || 'Slack Workspace'}
+                </p>
+                <p className="text-xs text-green-600 dark:text-green-400">Connected</p>
+              </div>
+              {confirmUninstall ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-red-600 dark:text-red-400">Confirm?</span>
+                  <Button
+                    variant="secondary"
+                    onClick={handleUninstall}
+                    disabled={uninstallSlack.isPending}
+                  >
+                    {uninstallSlack.isPending ? 'Removing...' : 'Remove'}
+                  </Button>
+                  <Button variant="secondary" onClick={() => setConfirmUninstall(false)}>
+                    Cancel
+                  </Button>
+                </div>
+              ) : (
+                <Button variant="secondary" onClick={() => setConfirmUninstall(true)}>
+                  Uninstall
+                </Button>
+              )}
+            </div>
+            {uninstallSlack.isError && (
+              <p className="text-sm text-red-600 dark:text-red-400">Failed to uninstall Slack app.</p>
+            )}
+          </div>
+        ) : editing ? (
+          <form onSubmit={handleInstall} className="space-y-3">
+            <div>
+              <label htmlFor="slack-token" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                Bot Token
+              </label>
+              <input
+                id="slack-token"
+                type="password"
+                value={botToken}
+                onChange={(e) => setBotToken(e.target.value)}
+                placeholder="xoxb-..."
+                autoComplete="off"
+                autoFocus
+                className={inputClass}
+              />
+              <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+                Create a Slack app, install it to your workspace, and paste the Bot User OAuth Token here.
+              </p>
+            </div>
+            {installSlack.isError && (
+              <p className="text-sm text-red-600 dark:text-red-400">
+                {(installSlack.error as Error)?.message || 'Failed to install Slack app.'}
+              </p>
+            )}
+            <div className="flex items-center gap-2">
+              <Button type="submit" disabled={!botToken.trim() || installSlack.isPending}>
+                {installSlack.isPending ? 'Installing...' : 'Install'}
+              </Button>
+              <Button type="button" variant="secondary" onClick={() => { setEditing(false); setBotToken(''); }}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <Button variant="secondary" onClick={() => setEditing(true)}>
+            Install Slack App
+          </Button>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+function SlackIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zm10.122 2.521a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zm-1.268 0a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zm-2.523 10.122a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zm0-1.268a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" />
+    </svg>
   );
 }
 

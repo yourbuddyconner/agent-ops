@@ -5,6 +5,9 @@ export default defineConfig({
     projects: [
       'packages/worker',
       'packages/shared',
+      'packages/sdk',
+      'packages/channel-telegram',
+      'packages/channel-slack',
     ],
   },
 });

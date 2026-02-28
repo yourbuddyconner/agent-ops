@@ -42,9 +42,11 @@ export interface Env {
   // Optional Worker name fallback (used when FRONTEND_URL is a Pages domain).
   WORKER_NAME?: string;
 
-  // Slack integration (Phase D prep)
+  // Slack integration
   SLACK_SIGNING_SECRET?: string;
   SLACK_BOT_TOKEN?: string;
+  SLACK_CLIENT_ID?: string;
+  SLACK_CLIENT_SECRET?: string;
 
   // Email allowlist (comma-separated). If unset, all emails are allowed.
   ALLOWED_EMAILS?: string;
