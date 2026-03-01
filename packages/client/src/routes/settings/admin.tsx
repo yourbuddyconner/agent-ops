@@ -956,7 +956,7 @@ function ModelIdInput({
   }
 
   return (
-    <div className="relative flex-[2]">
+    <div className="relative flex-[3] min-w-0">
       <input
         ref={inputRef}
         value={value}
@@ -972,7 +972,7 @@ function ModelIdInput({
       {showDropdown && filtered.length > 0 && (
         <div
           ref={dropdownRef}
-          className="absolute z-20 mt-1 max-h-48 w-full overflow-auto rounded-md border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-800"
+          className="absolute z-20 mt-1 max-h-48 min-w-[360px] overflow-auto rounded-md border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-800"
         >
           {filtered.map((modelId, i) => (
             <button
@@ -1164,22 +1164,22 @@ function CustomProviderForm({
               <input
                 value={model.name ?? ''}
                 onChange={(e) => updateModel(i, 'name', e.target.value)}
-                placeholder="Display name (optional)"
-                className={inputClass + ' !mt-0 !max-w-none flex-1'}
+                placeholder="Display name"
+                className={inputClass + ' !mt-0 !max-w-none flex-[2]'}
               />
               <input
                 type="number"
                 value={model.contextLimit ?? ''}
                 onChange={(e) => updateModel(i, 'contextLimit', parseInt(e.target.value) || 0)}
-                placeholder="Context limit"
-                className={inputClass + ' !mt-0 w-28'}
+                placeholder="Context"
+                className={inputClass + ' !mt-0 w-24'}
               />
               <input
                 type="number"
                 value={model.outputLimit ?? ''}
                 onChange={(e) => updateModel(i, 'outputLimit', parseInt(e.target.value) || 0)}
-                placeholder="Output limit"
-                className={inputClass + ' !mt-0 w-28'}
+                placeholder="Output"
+                className={inputClass + ' !mt-0 w-24'}
               />
               <Button type="button" variant="secondary" onClick={() => removeModel(i)} disabled={models.length <= 1}>
                 -
