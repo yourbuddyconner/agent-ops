@@ -22,6 +22,7 @@ import {
 import { useOrgRepos, useCreateOrgRepo, useDeleteOrgRepo, useSetRepoPersonaDefault } from '@/api/org-repos';
 import { usePersonas } from '@/api/personas';
 import type { UserRole, CustomProviderModel } from '@agent-ops/shared';
+import { formatDate } from '../../lib/format';
 import { Input } from '@/components/ui/input';
 import { useAvailableModels } from '@/api/sessions';
 import type { ProviderModels } from '@/api/sessions';
@@ -1294,7 +1295,7 @@ function InvitesSection() {
                       </span>
                     </td>
                     <td className="py-2 text-neutral-500 dark:text-neutral-400">
-                      {new Date(invite.createdAt).toLocaleDateString()}
+                      {formatDate(invite.createdAt)}
                     </td>
                     <td className="py-2 text-right">
                       <div className="flex items-center gap-2 justify-end">
@@ -1393,7 +1394,7 @@ function UsersSection({ currentUserId }: { currentUserId: string }) {
                       </select>
                     </td>
                     <td className="py-2 text-neutral-500 dark:text-neutral-400">
-                      {new Date(u.createdAt).toLocaleDateString()}
+                      {formatDate(u.createdAt)}
                     </td>
                     <td className="py-2 text-right">
                       {!isSelf && !isLastAdmin && (

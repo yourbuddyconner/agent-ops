@@ -15,5 +15,11 @@ export function getDb(d1: D1Database): DrizzleD1Database {
 }
 
 export function toDate(value: string | null | undefined): Date {
-  return new Date(value ?? 0);
+  if (!value) return new Date(0);
+  // SQLite's datetime('now') returns "YYYY-MM-DD HH:MM:SS" (UTC, but no T/Z).
+  // Normalize to ISO 8601 so `new Date()` unambiguously treats it as UTC.
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
+    return new Date(value.replace(' ', 'T') + 'Z');
+  }
+  return new Date(value);
 }

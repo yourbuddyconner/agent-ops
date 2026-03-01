@@ -23,19 +23,31 @@ const relativeFormatter = new Intl.RelativeTimeFormat('en-US', {
   numeric: 'auto',
 });
 
+/**
+ * Normalize a server date string to a proper UTC Date.
+ * SQLite's datetime('now') returns "YYYY-MM-DD HH:MM:SS" (no T, no Z).
+ * Without the Z suffix, `new Date()` parses space-separated formats as local time.
+ * This function detects that format and appends 'Z' so it's correctly treated as UTC.
+ */
+function parseServerDate(date: Date | string): Date {
+  if (date instanceof Date) return date;
+  // Match SQLite format: "YYYY-MM-DD HH:MM:SS" (no T, no Z/timezone)
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(date)) {
+    return new Date(date.replace(' ', 'T') + 'Z');
+  }
+  return new Date(date);
+}
+
 export function formatDate(date: Date | string): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  return dateFormatter.format(d);
+  return dateFormatter.format(parseServerDate(date));
 }
 
 export function formatTime(date: Date | string): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  return timeFormatter.format(d);
+  return timeFormatter.format(parseServerDate(date));
 }
 
 export function formatDateTime(date: Date | string): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  return dateTimeFormatter.format(d);
+  return dateTimeFormatter.format(parseServerDate(date));
 }
 
 export function formatDuration(seconds: number): string {
@@ -48,7 +60,7 @@ export function formatDuration(seconds: number): string {
 }
 
 export function formatRelativeTime(date: Date | string): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
+  const d = parseServerDate(date);
   const now = new Date();
   const diffInSeconds = Math.floor((d.getTime() - now.getTime()) / 1000);
   const diffInMinutes = Math.floor(diffInSeconds / 60);
