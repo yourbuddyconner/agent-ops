@@ -8,21 +8,20 @@ import * as db from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
 import { dispatchOrchestratorPrompt } from '../lib/workflow-runtime.js';
 import { handleChannelCommand } from './channel-webhooks.js';
+import { getSlackUserInfo, getSlackBotInfo } from '../services/slack.js';
 
 export const slackEventsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 /**
  * POST /channels/slack/events — Slack Events API handler
  *
- * Org-level flow:
- * 1. Parse JSON → handle url_verification
- * 2. Verify signature (SLACK_SIGNING_SECRET)
- * 3. team_id → getOrgSlackInstall(teamId) → { encryptedBotToken, botUserId }
- * 4. decryptString(encryptedBotToken) → botToken
- * 5. event.user → resolveUserByExternalId('slack', slackUserId) → userId
- * 6. If no user found → 200 OK (ignore gracefully)
- * 7. transport.parseInbound() → InboundMessage
- * 8. scopeKey → channel binding lookup → route to session or orchestrator
+ * Routing rules:
+ * 1. DMs (channel_type === 'im') → always route
+ * 2. @mention (event.type === 'app_mention') → route + track thread
+ * 3. Reply in a tracked thread → route
+ * 4. Everything else → ignore (200 OK)
+ *
+ * Bot replies always thread on the invoking message.
  */
 slackEventsRouter.post('/slack/events', async (c) => {
   const rawBody = await c.req.text();
@@ -73,7 +72,13 @@ slackEventsRouter.post('/slack/events', async (c) => {
   // Decrypt bot token
   const botToken = await decryptString(install.encryptedBotToken, c.env.ENCRYPTION_KEY);
 
-  // Resolve Agent-Ops user from Slack user ID via identity links
+  // Get transport and parse inbound (before identity resolution so we have event metadata)
+  const transport = channelRegistry.getTransport('slack');
+  if (!transport) {
+    return c.json({ error: 'Slack transport not registered' }, 500);
+  }
+
+  // Extract event-level fields for routing decisions before full parse
   const event = payload.event as Record<string, unknown> | undefined;
   const slackUserId = (event?.user as string) || null;
 
@@ -82,25 +87,100 @@ slackEventsRouter.post('/slack/events', async (c) => {
     return c.json({ ok: true });
   }
 
-  const userId = await db.resolveUserByExternalId(c.get('db'), 'slack', slackUserId);
-  if (!userId) {
-    console.log(`[Slack] No identity link for slack user=${slackUserId}`);
-    return c.json({ ok: true });
-  }
+  // Resolve Slack display names in parallel: sender + bot (for mention cleanup)
+  const [slackUserProfile, botInfo] = await Promise.all([
+    getSlackUserInfo(botToken, slackUserId),
+    getSlackBotInfo(botToken), // discovers bot_id via auth.test, then calls bots.info
+  ]);
+  const resolvedSenderName = slackUserProfile?.displayName || slackUserProfile?.realName || undefined;
 
-  // Get transport and parse inbound
-  const transport = channelRegistry.getTransport('slack');
-  if (!transport) {
-    return c.json({ error: 'Slack transport not registered' }, 500);
+  // Build mention map for resolving <@USER_ID> in message text
+  // bots.info returns the bot's U-prefixed userId and its display name
+  const mentionMap: Record<string, string> = {};
+  if (botInfo?.userId && botInfo.name) {
+    mentionMap[botInfo.userId] = botInfo.name;
+  } else if (install.botUserId && botInfo?.name) {
+    // Fallback: use stored botUserId as key
+    mentionMap[install.botUserId] = botInfo.name;
   }
+  console.log(`[Slack] Mention map: botInfo=${botInfo ? JSON.stringify(botInfo) : 'null'} map=${JSON.stringify(mentionMap)}`);
 
   const message = await transport.parseInbound(rawHeaders, rawBody, {
-    userId,
+    userId: '', // resolved after parsing for routing decisions
     botToken,
+    senderName: resolvedSenderName,
+    mentionMap,
   });
 
   if (!message) {
     return c.json({ ok: true });
+  }
+
+  console.log(`[Slack] Parsed message: senderName=${message.senderName} senderId=${message.senderId} channelId=${message.channelId}`);
+
+  // Extract routing metadata
+  const slackEventType = message.metadata?.slackEventType as string | undefined;
+  const slackChannelType = message.metadata?.slackChannelType as string | undefined;
+  const threadTs = message.metadata?.threadTs as string | undefined;
+  const messageId = message.messageId;
+
+  // Compute threadId: ensures top-level mentions start a thread on themselves
+  const threadId = threadTs || messageId;
+
+  // ─── Routing decision ──────────────────────────────────────────────────
+  const isDm = slackChannelType === 'im';
+  const isMention = slackEventType === 'app_mention';
+  const isThreadReply = !!threadTs;
+
+  let shouldRoute = false;
+
+  if (isDm) {
+    // DMs → always route
+    shouldRoute = true;
+  } else if (isMention) {
+    // @mention → route + track thread for follow-ups
+    shouldRoute = true;
+  } else if (isThreadReply) {
+    // Thread reply → only route if we've seen a mention in this thread
+    shouldRoute = await db.isSlackBotThread(c.get('db'), teamId, message.channelId, threadTs);
+    if (!shouldRoute) {
+      console.log(`[Slack] Ignoring thread reply in untracked thread: channel=${message.channelId} thread=${threadTs}`);
+      return c.json({ ok: true });
+    }
+  } else {
+    // Regular channel message, no mention, not in a thread → ignore
+    console.log(`[Slack] Ignoring non-mention channel message: channel=${message.channelId}`);
+    return c.json({ ok: true });
+  }
+
+  // ─── Identity resolution ───────────────────────────────────────────────
+  const userId = await db.resolveUserByExternalId(c.get('db'), 'slack', slackUserId);
+  if (!userId) {
+    console.log(`[Slack] No identity link for slack user=${slackUserId}`);
+    // For @mentions and DMs, reply with account linking instructions
+    if (isMention || isDm) {
+      const ctx: ChannelContext = { token: botToken, userId: '' };
+      const target: ChannelTarget = {
+        channelType: 'slack',
+        channelId: message.channelId,
+        threadId: isDm ? undefined : threadId,
+      };
+      await transport.sendMessage(target, {
+        markdown: "I don't recognize your Slack account yet. To get started, link your account in Agent-Ops:\n\n1. Log in to Agent-Ops\n2. Go to **Integrations** in the sidebar\n3. Click **Link Account** on the Slack card\n4. Find your name and enter the verification code I'll DM you",
+      }, ctx);
+    }
+    return c.json({ ok: true });
+  }
+
+  // ─── Track @mention threads ────────────────────────────────────────────
+  if (isMention && threadId) {
+    await db.trackSlackBotThread(c.get('db'), {
+      id: crypto.randomUUID(),
+      teamId,
+      channelId: message.channelId,
+      threadTs: threadId,
+      userId,
+    });
   }
 
   // Handle slash commands
@@ -109,11 +189,15 @@ slackEventsRouter.post('/slack/events', async (c) => {
     const target: ChannelTarget = {
       channelType: 'slack',
       channelId: message.channelId,
-      threadId: (message.metadata?.threadTs as string) || undefined,
+      threadId,
     };
     await handleChannelCommand(c.env, transport, target, ctx, message, userId);
     return c.json({ ok: true });
   }
+
+  // Encode thread_ts in channelId for non-DM channels so the agent can reply
+  // in the correct thread. DMs don't need this — they're a single conversation.
+  const dispatchChannelId = (!isDm && threadId) ? `${message.channelId}:${threadId}` : message.channelId;
 
   // Build scope key and look up channel binding
   const parts = transport.scopeKeyParts(message, userId);
@@ -121,7 +205,7 @@ slackEventsRouter.post('/slack/events', async (c) => {
   const binding = await db.getChannelBindingByScopeKey(c.get('db'), scopeKey);
 
   if (binding) {
-    console.log(`[Slack] Bound session dispatch: session=${binding.sessionId} channelId=${message.channelId}`);
+    console.log(`[Slack] Bound session dispatch: session=${binding.sessionId} channelId=${dispatchChannelId}`);
     const doId = c.env.SESSIONS.idFromName(binding.sessionId);
     const sessionDO = c.env.SESSIONS.get(doId);
     try {
@@ -141,7 +225,7 @@ slackEventsRouter.post('/slack/events', async (c) => {
             attachments: attachments.length > 0 ? attachments : undefined,
             queueMode: binding.queueMode,
             channelType: 'slack',
-            channelId: message.channelId,
+            channelId: dispatchChannelId,
             authorName: message.senderName,
           }),
         }),
@@ -163,12 +247,12 @@ slackEventsRouter.post('/slack/events', async (c) => {
     filename: a.fileName,
   }));
 
-  console.log(`[Slack] Orchestrator dispatch: userId=${userId} channelId=${message.channelId}`);
+  console.log(`[Slack] Orchestrator dispatch: userId=${userId} channelId=${dispatchChannelId}`);
   const result = await dispatchOrchestratorPrompt(c.env, {
     userId,
     content: message.text || '[Attachment]',
     channelType: 'slack',
-    channelId: message.channelId,
+    channelId: dispatchChannelId,
     authorName: message.senderName,
     attachments: attachments.length > 0 ? attachments : undefined,
   });
@@ -178,7 +262,7 @@ slackEventsRouter.post('/slack/events', async (c) => {
     const target: ChannelTarget = {
       channelType: 'slack',
       channelId: message.channelId,
-      threadId: (message.metadata?.threadTs as string) || undefined,
+      threadId,
     };
     await transport.sendMessage(target, {
       markdown: 'Your orchestrator is not running. Start it from the Agent-Ops dashboard.',

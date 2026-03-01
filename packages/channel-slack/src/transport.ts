@@ -65,6 +65,35 @@ const SKIP_SUBTYPES = new Set([
   'unpinned_item',
 ]);
 
+// ─── Text Cleanup ───────────────────────────────────────────────────────────
+
+/**
+ * Clean Slack-specific markup from message text:
+ * - Replace <@USER_ID> with @DisplayName using mentionMap, or @USER_ID as fallback
+ * - Decode Slack channel links: <#C123|general> → #general
+ * - Decode URL links: <https://example.com|label> → label
+ *
+ * @param mentionMap - Map of Slack user ID → display name (e.g. { "U123": "Agent-Ops" })
+ */
+function cleanSlackText(text: string, mentionMap?: Record<string, string>): string {
+  let cleaned = text;
+
+  // Replace user mentions: <@U123> → @DisplayName or @U123
+  cleaned = cleaned.replace(/<@([A-Z0-9]+)>/g, (_match, userId: string) => {
+    const name = mentionMap?.[userId];
+    return name ? `@${name}` : `@${userId}`;
+  });
+
+  // Replace channel links: <#C123|general> → #general
+  cleaned = cleaned.replace(/<#[A-Z0-9]+\|([^>]+)>/g, '#$1');
+
+  // Replace URL links: <url|label> → label, <url> → url
+  cleaned = cleaned.replace(/<(https?:\/\/[^|>]+)\|([^>]+)>/g, '$2');
+  cleaned = cleaned.replace(/<(https?:\/\/[^>]+)>/g, '$1');
+
+  return cleaned.trim();
+}
+
 // ─── SlackTransport ─────────────────────────────────────────────────────────
 
 export class SlackTransport implements ChannelTransport {
@@ -115,7 +144,9 @@ export class SlackTransport implements ChannelTransport {
 
     const channel = event.channel as string | undefined;
     const user = event.user as string | undefined;
-    const text = (event.text as string) || '';
+    const rawText = (event.text as string) || '';
+    const mentionMap = routing.mentionMap as Record<string, string> | undefined;
+    const text = cleanSlackText(rawText, mentionMap);
     const ts = event.ts as string | undefined;
     const threadTs = event.thread_ts as string | undefined;
     const eventTs = event.event_ts as string | undefined;
@@ -165,7 +196,7 @@ export class SlackTransport implements ChannelTransport {
         command: commandMatch[1],
         commandArgs: commandMatch[2]?.trim(),
         messageId: ts,
-        metadata: { teamId, threadTs, eventTs },
+        metadata: { teamId, threadTs, eventTs, slackEventType: eventType, slackChannelType: event.channel_type },
       };
     }
 
@@ -177,7 +208,7 @@ export class SlackTransport implements ChannelTransport {
       text: text || (attachments.length > 0 ? '[Attachment]' : ''),
       attachments,
       messageId: ts,
-      metadata: { teamId, threadTs, eventTs },
+      metadata: { teamId, threadTs, eventTs, slackEventType: eventType, slackChannelType: event.channel_type },
     };
   }
 

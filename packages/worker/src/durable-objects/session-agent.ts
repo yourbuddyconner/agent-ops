@@ -3,6 +3,7 @@ import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
 import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrchestratorMemories, createOrchestratorMemory, deleteOrchestratorMemory, boostMemoryRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels } from '../lib/db.js';
 import { getCredential } from '../services/credentials.js';
+import { getSlackBotToken } from '../services/slack.js';
 import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
 import { listTriggers, getTrigger, deleteTrigger, createTrigger, getTriggerForRun, updateTriggerLastRun, findScheduleTriggerByNameAndWorkflow, findScheduleTriggersByWorkflow, findScheduleTriggersByName, updateTriggerFull } from '../lib/db/triggers.js';
 import { getExecution, getExecutionWithWorkflowName, getExecutionForAuth, getExecutionSteps, getExecutionOwnerAndStatus, checkIdempotencyKey, createExecution, completeExecutionFull, upsertExecutionStep, listExecutions } from '../lib/db/executions.js';
@@ -7301,6 +7302,18 @@ export class SessionAgentDO {
 
   // ─── Phase D: Channel Reply Handler ──────────────────────────────────
 
+  /**
+   * Parse composite Slack channelId that may encode thread_ts after a colon.
+   * e.g. "C123ABC:1234567890.123456" → { channelId: "C123ABC", threadId: "1234567890.123456" }
+   */
+  private parseSlackChannelId(channelType: string, channelId: string): { channelId: string; threadId?: string } {
+    if (channelType === 'slack' && channelId.includes(':')) {
+      const idx = channelId.indexOf(':');
+      return { channelId: channelId.slice(0, idx), threadId: channelId.slice(idx + 1) };
+    }
+    return { channelId };
+  }
+
   private async handleChannelReply(requestId: string, channelType: string, channelId: string, message: string, imageBase64?: string, imageMimeType?: string, followUp?: boolean) {
     try {
       const userId = this.getStateValue('userId');
@@ -7315,14 +7328,23 @@ export class SessionAgentDO {
         return;
       }
 
-      const credResult = await getCredential(this.env, userId, channelType);
-      if (!credResult.ok) {
+      // Resolve token: Slack uses org-level bot token, other channels use per-user credentials
+      let token: string | undefined;
+      if (channelType === 'slack') {
+        token = await getSlackBotToken(this.env) ?? undefined;
+      } else {
+        const credResult = await getCredential(this.env, userId, channelType);
+        if (credResult.ok) token = credResult.credential.accessToken;
+      }
+      if (!token) {
         this.sendToRunner({ type: 'channel-reply-result', requestId, error: `No ${channelType} config for user` } as any);
         return;
       }
 
-      const target: ChannelTarget = { channelType, channelId };
-      const ctx: ChannelContext = { token: credResult.credential.accessToken, userId };
+      // Parse composite channelId (Slack encodes threadId after colon)
+      const parsed = this.parseSlackChannelId(channelType, channelId);
+      const target: ChannelTarget = { channelType, channelId: parsed.channelId, threadId: parsed.threadId };
+      const ctx: ChannelContext = { token, userId };
 
       // Build outbound message
       const outbound: import('@agent-ops/sdk').OutboundMessage = imageBase64
@@ -7432,13 +7454,22 @@ export class SessionAgentDO {
       if (!transport) {
         console.log(`[SessionAgentDO] Auto channel reply: unsupported channel type ${pending.channelType}`);
       } else {
-        const credResult = await getCredential(this.env, userId, pending.channelType);
-        if (!credResult.ok) {
+        // Resolve token: Slack uses org-level bot token, other channels use per-user credentials
+        let token: string | undefined;
+        if (pending.channelType === 'slack') {
+          token = await getSlackBotToken(this.env) ?? undefined;
+        } else {
+          const credResult = await getCredential(this.env, userId, pending.channelType);
+          if (credResult.ok) token = credResult.credential.accessToken;
+        }
+        if (!token) {
           console.log(`[SessionAgentDO] Auto channel reply: no ${pending.channelType} config, skipping`);
           return;
         }
-        const target: ChannelTarget = { channelType: pending.channelType, channelId: pending.channelId };
-        const ctx: ChannelContext = { token: credResult.credential.accessToken, userId };
+        // Parse composite channelId (Slack encodes threadId after colon)
+        const parsed = this.parseSlackChannelId(pending.channelType, pending.channelId);
+        const target: ChannelTarget = { channelType: pending.channelType, channelId: parsed.channelId, threadId: parsed.threadId };
+        const ctx: ChannelContext = { token, userId };
         const result = await transport.sendMessage(target, { markdown: pending.resultContent }, ctx);
         if (result.success) {
           console.log(`[SessionAgentDO] Auto channel reply sent to ${pending.channelType}:${pending.channelId}`);

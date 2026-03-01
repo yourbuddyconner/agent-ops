@@ -1,6 +1,6 @@
 import type { AppDb } from '../drizzle.js';
 import { eq, and, sql, lt } from 'drizzle-orm';
-import { orgSlackInstalls, slackLinkVerifications } from '../schema/index.js';
+import { orgSlackInstalls, slackLinkVerifications, slackBotThreads } from '../schema/index.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -182,5 +182,59 @@ export async function deleteExpiredSlackLinkVerifications(
   const result = await db
     .delete(slackLinkVerifications)
     .where(lt(slackLinkVerifications.expiresAt, now));
+  return result.meta?.changes ?? 0;
+}
+
+// ─── Bot Thread Tracking ───────────────────────────────────────────────────
+
+export async function trackSlackBotThread(
+  db: AppDb,
+  data: {
+    id: string;
+    teamId: string;
+    channelId: string;
+    threadTs: string;
+    userId: string;
+  },
+): Promise<void> {
+  await db.insert(slackBotThreads).values({
+    id: data.id,
+    teamId: data.teamId,
+    channelId: data.channelId,
+    threadTs: data.threadTs,
+    userId: data.userId,
+  }).onConflictDoNothing();
+}
+
+export async function isSlackBotThread(
+  db: AppDb,
+  teamId: string,
+  channelId: string,
+  threadTs: string,
+): Promise<boolean> {
+  const row = await db
+    .select({ id: slackBotThreads.id })
+    .from(slackBotThreads)
+    .where(
+      and(
+        eq(slackBotThreads.teamId, teamId),
+        eq(slackBotThreads.channelId, channelId),
+        eq(slackBotThreads.threadTs, threadTs),
+      ),
+    )
+    .limit(1)
+    .get();
+  return !!row;
+}
+
+export async function cleanupOldSlackBotThreads(
+  db: AppDb,
+  olderThanDays: number,
+): Promise<number> {
+  const result = await db
+    .delete(slackBotThreads)
+    .where(
+      sql`${slackBotThreads.createdAt} < datetime('now', '-' || ${olderThanDays} || ' days')`,
+    );
   return result.meta?.changes ?? 0;
 }

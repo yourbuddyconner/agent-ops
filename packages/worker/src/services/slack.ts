@@ -218,6 +218,142 @@ export async function listSlackWorkspaceUsers(
     }));
 }
 
+// ─── Slack User Info (single user lookup) ─────────────────────────────────
+
+export interface SlackUserProfile {
+  displayName: string;
+  realName: string;
+  avatar: string | null;
+}
+
+export async function getSlackUserInfo(
+  botToken: string,
+  slackUserId: string,
+): Promise<SlackUserProfile | null> {
+  try {
+    const resp = await fetch(`${SLACK_API}/users.info?user=${encodeURIComponent(slackUserId)}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${botToken}`,
+      },
+    });
+
+    if (!resp.ok) {
+      console.log(`[Slack] users.info HTTP error: status=${resp.status} user=${slackUserId}`);
+      return null;
+    }
+
+    const result = (await resp.json()) as {
+      ok: boolean;
+      error?: string;
+      user?: {
+        name?: string;
+        real_name?: string;
+        profile?: {
+          display_name?: string;
+          real_name?: string;
+          image_48?: string;
+        };
+      };
+    };
+
+    if (!result.ok || !result.user) {
+      console.log(`[Slack] users.info API error: ok=${result.ok} error=${result.error} user=${slackUserId}`);
+      return null;
+    }
+
+    const u = result.user;
+    const profile: SlackUserProfile = {
+      displayName: u.profile?.display_name || u.name || slackUserId,
+      realName: u.profile?.real_name || u.real_name || u.name || slackUserId,
+      avatar: u.profile?.image_48 || null,
+    };
+    console.log(`[Slack] users.info resolved: user=${slackUserId} displayName=${profile.displayName} realName=${profile.realName}`);
+    return profile;
+  } catch (err) {
+    console.error(`[Slack] users.info fetch error: user=${slackUserId}`, err);
+    return null;
+  }
+}
+
+// ─── Bot Info (via bots.info) ────────────────────────────────────────────────
+
+export interface SlackBotInfo {
+  id: string;
+  name: string;
+  userId?: string;
+  icons?: { image_36?: string; image_48?: string; image_72?: string };
+}
+
+/**
+ * Get bot metadata via bots.info. Requires the B-prefixed bot ID.
+ * Falls back to auth.test to discover the bot_id if not provided.
+ */
+export async function getSlackBotInfo(
+  botToken: string,
+  botId?: string,
+): Promise<SlackBotInfo | null> {
+  try {
+    // If no B-prefixed bot ID, discover it via auth.test
+    let resolvedBotId = botId;
+    if (!resolvedBotId) {
+      const authResp = await fetch(`${SLACK_API}/auth.test`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          Authorization: `Bearer ${botToken}`,
+        },
+        body: '{}',
+      });
+      if (!authResp.ok) return null;
+      const authResult = (await authResp.json()) as { ok: boolean; bot_id?: string };
+      if (!authResult.ok || !authResult.bot_id) return null;
+      resolvedBotId = authResult.bot_id;
+    }
+
+    const resp = await fetch(`${SLACK_API}/bots.info?bot=${encodeURIComponent(resolvedBotId)}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${botToken}` },
+    });
+    if (!resp.ok) return null;
+
+    const result = (await resp.json()) as {
+      ok: boolean;
+      error?: string;
+      bot?: {
+        id: string;
+        name?: string;
+        user_id?: string;
+        icons?: { image_36?: string; image_48?: string; image_72?: string };
+      };
+    };
+
+    if (!result.ok || !result.bot) {
+      console.log(`[Slack] bots.info error: ok=${result.ok} error=${result.error} botId=${resolvedBotId}`);
+      return null;
+    }
+
+    return {
+      id: result.bot.id,
+      name: result.bot.name || resolvedBotId,
+      userId: result.bot.user_id,
+      icons: result.bot.icons,
+    };
+  } catch (err) {
+    console.error(`[Slack] bots.info fetch error:`, err);
+    return null;
+  }
+}
+
+// ─── Org-level Bot Token Resolution ─────────────────────────────────────────
+
+export async function getSlackBotToken(env: Env): Promise<string | null> {
+  const appDb = getDb(env.DB);
+  const install = await db.getOrgSlackInstallAny(appDb);
+  if (!install) return null;
+  return decryptString(install.encryptedBotToken, env.ENCRYPTION_KEY);
+}
+
 // ─── Initiate Slack Link ────────────────────────────────────────────────────
 
 export interface InitiateSlackLinkResult {
