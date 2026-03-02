@@ -576,6 +576,7 @@ export function useChat(sessionId: string) {
           runnerConnected: !!message.data?.runnerConnected,
           sessionTitle: message.session.title,
           childSessionEvents: restoredChildEvents,
+          pendingActionApprovals: [],
           reviewResult: null,
           reviewError: null,
           reviewLoading: false,

@@ -134,7 +134,7 @@ export function ActionApprovalCard({ approval, onApproveWs, onDenyWs }: ActionAp
         <div className="mt-3 flex gap-2">
           <Button
             size="sm"
-            variant="default"
+            variant="primary"
             onClick={handleApprove}
             disabled={isLoading}
             className="bg-emerald-600 hover:bg-emerald-700 text-white"
