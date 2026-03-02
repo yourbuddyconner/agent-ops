@@ -138,6 +138,8 @@ describe('SlackTransport', () => {
         teamId: 'T123',
         threadTs: undefined,
         eventTs: '1234567890.123456',
+        slackEventType: 'message',
+        slackChannelType: undefined,
       });
     });
 
