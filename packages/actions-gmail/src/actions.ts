@@ -2,6 +2,19 @@ import { z } from 'zod';
 import type { ActionDefinition, ActionSource, ActionContext, ActionResult } from '@agent-ops/sdk';
 import { gmailFetch, decodeBase64Url, encodeBase64Url } from './api.js';
 
+/** Build a descriptive error from a failed Gmail API response. */
+async function gmailError(res: Response): Promise<ActionResult> {
+  let detail = '';
+  try {
+    const body = await res.text();
+    const json = JSON.parse(body);
+    detail = json?.error?.message || body.slice(0, 200);
+  } catch {
+    detail = res.statusText;
+  }
+  return { success: false, error: `Gmail API ${res.status}: ${detail}` };
+}
+
 // ─── Internal Types ──────────────────────────────────────────────────────────
 
 interface GmailMessage {
@@ -321,7 +334,7 @@ async function executeAction(
       case 'gmail.get_message': {
         const { messageId } = getMessage.params.parse(params);
         const res = await gmailFetch(`/users/me/messages/${messageId}?format=full`, token);
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
+        if (!res.ok) return gmailError(res);
         const msg = (await res.json()) as GmailMessage;
         return { success: true, data: parseMessage(msg) };
       }
@@ -334,7 +347,7 @@ async function executeAction(
         if (p.labelIds?.length) p.labelIds.forEach((id: string) => qs.append('labelIds', id));
 
         const listRes = await gmailFetch(`/users/me/messages?${qs}`, token);
-        if (!listRes.ok) return { success: false, error: `Failed: ${listRes.status}` };
+        if (!listRes.ok) return gmailError(listRes);
 
         const listData = (await listRes.json()) as {
           messages?: Array<{ id: string }>;
@@ -361,7 +374,7 @@ async function executeAction(
           method: 'POST',
           body: JSON.stringify(body),
         });
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
+        if (!res.ok) return gmailError(res);
         return { success: true, data: await res.json() };
       }
 
@@ -369,7 +382,7 @@ async function executeAction(
         const p = replyToEmail.params.parse(params);
         // Get original to find threadId and Message-ID for threading headers
         const origRes = await gmailFetch(`/users/me/messages/${p.originalMessageId}?format=full`, token);
-        if (!origRes.ok) return { success: false, error: 'Original message not found' };
+        if (!origRes.ok) return gmailError(origRes);
         const original = parseMessage((await origRes.json()) as GmailMessage);
 
         const subject = p.subject.startsWith('Re:') ? p.subject : `Re: ${original.subject}`;
@@ -383,7 +396,7 @@ async function executeAction(
           method: 'POST',
           body: JSON.stringify({ raw, threadId: original.threadId }),
         });
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
+        if (!res.ok) return gmailError(res);
         return { success: true, data: await res.json() };
       }
 
@@ -394,7 +407,7 @@ async function executeAction(
           method: 'POST',
           body: JSON.stringify({ message: { raw, threadId: p.threadId } }),
         });
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
+        if (!res.ok) return gmailError(res);
         return { success: true, data: await res.json() };
       }
 
@@ -404,7 +417,7 @@ async function executeAction(
           method: 'POST',
           body: JSON.stringify({ id: draftId }),
         });
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
+        if (!res.ok) return gmailError(res);
         return { success: true, data: await res.json() };
       }
 
@@ -414,7 +427,7 @@ async function executeAction(
           method: 'POST',
           body: JSON.stringify({ addLabelIds, removeLabelIds }),
         });
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
+        if (!res.ok) return gmailError(res);
         return { success: true };
       }
 
@@ -424,7 +437,7 @@ async function executeAction(
           method: 'POST',
           body: JSON.stringify({ removeLabelIds: ['INBOX'] }),
         });
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
+        if (!res.ok) return gmailError(res);
         return { success: true };
       }
 
@@ -434,7 +447,7 @@ async function executeAction(
           method: 'POST',
           body: JSON.stringify({ addLabelIds: ['STARRED'] }),
         });
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
+        if (!res.ok) return gmailError(res);
         return { success: true };
       }
 
@@ -443,7 +456,7 @@ async function executeAction(
         const res = await gmailFetch(`/users/me/messages/${messageId}/trash`, token, {
           method: 'POST',
         });
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
+        if (!res.ok) return gmailError(res);
         return { success: true };
       }
 
@@ -453,14 +466,14 @@ async function executeAction(
           method: 'POST',
           body: JSON.stringify({ removeLabelIds: ['UNREAD'] }),
         });
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
+        if (!res.ok) return gmailError(res);
         return { success: true };
       }
 
       case 'gmail.get_labels': {
         getLabels.params.parse(params);
         const res = await gmailFetch('/users/me/labels', token);
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
+        if (!res.ok) return gmailError(res);
         return { success: true, data: await res.json() };
       }
 
@@ -470,7 +483,7 @@ async function executeAction(
           `/users/me/messages/${messageId}/attachments/${attachmentId}`,
           token,
         );
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
+        if (!res.ok) return gmailError(res);
         return { success: true, data: await res.json() };
       }
 

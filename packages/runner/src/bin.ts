@@ -267,6 +267,13 @@ async function main() {
     onChannelReply: async (channelType, channelId, message, imageBase64, imageMimeType, followUp) => {
       return await agentClient.requestChannelReply(channelType, channelId, message, imageBase64, imageMimeType, followUp);
     },
+    // Tool Discovery & Invocation
+    onListTools: async (service, query) => {
+      return await agentClient.requestListTools(service, query);
+    },
+    onCallTool: async (toolId, params) => {
+      return await agentClient.requestCallTool(toolId, params);
+    },
   });
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient, sessionId!);
 

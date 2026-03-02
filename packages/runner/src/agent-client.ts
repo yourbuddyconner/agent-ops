@@ -34,6 +34,7 @@ const SPAWN_CHILD_TIMEOUT_MS = 60_000;
 const TERMINATE_CHILD_TIMEOUT_MS = 30_000;
 const MESSAGE_OP_TIMEOUT_MS = 15_000;
 const PR_OP_TIMEOUT_MS = 30_000;
+const TOOL_OP_TIMEOUT_MS = 30_000;
 // If the server rejects the WebSocket upgrade N times in a row (e.g. 401 due to
 // rotated token), stop retrying and exit — the sandbox has been replaced.
 const MAX_CONSECUTIVE_UPGRADE_FAILURES = 5;
@@ -717,6 +718,22 @@ export class AgentClient {
     });
   }
 
+  // ─── Tool Discovery & Invocation ──────────────────────────────
+
+  requestListTools(service?: string, query?: string): Promise<{ tools: unknown[] }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, TOOL_OP_TIMEOUT_MS, () => {
+      this.send({ type: "list-tools", requestId, service, query });
+    });
+  }
+
+  requestCallTool(toolId: string, params: Record<string, unknown>): Promise<{ result: unknown }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, TOOL_OP_TIMEOUT_MS, () => {
+      this.send({ type: "call-tool", requestId, toolId, params });
+    });
+  }
+
   requestSelfTerminate(): void {
     this.send({ type: "self-terminate" });
     // Disconnect and exit — the DO will handle sandbox termination
@@ -1168,6 +1185,22 @@ export class AgentClient {
             this.rejectPendingRequest(msg.requestId, msg.error);
           } else {
             this.resolvePendingRequest(msg.requestId, { success: msg.success ?? true });
+          }
+          break;
+
+        case "list-tools-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { tools: msg.tools ?? [] });
+          }
+          break;
+
+        case "call-tool-result":
+          if (msg.error) {
+            this.rejectPendingRequest(msg.requestId, msg.error);
+          } else {
+            this.resolvePendingRequest(msg.requestId, { result: msg.result });
           }
           break;
 

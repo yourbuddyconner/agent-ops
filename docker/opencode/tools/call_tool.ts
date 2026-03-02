@@ -1,0 +1,56 @@
+import { tool } from "@opencode-ai/plugin"
+
+export default tool({
+  description:
+    "Call a tool by its ID with the given parameters. Use list_tools first to discover available tools and their required parameters.",
+  args: {
+    tool_id: tool.schema
+      .string()
+      .describe("The fully-qualified tool ID (e.g. 'gmail:send_email', 'github:create_issue')"),
+    params: tool.schema
+      .string()
+      .optional()
+      .describe("JSON object of parameters for the tool. Must match the schema from list_tools."),
+  },
+  async execute(args) {
+    try {
+      if (!args.tool_id) {
+        return "Error: tool_id is required. Use list_tools to discover available tools."
+      }
+
+      let params: Record<string, unknown> = {}
+      if (args.params) {
+        try {
+          params = JSON.parse(args.params)
+        } catch {
+          return "Error: params must be a valid JSON object."
+        }
+      }
+
+      const res = await fetch("http://localhost:9000/api/tools/call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toolId: args.tool_id, params }),
+      })
+
+      if (!res.ok) {
+        const errText = await res.text()
+        return `Tool call failed: ${errText}`
+      }
+
+      const data = (await res.json()) as { result?: unknown; error?: string }
+      if (data.error) {
+        return `Tool error: ${data.error}`
+      }
+
+      if (data.result === undefined || data.result === null) {
+        return "Tool executed successfully (no data returned)."
+      }
+
+      return JSON.stringify(data.result, null, 2)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `Failed to call tool: ${msg}`
+    }
+  },
+})

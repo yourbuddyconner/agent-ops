@@ -170,17 +170,21 @@ export async function getCredential(
     };
   }
 
+  // Force refresh if requested (e.g. after a 401 from the API indicates the token is invalid)
+  if (options?.forceRefresh && data.refresh_token) {
+    const refreshed = await attemptRefresh(env, userId, provider, data);
+    if (refreshed.ok) return refreshed;
+    return {
+      ok: false,
+      error: { service: provider, reason: 'refresh_failed', message: 'Force refresh failed' },
+    };
+  }
+
   // Check expiration (with 60-second buffer)
   if (row.expiresAt && new Date(row.expiresAt).getTime() - Date.now() < 60_000) {
     if (data.refresh_token) {
       const refreshed = await attemptRefresh(env, userId, provider, data);
       if (refreshed.ok) return refreshed;
-    }
-    if (options?.forceRefresh) {
-      return {
-        ok: false,
-        error: { service: provider, reason: 'expired', message: 'Credential expired and refresh failed' },
-      };
     }
     // Return potentially expired credential — caller can decide
   }

@@ -579,6 +579,9 @@ export interface GatewayCallbacks {
   onMyTasks?: (status?: string) => Promise<{ tasks: unknown[] }>;
   // Phase D: Channel Reply
   onChannelReply?: (channelType: string, channelId: string, message: string, imageBase64?: string, imageMimeType?: string, followUp?: boolean) => Promise<{ success: boolean }>;
+  // Tool Discovery & Invocation
+  onListTools?: (service?: string, query?: string) => Promise<{ tools: unknown[] }>;
+  onCallTool?: (toolId: string, params: Record<string, unknown>) => Promise<{ result: unknown }>;
 }
 
 export function startGateway(port: number, callbacks: GatewayCallbacks): void {
@@ -1508,6 +1511,40 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] Channel reply error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // ─── Tool Discovery & Invocation API ─────────────────────────────────
+
+  app.get("/api/tools", async (c) => {
+    if (!callbacks.onListTools) {
+      return c.json({ error: "List tools handler not configured" }, 500);
+    }
+    try {
+      const service = c.req.query("service") || undefined;
+      const query = c.req.query("query") || undefined;
+      const result = await callbacks.onListTools(service, query);
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] List tools error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/tools/call", async (c) => {
+    if (!callbacks.onCallTool) {
+      return c.json({ error: "Call tool handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as { toolId?: string; params?: Record<string, unknown> };
+      if (!body.toolId) {
+        return c.json({ error: "Missing required field: toolId" }, 400);
+      }
+      const result = await callbacks.onCallTool(body.toolId, body.params || {});
+      return c.json(result);
+    } catch (err) {
+      console.error("[Gateway] Call tool error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });

@@ -10,6 +10,8 @@ import { getExecution, getExecutionWithWorkflowName, getExecutionForAuth, getExe
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 import { assembleCustomProviders, assembleBuiltInProviderModelConfigs } from '../lib/env-assembly.js';
 import { channelRegistry } from '../channels/registry.js';
+import { integrationRegistry } from '../integrations/registry.js';
+import { getUserIntegrations } from '../lib/db/integrations.js';
 import type { ChannelTarget, ChannelContext } from '@agent-ops/sdk';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
 
@@ -211,7 +213,7 @@ function deriveRuntimeStates(args: {
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'command-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'mem-read' | 'mem-write' | 'mem-patch' | 'mem-rm' | 'mem-search' | 'list-repos' | 'list-personas' | 'list-channels' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'workflow-chat-message' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply' | 'audio-transcript' | 'channel-session-created' | 'session-reset' | 'opencode-config-applied' | 'message.create' | 'message.part.text-delta' | 'message.part.tool-update' | 'message.finalize';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'command-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'mem-read' | 'mem-write' | 'mem-patch' | 'mem-rm' | 'mem-search' | 'list-repos' | 'list-personas' | 'list-channels' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'workflow-execution-result' | 'workflow-chat-message' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply' | 'audio-transcript' | 'channel-session-created' | 'session-reset' | 'opencode-config-applied' | 'list-tools' | 'call-tool' | 'message.create' | 'message.part.text-delta' | 'message.part.tool-update' | 'message.finalize';
   restarted?: boolean;
   turnId?: string;
   delta?: string;
@@ -332,6 +334,10 @@ interface RunnerMessage {
   imageBase64?: string;
   imageMimeType?: string;
   followUp?: boolean;
+  // Tool Discovery & Invocation fields
+  toolId?: string;
+  params?: Record<string, unknown>;
+  service?: string;
   // Per-channel session tracking
   channelKey?: string;
   opencodeSessionId?: string;
@@ -347,7 +353,7 @@ interface ClientOutbound {
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'opencode-command' | 'pong' | 'init' | 'opencode-config' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'mem-read-result' | 'mem-write-result' | 'mem-patch-result' | 'mem-rm-result' | 'mem-search-result' | 'list-repos-result' | 'list-personas-result' | 'list-channels-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'workflow-api-result' | 'trigger-api-result' | 'execution-api-result' | 'workflow-execute' | 'tunnel-delete' | 'channel-reply-result';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'opencode-command' | 'pong' | 'init' | 'opencode-config' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'mem-read-result' | 'mem-write-result' | 'mem-patch-result' | 'mem-rm-result' | 'mem-search-result' | 'list-repos-result' | 'list-personas-result' | 'list-channels-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'workflow-api-result' | 'trigger-api-result' | 'execution-api-result' | 'workflow-execute' | 'tunnel-delete' | 'channel-reply-result' | 'list-tools-result' | 'call-tool-result';
   config?: {
     tools?: Record<string, boolean>;
     providerKeys?: Record<string, string>;
@@ -2801,6 +2807,14 @@ export class SessionAgentDO {
         await this.handleChannelReply(msg.requestId!, msg.channelType!, msg.channelId!, msg.message || '', msg.imageBase64, msg.imageMimeType, msg.followUp);
         break;
 
+      // ─── Tool Discovery & Invocation ──────────────────────────────────
+      case 'list-tools':
+        await this.handleListTools(msg.requestId!, msg.service, msg.query);
+        break;
+
+      case 'call-tool':
+        await this.handleCallTool(msg.requestId!, msg.toolId!, msg.params ?? {});
+        break;
 
       case 'ping':
         // Keepalive from runner — respond with pong
@@ -7451,6 +7465,182 @@ export class SessionAgentDO {
         error: err instanceof Error ? err.message : String(err),
       } as any);
     }
+  }
+
+  // ─── Tool Discovery & Invocation ──────────────────────────────────────
+
+  private async handleListTools(requestId: string, service?: string, query?: string) {
+    try {
+      const userId = this.getStateValue('userId');
+      if (!userId) {
+        this.sendToRunner({ type: 'list-tools-result', requestId, error: 'No userId on session' } as any);
+        return;
+      }
+
+      // Get user's active integrations
+      const userIntegrations = await getUserIntegrations(this.appDb, userId);
+      const activeIntegrations = userIntegrations.filter((i) => i.status === 'active');
+
+      const tools: unknown[] = [];
+
+      for (const integration of activeIntegrations) {
+        // If filtering by service, skip non-matching integrations
+        if (service && integration.service !== service) continue;
+
+        const actionSource = integrationRegistry.getActions(integration.service);
+        if (!actionSource) continue;
+
+        const actions = actionSource.listActions();
+        for (const action of actions) {
+          // If query provided, filter by case-insensitive substring match on name/description
+          if (query) {
+            const lowerQuery = query.toLowerCase();
+            const matchesName = action.name.toLowerCase().includes(lowerQuery);
+            const matchesDesc = action.description.toLowerCase().includes(lowerQuery);
+            if (!matchesName && !matchesDesc) continue;
+          }
+
+          tools.push({
+            id: `${integration.service}:${action.id}`,
+            name: action.name,
+            description: action.description,
+            riskLevel: action.riskLevel,
+            params: this.serializeZodSchema(action.params),
+          });
+        }
+      }
+
+      this.sendToRunner({ type: 'list-tools-result', requestId, tools } as any);
+    } catch (err) {
+      this.sendToRunner({
+        type: 'list-tools-result',
+        requestId,
+        error: err instanceof Error ? err.message : String(err),
+      } as any);
+    }
+  }
+
+  private async handleCallTool(requestId: string, toolId: string, params: Record<string, unknown>) {
+    try {
+      const userId = this.getStateValue('userId');
+      if (!userId) {
+        this.sendToRunner({ type: 'call-tool-result', requestId, error: 'No userId on session' } as any);
+        return;
+      }
+
+      // Parse toolId: "service:actionId"
+      const colonIndex = toolId.indexOf(':');
+      if (colonIndex === -1) {
+        this.sendToRunner({ type: 'call-tool-result', requestId, error: `Invalid tool ID format "${toolId}". Expected "service:actionId" (e.g. "gmail:gmail.send_email")` } as any);
+        return;
+      }
+      const service = toolId.slice(0, colonIndex);
+      const actionId = toolId.slice(colonIndex + 1);
+
+      // Verify user has this integration active (not just credentials in the DB)
+      const userIntegrations = await getUserIntegrations(this.appDb, userId);
+      const activeIntegration = userIntegrations.find(
+        (i) => i.service === service && i.status === 'active',
+      );
+      if (!activeIntegration) {
+        this.sendToRunner({ type: 'call-tool-result', requestId, error: `Integration "${service}" is not active. Configure it in Settings > Integrations.` } as any);
+        return;
+      }
+
+      // Look up ActionSource
+      const actionSource = integrationRegistry.getActions(service);
+      if (!actionSource) {
+        this.sendToRunner({ type: 'call-tool-result', requestId, error: `No integration package found for service "${service}".` } as any);
+        return;
+      }
+
+      // Get credentials
+      const credResult = await getCredential(this.env, userId, service);
+      if (!credResult.ok) {
+        this.sendToRunner({ type: 'call-tool-result', requestId, error: `No credentials found for "${service}": ${credResult.error.message}` } as any);
+        return;
+      }
+
+      // Execute the action
+      let actionResult = await actionSource.execute(actionId, params, {
+        credentials: { access_token: credResult.credential.accessToken },
+        userId,
+      });
+
+      // If auth error (401/403), retry once with force-refreshed credentials
+      if (!actionResult.success && actionResult.error && /\b(401|403|unauthorized|invalid.credentials|token.*expired|token.*revoked)\b/i.test(actionResult.error)) {
+        console.log(`[SessionAgentDO] Tool "${toolId}" returned auth error, retrying with refreshed credentials`);
+        const refreshedCred = await getCredential(this.env, userId, service, { forceRefresh: true });
+        if (refreshedCred.ok) {
+          actionResult = await actionSource.execute(actionId, params, {
+            credentials: { access_token: refreshedCred.credential.accessToken },
+            userId,
+          });
+        }
+      }
+
+      // Unwrap ActionResult: propagate failures as error, send data directly on success
+      if (!actionResult.success) {
+        this.sendToRunner({ type: 'call-tool-result', requestId, error: actionResult.error || 'Action failed' } as any);
+      } else {
+        this.sendToRunner({ type: 'call-tool-result', requestId, result: actionResult.data } as any);
+      }
+    } catch (err) {
+      this.sendToRunner({
+        type: 'call-tool-result',
+        requestId,
+        error: err instanceof Error ? err.message : String(err),
+      } as any);
+    }
+  }
+
+  /** Serialize a Zod schema into a simple param descriptor object for tool discovery. */
+  private serializeZodSchema(schema: unknown): Record<string, { type: string; required: boolean; description?: string }> {
+    const result: Record<string, { type: string; required: boolean; description?: string }> = {};
+
+    // Walk ZodObject .shape
+    const shape = (schema as any)?._def?.shape?.();
+    if (!shape || typeof shape !== 'object') return result;
+
+    for (const [key, fieldSchema] of Object.entries(shape)) {
+      let inner: any = fieldSchema;
+      let required = true;
+
+      // Unwrap ZodOptional / ZodDefault / ZodNullable
+      while (inner?._def) {
+        const tn = inner._def.typeName;
+        if (tn === 'ZodOptional' || tn === 'ZodDefault' || tn === 'ZodNullable') {
+          if (tn === 'ZodOptional' || tn === 'ZodDefault') required = false;
+          inner = inner._def.innerType;
+        } else {
+          break;
+        }
+      }
+
+      const type = this.zodTypeToString(inner);
+      const description = inner?._def?.description || (fieldSchema as any)?._def?.description || undefined;
+      result[key] = { type, required, description };
+    }
+
+    return result;
+  }
+
+  /** Map a Zod type to a human-readable type string. */
+  private zodTypeToString(inner: any): string {
+    const typeName = inner?._def?.typeName;
+    if (typeName === 'ZodString') return 'string';
+    if (typeName === 'ZodNumber') return 'number';
+    if (typeName === 'ZodBoolean') return 'boolean';
+    if (typeName === 'ZodEnum') {
+      const values = inner._def.values;
+      return Array.isArray(values) ? `enum(${values.join(',')})` : 'enum';
+    }
+    if (typeName === 'ZodArray') {
+      const itemType = inner._def.type ? this.zodTypeToString(inner._def.type) : 'unknown';
+      return `array<${itemType}>`;
+    }
+    if (typeName === 'ZodObject') return 'object';
+    return 'unknown';
   }
 
   /**

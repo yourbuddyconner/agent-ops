@@ -97,6 +97,8 @@ export type DOToRunnerMessage =
         payload: Record<string, unknown>;
       };
     }
+  | { type: "list-tools-result"; requestId: string; tools?: unknown[]; error?: string }
+  | { type: "call-tool-result"; requestId: string; result?: unknown; error?: string }
   | { type: "tunnel-delete"; name: string; actorId?: string; actorName?: string; actorEmail?: string }
   | { type: "opencode-command"; command: string; args?: string; requestId: string }
   | { type: "new-session"; channelType: string; channelId: string; requestId: string }
@@ -188,6 +190,8 @@ export type RunnerToDOMessage =
   | { type: "task-update"; requestId: string; taskId: string; status?: string; result?: string; description?: string; sessionId?: string; title?: string }
   | { type: "task-my"; requestId: string; status?: string }
   | { type: "channel-reply"; requestId: string; channelType: string; channelId: string; message: string; imageBase64?: string; imageMimeType?: string; followUp?: boolean }
+  | { type: "list-tools"; requestId: string; service?: string; query?: string }
+  | { type: "call-tool"; requestId: string; toolId: string; params: Record<string, unknown> }
   | { type: "audio-transcript"; messageId: string; transcript: string }
   | { type: "command-result"; requestId: string; command: string; result?: unknown; error?: string }
   | { type: "channel-session-created"; channelKey: string; opencodeSessionId: string }
