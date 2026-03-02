@@ -8,17 +8,17 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { api } from '@/api/client';
+import { useAvailableIntegrations, type AvailableService } from '@/api/integrations';
 import { useSetUserCredential } from '@/api/auth';
 import { useSetupTelegram } from '@/api/orchestrator';
 
-type ConnectionType = 'oauth' | 'token';
+// ─── Client-side metadata for display (icons, descriptions, token config) ────
 
-interface Service {
-  id: string;
-  name: string;
-  description: string;
+interface ServiceMeta {
   icon: React.FC<{ className?: string }>;
-  connectionType: ConnectionType;
+  description: string;
+  /** Override connection type for non-OAuth services (1Password, Telegram). */
+  connectionType?: 'token';
   tokenLabel?: string;
   tokenPlaceholder?: string;
   tokenHelpText?: React.ReactNode;
@@ -26,22 +26,18 @@ interface Service {
   credentialProvider?: string;
 }
 
-const SERVICES: Service[] = [
-  {
-    id: '1password',
-    name: '1Password',
-    description: 'Secret management for agent sessions',
+const SERVICE_META: Record<string, ServiceMeta> = {
+  '1password': {
     icon: OnePasswordIcon,
+    description: 'Secret management for agent sessions',
     connectionType: 'token',
     tokenLabel: 'Service Account Token',
     tokenPlaceholder: 'ops_...',
     credentialProvider: '1password',
   },
-  {
-    id: 'telegram',
-    name: 'Telegram',
-    description: 'Bot messaging for your orchestrator',
+  telegram: {
     icon: TelegramIcon,
+    description: 'Bot messaging for your orchestrator',
     connectionType: 'token',
     tokenLabel: 'Bot Token',
     tokenPlaceholder: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11',
@@ -60,42 +56,92 @@ const SERVICES: Service[] = [
       </>
     ),
   },
-  {
-    id: 'github',
-    name: 'GitHub',
-    description: 'Repositories, issues, and pull requests',
+  github: {
     icon: GitHubIcon,
-    connectionType: 'oauth',
+    description: 'Repositories, issues, and pull requests',
   },
-  {
-    id: 'gmail',
-    name: 'Gmail',
-    description: 'Email messages and labels',
+  gmail: {
     icon: GmailIcon,
-    connectionType: 'oauth',
+    description: 'Email messages and labels',
   },
-  {
-    id: 'google_calendar',
-    name: 'Google Calendar',
-    description: 'Events and calendars',
+  google_calendar: {
     icon: CalendarIcon,
-    connectionType: 'oauth',
+    description: 'Events and calendars',
   },
-  {
-    id: 'notion',
-    name: 'Notion',
-    description: 'Pages and databases',
+  notion: {
     icon: NotionIcon,
-    connectionType: 'oauth',
+    description: 'Pages and databases',
   },
-  {
-    id: 'discord',
-    name: 'Discord',
-    description: 'Channels and messages',
+  linear: {
+    icon: LinearIcon,
+    description: 'Issues, projects, and teams',
+  },
+  discord: {
     icon: DiscordIcon,
-    connectionType: 'oauth',
+    description: 'Channels and messages',
   },
-];
+  slack: {
+    icon: SlackIcon,
+    description: 'Team messaging and channels',
+  },
+};
+
+const DEFAULT_META: ServiceMeta = {
+  icon: DefaultServiceIcon,
+  description: '',
+};
+
+// ─── Resolved service type (API data + client metadata) ────────────────────
+
+interface ResolvedService {
+  id: string;
+  name: string;
+  description: string;
+  icon: React.FC<{ className?: string }>;
+  connectionType: 'oauth' | 'token';
+  tokenLabel?: string;
+  tokenPlaceholder?: string;
+  tokenHelpText?: React.ReactNode;
+  credentialProvider?: string;
+}
+
+function resolveService(svc: AvailableService): ResolvedService {
+  const meta = SERVICE_META[svc.service] ?? DEFAULT_META;
+  return {
+    id: svc.service,
+    name: svc.displayName,
+    description: meta.description || svc.supportedEntities.join(', '),
+    icon: meta.icon,
+    connectionType: meta.connectionType ?? 'oauth',
+    tokenLabel: meta.tokenLabel,
+    tokenPlaceholder: meta.tokenPlaceholder,
+    tokenHelpText: meta.tokenHelpText,
+    credentialProvider: meta.credentialProvider,
+  };
+}
+
+// ─── Token-based services (not from the integration registry) ──────────────
+// 1Password and Telegram use different APIs and aren't registered as
+// IntegrationPackages. They're always shown if their meta is defined.
+
+const TOKEN_SERVICES: ResolvedService[] = (['1password', 'telegram'] as const)
+  .filter((id) => SERVICE_META[id])
+  .map((id) => {
+    const meta = SERVICE_META[id]!;
+    return {
+      id,
+      name: id === '1password' ? '1Password' : 'Telegram',
+      description: meta.description,
+      icon: meta.icon,
+      connectionType: 'token' as const,
+      tokenLabel: meta.tokenLabel,
+      tokenPlaceholder: meta.tokenPlaceholder,
+      tokenHelpText: meta.tokenHelpText,
+      credentialProvider: meta.credentialProvider,
+    };
+  });
+
+// ─── Component ─────────────────────────────────────────────────────────────
 
 interface ConnectIntegrationDialogProps {
   open: boolean;
@@ -106,8 +152,15 @@ export function ConnectIntegrationDialog({
   open,
   onOpenChange,
 }: ConnectIntegrationDialogProps) {
-  const [selectedService, setSelectedService] = React.useState<Service | null>(null);
+  const [selectedService, setSelectedService] = React.useState<ResolvedService | null>(null);
   const [connecting, setConnecting] = React.useState<string | null>(null);
+  const { data, isLoading } = useAvailableIntegrations();
+
+  // Merge token-based services + API-sourced OAuth services
+  const services = React.useMemo(() => {
+    const oauthServices = (data?.services ?? []).map(resolveService);
+    return [...TOKEN_SERVICES, ...oauthServices];
+  }, [data]);
 
   function handleClose(isOpen: boolean) {
     if (!isOpen) {
@@ -117,7 +170,7 @@ export function ConnectIntegrationDialog({
     onOpenChange(isOpen);
   }
 
-  const handleSelectService = async (service: Service) => {
+  const handleSelectService = async (service: ResolvedService) => {
     if (service.connectionType === 'token') {
       setSelectedService(service);
       return;
@@ -157,29 +210,40 @@ export function ConnectIntegrationDialog({
               </DialogDescription>
             </DialogHeader>
 
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              {SERVICES.map((service) => (
-                <button
-                  key={service.id}
-                  onClick={() => handleSelectService(service)}
-                  disabled={connecting === service.id}
-                  className="flex items-start gap-3 rounded-lg border border-neutral-200 bg-white p-4 text-left transition-colors hover:bg-neutral-50 disabled:cursor-wait disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-800 dark:hover:bg-neutral-750"
-                >
-                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-neutral-100 dark:bg-neutral-700">
-                    <service.icon className="h-5 w-5" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="font-medium text-neutral-900 dark:text-neutral-100">{service.name}</p>
-                    <p className="mt-0.5 text-sm text-neutral-500 dark:text-neutral-400">
-                      {service.description}
-                    </p>
-                  </div>
-                  {connecting === service.id && (
-                    <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-900" />
-                  )}
-                </button>
-              ))}
-            </div>
+            {isLoading ? (
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="h-[76px] animate-pulse rounded-lg border border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800"
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                {services.map((service) => (
+                  <button
+                    key={service.id}
+                    onClick={() => handleSelectService(service)}
+                    disabled={connecting === service.id}
+                    className="flex items-start gap-3 rounded-lg border border-neutral-200 bg-white p-4 text-left transition-colors hover:bg-neutral-50 disabled:cursor-wait disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-800 dark:hover:bg-neutral-750"
+                  >
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-neutral-100 dark:bg-neutral-700">
+                      <service.icon className="h-5 w-5" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="font-medium text-neutral-900 dark:text-neutral-100">{service.name}</p>
+                      <p className="mt-0.5 text-sm text-neutral-500 dark:text-neutral-400">
+                        {service.description}
+                      </p>
+                    </div>
+                    {connecting === service.id && (
+                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-900" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
           </>
         )}
       </DialogContent>
@@ -194,7 +258,7 @@ function TokenSetupStep({
   onBack,
   onComplete,
 }: {
-  service: Service;
+  service: ResolvedService;
   onBack: () => void;
   onComplete: () => void;
 }) {
@@ -341,10 +405,37 @@ function NotionIcon({ className }: { className?: string }) {
   );
 }
 
+function LinearIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M2.643 13.673a10.202 10.202 0 0 0 7.685 7.684L2.643 13.673Zm-.46-1.725a10.18 10.18 0 0 0 1.048 4.518L10.466 3.23a10.18 10.18 0 0 0-4.518-1.048l-3.765 9.766Zm5.082-9.476L3.547 9.189A10.235 10.235 0 0 1 7.265 2.472Zm2.252-.834 11.888 11.888a10.218 10.218 0 0 0-1.085-8.86L13.377 1.697a10.218 10.218 0 0 0-3.86-.059Zm5.705 1.263 4.596 4.596a10.26 10.26 0 0 0-1.378-3.088l-1.53-1.53a10.177 10.177 0 0 0-1.688-.978Zm3.318 6.132-8.573-8.573a10.238 10.238 0 0 1 6.262 2.311l2.311 2.311a10.22 10.22 0 0 1 0 3.95Zm1.268 2.598L12.13 3.953a10.216 10.216 0 0 1 3.994 1.216l6.85 6.85a10.28 10.28 0 0 1-1.166 3.614Zm.096 2.145-9.908-9.908a10.22 10.22 0 0 1 2.728.91l8.24 8.24a10.324 10.324 0 0 1-1.06.758Z" />
+    </svg>
+  );
+}
+
 function DiscordIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="currentColor">
       <path d="M20.317 4.37a19.791 19.791 0 00-4.885-1.515.074.074 0 00-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 00-5.487 0 12.64 12.64 0 00-.617-1.25.077.077 0 00-.079-.037A19.736 19.736 0 003.677 4.37a.07.07 0 00-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 00.031.057 19.9 19.9 0 005.993 3.03.078.078 0 00.084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 01-1.872-.892.077.077 0 01-.008-.128 10.2 10.2 0 00.372-.292.074.074 0 01.077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 01.078.01c.12.098.246.198.373.292a.077.077 0 01-.006.127 12.299 12.299 0 01-1.873.892.077.077 0 00-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 00.084.028 19.839 19.839 0 006.002-3.03.077.077 0 00.032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 00-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
+    </svg>
+  );
+}
+
+function SlackIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zm10.122 2.521a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zm-1.268 0a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zm-2.523 10.122a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zm0-1.268a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" />
+    </svg>
+  );
+}
+
+function DefaultServiceIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22v-5" />
+      <path d="M9 8V2" />
+      <path d="M15 8V2" />
+      <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
     </svg>
   );
 }

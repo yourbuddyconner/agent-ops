@@ -83,19 +83,31 @@ integrationsRouter.get('/', async (c) => {
 
 /**
  * GET /api/integrations/available
- * List available integration services with rich metadata
+ * List integration services that are actually configured (OAuth env vars present).
+ * Services whose required credentials aren't set are excluded so the UI only
+ * shows connectable integrations.
  */
 integrationsRouter.get('/available', async (c) => {
   const packages = integrationRegistry.listPackages();
 
-  const available = packages.map((pkg) => ({
-    service: pkg.service,
-    displayName: pkg.provider.displayName,
-    authType: pkg.provider.authType,
-    supportedEntities: pkg.provider.supportedEntities,
-    hasActions: !!pkg.actions,
-    hasTriggers: !!pkg.triggers,
-  }));
+  const available = packages
+    .filter((pkg) => {
+      // OAuth services need their client ID + secret in the env to be connectable
+      if (pkg.provider.authType === 'oauth2' && pkg.provider.oauthEnvKeys) {
+        const clientId = getEnvString(c.env, pkg.provider.oauthEnvKeys.clientId);
+        const clientSecret = getEnvString(c.env, pkg.provider.oauthEnvKeys.clientSecret);
+        if (!clientId || !clientSecret) return false;
+      }
+      return true;
+    })
+    .map((pkg) => ({
+      service: pkg.service,
+      displayName: pkg.provider.displayName,
+      authType: pkg.provider.authType,
+      supportedEntities: pkg.provider.supportedEntities,
+      hasActions: !!pkg.actions,
+      hasTriggers: !!pkg.triggers,
+    }));
 
   return c.json({ services: available });
 });

@@ -9,6 +9,7 @@ export const integrationKeys = {
   all: ['integrations'] as const,
   lists: () => [...integrationKeys.all, 'list'] as const,
   list: () => [...integrationKeys.lists()] as const,
+  available: () => [...integrationKeys.all, 'available'] as const,
   details: () => [...integrationKeys.all, 'detail'] as const,
   detail: (id: string) => [...integrationKeys.details(), id] as const,
 };
@@ -17,10 +18,30 @@ interface ListIntegrationsResponse {
   integrations: Integration[];
 }
 
+export interface AvailableService {
+  service: string;
+  displayName: string;
+  authType: 'oauth2' | 'bot_token' | 'api_key';
+  supportedEntities: string[];
+  hasActions: boolean;
+  hasTriggers: boolean;
+}
+
+interface AvailableServicesResponse {
+  services: AvailableService[];
+}
+
 export function useIntegrations() {
   return useQuery({
     queryKey: integrationKeys.list(),
     queryFn: () => api.get<ListIntegrationsResponse>('/integrations'),
+  });
+}
+
+export function useAvailableIntegrations() {
+  return useQuery({
+    queryKey: integrationKeys.available(),
+    queryFn: () => api.get<AvailableServicesResponse>('/integrations/available'),
   });
 }
 
