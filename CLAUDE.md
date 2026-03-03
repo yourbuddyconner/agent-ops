@@ -2,26 +2,42 @@
 
 ## What This Project Is
 
-Agent-Ops is a hosted background coding agent platform. Users interact with an AI coding agent through a web UI or Slack. Each session runs in an isolated Modal sandbox with a full dev environment (VS Code, browser via VNC, terminal, and an OpenCode agent). The architecture is modeled after Ramp's Inspect system.
+Agent-Ops is a hosted background coding agent platform. Users interact with an AI coding agent through a web UI, Slack, or Telegram. Each session runs in an isolated Modal sandbox with a full dev environment (VS Code, browser via VNC, terminal, and an OpenCode agent with 73 custom tools). A per-user orchestrator ("Jarvis") manages sessions, routes messages across channels, and maintains long-term memory. The architecture is modeled after Ramp's Inspect system.
 
 ## Project Structure
 
 ```
 agent-ops/
 ├── packages/
-│   ├── client/          # React SPA (Vite + TanStack Router + Query + Zustand)
-│   ├── worker/          # Cloudflare Worker (Hono + D1 + R2 + Durable Objects)
-│   ├── shared/          # Shared TypeScript types & errors
-│   └── runner/          # Bun/TS runner for inside sandboxes
-├── backend/             # Modal Python backend
-├── docker/              # Sandbox Dockerfile + start.sh
+│   ├── client/              # React SPA (Vite + TanStack Router + Query + Zustand)
+│   ├── worker/              # Cloudflare Worker (Hono + D1 + R2 + Durable Objects)
+│   ├── shared/              # Shared TypeScript types & errors
+│   ├── runner/              # Bun/TS runner for inside sandboxes
+│   ├── sdk/                 # Integration & channel SDK contracts, MCP client, UI components
+│   ├── channel-slack/       # Slack channel adapter
+│   ├── channel-telegram/    # Telegram channel adapter
+│   ├── actions-github/      # GitHub integration (PRs, issues, webhooks)
+│   ├── actions-slack/       # Slack actions (messages, channels)
+│   ├── actions-gmail/       # Gmail integration
+│   ├── actions-google-calendar/  # Google Calendar integration
+│   ├── actions-linear/      # Linear issue tracking
+│   ├── actions-notion/      # Notion integration
+│   ├── actions-stripe/      # Stripe integration
+│   ├── actions-cloudflare/  # Cloudflare API integration
+│   ├── actions-sentry/      # Sentry error tracking
+│   └── actions-deepwiki/    # DeepWiki knowledge base
+├── backend/                 # Modal Python backend
+├── docker/
+│   ├── Dockerfile.sandbox   # Sandbox container image
+│   ├── start.sh             # Sandbox startup script
+│   └── opencode/            # OpenCode config: tools/, skills/, plugins/
 ├── docs/
-│   └── specs/           # Subsystem specs (source of truth per domain)
-├── V1.md                # Original architecture spec (may be outdated)
-├── WORKFLOW_PLUGIN_SPEC.md  # Workflow engine spec
-├── Makefile             # Dev, test, deploy commands
-├── docker-compose.yml   # Local dev (OpenCode container)
-└── .beans/              # Task tracking (beans)
+│   └── specs/               # Subsystem specs (source of truth per domain)
+├── V1.md                    # Original architecture spec (may be outdated)
+├── V2.md                    # Orchestration layer spec (orchestrators, channels, personas)
+├── Makefile                 # Dev, test, deploy commands
+├── docker-compose.yml       # Local dev (OpenCode container)
+└── .beans/                  # Task tracking (beans)
 ```
 
 ## Tech Stack Quick Reference
@@ -29,11 +45,12 @@ agent-ops/
 | Layer | Tech | Key Files |
 |-------|------|-----------|
 | Frontend | React 19, Vite 6, TanStack Router/Query, Zustand, Tailwind, Radix UI | `packages/client/src/` |
-| Worker | Cloudflare Workers, Hono 4, D1 (SQLite), R2, Durable Objects | `packages/worker/src/` |
-| Shared | TypeScript types, error classes | `packages/shared/src/` |
-| Runner | Bun, TypeScript, `@opencode-ai/sdk`, Hono | `packages/runner/src/` |
+| Worker | Cloudflare Workers, Hono 4, D1 (SQLite via Drizzle ORM), R2, Durable Objects | `packages/worker/src/` |
+| Shared | TypeScript types, error classes, scope keys | `packages/shared/src/` |
+| SDK | Integration contracts, channel contracts, MCP client/OAuth, UI components | `packages/sdk/src/` |
+| Runner | Bun, TypeScript, `@opencode-ai/sdk`, Hono gateway | `packages/runner/src/` |
 | Backend | Python 3.12, Modal SDK | `backend/` |
-| Sandbox | OpenCode serve, code-server, Xvfb+VNC, TTYD | `docker/` |
+| Sandbox | OpenCode serve (73 tools, 3 skills, 1 plugin), code-server, Xvfb+VNC, TTYD | `docker/` |
 
 ## Subsystem Specs
 
@@ -57,12 +74,14 @@ Boundary rules are enforced: each spec declares what it does NOT cover. Don't ad
 These are decided and locked in. Do not revisit:
 
 1. **WebSocket only** between Runner and SessionAgent DO. No HTTP callbacks.
-2. **Single merged SessionAgent DO** replaces both old `AgentSessionDurableObject` and `OpenCodeContainerDO`. Old code is deleted.
+2. **Single merged SessionAgent DO** for session orchestration. Three DOs total: `SessionAgentDO`, `EventBusDO`, `WorkflowExecutorDO`.
 3. **Single Modal App** for the Python backend (structured for future split).
 4. **Repo-specific images** from day one. Base image fallback for unconfigured repos.
-5. **iframes** for VNC (websockify noVNC web UI) and Terminal (TTYD web UI). No embedded JS clients for V1.
+5. **iframes** for VNC (websockify noVNC web UI) and Terminal (TTYD web UI). No embedded JS clients.
 6. **Single auth gateway proxy** on port 9000 in sandbox. Routes `/vscode/*`, `/vnc/*`, `/ttyd/*` to internal services. JWT validation.
-7. **Full Slack App** with Inspect parity (slash commands, Events API, repo classifier, thread updates, interactive components).
+7. **Plugin SDK auto-discovery** — action and channel packages are auto-registered via generated registry files (`make generate-registries`).
+8. **User orchestrator is a full agent session** — SessionAgent DO + sandbox + Runner + OpenCode with orchestrator persona and tools. Uses well-known session ID `orchestrator:{userId}`.
+9. **Org orchestrator is also a full agent session** — org's "chief of staff", admin-configured identity/handle, handles unattributed events + automation rules. Uses well-known session ID `orchestrator:org:{orgId}`.
 
 ## Development Commands
 
@@ -81,13 +100,29 @@ make dev-all
 # Database
 make db-migrate         # Run D1 migrations locally
 make db-seed            # Seed test data
+make db-reset           # Reset database (drop and recreate)
 
 # Typecheck
 pnpm typecheck          # All packages
 cd packages/worker && pnpm typecheck  # Single package
 
+# Tests
+pnpm test               # Run all vitest tests
+make test               # Unit + integration tests
+make test-workflow       # Test workflow CRUD
+make test-triggers       # Test trigger CRUD
+make test-webhooks       # Test webhook trigger execution
+
+# Code generation
+make generate-registries # Regenerate action/channel plugin registries
+
+# Logs
+make logs-cloudflare     # Tail deployed Cloudflare Worker logs
+
 # Deploy
-make deploy             # Deploy worker + modal + client (includes migrations)
+make deploy              # Deploy worker + modal + client (includes migrations)
+make deploy-migrate      # Apply D1 migrations to production only
+make release             # Full idempotent release: install, build, push image, deploy
 ```
 
 ### Applying D1 Migrations to Production
@@ -154,7 +189,7 @@ The sandbox comes with a full dev environment already running:
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| **OpenCode server** | 4096 | AI coding agent (HTTP + SSE) |
+| **OpenCode server** | 4096 | AI coding agent (HTTP + SSE) with 73 custom tools, 3 skills, 1 plugin |
 | **VS Code (code-server)** | 8080 | Web IDE |
 | **noVNC** | 6080 | Virtual display GUI (Xvfb on :99) |
 | **TTYD** | 7681 | Web terminal |
@@ -194,8 +229,10 @@ The system OpenCode instance is configured via `docker/opencode/opencode.json` a
 1. **Frontend**: Run `cd packages/client && pnpm dev`, open `http://localhost:5173` in the VNC browser (port 6080) to preview changes live.
 2. **Worker**: Run `cd packages/worker && pnpm dev` to start the worker locally with `wrangler dev` on `:8787`. You can also point the frontend at it: `VITE_API_URL=http://localhost:8787/api pnpm dev`. Use `pnpm typecheck` to catch type errors.
 3. **Shared types**: Edit `packages/shared/src/`, then `pnpm typecheck` from root to verify all consumers compile.
-4. **Runner**: Edit `packages/runner/src/`, run `cd packages/runner && pnpm typecheck`. The live runner instance is managed by `start.sh` — don't restart it manually.
-5. **Migrations**: Write SQL in `packages/worker/migrations/NNNN_name.sql`. Migrations are applied via `wrangler d1 migrations apply` from outside the sandbox or during `make deploy`.
+4. **SDK**: Edit `packages/sdk/src/`, then `pnpm typecheck` from root. SDK exports are consumed by action packages, channel packages, and the worker.
+5. **Action/channel packages**: Edit `packages/actions-*/` or `packages/channel-*/`. Run `make generate-registries` if adding a new package. Run `pnpm typecheck` to verify.
+6. **Runner**: Edit `packages/runner/src/`, run `cd packages/runner && pnpm typecheck`. The live runner instance is managed by `start.sh` — don't restart it manually.
+7. **Migrations**: Write SQL in `packages/worker/migrations/NNNN_name.sql` and add the corresponding Drizzle schema in `packages/worker/src/lib/schema/`. Migrations are applied via `wrangler d1 migrations apply` from outside the sandbox or during `make deploy`.
 
 ### Testing against the deployed worker
 
@@ -215,14 +252,16 @@ You can also `curl` the deployed API directly for testing routes.
 - Routes go in `packages/worker/src/routes/<name>.ts`
 - Each route file exports a Hono router: `export const fooRouter = new Hono<{ Bindings: Env; Variables: Variables }>()`
 - Route is mounted in `index.ts`: `app.route('/api/foo', fooRouter)`
-- DB helpers go in `packages/worker/src/lib/db.ts` — cursor-based pagination, camelCase conversion
-- Durable Objects go in `packages/worker/src/durable-objects/<name>.ts` — export the class and re-export from `index.ts`
+- Database uses **Drizzle ORM**: schema in `src/lib/schema/`, query helpers in `src/lib/db/`, Drizzle instance via `src/lib/drizzle.ts`. Barrel re-export at `src/lib/db.ts`.
+- Three Durable Objects in `src/durable-objects/`: `SessionAgentDO` (session-agent.ts), `EventBusDO` (event-bus.ts), `WorkflowExecutorDO` (workflow-executor.ts). All re-exported from `index.ts`.
 - Services go in `packages/worker/src/services/<name>.ts`
-- Auth middleware at `packages/worker/src/middleware/auth.ts` — sets `c.get('user')` with `{ id, email }`
+- Middleware: `auth.ts` (OAuth + API keys), `db.ts` (Drizzle setup), `admin.ts` (role-based access), `error-handler.ts` (global error handling). Auth sets `c.get('user')` with `{ id, email, role }`.
+- Plugin registries: `src/integrations/packages.ts` (auto-generated, 10 action packages) and `src/channels/packages.ts` (auto-generated, 2 channel packages). Regenerate with `make generate-registries`.
+- Env types in `packages/worker/src/env.ts` — `Env` interface (bindings) and `Variables` interface (request context)
 - Errors use classes from `@agent-ops/shared`: `UnauthorizedError`, `NotFoundError`, `ValidationError`
 - All API responses are JSON. Error format: `{ error, code, requestId }`
 - Wrangler config in `packages/worker/wrangler.toml` — DO bindings, D1, R2, cron triggers
-- Migrations in `packages/worker/migrations/` — numbered `0001_name.sql`, `0002_name.sql`, etc.
+- Migrations in `packages/worker/migrations/` — numbered `0001_name.sql` through `0055_name.sql` (and growing)
 
 ### Frontend (React)
 
@@ -240,66 +279,100 @@ You can also `curl` the deployed API directly for testing routes.
 ### Shared Types
 
 - All shared types in `packages/shared/src/types/index.ts`
+- Message part types in `packages/shared/src/types/message-parts.ts`
+- Scope key utilities in `packages/shared/src/scope-key.ts`
 - Errors in `packages/shared/src/errors.ts`
 - When adding a new entity, add types here first, then use in both worker and client
 
-### Runner (TO BUILD)
+### SDK
+
+- Integration contracts in `packages/sdk/src/integrations/` — defines the shape action packages must implement (actions, triggers, provider)
+- Channel contracts in `packages/sdk/src/channels/` — defines `ChannelTransport` interface for channel packages
+- MCP client and OAuth helpers in `packages/sdk/src/mcp/` — `client.ts`, `oauth.ts`, `action-source.ts`
+- UI components in `packages/sdk/src/ui/` — shared channel badges, icons
+- Metadata helpers in `packages/sdk/src/meta.ts`
+- Exports: `@agent-ops/sdk` (main), `@agent-ops/sdk/channels`, `@agent-ops/sdk/integrations`, `@agent-ops/sdk/meta`, `@agent-ops/sdk/ui`
+
+### Action Packages (`packages/actions-*`)
+
+Each action package follows a standard structure:
+
+- `src/index.ts` — package entry, re-exports provider/actions/triggers
+- `src/provider.ts` — OAuth/API configuration for the service
+- `src/actions.ts` — tool definitions the agent can invoke
+- `src/triggers.ts` — webhook/event handlers from the service
+- `src/api.ts` — (optional) typed API client for the service
+
+Auto-discovered by the worker via `src/integrations/packages.ts` (generated by `make generate-registries`). Each package depends on `@agent-ops/sdk` for contracts.
+
+### Channel Packages (`packages/channel-*`)
+
+Each channel package implements the `ChannelTransport` contract from `@agent-ops/sdk/channels`:
+
+- `src/index.ts` — package entry
+- `src/provider.ts` — channel configuration and setup
+- `src/transport.ts` — message send/receive implementation
+- `src/format.ts` — (optional) message formatting for the platform
+- `src/verify.ts` — (optional) webhook signature verification
+
+Auto-discovered by the worker via `src/channels/packages.ts` (generated by `make generate-registries`).
+
+### Runner
 
 - Runtime: Bun
 - Entry: `packages/runner/src/bin.ts`
 - WebSocket to DO: `packages/runner/src/agent-client.ts`
 - OpenCode interaction: `packages/runner/src/prompt.ts`
-- Event stream: `packages/runner/src/events.ts`
+- OpenCode lifecycle: `packages/runner/src/opencode-manager.ts`
 - Auth gateway: `packages/runner/src/gateway.ts` (Hono on port 9000)
+- Workflow engine: `packages/runner/src/workflow-engine.ts`, `workflow-compiler.ts`, `workflow-cli.ts`
+- Secrets: `packages/runner/src/secrets.ts`, `onepassword-provider.ts`
 
-### Backend (TO BUILD)
+### Backend
 
 - Python 3.12, Modal SDK
 - Entry: `backend/app.py` (Modal App with web endpoints)
+- Configuration: `backend/config.py`
 - Session management: `backend/session.py`
 - Sandbox lifecycle: `backend/sandboxes.py`
-- Image definitions: `backend/images/base.py`, `backend/images/webapp.py`, `backend/images/core.py`
+- Image definition: `backend/images/base.py`
 
 ### Git Conventions
 
 - Commit code upon completion of each bean.
 - Do NOT add "Co-Authored-by" trailers mentioning AI models (e.g., Opus, Claude) in commit messages PRs, or comments.
 
-## Implementation Phases (from V1.md)
-
-**Phase 1 — Core Sandbox Runtime**: Delete old DOs, build SessionAgentDO, Python backend, Runner, sandbox Dockerfile, end-to-end session flow.
-
-**Phase 2 — Full Dev Environment**: code-server + VNC + TTYD in sandbox, auth gateway, JWT issuance, iframe panels in frontend, session editor page.
-
-**Phase 3 — Real-Time & Multiplayer**: EventBus DO, user-tagged WebSockets, question handling, prompt queuing, collaborator UI.
-
-**Phase 4 — Integrations**: GitHub OAuth, Slack App (full Inspect parity), Linear OAuth.
-
-**Phase 5 — Cost Management**: Usage tracking, concurrency limits, budgets, alerts.
-
-**Phase 6 — Optimization**: Image build pipeline, warm pools, snapshots, screenshots, memories, dashboard.
-
-## What to Delete
-
-The following existing code must be deleted (per architectural decisions) and replaced:
-
-- `packages/worker/src/durable-objects/agent-session.ts` — replaced by new `SessionAgentDO`
-- `packages/worker/src/durable-objects/opencode-container.ts` — replaced by new `SessionAgentDO`
-- `packages/worker/src/services/modal-service.ts` — replaced by Python backend
-
-Do NOT delete these until their replacements are built and working. Delete as part of Phase 1.
-
 ## Common Patterns
 
 ### Adding a new D1 table
 
 1. Create migration: `packages/worker/migrations/NNNN_name.sql`
-2. Add types to `packages/shared/src/types/index.ts`
-3. Add DB helpers to `packages/worker/src/lib/db.ts`
-4. Add API routes to `packages/worker/src/routes/<name>.ts`
-5. Mount in `packages/worker/src/index.ts`
-6. Add React Query hooks in `packages/client/src/api/<name>.ts`
-7. Run `make db-migrate` (local) or apply to production via the deploy migration workflow above
+2. Add Drizzle schema: `packages/worker/src/lib/schema/<name>.ts` and re-export from `schema/index.ts`
+3. Add types to `packages/shared/src/types/index.ts`
+4. Add DB query helpers to `packages/worker/src/lib/db/<name>.ts` and re-export from `lib/db.ts`
+5. Add API routes to `packages/worker/src/routes/<name>.ts`
+6. Mount in `packages/worker/src/index.ts`
+7. Add React Query hooks in `packages/client/src/api/<name>.ts`
+8. Run `make db-migrate` (local) or apply to production via the deploy migration workflow above
+
+### Adding a new integration (action package)
+
+1. Create package: `packages/actions-<name>/` with `package.json`, `tsconfig.json`, `src/index.ts`
+2. Add `@agent-ops/sdk` as a dependency
+3. Implement `src/provider.ts` (OAuth/API config), `src/actions.ts` (tool definitions), `src/triggers.ts` (webhook handlers)
+4. Export everything from `src/index.ts`
+5. Run `make generate-registries` to auto-register the package in the worker
+6. Add any needed OAuth routes in `packages/worker/src/routes/`
+7. Add credential storage if needed (see `docs/specs/integrations.md`)
+
+### Adding a new channel
+
+1. Create package: `packages/channel-<name>/` with `package.json`, `tsconfig.json`, `src/index.ts`
+2. Add `@agent-ops/sdk` as a dependency
+3. Implement the `ChannelTransport` contract from `@agent-ops/sdk/channels` in `src/transport.ts`
+4. Add `src/provider.ts` for channel configuration
+5. Run `make generate-registries` to auto-register the channel in the worker
+6. Add webhook/event routes in `packages/worker/src/routes/` if the channel receives inbound messages
 
 ### Adding a new Durable Object
 
