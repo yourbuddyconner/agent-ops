@@ -147,9 +147,12 @@ export class AgentClient {
         }
 
         // Code 1002 = WebSocket upgrade rejected by server (HTTP 401/403/503 etc.)
+        // Code 1006 = abnormal closure — Bun surfaces failed HTTP upgrades as 1006
+        //   rather than 1002, so treat both as upgrade failures when the socket
+        //   never opened (settled is still false from the initial promise).
         // Track consecutive upgrade failures — if the token was rotated (sandbox replaced),
         // exit the process so this stale sandbox stops consuming resources.
-        if (event.code === 1002) {
+        if (event.code === 1002 || (event.code === 1006 && !settled)) {
           this.consecutiveUpgradeFailures++;
           if (this.consecutiveUpgradeFailures >= MAX_CONSECUTIVE_UPGRADE_FAILURES) {
             console.log(`[AgentClient] ${this.consecutiveUpgradeFailures} consecutive upgrade failures — token likely rotated, exiting`);
