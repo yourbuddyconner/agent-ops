@@ -1,12 +1,16 @@
+import { File } from '@pierre/diffs/react';
 import { ToolCardShell, ToolCardSection } from './tool-card-shell';
 import { FileIcon } from './icons';
 import type { ToolCallData, ReadArgs } from './types';
 import { formatToolPath } from './path-display';
+import { usePierreTheme } from '@/hooks/use-pierre-theme';
+import { PierreWrapper, PIERRE_INLINE_CSS, stripLineNumbers } from '@/components/pierre/pierre-wrapper';
 
 export function ReadCard({ tool }: { tool: ToolCallData }) {
   const args = (tool.args ?? {}) as ReadArgs;
   const filePath = args.file_path ?? args.filePath ?? '';
   const { fileName, dirPath } = formatToolPath(filePath);
+  const theme = usePierreTheme();
 
   const resultStr = typeof tool.result === 'string' ? tool.result : null;
   const lineCount = resultStr ? resultStr.split('\n').length : 0;
@@ -37,47 +41,14 @@ export function ReadCard({ tool }: { tool: ToolCallData }) {
     >
       {resultStr && (
         <ToolCardSection>
-          <div className="overflow-auto rounded bg-neutral-50 dark:bg-neutral-900/50" style={{ maxHeight: '280px' }}>
-            <FileContent content={resultStr} />
-          </div>
+          <PierreWrapper maxHeight="280px" debugLabel="ReadCard">
+            <File
+              file={{ name: filePath || 'file.txt', contents: stripLineNumbers(resultStr) }}
+              options={{ theme, overflow: 'scroll', disableFileHeader: true, unsafeCSS: PIERRE_INLINE_CSS }}
+            />
+          </PierreWrapper>
         </ToolCardSection>
       )}
     </ToolCardShell>
-  );
-}
-
-function FileContent({ content }: { content: string }) {
-  const lines = content.split('\n');
-  // Try to detect line-numbered output from OpenCode (format: "  123→content" or "00001| content")
-  const hasLineNumbers = lines.length > 0 && /^\s*\d+[→|]/.test(lines[0]);
-
-  if (hasLineNumbers) {
-    return (
-      <table className="w-full border-collapse font-mono text-[11px] leading-[1.6]">
-        <tbody>
-          {lines.map((line, i) => {
-            const match = line.match(/^\s*(\d+)[→|]\s?(.*)$/);
-            const lineNum = match ? match[1] : String(i + 1);
-            const lineContent = match ? match[2] : line;
-            return (
-              <tr key={i} className="hover:bg-accent/[0.04] dark:hover:bg-accent/[0.03]">
-                <td className="select-none border-r border-neutral-200 px-2 py-0 text-right tabular-nums text-neutral-300 dark:border-neutral-700/60 dark:text-neutral-600">
-                  {lineNum}
-                </td>
-                <td className="px-2 py-0 whitespace-pre text-neutral-600 dark:text-neutral-400">
-                  {lineContent}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    );
-  }
-
-  return (
-    <pre className="px-2.5 py-2 font-mono text-[11px] leading-[1.6] text-neutral-600 dark:text-neutral-400">
-      {content}
-    </pre>
   );
 }

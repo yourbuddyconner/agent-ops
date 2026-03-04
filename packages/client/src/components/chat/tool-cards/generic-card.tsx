@@ -1,4 +1,6 @@
 import { memo } from 'react';
+import { decode as decodeToon } from '@toon-format/toon';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { ToolCardShell, ToolCardSection, ToolCodeBlock } from './tool-card-shell';
 import { WrenchIcon } from './icons';
 import type { ToolCallData } from './types';
@@ -15,7 +17,12 @@ function tryParseJson(value: unknown): unknown | null {
   try {
     return JSON.parse(value);
   } catch {
-    return null;
+    // Tool results may be TOON-encoded (token-efficient format used for LLM context)
+    try {
+      return decodeToon(value);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -112,6 +119,38 @@ const CellValue = memo(function CellValue({ value }: { value: unknown }) {
   return <>{str}</>;
 });
 
+/** Format a value as a full string for tooltip display */
+function formatFullValue(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === 'boolean' || typeof value === 'number') return null; // not worth a tooltip
+  if (typeof value === 'object') return JSON.stringify(value, null, 2);
+  const str = String(value);
+  return str.length > 30 ? str : null; // only tooltip for values that might be truncated
+}
+
+/** Wraps content in a Radix Tooltip showing the full value on hover */
+function ValueTooltip({ value, children }: { value: unknown; children: React.ReactNode }) {
+  const full = formatFullValue(value);
+  if (!full) return <>{children}</>;
+
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="cursor-default">{children}</span>
+        </TooltipTrigger>
+        <TooltipContent
+          side="bottom"
+          align="start"
+          className="max-h-[300px] max-w-[480px] overflow-auto whitespace-pre-wrap break-all rounded-md bg-neutral-900 px-3 py-2 font-mono text-[11px] leading-relaxed text-neutral-100 shadow-lg dark:bg-neutral-800 dark:text-neutral-200"
+        >
+          {full}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Sub-renderers
 // ---------------------------------------------------------------------------
@@ -161,7 +200,9 @@ function TableRenderer({ data }: { data: Record<string, unknown>[] }) {
                     key={col}
                     className="max-w-[240px] truncate whitespace-nowrap px-2 py-0.5 text-neutral-600 dark:text-neutral-400"
                   >
-                    <CellValue value={row[col]} />
+                    <ValueTooltip value={row[col]}>
+                      <CellValue value={row[col]} />
+                    </ValueTooltip>
                   </td>
                 ))}
                 {hidden.length > 0 && (
@@ -195,8 +236,10 @@ function KvRenderer({ data }: { data: Record<string, unknown> }) {
             <span className="shrink-0 text-neutral-400 dark:text-neutral-500" style={{ minWidth: '100px' }}>
               {key}
             </span>
-            <span className="min-w-0 text-neutral-600 dark:text-neutral-400">
-              <CellValue value={value} />
+            <span className="min-w-0 truncate text-neutral-600 dark:text-neutral-400">
+              <ValueTooltip value={value}>
+                <CellValue value={value} />
+              </ValueTooltip>
             </span>
           </div>
         ))}

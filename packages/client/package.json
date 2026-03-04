@@ -12,6 +12,7 @@
   "dependencies": {
     "@agent-ops/sdk": "workspace:*",
     "@agent-ops/shared": "workspace:*",
+    "@pierre/diffs": "^1.0.11",
     "@radix-ui/react-alert-dialog": "^1.1.2",
     "@radix-ui/react-avatar": "^1.1.1",
     "@radix-ui/react-dialog": "^1.1.2",
@@ -21,8 +22,8 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tanstack/react-query": "^5.60.0",
     "@tanstack/react-router": "^1.151.0",
+    "@toon-format/toon": "^2.1.0",
     "clsx": "^2.1.1",
-    "diff": "^8.0.3",
     "heic-to": "^1.4.2",
     "mermaid": "^11.12.2",
     "react": "^19.0.0",

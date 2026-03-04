@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { PatchDiff } from '@pierre/diffs/react';
 import {
   Dialog,
   DialogContent,
@@ -8,6 +9,7 @@ import {
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/cn';
 import { Skeleton } from '@/components/ui/skeleton';
+import { usePierreTheme } from '@/hooks/use-pierre-theme';
 import type { DiffFile } from '@/hooks/use-chat';
 
 interface DiffDialogProps {
@@ -55,6 +57,7 @@ export function DiffDialog({ open, onOpenChange, files, loading }: DiffDialogPro
 function DiffFileEntry({ file }: { file: DiffFile }) {
   const [expanded, setExpanded] = useState(false);
   const hasDiff = !!file.diff;
+  const theme = usePierreTheme();
 
   return (
     <div className="rounded border border-neutral-200 dark:border-neutral-700">
@@ -91,21 +94,12 @@ function DiffFileEntry({ file }: { file: DiffFile }) {
 
       {expanded && file.diff && (
         <div className="border-t border-neutral-200 dark:border-neutral-700">
-          <pre className="overflow-x-auto p-3 font-mono text-[11px] leading-relaxed">
-            {file.diff.split('\n').map((line, i) => (
-              <div
-                key={i}
-                className={cn({
-                  'text-green-700 dark:text-green-400': line.startsWith('+') && !line.startsWith('+++'),
-                  'text-red-600 dark:text-red-400': line.startsWith('-') && !line.startsWith('---'),
-                  'text-blue-600 dark:text-blue-400': line.startsWith('@@'),
-                  'text-neutral-500 dark:text-neutral-400': !line.startsWith('+') && !line.startsWith('-') && !line.startsWith('@@'),
-                })}
-              >
-                {line}
-              </div>
-            ))}
-          </pre>
+          <div className="overflow-auto" style={{ maxHeight: '400px' }}>
+            <PatchDiff
+              patch={file.diff}
+              options={{ theme, diffStyle: 'unified', overflow: 'scroll' }}
+            />
+          </div>
         </div>
       )}
     </div>

@@ -1,9 +1,10 @@
-import { useMemo } from 'react';
-import { diffLines } from 'diff';
+import { MultiFileDiff } from '@pierre/diffs/react';
 import { ToolCardShell, ToolCardSection } from './tool-card-shell';
 import { FileEditIcon } from './icons';
 import type { ToolCallData, EditArgs } from './types';
 import { formatToolPath } from './path-display';
+import { usePierreTheme } from '@/hooks/use-pierre-theme';
+import { PierreWrapper, PIERRE_INLINE_CSS } from '@/components/pierre/pierre-wrapper';
 
 function parseArgs(raw: unknown): EditArgs {
   if (!raw) return {};
@@ -24,6 +25,7 @@ export function EditCard({ tool }: { tool: ToolCallData }) {
   const replaceAll = args.replace_all ?? args.replaceAll;
 
   const resultStr = typeof tool.result === 'string' ? tool.result : null;
+  const theme = usePierreTheme();
 
   return (
     <ToolCardShell
@@ -45,9 +47,13 @@ export function EditCard({ tool }: { tool: ToolCallData }) {
     >
       {(oldStr || newStr) ? (
         <ToolCardSection>
-          <div className="overflow-auto rounded bg-neutral-50 dark:bg-neutral-900/50" style={{ maxHeight: '320px' }}>
-            <UnifiedDiff oldStr={oldStr} newStr={newStr} />
-          </div>
+          <PierreWrapper maxHeight="320px" debugLabel="EditCard">
+            <MultiFileDiff
+              oldFile={{ name: filePath || 'file.txt', contents: oldStr }}
+              newFile={{ name: filePath || 'file.txt', contents: newStr }}
+              options={{ theme, diffStyle: 'unified', overflow: 'scroll', disableFileHeader: true, unsafeCSS: PIERRE_INLINE_CSS }}
+            />
+          </PierreWrapper>
           {resultStr && (
             <p className="mt-1.5 font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
               {resultStr}
@@ -69,47 +75,5 @@ export function EditCard({ tool }: { tool: ToolCallData }) {
         </ToolCardSection>
       ) : null}
     </ToolCardShell>
-  );
-}
-
-interface DiffLine {
-  type: 'add' | 'remove' | 'context';
-  content: string;
-}
-
-function UnifiedDiff({ oldStr, newStr }: { oldStr: string; newStr: string }) {
-  const lines = useMemo((): DiffLine[] => {
-    const changes = diffLines(oldStr, newStr);
-    const result: DiffLine[] = [];
-    for (const change of changes) {
-      const changeLines = change.value.replace(/\n$/, '').split('\n');
-      const type: DiffLine['type'] = change.added ? 'add' : change.removed ? 'remove' : 'context';
-      for (const line of changeLines) {
-        result.push({ type, content: line });
-      }
-    }
-    return result;
-  }, [oldStr, newStr]);
-
-  return (
-    <div className="min-w-fit font-mono text-[11px] leading-[1.6]">
-      {lines.map((line, i) => (
-        <div
-          key={i}
-          className={
-            line.type === 'add'
-              ? 'bg-emerald-50/80 text-emerald-800 dark:bg-emerald-950/20 dark:text-emerald-300'
-              : line.type === 'remove'
-                ? 'bg-red-50/80 text-red-800 dark:bg-red-950/20 dark:text-red-300'
-                : 'text-neutral-500 dark:text-neutral-400'
-          }
-        >
-          <span className="inline-block w-5 select-none text-center opacity-50">
-            {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
-          </span>
-          <span className="whitespace-pre">{line.content}</span>
-        </div>
-      ))}
-    </div>
   );
 }

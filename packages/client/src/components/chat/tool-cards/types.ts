@@ -96,6 +96,8 @@ export interface PatchArgs {
   patch?: string;
   diff?: string;
   content?: string;
+  /** OpenCode's native arg name for patch content */
+  patchText?: string;
 }
 
 export interface LspArgs {

@@ -1,7 +1,10 @@
+import { File } from '@pierre/diffs/react';
 import { ToolCardShell, ToolCardSection } from './tool-card-shell';
 import { FilePlusIcon } from './icons';
 import type { ToolCallData, WriteArgs } from './types';
 import { formatToolPath } from './path-display';
+import { usePierreTheme } from '@/hooks/use-pierre-theme';
+import { PierreWrapper, PIERRE_INLINE_CSS } from '@/components/pierre/pierre-wrapper';
 
 export function WriteCard({ tool }: { tool: ToolCallData }) {
   const args = (tool.args ?? {}) as WriteArgs;
@@ -9,6 +12,11 @@ export function WriteCard({ tool }: { tool: ToolCallData }) {
   const { fileName, dirPath } = formatToolPath(filePath);
   const content = args.content ?? '';
   const lineCount = content ? content.split('\n').length : 0;
+  const theme = usePierreTheme();
+
+  const displayContent = content.length > 2000
+    ? content.slice(0, 2000) + '\n... (truncated)'
+    : content;
 
   return (
     <ToolCardShell
@@ -29,11 +37,12 @@ export function WriteCard({ tool }: { tool: ToolCallData }) {
     >
       {content && (
         <ToolCardSection>
-          <div className="overflow-auto rounded bg-neutral-50 dark:bg-neutral-900/50" style={{ maxHeight: '280px' }}>
-            <pre className="px-2.5 py-2 font-mono text-[11px] leading-[1.6] text-neutral-600 dark:text-neutral-400">
-              {content.length > 2000 ? content.slice(0, 2000) + '\n... (truncated)' : content}
-            </pre>
-          </div>
+          <PierreWrapper maxHeight="280px" debugLabel="WriteCard">
+            <File
+              file={{ name: filePath || 'file.txt', contents: displayContent }}
+              options={{ theme, overflow: 'scroll', disableFileHeader: true, unsafeCSS: PIERRE_INLINE_CSS }}
+            />
+          </PierreWrapper>
         </ToolCardSection>
       )}
     </ToolCardShell>

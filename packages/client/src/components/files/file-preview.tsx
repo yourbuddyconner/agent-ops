@@ -1,7 +1,9 @@
 import { useState } from 'react';
+import { File } from '@pierre/diffs/react';
 import { useFileRead } from '@/api/files';
 import { Skeleton } from '@/components/ui/skeleton';
 import { MarkdownContent } from '@/components/chat/markdown/markdown-content';
+import { usePierreTheme } from '@/hooks/use-pierre-theme';
 
 interface FilePreviewProps {
   sessionId: string;
@@ -14,6 +16,7 @@ const MARKDOWN_EXTENSIONS = new Set(['md', 'mdx', 'markdown']);
 export function FilePreview({ sessionId, path, showHeader = true }: FilePreviewProps) {
   const { data, isLoading, isError } = useFileRead(sessionId, path);
   const [renderMarkdown, setRenderMarkdown] = useState(true);
+  const theme = usePierreTheme();
 
   if (isLoading) {
     return (
@@ -82,11 +85,10 @@ export function FilePreview({ sessionId, path, showHeader = true }: FilePreviewP
           <MarkdownContent content={data.content} />
         </div>
       ) : (
-        <pre className="overflow-x-auto p-4 text-sm">
-          <code className="font-mono text-neutral-800 dark:text-neutral-200">
-            {data.content}
-          </code>
-        </pre>
+        <File
+          file={{ name: path.split('/').pop() || 'file.txt', contents: data.content }}
+          options={{ theme, overflow: 'scroll' }}
+        />
       )}
     </div>
   );
