@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
 export const users = sqliteTable('users', {
@@ -18,6 +18,8 @@ export const users = sqliteTable('users', {
   maxActiveSessions: integer(),
   uiQueueMode: text().default('followup'),
   timezone: text(),
+  sandboxCpuCores: real(),
+  sandboxMemoryMib: integer(),
   createdAt: text().default(sql`(datetime('now'))`),
   updatedAt: text().default(sql`(datetime('now'))`),
 }, (table) => [

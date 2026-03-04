@@ -6,6 +6,8 @@ interface UserBreakdown {
   outputTokens: number;
   cost: number | null;
   sessionCount: number;
+  sandboxCost: number;
+  sandboxActiveSeconds: number;
 }
 
 interface UserBreakdownTableProps {
@@ -23,6 +25,14 @@ function formatCost(cost: number | null): string {
   if (cost < 0.01) return `$${cost.toFixed(4)}`;
   if (cost < 1) return `$${cost.toFixed(3)}`;
   return `$${cost.toFixed(2)}`;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds === 0) return '-';
+  const hours = seconds / 3600;
+  if (hours < 0.1) return `${Math.round(seconds / 60)}m`;
+  if (hours < 10) return `${hours.toFixed(1)}h`;
+  return `${Math.round(hours)}h`;
 }
 
 export function UserBreakdownTable({ data }: UserBreakdownTableProps) {
@@ -45,6 +55,7 @@ export function UserBreakdownTable({ data }: UserBreakdownTableProps) {
               <th className="pb-2 pr-4 text-left font-mono text-2xs font-medium text-neutral-400">User</th>
               <th className="pb-2 px-4 text-right font-mono text-2xs font-medium text-neutral-400">Input</th>
               <th className="pb-2 px-4 text-right font-mono text-2xs font-medium text-neutral-400">Output</th>
+              <th className="pb-2 px-4 text-right font-mono text-2xs font-medium text-neutral-400">Compute</th>
               <th className="pb-2 px-4 text-right font-mono text-2xs font-medium text-neutral-400">Sessions</th>
               <th className="pb-2 pl-4 text-right font-mono text-2xs font-medium text-neutral-400">Cost</th>
             </tr>
@@ -65,6 +76,9 @@ export function UserBreakdownTable({ data }: UserBreakdownTableProps) {
                 </td>
                 <td className="py-2.5 px-4 text-right font-mono text-xs tabular-nums text-neutral-600 dark:text-neutral-300">
                   {formatTokens(row.outputTokens)}
+                </td>
+                <td className="py-2.5 px-4 text-right font-mono text-xs tabular-nums text-neutral-600 dark:text-neutral-300">
+                  {formatDuration(row.sandboxActiveSeconds)}
                 </td>
                 <td className="py-2.5 px-4 text-right font-mono text-xs tabular-nums text-neutral-600 dark:text-neutral-300">
                   {row.sessionCount}

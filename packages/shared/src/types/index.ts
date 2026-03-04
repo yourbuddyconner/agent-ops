@@ -220,6 +220,8 @@ export interface User {
   gitEmail?: string;
   onboardingCompleted?: boolean;
   idleTimeoutSeconds?: number;
+  sandboxCpuCores?: number;
+  sandboxMemoryMib?: number;
   modelPreferences?: string[];
   uiQueueMode?: QueueMode;
   timezone?: string;
@@ -951,12 +953,16 @@ export interface UsageStatsResponse {
     totalOutputTokens: number;
     totalSessions: number;
     totalUsers: number;
+    sandboxCost: number;
+    sandboxActiveSeconds: number;
   };
   costByDay: Array<{
     date: string;
     cost: number | null;
     inputTokens: number;
     outputTokens: number;
+    sandboxCost: number;
+    sandboxActiveSeconds: number;
   }>;
   byUser: Array<{
     userId: string;
@@ -966,6 +972,8 @@ export interface UsageStatsResponse {
     outputTokens: number;
     cost: number | null;
     sessionCount: number;
+    sandboxCost: number;
+    sandboxActiveSeconds: number;
   }>;
   byModel: Array<{
     model: string;

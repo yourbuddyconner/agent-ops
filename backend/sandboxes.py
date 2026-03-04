@@ -12,6 +12,8 @@ from config import (
     MAX_TIMEOUT_SECONDS,
     MODAL_IDLE_TIMEOUT_BUFFER_SECONDS,
     OPENCODE_PORT,
+    SANDBOX_DEFAULT_CPU_CORES,
+    SANDBOX_DEFAULT_MEMORY_MIB,
     WHISPER_MODELS_MOUNT,
     WHISPER_MODELS_VOLUME,
     get_secret,
@@ -37,6 +39,8 @@ class SandboxConfig:
     jwt_secret: str
     image_type: str = "base"
     idle_timeout_seconds: int = DEFAULT_IDLE_TIMEOUT_SECONDS
+    cpu_cores: float = SANDBOX_DEFAULT_CPU_CORES
+    memory_mib: int = SANDBOX_DEFAULT_MEMORY_MIB
     env_vars: dict[str, str] | None = None
     persona_files: list[dict] | None = None
 
@@ -94,6 +98,8 @@ class SandboxManager:
             "/bin/bash", "/start.sh",
             app=self.app,
             image=image,
+            cpu=config.cpu_cores,
+            memory=config.memory_mib,
             encrypted_ports=[OPENCODE_PORT, GATEWAY_PORT],
             timeout=MAX_TIMEOUT_SECONDS,
             idle_timeout=config.idle_timeout_seconds + MODAL_IDLE_TIMEOUT_BUFFER_SECONDS,
@@ -187,6 +193,8 @@ class SandboxManager:
             "/bin/bash", "/start.sh",
             app=self.app,
             image=image,
+            cpu=config.cpu_cores,
+            memory=config.memory_mib,
             encrypted_ports=[OPENCODE_PORT, GATEWAY_PORT],
             timeout=MAX_TIMEOUT_SECONDS,
             idle_timeout=config.idle_timeout_seconds + MODAL_IDLE_TIMEOUT_BUFFER_SECONDS,

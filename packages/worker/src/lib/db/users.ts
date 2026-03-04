@@ -16,6 +16,8 @@ function rowToUser(row: typeof users.$inferSelect): User {
     gitEmail: row.gitEmail || undefined,
     onboardingCompleted: !!row.onboardingCompleted,
     idleTimeoutSeconds: row.idleTimeoutSeconds ?? 900,
+    sandboxCpuCores: row.sandboxCpuCores ?? undefined,
+    sandboxMemoryMib: row.sandboxMemoryMib ?? undefined,
     modelPreferences: row.modelPreferences || undefined,
     uiQueueMode: (row.uiQueueMode as QueueMode) || 'followup',
     timezone: row.timezone || undefined,
@@ -94,6 +96,8 @@ export async function updateUserProfile(
     gitEmail?: string;
     onboardingCompleted?: boolean;
     idleTimeoutSeconds?: number;
+    sandboxCpuCores?: number;
+    sandboxMemoryMib?: number;
     modelPreferences?: string[];
     uiQueueMode?: QueueMode;
     timezone?: string;
@@ -106,6 +110,8 @@ export async function updateUserProfile(
   if (data.gitEmail !== undefined) setValues.gitEmail = sql`COALESCE(${data.gitEmail}, ${users.gitEmail})`;
   if (data.onboardingCompleted !== undefined) setValues.onboardingCompleted = data.onboardingCompleted;
   if (data.idleTimeoutSeconds !== undefined) setValues.idleTimeoutSeconds = sql`COALESCE(${data.idleTimeoutSeconds}, ${users.idleTimeoutSeconds})`;
+  if (data.sandboxCpuCores !== undefined) setValues.sandboxCpuCores = data.sandboxCpuCores;
+  if (data.sandboxMemoryMib !== undefined) setValues.sandboxMemoryMib = data.sandboxMemoryMib;
   if (data.modelPreferences !== undefined) setValues.modelPreferences = sql`COALESCE(${JSON.stringify(data.modelPreferences)}, ${users.modelPreferences})`;
   if (data.uiQueueMode !== undefined) setValues.uiQueueMode = sql`COALESCE(${data.uiQueueMode}, ${users.uiQueueMode})`;
   if (data.timezone !== undefined) setValues.timezone = data.timezone || null;

@@ -348,6 +348,8 @@ export async function createSession(
     personaFiles,
     customProviders: customProviders.length > 0 ? customProviders : undefined,
     builtInProviderModelConfigs: builtInProviderModelConfigs.length > 0 ? builtInProviderModelConfigs : undefined,
+    ...(userRow?.sandboxCpuCores != null ? { sandboxCpuCores: userRow.sandboxCpuCores } : {}),
+    ...(userRow?.sandboxMemoryMib != null ? { sandboxMemoryMib: userRow.sandboxMemoryMib } : {}),
   };
 
   try {

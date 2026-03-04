@@ -6,6 +6,8 @@ interface UsageHeroMetricsProps {
   totalOutputTokens: number;
   totalSessions: number;
   totalUsers: number;
+  sandboxCost: number;
+  sandboxActiveSeconds: number;
 }
 
 function formatTokenCount(n: number): string {
@@ -20,6 +22,13 @@ function formatCost(cost: number | null): string {
   if (cost < 0.01) return `$${cost.toFixed(4)}`;
   if (cost < 1) return `$${cost.toFixed(3)}`;
   return `$${cost.toFixed(2)}`;
+}
+
+function formatHours(seconds: number): string {
+  const hours = seconds / 3600;
+  if (hours < 0.1) return `${Math.round(seconds / 60)}m`;
+  if (hours < 10) return `${hours.toFixed(1)}h`;
+  return `${Math.round(hours)}h`;
 }
 
 function DollarIcon() {
@@ -61,13 +70,36 @@ function UsersIcon() {
   );
 }
 
-export function UsageHeroMetrics({ totalCost, totalInputTokens, totalOutputTokens, totalSessions, totalUsers }: UsageHeroMetricsProps) {
+function ComputeIcon() {
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+      <rect x="9" y="9" width="6" height="6" />
+      <path d="M15 2v2" />
+      <path d="M15 20v2" />
+      <path d="M2 15h2" />
+      <path d="M2 9h2" />
+      <path d="M20 15h2" />
+      <path d="M20 9h2" />
+      <path d="M9 2v2" />
+      <path d="M9 20v2" />
+    </svg>
+  );
+}
+
+export function UsageHeroMetrics({ totalCost, totalInputTokens, totalOutputTokens, totalSessions, totalUsers, sandboxCost, sandboxActiveSeconds }: UsageHeroMetricsProps) {
+  const llmCost = totalCost !== null ? totalCost - sandboxCost : null;
+  const costTooltip = totalCost !== null
+    ? `LLM: ${formatCost(llmCost)} | Compute: ${formatCost(sandboxCost)}`
+    : undefined;
+
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
       <HeroMetricCard
         icon={<DollarIcon />}
         label="Total Cost"
         value={formatCost(totalCost)}
+        tooltip={costTooltip}
         index={0}
       />
       <HeroMetricCard
@@ -78,16 +110,23 @@ export function UsageHeroMetrics({ totalCost, totalInputTokens, totalOutputToken
         index={1}
       />
       <HeroMetricCard
+        icon={<ComputeIcon />}
+        label="Compute Time"
+        value={formatHours(sandboxActiveSeconds)}
+        tooltip={`${formatCost(sandboxCost)} compute cost`}
+        index={2}
+      />
+      <HeroMetricCard
         icon={<SessionIcon />}
         label="Sessions"
         value={totalSessions.toLocaleString()}
-        index={2}
+        index={3}
       />
       <HeroMetricCard
         icon={<UsersIcon />}
         label="Active Users"
         value={totalUsers.toLocaleString()}
-        index={3}
+        index={4}
       />
     </div>
   );

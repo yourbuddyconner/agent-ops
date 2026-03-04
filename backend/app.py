@@ -54,6 +54,8 @@ async def create_session(request: dict) -> dict:
         runner_token=request["runnerToken"],
         jwt_secret=request["jwtSecret"],
         idle_timeout_seconds=request.get("idleTimeoutSeconds", 900),
+        cpu_cores=request.get("sandboxCpuCores"),
+        memory_mib=request.get("sandboxMemoryMib"),
         env_vars=request.get("envVars"),
         persona_files=request.get("personaFiles"),
     )
@@ -136,6 +138,8 @@ async def restore_session(request: dict) -> dict:
         runner_token=request["runnerToken"],
         jwt_secret=request["jwtSecret"],
         idle_timeout_seconds=request.get("idleTimeoutSeconds", 900),
+        cpu_cores=request.get("sandboxCpuCores"),
+        memory_mib=request.get("sandboxMemoryMib"),
         env_vars=request.get("envVars"),
         persona_files=request.get("personaFiles"),
     )

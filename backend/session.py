@@ -19,6 +19,8 @@ class CreateSessionRequest:
     runner_token: str
     jwt_secret: str
     idle_timeout_seconds: int = 900
+    cpu_cores: float | None = None
+    memory_mib: int | None = None
     env_vars: dict[str, str] | None = None
     persona_files: list[dict] | None = None
 
@@ -46,6 +48,8 @@ class SessionManager:
             jwt_secret=req.jwt_secret,
             image_type=req.image_type,
             idle_timeout_seconds=req.idle_timeout_seconds,
+            **({"cpu_cores": req.cpu_cores} if req.cpu_cores is not None else {}),
+            **({"memory_mib": req.memory_mib} if req.memory_mib is not None else {}),
             env_vars=req.env_vars,
             persona_files=req.persona_files,
         )
@@ -83,6 +87,8 @@ class SessionManager:
             jwt_secret=req.jwt_secret,
             image_type=req.image_type,
             idle_timeout_seconds=req.idle_timeout_seconds,
+            **({"cpu_cores": req.cpu_cores} if req.cpu_cores is not None else {}),
+            **({"memory_mib": req.memory_mib} if req.memory_mib is not None else {}),
             env_vars=req.env_vars,
             persona_files=req.persona_files,
         )

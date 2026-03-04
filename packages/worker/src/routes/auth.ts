@@ -56,6 +56,8 @@ const updateProfileSchema = z.object({
   gitEmail: z.string().email().max(255).optional(),
   onboardingCompleted: z.boolean().optional(),
   idleTimeoutSeconds: z.number().int().min(300).max(3600).optional(),
+  sandboxCpuCores: z.number().min(0.5).max(8).optional(),
+  sandboxMemoryMib: z.number().int().min(256).max(8192).optional(),
   modelPreferences: z.array(z.string().max(255)).max(20).optional(),
   uiQueueMode: z.enum(['followup', 'collect', 'steer']).optional(),
   timezone: z.string().max(50).optional(),

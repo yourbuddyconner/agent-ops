@@ -51,6 +51,8 @@ function UsagePage() {
             totalOutputTokens={data.hero.totalOutputTokens}
             totalSessions={data.hero.totalSessions}
             totalUsers={data.hero.totalUsers}
+            sandboxCost={data.hero.sandboxCost}
+            sandboxActiveSeconds={data.hero.sandboxActiveSeconds}
           />
           <CostChart data={data.costByDay} />
           <div className="grid gap-6 lg:grid-cols-2">
@@ -70,8 +72,8 @@ function UsagePage() {
 function UsageSkeleton() {
   return (
     <div className="space-y-6 animate-pulse">
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, i) => (
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        {Array.from({ length: 5 }).map((_, i) => (
           <div key={i} className="h-24 rounded-lg border border-neutral-200/80 bg-white dark:border-neutral-800 dark:bg-surface-1" />
         ))}
       </div>

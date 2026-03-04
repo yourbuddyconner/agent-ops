@@ -179,6 +179,7 @@ function AgentTab() {
       <ModelPreferencesSection />
       <TimezoneSection />
       <IdleTimeoutSection />
+      <SandboxResourcesSection />
       <UiQueueModeSection />
     </div>
   );
@@ -502,6 +503,21 @@ const IDLE_TIMEOUT_OPTIONS = [
   { label: '1 hour', value: 3600 },
 ];
 
+const SANDBOX_CPU_OPTIONS = [
+  { label: '0.5 cores', value: 0.5 },
+  { label: '1 core', value: 1 },
+  { label: '1.5 cores (default)', value: 1.5 },
+  { label: '2 cores', value: 2 },
+  { label: '4 cores', value: 4 },
+];
+
+const SANDBOX_MEMORY_OPTIONS = [
+  { label: '512 MiB', value: 512 },
+  { label: '1 GiB (default)', value: 1024 },
+  { label: '2 GiB', value: 2048 },
+  { label: '4 GiB', value: 4096 },
+];
+
 const UI_QUEUE_MODE_OPTIONS: Array<{ value: QueueMode; label: string; description: string }> = [
   {
     value: 'followup',
@@ -641,6 +657,107 @@ function IdleTimeoutSection() {
             Time before an idle session is hibernated. New sessions will use this setting.
           </p>
         </div>
+        <div className="flex items-center gap-3">
+          {saved && (
+            <span className="text-sm text-green-600 dark:text-green-400">Saved</span>
+          )}
+          {updateProfile.isError && (
+            <span className="text-sm text-red-600 dark:text-red-400">Failed to save.</span>
+          )}
+        </div>
+      </div>
+    </SettingsSection>
+  );
+}
+
+function SandboxResourcesSection() {
+  const user = useAuthStore((s) => s.user);
+  const updateProfile = useUpdateProfile();
+  const [saved, setSaved] = React.useState(false);
+  const currentCpu = user?.sandboxCpuCores ?? 1.5;
+  const currentMemory = user?.sandboxMemoryMib ?? 1024;
+
+  function handleCpuChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const value = parseFloat(e.target.value);
+    updateProfile.mutate(
+      { sandboxCpuCores: value },
+      {
+        onSuccess: () => {
+          setSaved(true);
+          setTimeout(() => setSaved(false), 2000);
+        },
+      }
+    );
+  }
+
+  function handleMemoryChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const value = parseInt(e.target.value);
+    updateProfile.mutate(
+      { sandboxMemoryMib: value },
+      {
+        onSuccess: () => {
+          setSaved(true);
+          setTimeout(() => setSaved(false), 2000);
+        },
+      }
+    );
+  }
+
+  const selectClass = "mt-1 block w-full max-w-md rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-neutral-400 dark:focus:ring-neutral-400";
+
+  return (
+    <SettingsSection title="Sandbox Resources">
+      <div className="space-y-4">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Configure CPU and memory allocated to new sandbox sessions. Higher resources improve agent performance but increase compute costs.
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2 max-w-2xl">
+          <div>
+            <label
+              htmlFor="sandbox-cpu"
+              className="text-sm font-medium text-neutral-700 dark:text-neutral-300"
+            >
+              CPU
+            </label>
+            <select
+              id="sandbox-cpu"
+              value={currentCpu}
+              onChange={handleCpuChange}
+              disabled={updateProfile.isPending}
+              className={selectClass}
+            >
+              {SANDBOX_CPU_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label
+              htmlFor="sandbox-memory"
+              className="text-sm font-medium text-neutral-700 dark:text-neutral-300"
+            >
+              Memory
+            </label>
+            <select
+              id="sandbox-memory"
+              value={currentMemory}
+              onChange={handleMemoryChange}
+              disabled={updateProfile.isPending}
+              className={selectClass}
+            >
+              {SANDBOX_MEMORY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <p className="text-xs text-neutral-400 dark:text-neutral-500">
+          Only applies to new sessions. Existing sessions keep their current allocation.
+        </p>
         <div className="flex items-center gap-3">
           {saved && (
             <span className="text-sm text-green-600 dark:text-green-400">Saved</span>

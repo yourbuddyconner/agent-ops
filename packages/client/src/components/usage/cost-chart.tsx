@@ -13,6 +13,8 @@ interface CostByDay {
   cost: number | null;
   inputTokens: number;
   outputTokens: number;
+  sandboxCost: number;
+  sandboxActiveSeconds: number;
 }
 
 interface CostChartProps {
@@ -38,17 +40,27 @@ function formatTokens(n: number): string {
 
 function CustomTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ name: string; value: number; color: string; dataKey: string }>; label?: string }) {
   if (!active || !payload?.length) return null;
-  const costEntry = payload.find(p => p.dataKey === 'cost');
+  const llmEntry = payload.find(p => p.dataKey === 'llmCost');
+  const sandboxEntry = payload.find(p => p.dataKey === 'sandboxCost');
   const tokensEntry = payload.find(p => p.dataKey === 'tokens');
   return (
     <div className="rounded-lg border border-neutral-200/80 bg-white px-3 py-2.5 shadow-[0_4px_12px_-4px_rgb(0_0_0/0.1)] dark:border-neutral-700 dark:bg-surface-2">
       <p className="mb-1.5 font-mono text-2xs text-neutral-400">{formatDateLabel(String(label))}</p>
-      {costEntry && (
+      {llmEntry && (
         <div className="flex items-center gap-2">
-          <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: costEntry.color }} />
-          <span className="text-xs text-neutral-500 dark:text-neutral-400">Cost</span>
+          <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: llmEntry.color }} />
+          <span className="text-xs text-neutral-500 dark:text-neutral-400">LLM</span>
           <span className="ml-auto font-mono text-xs font-medium tabular-nums text-neutral-900 dark:text-neutral-100">
-            {costEntry.value != null ? formatCost(costEntry.value) : 'N/A'}
+            {llmEntry.value != null ? formatCost(llmEntry.value) : 'N/A'}
+          </span>
+        </div>
+      )}
+      {sandboxEntry && sandboxEntry.value > 0 && (
+        <div className="flex items-center gap-2">
+          <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: sandboxEntry.color }} />
+          <span className="text-xs text-neutral-500 dark:text-neutral-400">Compute</span>
+          <span className="ml-auto font-mono text-xs font-medium tabular-nums text-neutral-900 dark:text-neutral-100">
+            {formatCost(sandboxEntry.value)}
           </span>
         </div>
       )}
@@ -68,7 +80,8 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
 export function CostChart({ data }: CostChartProps) {
   const chartData = data.map(d => ({
     date: d.date,
-    cost: d.cost,
+    llmCost: d.cost,
+    sandboxCost: d.sandboxCost,
     tokens: d.inputTokens + d.outputTokens,
   }));
 
@@ -89,9 +102,13 @@ export function CostChart({ data }: CostChartProps) {
       <ResponsiveContainer width="100%" height={260}>
         <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
           <defs>
-            <linearGradient id="gradCost" x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id="gradLlmCost" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="rgb(168 85 247)" stopOpacity={0.12} />
               <stop offset="100%" stopColor="rgb(168 85 247)" stopOpacity={0} />
+            </linearGradient>
+            <linearGradient id="gradSandboxCost" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="rgb(20 184 166)" stopOpacity={0.12} />
+              <stop offset="100%" stopColor="rgb(20 184 166)" stopOpacity={0} />
             </linearGradient>
             <linearGradient id="gradTokens" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="rgb(59 130 246)" stopOpacity={0.12} />
@@ -129,14 +146,25 @@ export function CostChart({ data }: CostChartProps) {
           <Area
             yAxisId="cost"
             type="monotone"
-            dataKey="cost"
-            name="Cost"
+            dataKey="llmCost"
+            name="LLM Cost"
             stroke="rgb(168 85 247)"
             strokeWidth={1.5}
-            fill="url(#gradCost)"
+            fill="url(#gradLlmCost)"
             dot={false}
             activeDot={{ r: 3.5, strokeWidth: 2, fill: 'white', stroke: 'rgb(168 85 247)' }}
             connectNulls
+          />
+          <Area
+            yAxisId="cost"
+            type="monotone"
+            dataKey="sandboxCost"
+            name="Compute Cost"
+            stroke="rgb(20 184 166)"
+            strokeWidth={1.5}
+            fill="url(#gradSandboxCost)"
+            dot={false}
+            activeDot={{ r: 3.5, strokeWidth: 2, fill: 'white', stroke: 'rgb(20 184 166)' }}
           />
           <Area
             yAxisId="tokens"
@@ -154,7 +182,11 @@ export function CostChart({ data }: CostChartProps) {
       <div className="flex items-center justify-end gap-4 pt-2">
         <div className="flex items-center gap-1.5">
           <span className="h-[3px] w-3 rounded-full" style={{ backgroundColor: 'rgb(168 85 247)' }} />
-          <span className="font-mono text-2xs text-neutral-400">Cost</span>
+          <span className="font-mono text-2xs text-neutral-400">LLM</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="h-[3px] w-3 rounded-full" style={{ backgroundColor: 'rgb(20 184 166)' }} />
+          <span className="font-mono text-2xs text-neutral-400">Compute</span>
         </div>
         <div className="flex items-center gap-1.5">
           <span className="h-[3px] w-3 rounded-full" style={{ backgroundColor: 'rgb(59 130 246)' }} />

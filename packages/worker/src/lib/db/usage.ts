@@ -233,3 +233,90 @@ export async function getUsageByModel(
     callCount: Number(r.call_count),
   }));
 }
+
+// ─── Sandbox Usage Queries ──────────────────────────────────────────────────
+
+export interface SandboxHeroStats {
+  totalActiveSeconds: number;
+}
+
+export async function getSandboxHeroStats(
+  db: D1Database,
+  periodStart: string,
+): Promise<SandboxHeroStats> {
+  const row = await db
+    .prepare(`
+      SELECT COALESCE(SUM(active_seconds), 0) as total_active_seconds
+      FROM sessions
+      WHERE created_at >= ?
+    `)
+    .bind(periodStart)
+    .first<{ total_active_seconds: number }>();
+
+  return {
+    totalActiveSeconds: row?.total_active_seconds ?? 0,
+  };
+}
+
+export interface SandboxByDayRow {
+  date: string;
+  activeSeconds: number;
+}
+
+export async function getSandboxByDay(
+  db: D1Database,
+  periodStart: string,
+): Promise<SandboxByDayRow[]> {
+  const result = await db
+    .prepare(`
+      SELECT
+        date(created_at) as date,
+        SUM(active_seconds) as active_seconds
+      FROM sessions
+      WHERE created_at >= ?
+      GROUP BY date(created_at)
+      ORDER BY date ASC
+    `)
+    .bind(periodStart)
+    .all();
+
+  return (result.results ?? []).map((r: Record<string, unknown>) => ({
+    date: String(r.date),
+    activeSeconds: Number(r.active_seconds),
+  }));
+}
+
+export interface SandboxByUserRow {
+  userId: string;
+  activeSeconds: number;
+  sandboxCpuCores: number | null;
+  sandboxMemoryMib: number | null;
+}
+
+export async function getSandboxByUser(
+  db: D1Database,
+  periodStart: string,
+): Promise<SandboxByUserRow[]> {
+  const result = await db
+    .prepare(`
+      SELECT
+        s.user_id,
+        SUM(s.active_seconds) as active_seconds,
+        u.sandbox_cpu_cores,
+        u.sandbox_memory_mib
+      FROM sessions s
+      LEFT JOIN users u ON u.id = s.user_id
+      WHERE s.created_at >= ?
+        AND s.user_id IS NOT NULL
+      GROUP BY s.user_id
+    `)
+    .bind(periodStart)
+    .all();
+
+  return (result.results ?? []).map((r: Record<string, unknown>) => ({
+    userId: String(r.user_id),
+    activeSeconds: Number(r.active_seconds),
+    sandboxCpuCores: r.sandbox_cpu_cores != null ? Number(r.sandbox_cpu_cores) : null,
+    sandboxMemoryMib: r.sandbox_memory_mib != null ? Number(r.sandbox_memory_mib) : null,
+  }));
+}
