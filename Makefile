@@ -16,6 +16,7 @@
         health health-worker health-opencode \
         workflow-create workflow-list workflow-run workflow-delete \
         trigger-create trigger-list trigger-run \
+        bootstrap bootstrap-d1 bootstrap-r2 bootstrap-pages bootstrap-secrets \
         release deploy deploy-worker deploy-modal deploy-client build-client generate-registries \
         secrets-set secrets-list \
         image-build image-push \
@@ -538,6 +539,70 @@ e2e-full: ## Run complete E2E test suite
 e2e-ci: ## E2E tests for CI (includes cleanup)
 	@make e2e-full || (make clean && exit 1)
 	@make clean
+
+# ==========================================
+# Bootstrap (create remote resources)
+# ==========================================
+# Creates Cloudflare resources (D1, R2, Pages) and sets worker secrets.
+# Run once when setting up a new environment. Idempotent — skips resources
+# that already exist. After bootstrap, update .env.deploy with the D1
+# database ID printed below, then run `make deploy`.
+
+bootstrap: bootstrap-d1 bootstrap-r2 bootstrap-pages ## Create all remote Cloudflare resources
+	@echo ""
+	@echo "$(GREEN)========================================$(NC)"
+	@echo "$(GREEN)Bootstrap complete!$(NC)"
+	@echo "$(GREEN)========================================$(NC)"
+	@echo ""
+	@echo "Next steps:"
+	@echo "  1. Copy the D1 database ID above into .env.deploy as D1_DATABASE_ID"
+	@echo "  2. Run $(YELLOW)make bootstrap-secrets$(NC) to set worker secrets"
+	@echo "  3. Run $(YELLOW)make deploy$(NC) to deploy everything"
+
+bootstrap-d1: ## Create D1 database
+	@echo "$(GREEN)Creating D1 database '$(D1_DATABASE_NAME)'...$(NC)"
+	@wrangler d1 create $(D1_DATABASE_NAME) 2>&1 | tee /dev/stderr | grep -q "already exists" \
+		&& echo "$(YELLOW)D1 database already exists$(NC)" \
+		|| echo "$(GREEN)✓ D1 database created — copy the database_id into .env.deploy$(NC)"
+
+bootstrap-r2: ## Create R2 bucket
+	@echo "$(GREEN)Creating R2 bucket '$(R2_BUCKET_NAME)'...$(NC)"
+	@wrangler r2 bucket create $(R2_BUCKET_NAME) 2>&1 | tee /dev/stderr | grep -q "already exists" \
+		&& echo "$(YELLOW)R2 bucket already exists$(NC)" \
+		|| echo "$(GREEN)✓ R2 bucket created$(NC)"
+
+bootstrap-pages: ## Create Cloudflare Pages project
+	@echo "$(GREEN)Creating Pages project '$(PAGES_PROJECT_NAME)'...$(NC)"
+	@wrangler pages project create $(PAGES_PROJECT_NAME) --production-branch main 2>&1 | tee /dev/stderr | grep -q "already exists" \
+		&& echo "$(YELLOW)Pages project already exists$(NC)" \
+		|| echo "$(GREEN)✓ Pages project created$(NC)"
+
+bootstrap-secrets: ## Set required worker secrets (interactive)
+	@echo "$(GREEN)Setting secrets for worker '$(CF_WORKER_NAME)'...$(NC)"
+	@echo ""
+	@echo "Required secrets:"
+	@echo "  ENCRYPTION_KEY        — random 32+ char string for credential encryption"
+	@echo "  GITHUB_CLIENT_ID      — GitHub OAuth app client ID"
+	@echo "  GITHUB_CLIENT_SECRET  — GitHub OAuth app client secret"
+	@echo "  GOOGLE_CLIENT_ID      — Google OAuth client ID"
+	@echo "  GOOGLE_CLIENT_SECRET  — Google OAuth client secret"
+	@echo "  FRONTEND_URL          — e.g. https://valet-client.pages.dev"
+	@echo ""
+	@echo "Optional secrets:"
+	@echo "  ANTHROPIC_API_KEY     — fallback LLM key (prefer org-level keys)"
+	@echo "  OPENAI_API_KEY        — fallback LLM key"
+	@echo "  GOOGLE_API_KEY        — fallback LLM key (Gemini)"
+	@echo "  SLACK_SIGNING_SECRET  — Slack app signing secret"
+	@echo "  SLACK_BOT_TOKEN       — Slack bot token"
+	@echo "  SLACK_CLIENT_ID       — Slack OAuth client ID"
+	@echo "  SLACK_CLIENT_SECRET   — Slack OAuth client secret"
+	@echo ""
+	@for secret in ENCRYPTION_KEY GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET FRONTEND_URL; do \
+		echo "$(YELLOW)Enter $$secret (or press Ctrl+C to skip remaining):$(NC)"; \
+		wrangler secret put $$secret --name $(CF_WORKER_NAME) || break; \
+		echo ""; \
+	done
+	@echo "$(GREEN)✓ Secrets configured. Run 'wrangler secret list --name $(CF_WORKER_NAME)' to verify.$(NC)"
 
 # ==========================================
 # Deployment
