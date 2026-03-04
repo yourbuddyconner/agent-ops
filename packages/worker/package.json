@@ -26,6 +26,7 @@
     "@agent-ops/actions-github": "workspace:*",
     "@agent-ops/actions-gmail": "workspace:*",
     "@agent-ops/actions-google-calendar": "workspace:*",
+    "@agent-ops/actions-google-drive": "workspace:*",
     "@agent-ops/actions-linear": "workspace:*",
     "@agent-ops/actions-notion": "workspace:*",
     "@agent-ops/actions-sentry": "workspace:*",
