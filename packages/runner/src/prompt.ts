@@ -1354,6 +1354,7 @@ export class PromptHandler {
             this.agentClient.sendModelSwitched(this.activeMessageId, fromModel, toModel, lastModelError || "Model failed");
           }
           channel.resetForRetry();
+          channel.syncPromptInFlight = true; // Re-set after resetForRetry clears it
           this.agentClient.sendAgentStatus("thinking");
           this.awaitingAssistantForAttempt = true;
         }
@@ -2674,9 +2675,9 @@ export class PromptHandler {
 
     console.log(`[PromptHandler] prompt sync response: ${res.status} ${res.statusText}`);
 
-    if (!res.ok && res.status !== 204) {
-      const body = await res.text().catch(() => "");
-      const error = new Error(`OpenCode prompt sync failed: ${res.status} — ${body}`);
+    if (!res.ok) {
+      const errorBody = await res.text().catch(() => "");
+      const error = new Error(`OpenCode prompt sync failed: ${res.status} — ${errorBody}`);
       (error as { status?: number }).status = res.status;
       throw error;
     }
