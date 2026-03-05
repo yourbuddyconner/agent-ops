@@ -1324,29 +1324,86 @@ export class PromptHandler {
       this.pendingRetryAuthor = author;
 
       // Determine which model to use: explicit model takes priority, then first preference
-      const effectiveModel = failoverChain[0];
       this.currentModelIndex = 0;
 
       // Notify client that agent is thinking
       this.agentClient.sendAgentStatus("thinking");
       this.awaitingAssistantForAttempt = true;
 
-      // Send message async (fire-and-forget)
-      await this.sendPromptToChannelWithRecovery(channel, effectiveContent, {
-        model: effectiveModel,
-        attachments: effectiveAttachments,
-        author,
-        channelType,
-        channelId,
-      });
-      console.log(`[PromptHandler] Prompt ${messageId} sent to OpenCode (channel: ${channel.channelKey})${effectiveModel ? ` (model: ${effectiveModel})` : ''}`);
+      // Synchronous failover loop — try each model in the chain
+      const modelsToTry = failoverChain.length > 0 ? failoverChain : [undefined];
+      let lastModelError: string | null = null;
 
-      // Start a timeout for the first assistant response. If the model/provider
-      // never responds (e.g. hangs, free-tier timeout), this prevents the session
-      // from being stuck in "Thinking" forever.
-      this.startFirstResponseTimeout();
+      for (let i = 0; i < modelsToTry.length; i++) {
+        const currentModel = modelsToTry[i];
+        this.currentModelIndex = i;
 
-      // Response will arrive via SSE events — don't block here
+        if (i > 0) {
+          // Not first attempt — notify DO, reset, send thinking
+          const fromModel = modelsToTry[i - 1] || "default";
+          const toModel = currentModel || "default";
+          console.log(`[PromptHandler] Failing over from ${fromModel} to ${toModel} due to: ${lastModelError}`);
+          if (this.activeMessageId) {
+            this.agentClient.sendModelSwitched(this.activeMessageId, fromModel, toModel, lastModelError || "Model failed");
+          }
+          channel.resetForRetry();
+          this.agentClient.sendAgentStatus("thinking");
+          this.awaitingAssistantForAttempt = true;
+        }
+
+        try {
+          console.log(`[PromptHandler] Sending sync prompt ${messageId} (channel: ${channel.channelKey})${currentModel ? ` (model: ${currentModel})` : ''}`);
+          const { result } = await this.sendPromptSyncWithRecovery(channel, effectiveContent, {
+            model: currentModel,
+            attachments: effectiveAttachments,
+            author,
+            channelType,
+            channelId,
+          });
+          console.log(`[PromptHandler] Sync prompt ${messageId} returned (channel: ${channel.channelKey})`);
+
+          // Extract text and error from the sync response
+          const info = result?.info as Record<string, unknown> | undefined;
+          const responseText = info ? this.extractAssistantTextFromMessageInfo(info) : null;
+          const responseError = info ? this.extractAssistantErrorFromMessageInfo(info) : null;
+          const errorMsg = responseError || this.lastError;
+
+          if (errorMsg && isRetriableProviderError(errorMsg)) {
+            // Retriable error — continue to next model
+            lastModelError = errorMsg;
+            console.log(`[PromptHandler] Retriable error for ${messageId}: ${errorMsg} — trying next model`);
+            continue;
+          }
+
+          if (!responseText && !errorMsg && !this.hasActivity) {
+            // Empty response with no SSE activity — continue to next model
+            lastModelError = "Model returned an empty response";
+            console.log(`[PromptHandler] Empty response for ${messageId} with no activity — trying next model`);
+            continue;
+          }
+
+          // Success (or non-retriable error) — finalize and return
+          await this.finalizeSyncResponse(responseText, errorMsg || null);
+          return;
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          if (isRetriableProviderError(errMsg)) {
+            lastModelError = errMsg;
+            console.log(`[PromptHandler] Retriable exception for ${messageId}: ${errMsg} — trying next model`);
+            continue;
+          }
+          // Non-retriable exception — finalize with error
+          await this.finalizeSyncResponse(null, errMsg);
+          return;
+        }
+      }
+
+      // All models exhausted
+      const exhaustedError = this.buildFailoverExhaustedError(
+        lastModelError || "The model did not respond."
+      );
+      console.log(`[PromptHandler] All models exhausted for ${messageId}: ${exhaustedError}`);
+      await this.finalizeSyncResponse(null, exhaustedError);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error("[PromptHandler] Error processing prompt:", errorMsg);
@@ -1380,6 +1437,116 @@ export class PromptHandler {
       `Tried ${fallbackCount} fallback model${fallbackCount > 1 ? "s" : ""} — none responded. ` +
       `Try again or switch to a different model.`
     );
+  }
+
+  /**
+   * Finalize a sync prompt response. Handles turn creation, turn finalization,
+   * stuck tool flushing, completion/idle signals, usage reporting, memory flush,
+   * and state cleanup.
+   */
+  private async finalizeSyncResponse(content: string | null, error: string | null): Promise<void> {
+    // Clear any pending timeouts
+    this.clearResponseTimeout();
+    this.clearFirstResponseTimeout();
+
+    const messageId = this.activeMessageId;
+    // Also consider streamed content from SSE events that arrived during the sync call
+    const effectiveContent = content || this.streamedContent || this.latestAssistantTextSnapshot;
+
+    if (effectiveContent) {
+      console.log(`[PromptHandler] Sync finalize: success for ${messageId} (${effectiveContent.length} chars)`);
+      this.ensureTurnCreated();
+      this.agentClient.sendTurnFinalize(this.turnId!, "end_turn", effectiveContent);
+    } else if (error) {
+      console.log(`[PromptHandler] Sync finalize: error for ${messageId}: ${error}`);
+      this.ensureTurnCreated();
+      this.agentClient.sendTurnFinalize(this.turnId!, "error", undefined, error);
+    } else if (this.toolStates.size > 0) {
+      // Tools ran but no text was produced — this is normal for tool-only turns
+      console.log(`[PromptHandler] Sync finalize: tools-only for ${messageId} (${this.toolStates.size} tools ran)`);
+      this.ensureTurnCreated();
+      this.agentClient.sendTurnFinalize(this.turnId!, "end_turn");
+    } else {
+      // Truly empty response
+      console.log(`[PromptHandler] Sync finalize: empty response for ${messageId}`);
+      this.ensureTurnCreated();
+      this.agentClient.sendTurnFinalize(this.turnId!, "error", undefined, "The model did not respond.");
+    }
+
+    // Flush any tools still in non-terminal state as "completed"
+    for (const [callID, { status, toolName }] of this.toolStates) {
+      if (status === "pending" || status === "running") {
+        console.log(`[PromptHandler] Flushing stuck tool "${toolName}" [${callID}] as completed (was: ${status})`);
+        this.agentClient.sendToolUpdate(this.turnId!, callID, toolName, "completed");
+      }
+    }
+
+    console.log(`[PromptHandler] Sending complete`);
+    this.agentClient.sendComplete();
+    this.agentClient.sendAgentStatus("idle");
+
+    // Emit usage report for this turn
+    const usageChannel = this.activeChannel;
+    if (usageChannel && usageChannel.usageEntries.size > 0 && usageChannel.turnId) {
+      const entries = Array.from(usageChannel.usageEntries.entries()).map(
+        ([ocMessageId, data]) => ({
+          ocMessageId,
+          model: data.model,
+          inputTokens: data.inputTokens,
+          outputTokens: data.outputTokens,
+        })
+      );
+      this.agentClient.sendUsageReport(usageChannel.turnId, entries);
+      usageChannel.usageEntries.clear();
+    }
+
+    // Check for pre-compaction memory flush after each turn
+    const flushChannel = this.activeChannel;
+    if (flushChannel && !flushChannel.memoryFlushInProgress) {
+      flushChannel.turnCount++;
+      this.checkAndTriggerMemoryFlush(flushChannel).catch(err =>
+        console.warn("[PromptHandler] Memory flush check failed:", err)
+      );
+    }
+
+    // Report files changed after each turn
+    this.reportFilesChanged().catch((err) =>
+      console.error("[PromptHandler] Error reporting files changed:", err)
+    );
+
+    this.cleanupAfterFinalize();
+  }
+
+  /**
+   * Reset all per-prompt state after finalization. Shared by both
+   * finalizeSyncResponse and finalizeResponse.
+   */
+  private cleanupAfterFinalize(): void {
+    this.streamedContent = "";
+    this.hasActivity = false;
+    this.hadToolSinceLastText = false;
+    this.activeMessageId = null;
+    this.lastChunkTime = 0;
+    this.lastError = null;
+    this.toolStates.clear();
+    this.textPartSnapshots.clear();
+    this.messageTextSnapshots.clear();
+    this.messageRoles.clear();
+    this.activeAssistantMessageIds.clear();
+    this.latestAssistantTextSnapshot = "";
+    this.recentEventTrace = [];
+    this.awaitingAssistantForAttempt = false;
+    this.turnCreated = false;
+    this.turnId = null;
+    // Clear failover state
+    this.currentModelPreferences = undefined;
+    this.currentModelIndex = 0;
+    this.pendingRetryContent = null;
+    this.pendingRetryAttachments = [];
+    this.pendingRetryAuthor = undefined;
+    this.retryPending = false;
+    this.finalizeInFlight = false;
+    console.log(`[PromptHandler] Response finalized`);
   }
 
   /**
@@ -2819,24 +2986,17 @@ export class PromptHandler {
       }
 
       case "session.idle": {
-        // Dedicated idle event — finalize response (even if no activity, to handle empty responses)
-        console.log(`[PromptHandler] session.idle (channel: ${eventChannel?.channelKey ?? 'unknown'}, activeMessageId: ${this.activeMessageId ? 'yes' : 'no'}, hasActivity: ${this.hasActivity})`);
-        if (this.activeMessageId && !this.retryPending && this.awaitingAssistantForAttempt) {
-          // OpenCode went idle without ever producing an assistant message — the model
-          // silently failed. Clear the flag and finalize so finalizeResponse() can
-          // attempt model failover for the empty response.
-          console.log(`[PromptHandler] session.idle: model produced no assistant message — clearing awaitingAssistant, finalizing for failover`);
-          this.awaitingAssistantForAttempt = false;
-          this.clearFirstResponseTimeout();
-          this.finalizeResponse();
-        } else if (this.activeMessageId && !this.retryPending) {
-          console.log(`[PromptHandler] Session idle, finalizing response`);
-          this.finalizeResponse();
-        } else if (this.retryPending) {
-          console.log(
-            `[PromptHandler] session.idle ignored (retryPending=${this.retryPending})`
-          );
+        console.log(`[PromptHandler] session.idle (channel: ${eventChannel?.channelKey ?? 'unknown'}, activeMessageId: ${this.activeMessageId ? 'yes' : 'no'})`);
+        // With sync prompts, finalization happens via HTTP response.
+        // session.idle is still used for idle status notification and ephemeral sessions.
+
+        // Ephemeral session waiters
+        if (eventSessionId && this.idleWaiters.has(eventSessionId)) {
+          const resolve = this.idleWaiters.get(eventSessionId);
+          resolve?.();
+          this.idleWaiters.delete(eventSessionId);
         }
+
         if (!this.idleNotified) {
           this.agentClient.sendAgentStatus("idle");
           this.idleNotified = true;
@@ -2876,39 +3036,13 @@ export class PromptHandler {
       }
 
       case "session.error": {
-        // OpenCode session error — extract error message
         const rawError = props.error ?? props.message ?? props.description;
         const errorMsg = openCodeErrorToMessage(rawError) ?? "Unknown agent error";
         console.error(`[PromptHandler] session.error: ${errorMsg}`);
-        // Also log the raw structure for debugging
         console.error(`[PromptHandler] session.error raw:`, JSON.stringify(props));
-
-        // Check if this is a retriable provider error and we have model preferences
-        if (this.activeMessageId && !this.hasActivity && isRetriableProviderError(errorMsg)) {
-          // Attempt failover — only if we haven't started streaming content yet
-          this.attemptModelFailover(errorMsg).then((didFailover) => {
-            if (!didFailover) {
-              // No more models — propagate original error
-              this.lastError = errorMsg;
-              this.hasActivity = true;
-            }
-          }).catch(() => {
-            this.lastError = errorMsg;
-            this.hasActivity = true;
-          });
-        } else {
-          this.lastError = errorMsg;
-          this.hasActivity = true;
-          // If we were awaiting the first assistant message and got a non-retriable
-          // error instead, session.idle will skip finalization (it checks
-          // !awaitingAssistantForAttempt). Clear the flag so idle proceeds, or
-          // finalize immediately if no idle event follows.
-          if (this.awaitingAssistantForAttempt) {
-            this.awaitingAssistantForAttempt = false;
-            this.clearFirstResponseTimeout();
-            this.finalizeResponse();
-          }
-        }
+        // Record error — sync prompt response is authoritative for handling it
+        this.lastError = errorMsg;
+        this.hasActivity = true;
         break;
       }
 
@@ -3490,31 +3624,7 @@ export class PromptHandler {
         console.error("[PromptHandler] Error reporting files changed:", err)
       );
 
-      this.streamedContent = "";
-      this.hasActivity = false;
-      this.hadToolSinceLastText = false;
-      this.activeMessageId = null;
-      this.lastChunkTime = 0;
-      this.lastError = null;
-      this.toolStates.clear();
-      this.textPartSnapshots.clear();
-      this.messageTextSnapshots.clear();
-      this.messageRoles.clear();
-      this.activeAssistantMessageIds.clear();
-      this.latestAssistantTextSnapshot = "";
-      this.recentEventTrace = [];
-      this.awaitingAssistantForAttempt = false;
-      this.turnCreated = false;
-      this.turnId = null;
-      // Clear failover state
-      this.currentModelPreferences = undefined;
-      this.currentModelIndex = 0;
-      this.pendingRetryContent = null;
-      this.pendingRetryAttachments = [];
-      this.pendingRetryAuthor = undefined;
-      this.retryPending = false;
-      this.awaitingAssistantForAttempt = false;
-      console.log(`[PromptHandler] Response finalized`);
+      this.cleanupAfterFinalize();
     } finally {
       this.finalizeInFlight = false;
     }
