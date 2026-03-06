@@ -37,7 +37,7 @@ export function useUpdatePluginStatus() {
     mutationFn: ({ id, status }: { id: string; status: 'active' | 'disabled' }) =>
       api.put<{ ok: boolean }>(`/plugins/${id}`, { status }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.all });
     },
   });
 }
@@ -47,7 +47,7 @@ export function useSyncPlugins() {
   return useMutation({
     mutationFn: () => api.post<{ ok: boolean }>('/plugins/sync'),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.all });
     },
   });
 }

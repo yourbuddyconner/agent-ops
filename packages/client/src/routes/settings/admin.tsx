@@ -1792,6 +1792,20 @@ function UsersSection({ currentUserId }: { currentUserId: string }) {
 
 // --- Plugins ---
 
+const capabilityLabel: Record<string, string> = {
+  actions: 'Actions',
+  channels: 'Channels',
+  skills: 'Skills',
+  tools: 'Tools',
+  personas: 'Personas',
+};
+
+const artifactTypeLabel: Record<string, string> = {
+  skill: 'Skill',
+  persona: 'Persona',
+  tool: 'Tool',
+};
+
 function PluginsSection() {
   const { data: plugins, isLoading } = usePlugins();
   const { data: settings, isLoading: settingsLoading } = usePluginSettings();
@@ -1799,20 +1813,6 @@ function PluginsSection() {
   const syncMutation = useSyncPlugins();
   const updateSettingsMutation = useUpdatePluginSettings();
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
-
-  const capabilityLabel: Record<string, string> = {
-    actions: 'Actions',
-    channels: 'Channels',
-    skills: 'Skills',
-    tools: 'Tools',
-    personas: 'Personas',
-  };
-
-  const artifactTypeLabel: Record<string, string> = {
-    skill: 'Skill',
-    persona: 'Persona',
-    tool: 'Tool',
-  };
 
   return (
     <Section title="Plugins">
@@ -1863,6 +1863,7 @@ function PluginsSection() {
                       onClick={() => hasContent ? setExpandedId(isExpanded ? null : plugin.id) : undefined}
                       className={`flex items-center ${hasContent ? 'cursor-pointer' : 'cursor-default'}`}
                       disabled={!hasContent}
+                      aria-expanded={hasContent ? isExpanded : undefined}
                     >
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
@@ -1885,6 +1886,8 @@ function PluginsSection() {
                       type="button"
                       onClick={() => hasContent ? setExpandedId(isExpanded ? null : plugin.id) : undefined}
                       className="flex flex-1 items-center gap-3 text-left"
+                      disabled={!hasContent}
+                      aria-expanded={hasContent ? isExpanded : undefined}
                     >
                       <div className="flex items-center gap-2 min-w-0">
                         {plugin.icon && <span className="text-base">{plugin.icon}</span>}
