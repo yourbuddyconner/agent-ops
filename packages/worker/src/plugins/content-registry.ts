@@ -6,6 +6,7 @@ export interface PluginContentEntry {
   description?: string;
   icon?: string;
   actionType?: string;
+  authRequired?: boolean;
   capabilities: string[];
   artifacts: Array<{ type: string; filename: string; content: string; sortOrder: number }>;
 }
@@ -254,6 +255,7 @@ timeout 10 agent-browser --headed wait --text "Welcome"     # Wait for specific 
     version: "0.0.1",
     description: "DeepWiki integration for repository knowledge base",
     icon: "📚",
+    authRequired: false,
     capabilities: ["actions"],
     artifacts: [],
   },

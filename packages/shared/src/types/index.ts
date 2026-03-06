@@ -1005,6 +1005,7 @@ export interface OrgPlugin {
   description?: string;
   icon?: string;
   actionType?: string;
+  authRequired: boolean;
   source: string;
   capabilities: string[];
   status: string;

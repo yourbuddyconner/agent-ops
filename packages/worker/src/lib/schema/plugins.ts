@@ -11,6 +11,7 @@ export const orgPlugins = sqliteTable('org_plugins', {
   source: text().notNull().default('builtin'),
   capabilities: text({ mode: 'json' }).notNull().$type<string[]>().default([]),
   actionType: text(),
+  authRequired: integer({ mode: 'boolean' }).notNull().default(true),
   status: text().notNull().default('active'),
   installedBy: text().notNull().default('system'),
   installedAt: text().notNull().default(sql`(datetime('now'))`),

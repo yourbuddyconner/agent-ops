@@ -2000,6 +2000,11 @@ function PluginsSection() {
                           <Badge variant="secondary">MCP</Badge>
                         )}
 
+                        {/* Auto-enabled (no auth) badge */}
+                        {!plugin.authRequired && (
+                          <Badge variant="secondary">Auto-enabled</Badge>
+                        )}
+
                         {/* Action disabled status */}
                         {hasActions && isServiceDisabled && (
                           <Badge variant="error">Actions off</Badge>

@@ -17,7 +17,7 @@ import { resolveMode } from '../services/action-policy.js';
 import { invokeAction, markExecuted, markFailed, approveInvocation, denyInvocation } from '../services/actions.js';
 import { updateInvocationStatus } from '../lib/db/actions.js';
 import { getDisabledActionsIndex, isActionDisabled } from '../lib/db/disabled-actions.js';
-import { getActivePluginArtifacts, getPluginSettings } from '../lib/db/plugins.js';
+import { getActivePluginArtifacts, getPluginSettings, getAutoEnabledServices } from '../lib/db/plugins.js';
 import type { ChannelTarget, ChannelContext } from '@valet/sdk';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
 
@@ -7776,6 +7776,15 @@ export class SessionAgentDO {
         seen.add(i.service);
         return true;
       });
+
+      // Inject synthetic integrations for plugins that don't require auth
+      const autoServices = await getAutoEnabledServices(this.env.DB);
+      for (const svc of autoServices) {
+        if (!seen.has(svc)) {
+          dedupedIntegrations.push({ id: `auto:${svc}`, service: svc, status: 'active' } as any);
+          seen.add(svc);
+        }
+      }
 
       // Load disabled-actions index for filtering
       const { disabledActions: disabledActionSet, disabledServices: disabledServiceSet } =

@@ -68,6 +68,7 @@ export async function upsertPlugin(
     description?: string;
     icon?: string;
     actionType?: string;
+    authRequired?: boolean;
     source?: string;
     capabilities?: string[];
     status?: string;
@@ -82,6 +83,7 @@ export async function upsertPlugin(
     description: data.description ?? null,
     icon: data.icon ?? null,
     actionType: data.actionType ?? null,
+    authRequired: data.authRequired ?? true,
     source: data.source ?? 'builtin',
     capabilities: data.capabilities ?? [],
     status: data.status ?? 'active',
@@ -93,6 +95,7 @@ export async function upsertPlugin(
       description: sql`excluded.description`,
       icon: sql`excluded.icon`,
       actionType: sql`excluded.action_type`,
+      authRequired: sql`excluded.auth_required`,
       source: sql`excluded.source`,
       capabilities: sql`excluded.capabilities`,
       updatedAt: sql`datetime('now')`,
@@ -105,6 +108,24 @@ export async function updatePluginStatus(db: AppDb, id: string, status: string):
     .update(orgPlugins)
     .set({ status, updatedAt: sql`datetime('now')` })
     .where(eq(orgPlugins.id, id));
+}
+
+/**
+ * Returns service names for active plugins that don't require auth.
+ * These get synthetic integration entries so tools are available to all users.
+ */
+export async function getAutoEnabledServices(
+  db: D1Database,
+  orgId: string = 'default',
+): Promise<string[]> {
+  const result = await db
+    .prepare(
+      `SELECT name FROM org_plugins
+       WHERE org_id = ? AND status = 'active' AND auth_required = 0`
+    )
+    .bind(orgId)
+    .all();
+  return (result.results || []).map((row: any) => row.name as string);
 }
 
 // ─── Artifacts ──────────────────────────────────────────────────────────────

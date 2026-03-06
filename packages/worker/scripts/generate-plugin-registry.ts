@@ -37,6 +37,7 @@ function parsePluginYaml(filePath: string): {
   description?: string;
   icon?: string;
   actionType?: string;
+  authRequired?: boolean;
 } {
   const text = readFileSync(filePath, 'utf-8');
   const result: Record<string, string> = {};
@@ -63,6 +64,7 @@ function parsePluginYaml(filePath: string): {
     description: result.description,
     icon: result.icon,
     actionType: result.actionType,
+    authRequired: result.authRequired === 'false' ? false : undefined,
   };
 }
 
@@ -86,6 +88,7 @@ interface ContentEntry {
   description?: string;
   icon?: string;
   actionType?: string;
+  authRequired?: boolean;
   capabilities: string[];
   artifacts: Array<{ type: string; filename: string; content: string; sortOrder: number }>;
 }
@@ -169,6 +172,7 @@ for (const dir of pluginDirs) {
     description: meta.description,
     icon: meta.icon,
     actionType: meta.actionType,
+    authRequired: meta.authRequired,
     capabilities,
     artifacts,
   });
@@ -207,6 +211,7 @@ const contentLines: string[] = [
   '  description?: string;',
   '  icon?: string;',
   '  actionType?: string;',
+  '  authRequired?: boolean;',
   '  capabilities: string[];',
   '  artifacts: Array<{ type: string; filename: string; content: string; sortOrder: number }>;',
   '}',
@@ -226,6 +231,9 @@ for (const entry of contentEntries) {
   }
   if (entry.actionType !== undefined) {
     contentLines.push(`    actionType: ${JSON.stringify(entry.actionType)},`);
+  }
+  if (entry.authRequired !== undefined) {
+    contentLines.push(`    authRequired: ${JSON.stringify(entry.authRequired)},`);
   }
   contentLines.push(`    capabilities: ${JSON.stringify(entry.capabilities)},`);
   if (entry.artifacts.length === 0) {
