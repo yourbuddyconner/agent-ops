@@ -1038,6 +1038,11 @@ export class SessionAgentDO {
     this.ctx.acceptWebSocket(server, ['runner']);
     console.log('[SessionAgentDO] Runner connected');
 
+    // Mark runner as not-yet-ready. The runner needs to start OpenCode,
+    // discover models, etc. before it can accept prompts. Prompts arriving
+    // before the runner signals agentStatus: idle will be queued.
+    this.setStateValue('runnerReady', 'false');
+
     // Send init message to runner
     server.send(JSON.stringify({ type: 'init' }));
 
@@ -1097,6 +1102,7 @@ export class SessionAgentDO {
         "UPDATE prompt_queue SET status = 'queued' WHERE status = 'processing'"
       );
       this.setStateValue('runnerBusy', 'false');
+      this.setStateValue('runnerReady', 'false');
 
       const queueLength = this.getQueueLength();
       this.broadcastToClients({
@@ -1648,21 +1654,24 @@ export class SessionAgentDO {
       author?.id
     );
 
-    // Check if runner is busy
+    // Check if runner is busy / ready
     const channelKey = this.channelKeyFrom(channelType, channelId);
     const runnerBusy = this.getStateValue('runnerBusy') === 'true';
     const runnerSockets = this.ctx.getWebSockets('runner');
     const runnerConnected = runnerSockets.length > 0;
+    const runnerReady = this.getStateValue('runnerReady') !== 'false';
     const status = this.getStateValue('status');
     const sandboxId = this.getStateValue('sandboxId');
     const queuedCount = this.getQueueLength();
 
     console.log(
-      `[SessionAgentDO] handlePrompt: channel=${channelKey} runnerConnected=${runnerConnected} runnerBusy=${runnerBusy} status=${status} sandboxId=${sandboxId || 'none'} queued=${queuedCount}`
+      `[SessionAgentDO] handlePrompt: channel=${channelKey} runnerConnected=${runnerConnected} runnerReady=${runnerReady} runnerBusy=${runnerBusy} status=${status} sandboxId=${sandboxId || 'none'} queued=${queuedCount}`
     );
 
-    if (!runnerConnected) {
-      // No runner connected — queue the prompt with author info + channel metadata
+    if (!runnerConnected || !runnerReady) {
+      // No runner connected or runner still initializing (OpenCode not healthy yet)
+      // — queue the prompt with author info + channel metadata
+      const reason = !runnerConnected ? 'no runner connected' : 'runner not ready';
       this.ctx.storage.sql.exec(
         "INSERT INTO prompt_queue (id, content, attachments, model, status, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
         messageId, content, serializedQueuedAttachments, model || null,
@@ -1671,7 +1680,7 @@ export class SessionAgentDO {
       );
       this.appendAuditLog(
         'prompt.queued',
-        `Queued: no runner connected (status=${status || 'unknown'}, sandbox=${sandboxId ? 'yes' : 'no'}, queued=${this.getQueueLength()})`,
+        `Queued: ${reason} (status=${status || 'unknown'}, sandbox=${sandboxId ? 'yes' : 'no'}, queued=${this.getQueueLength()})`,
         author?.id
       );
       this.broadcastToClients({
@@ -2494,6 +2503,14 @@ export class SessionAgentDO {
           ...(statusCh ? { channelType: statusCh.channelType, channelId: statusCh.channelId } : {}),
         });
         if (msg.status === 'idle') {
+          // If runner was initializing (not yet ready), mark it ready now.
+          // This is the signal that OpenCode is healthy and models are discovered.
+          const wasInitializing = this.getStateValue('runnerReady') === 'false';
+          if (wasInitializing) {
+            this.setStateValue('runnerReady', 'true');
+            console.log('[SessionAgentDO] Runner is now ready (first idle after connect)');
+          }
+
           const currentRunnerBusy = this.getStateValue('runnerBusy') === 'true';
           const currentQueueLen = this.getQueueLength();
           console.log(`[SessionAgentDO] agentStatus: idle (runnerBusy=${currentRunnerBusy}, runnerConnected=${this.ctx.getWebSockets('runner').length > 0}, queued=${currentQueueLen})`);
