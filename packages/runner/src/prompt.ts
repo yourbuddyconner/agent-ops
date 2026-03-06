@@ -1368,13 +1368,24 @@ export class PromptHandler {
             channelType,
             channelId,
           });
-          console.log(`[PromptHandler] Sync prompt ${messageId} returned (channel: ${channel.channelKey})`);
+          console.log(`[PromptHandler] Sync prompt ${messageId} returned (channel: ${channel.channelKey}) result=${result ? 'present' : 'null'}`);
 
           // Extract text and error from the sync response
           const info = result?.info as Record<string, unknown> | undefined;
           const responseText = info ? this.extractAssistantTextFromMessageInfo(info) : null;
           const responseError = info ? this.extractAssistantErrorFromMessageInfo(info) : null;
           const errorMsg = responseError || this.lastError;
+
+          console.log(
+            `[PromptHandler] Sync response analysis for ${messageId}: ` +
+            `responseText=${responseText ? responseText.length + ' chars' : 'null'} ` +
+            `responseError=${responseError ?? 'null'} ` +
+            `lastError=${this.lastError ?? 'null'} ` +
+            `hasActivity=${this.hasActivity} ` +
+            `streamedContent=${this.streamedContent.length} chars ` +
+            `toolStates=${this.toolStates.size} ` +
+            `assistantMsgIds=${this.activeAssistantMessageIds.size}`
+          );
 
           if (errorMsg && isRetriableProviderError(errorMsg)) {
             // Retriable error — continue to next model
@@ -2628,6 +2639,7 @@ export class PromptHandler {
         body.model = { providerID: "", modelID: model };
       }
     }
+    console.log(`[PromptHandler] buildPromptBody: model=${model ?? 'none'} → ${body.model ? JSON.stringify(body.model) : 'no model'} parts=${promptParts.length}`);
     return body;
   }
 
@@ -2673,17 +2685,31 @@ export class PromptHandler {
       body: JSON.stringify(body),
     });
 
-    console.log(`[PromptHandler] prompt sync response: ${res.status} ${res.statusText}`);
+    console.log(`[PromptHandler] prompt sync response: ${res.status} ${res.statusText} (content-type: ${res.headers.get("content-type")})`);
 
     if (!res.ok) {
       const errorBody = await res.text().catch(() => "");
+      console.error(`[PromptHandler] prompt sync error body: ${errorBody.slice(0, 500)}`);
       const error = new Error(`OpenCode prompt sync failed: ${res.status} — ${errorBody}`);
       (error as { status?: number }).status = res.status;
       throw error;
     }
 
-    const json = await res.json().catch(() => null);
-    return json as { info: OpenCodeMessageInfo; parts: unknown[] } | null;
+    const rawText = await res.text().catch(() => "");
+    console.log(`[PromptHandler] prompt sync raw response (${rawText.length} chars): ${rawText.slice(0, 500)}`);
+    if (!rawText) {
+      console.warn(`[PromptHandler] prompt sync returned empty body`);
+      return null;
+    }
+    try {
+      const json = JSON.parse(rawText);
+      const info = json?.info;
+      console.log(`[PromptHandler] prompt sync parsed: role=${info?.role} finish=${info?.finish} parts=${Array.isArray(json?.parts) ? json.parts.length : 'none'} error=${info?.error ? JSON.stringify(info.error).slice(0, 200) : 'none'} infoKeys=${info ? Object.keys(info).join(",") : 'null'}`);
+      return json as { info: OpenCodeMessageInfo; parts: unknown[] } | null;
+    } catch (parseErr) {
+      console.error(`[PromptHandler] prompt sync JSON parse failed: ${parseErr}. Raw: ${rawText.slice(0, 300)}`);
+      return null;
+    }
   }
 
   private async sendPromptSyncWithRecovery(

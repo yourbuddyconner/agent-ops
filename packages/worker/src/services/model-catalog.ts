@@ -266,14 +266,41 @@ async function probeCustomProviderModels(
 }
 
 /**
+ * Get Runner-discovered model IDs from the org-level cache.
+ * Returns a Set of full model IDs (e.g. "openai/gpt-5.1-chat-latest") or null if no cache exists.
+ */
+async function getRunnerDiscoveredModelIds(db: AppDb): Promise<Set<string> | null> {
+  const cached = await getCatalogCache(db, 'runner:discovered');
+  if (!cached) return null;
+
+  try {
+    const models = JSON.parse(cached.data) as AvailableModels;
+    const ids = new Set<string>();
+    for (const provider of models) {
+      for (const model of provider.models) {
+        ids.add(model.id);
+      }
+    }
+    return ids.size > 0 ? ids : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve all available models from D1 configs and external catalogs.
  * This is the primary entry point — called from the route handler.
+ *
+ * When Runner-discovered models are cached at org level, the models.dev
+ * catalog is filtered to only include models that actually exist in OpenCode's
+ * provider registry. This prevents invalid model IDs from reaching clients.
  */
 export async function resolveAvailableModels(db: AppDb, env: Env): Promise<AvailableModels> {
   // Parallel reads
-  const [orgKeys, customProviderRows] = await Promise.all([
+  const [orgKeys, customProviderRows, discoveredModelIds] = await Promise.all([
     listOrgApiKeys(db),
     getAllCustomProvidersWithKeys(db),
+    getRunnerDiscoveredModelIds(db),
   ]);
 
   const result: ProviderModels[] = [];
@@ -357,6 +384,10 @@ export async function resolveAvailableModels(db: AppDb, env: Env): Promise<Avail
           id: `${providerId}/${m.id}`,
           name: m.name || m.id,
         }));
+        // Filter against Runner-discovered models to remove IDs that don't exist in OpenCode
+        if (discoveredModelIds) {
+          models = models.filter((m) => discoveredModelIds.has(m.id));
+        }
       } else if (key.models && key.models.length > 0) {
         // Catalog unavailable — fall back to DB model list
         models = key.models.map((m) => ({

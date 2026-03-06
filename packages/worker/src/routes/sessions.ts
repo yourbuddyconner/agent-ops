@@ -98,9 +98,12 @@ sessionsRouter.get('/available-models', async (c) => {
       resolveAvailableModels(appDb, c.env),
       db.getOrgSettings(appDb),
     ]);
+    // Filter org model preferences to only include models that exist in the resolved catalog
+    const allModelIds = new Set(models.flatMap((p) => p.models.map((m) => m.id)));
+    const validPrefs = orgSettings.modelPreferences?.filter((id) => allModelIds.has(id)) ?? null;
     return c.json({
       models,
-      orgModelPreferences: orgSettings.modelPreferences ?? null,
+      orgModelPreferences: validPrefs && validPrefs.length > 0 ? validPrefs : null,
     });
   } catch (err) {
     console.error('[available-models] resolution failed:', err);

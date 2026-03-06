@@ -1,7 +1,7 @@
 import type { Env } from '../env.js';
 import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, readMemoryFile, listMemoryFiles, writeMemoryFile, patchMemoryFile, deleteMemoryFile, deleteMemoryFilesUnderPath, searchMemoryFiles, boostMemoryFileRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels, batchInsertUsageEvents } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, readMemoryFile, listMemoryFiles, writeMemoryFile, patchMemoryFile, deleteMemoryFile, deleteMemoryFilesUnderPath, searchMemoryFiles, boostMemoryFileRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels, batchInsertUsageEvents, setCatalogCache } from '../lib/db.js';
 import { getCredential } from '../services/credentials.js';
 import { getSlackBotToken } from '../services/slack.js';
 import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
@@ -913,11 +913,15 @@ export class SessionAgentDO {
       availableModels = availableModelsRaw ? JSON.parse(availableModelsRaw) : undefined;
     }
 
-    // Resolve default model: user prefs → org prefs
+    // Resolve default model: user prefs → org prefs, validated against catalog
     const initOwnerId = this.getStateValue('userId');
     const initOwnerDetails = initOwnerId ? await this.getUserDetails(initOwnerId) : undefined;
     const initModelPrefs = await this.resolveModelPreferences(initOwnerDetails);
-    const defaultModel = initModelPrefs?.[0] ?? null;
+    const candidateDefault = initModelPrefs?.[0] ?? null;
+    // Validate that the default model actually exists in the resolved catalog
+    const defaultModel = candidateDefault && availableModels
+      ? (availableModels.some((p) => p.models.some((m) => m.id === candidateDefault)) ? candidateDefault : null)
+      : candidateDefault;
 
     // Load audit log for late joiners
     const auditLogRows = this.ctx.storage.sql
@@ -2596,12 +2600,16 @@ export class SessionAgentDO {
         // but do NOT broadcast to clients. The UI uses the Worker-resolved catalog from init.
         if (msg.models) {
           this.setStateValue('availableModels', JSON.stringify(msg.models));
+          const modelsJson = JSON.stringify(msg.models);
           // Persist to D1 so the settings typeahead works without a running session
           const userId = this.getStateValue('userId');
           if (userId) {
-            updateUserDiscoveredModels(this.appDb, userId, JSON.stringify(msg.models))
+            updateUserDiscoveredModels(this.appDb, userId, modelsJson)
               .catch((err: unknown) => console.error('[SessionAgentDO] Failed to cache models to D1:', err));
           }
+          // Cache at org level so resolveAvailableModels() can filter models.dev against real models
+          setCatalogCache(this.appDb, 'runner:discovered', modelsJson)
+            .catch((err: unknown) => console.error('[SessionAgentDO] Failed to cache org-level discovered models:', err));
         }
         break;
 
