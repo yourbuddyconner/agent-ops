@@ -120,6 +120,12 @@ def get_base_image() -> modal.Image:
             copy=True,
         )
         .run_commands("cd /opencode-config && /root/.bun/bin/bun install")
+        # Superpowers plugin + skills for OpenCode
+        .run_commands(
+            "git clone --depth 1 https://github.com/obra/superpowers.git /opencode-superpowers",
+            "ln -s /opencode-superpowers/.opencode/plugins/superpowers.js /opencode-config/plugins/superpowers.js",
+            "ln -s /opencode-superpowers/skills /opencode-config/skills/superpowers",
+        )
         # Create workspace directory
         .run_commands("mkdir -p /workspace")
         # Setup bash prompt and environment for terminals
@@ -140,7 +146,7 @@ def get_base_image() -> modal.Image:
                 "DISPLAY": ":99",
                 "HOME": "/root",
                 # Force image rebuild on deploy (change this value to trigger rebuild)
-                "IMAGE_BUILD_VERSION": "2026-03-04-v122-rename-to-valet",
+                "IMAGE_BUILD_VERSION": "2026-03-05-v123-superpowers",
                 "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
                 "AGENT_BROWSER_PROFILE": "/root/.agent-browser-profile",
                 "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright",
