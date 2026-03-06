@@ -115,7 +115,7 @@ export type DOToRunnerMessage =
     }
   | {
       type: 'plugin-content';
-      content: {
+      pluginContent: {
         personas: Array<{ filename: string; content: string; sortOrder: number }>;
         skills: Array<{ filename: string; content: string }>;
         tools: Array<{ filename: string; content: string }>;

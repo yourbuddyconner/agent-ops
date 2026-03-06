@@ -3,12 +3,22 @@ import { getDb } from '../lib/drizzle.js';
 import * as db from '../lib/db.js';
 import { pluginContentRegistry } from '../plugins/content-registry.js';
 
-let synced = false;
+let syncPromise: Promise<void> | null = null;
 
 export async function syncPluginsOnce(d1: D1Database, orgId: string = 'default', force = false): Promise<void> {
-  if (synced && !force) return;
-  synced = true;
+  if (syncPromise && !force) return syncPromise;
 
+  syncPromise = doSync(d1, orgId);
+  try {
+    await syncPromise;
+  } catch (err) {
+    // Reset so next request retries
+    syncPromise = null;
+    throw err;
+  }
+}
+
+async function doSync(d1: D1Database, orgId: string): Promise<void> {
   const appDb = getDb(d1);
 
   for (const plugin of pluginContentRegistry) {
@@ -25,8 +35,7 @@ export async function syncPluginsOnce(d1: D1Database, orgId: string = 'default',
       capabilities: plugin.capabilities,
     });
 
-    // Replace all artifacts for this plugin
-    await db.deletePluginArtifacts(appDb, pluginId);
+    // Upsert each artifact (ON CONFLICT handles updates)
     for (const artifact of plugin.artifacts) {
       await db.upsertPluginArtifact(appDb, {
         id: crypto.randomUUID(),

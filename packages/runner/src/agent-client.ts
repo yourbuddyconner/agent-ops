@@ -961,7 +961,7 @@ export class AgentClient {
           break;
 
         case "plugin-content":
-          await this.pluginContentHandler?.(msg.content);
+          await this.pluginContentHandler?.(msg.pluginContent);
           break;
 
         case "spawn-child-result":
