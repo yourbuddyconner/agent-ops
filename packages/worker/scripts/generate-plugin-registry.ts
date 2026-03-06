@@ -5,12 +5,13 @@
  * Generates:
  *   - src/integrations/packages.ts
  *   - src/channels/packages.ts
+ *   - src/plugins/content-registry.ts
  *
  * Run: bun packages/worker/scripts/generate-plugin-registry.ts
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
+import { resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -28,20 +29,142 @@ const pluginDirs = readdirSync(packagesDir, { withFileTypes: true })
 const actionPlugins: { name: string; pkgName: string }[] = [];
 const channelPlugins: { name: string; pkgName: string }[] = [];
 
+// ── Helpers for content registry ────────────────────────────────────────────
+
+function parsePluginYaml(filePath: string): {
+  name: string;
+  version: string;
+  description?: string;
+  icon?: string;
+} {
+  const text = readFileSync(filePath, 'utf-8');
+  const result: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const match = line.match(/^(\w+)\s*:\s*(.+)$/);
+    if (!match) continue;
+    let value = match[2].trim();
+    // Strip surrounding quotes
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    // Convert Unicode escapes like \U0001F310
+    value = value.replace(/\\U([0-9A-Fa-f]{8})/g, (_, hex) => {
+      return String.fromCodePoint(Number.parseInt(hex, 16));
+    });
+    result[match[1]] = value;
+  }
+  return {
+    name: result.name || '',
+    version: result.version || '0.0.1',
+    description: result.description,
+    icon: result.icon,
+  };
+}
+
+function globFiles(dir: string, ext: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter(f => f.endsWith(ext))
+    .sort()
+    .map(f => resolve(dir, f));
+}
+
+function escapeTemplateContent(content: string): string {
+  return content.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+}
+
+// ── Scan all plugins ────────────────────────────────────────────────────────
+
+interface ContentEntry {
+  name: string;
+  version: string;
+  description?: string;
+  icon?: string;
+  capabilities: string[];
+  artifacts: Array<{ type: string; filename: string; content: string; sortOrder: number }>;
+}
+
+const contentEntries: ContentEntry[] = [];
+
 for (const dir of pluginDirs) {
   const pluginPath = resolve(packagesDir, dir);
+
+  // Action/channel detection requires package.json (these are TS packages)
   const pkgJsonPath = resolve(pluginPath, 'package.json');
-  if (!existsSync(pkgJsonPath)) continue;
+  if (existsSync(pkgJsonPath)) {
+    const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'));
+    const pkgName = pkg.name as string;
 
-  const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'));
-  const pkgName = pkg.name as string;
+    if (existsSync(resolve(pluginPath, 'src', 'actions', 'index.ts'))) {
+      actionPlugins.push({ name: dir, pkgName });
+    }
+    if (existsSync(resolve(pluginPath, 'src', 'channels', 'index.ts'))) {
+      channelPlugins.push({ name: dir, pkgName });
+    }
+  }
 
-  if (existsSync(resolve(pluginPath, 'src', 'actions', 'index.ts'))) {
-    actionPlugins.push({ name: dir, pkgName });
+  const hasActions = existsSync(resolve(pluginPath, 'src', 'actions', 'index.ts'));
+  const hasChannels = existsSync(resolve(pluginPath, 'src', 'channels', 'index.ts'));
+
+  // Parse plugin.yaml for content registry
+  const yamlPath = resolve(pluginPath, 'plugin.yaml');
+  if (!existsSync(yamlPath)) continue;
+
+  const meta = parsePluginYaml(yamlPath);
+  const capabilities: string[] = [];
+  const artifacts: ContentEntry['artifacts'] = [];
+
+  if (hasActions) capabilities.push('actions');
+  if (hasChannels) capabilities.push('channels');
+
+  // Scan skills/*.md
+  const skillFiles = globFiles(resolve(pluginPath, 'skills'), '.md');
+  if (skillFiles.length > 0) capabilities.push('skills');
+  for (let i = 0; i < skillFiles.length; i++) {
+    artifacts.push({
+      type: 'skill',
+      filename: basename(skillFiles[i]),
+      content: readFileSync(skillFiles[i], 'utf-8'),
+      sortOrder: i,
+    });
   }
-  if (existsSync(resolve(pluginPath, 'src', 'channels', 'index.ts'))) {
-    channelPlugins.push({ name: dir, pkgName });
+
+  // Scan tools/*.ts and tools/*.json
+  const toolsDir = resolve(pluginPath, 'tools');
+  const toolFiles = [
+    ...globFiles(toolsDir, '.ts'),
+    ...globFiles(toolsDir, '.json'),
+  ].sort();
+  if (toolFiles.length > 0) capabilities.push('tools');
+  for (let i = 0; i < toolFiles.length; i++) {
+    artifacts.push({
+      type: 'tool',
+      filename: basename(toolFiles[i]),
+      content: readFileSync(toolFiles[i], 'utf-8'),
+      sortOrder: i,
+    });
   }
+
+  // Scan personas/*.md
+  const personaFiles = globFiles(resolve(pluginPath, 'personas'), '.md');
+  if (personaFiles.length > 0) capabilities.push('personas');
+  for (let i = 0; i < personaFiles.length; i++) {
+    artifacts.push({
+      type: 'persona',
+      filename: basename(personaFiles[i]),
+      content: readFileSync(personaFiles[i], 'utf-8'),
+      sortOrder: i,
+    });
+  }
+
+  contentEntries.push({
+    name: meta.name,
+    version: meta.version,
+    description: meta.description,
+    icon: meta.icon,
+    capabilities,
+    artifacts,
+  });
 }
 
 // ── Integration packages ────────────────────────────────────────────────────
@@ -66,6 +189,51 @@ const chLines = [
 ];
 writeFileSync(resolve(workerRoot, 'src/channels/packages.ts'), chLines.join('\n'));
 
+// ── Content registry ────────────────────────────────────────────────────────
+mkdirSync(resolve(workerRoot, 'src/plugins'), { recursive: true });
+
+const contentLines: string[] = [
+  HEADER,
+  'export interface PluginContentEntry {',
+  '  name: string;',
+  '  version: string;',
+  '  description?: string;',
+  '  icon?: string;',
+  '  capabilities: string[];',
+  '  artifacts: Array<{ type: string; filename: string; content: string; sortOrder: number }>;',
+  '}',
+  '',
+  'export const pluginContentRegistry: PluginContentEntry[] = [',
+];
+
+for (const entry of contentEntries) {
+  contentLines.push('  {');
+  contentLines.push(`    name: ${JSON.stringify(entry.name)},`);
+  contentLines.push(`    version: ${JSON.stringify(entry.version)},`);
+  if (entry.description !== undefined) {
+    contentLines.push(`    description: ${JSON.stringify(entry.description)},`);
+  }
+  if (entry.icon !== undefined) {
+    contentLines.push(`    icon: ${JSON.stringify(entry.icon)},`);
+  }
+  contentLines.push(`    capabilities: ${JSON.stringify(entry.capabilities)},`);
+  if (entry.artifacts.length === 0) {
+    contentLines.push('    artifacts: [],');
+  } else {
+    contentLines.push('    artifacts: [');
+    for (const artifact of entry.artifacts) {
+      contentLines.push(`      { type: ${JSON.stringify(artifact.type)}, filename: ${JSON.stringify(artifact.filename)}, content: \`${escapeTemplateContent(artifact.content)}\`, sortOrder: ${artifact.sortOrder} },`);
+    }
+    contentLines.push('    ],');
+  }
+  contentLines.push('  },');
+}
+
+contentLines.push('];');
+contentLines.push('');
+
+writeFileSync(resolve(workerRoot, 'src/plugins/content-registry.ts'), contentLines.join('\n'));
+
 console.log(
-  `Generated plugin registries: ${actionPlugins.length} integration(s), ${channelPlugins.length} channel(s)`,
+  `Generated plugin registries: ${actionPlugins.length} integration(s), ${channelPlugins.length} channel(s), ${contentEntries.length} content entries`,
 );

@@ -67,6 +67,7 @@ import {
   sha256Hex,
 } from './lib/workflow-runtime.js';
 import { restartOrchestratorSession } from './services/orchestrator.js';
+import { syncPluginsOnce } from './services/plugin-sync.js';
 
 // Durable Object exports
 export { SessionAgentDO } from './durable-objects/session-agent.js';
@@ -103,6 +104,12 @@ app.use(
 
 // Error handling
 app.onError(errorHandler);
+
+// Sync plugin registry to D1 on cold start
+app.use('*', async (c, next) => {
+  await syncPluginsOnce(c.env.DB);
+  return next();
+});
 
 // Health check (no auth required)
 app.get('/health', (c) => {
