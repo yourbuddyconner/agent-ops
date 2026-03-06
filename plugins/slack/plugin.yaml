@@ -1,4 +1,4 @@
 name: slack
 version: 0.0.1
-description: Slack integration for messages, channels, and users
+description: Slack integration for actions (messages, channels, users) and channel transport
 icon: "\U0001F4AC"
