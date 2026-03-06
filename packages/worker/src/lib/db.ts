@@ -28,3 +28,4 @@ export * from './db/dashboard.js';
 export * from './db/actions.js';
 export * from './db/disabled-actions.js';
 export * from './db/usage.js';
+export * from './db/plugins.js';
