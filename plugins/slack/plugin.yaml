@@ -1,0 +1,4 @@
+name: slack
+version: 0.0.1
+description: Slack integration for messages, channels, and users
+icon: "\U0001F4AC"

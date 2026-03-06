@@ -1,0 +1,4 @@
+name: gmail
+version: 0.0.1
+description: Gmail integration for reading and sending emails
+icon: "\U0001F4E7"

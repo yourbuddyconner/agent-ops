@@ -1,0 +1,4 @@
+name: google-calendar
+version: 0.0.1
+description: Google Calendar integration for events and scheduling
+icon: "\U0001F4C5"

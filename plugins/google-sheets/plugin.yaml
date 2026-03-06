@@ -1,0 +1,4 @@
+name: google-sheets
+version: 0.0.1
+description: Google Sheets integration for spreadsheet operations
+icon: "\U0001F4CA"
