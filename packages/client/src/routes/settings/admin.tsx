@@ -29,6 +29,8 @@ import { useAvailableModels } from '@/api/sessions';
 import type { ProviderModels } from '@/api/sessions';
 import { useSlackInstallStatus, useInstallSlack, useUninstallSlack } from '@/api/slack';
 import { ActionPoliciesSection } from '@/components/settings/action-policies-section';
+import { usePlugins, usePluginSettings, useUpdatePluginStatus, useSyncPlugins, useUpdatePluginSettings } from '@/api/plugins';
+import { Badge } from '@/components/ui/badge';
 import { ActionEnablementSection } from '@/components/settings/action-enablement-section';
 
 export const Route = createFileRoute('/settings/admin')({
@@ -75,6 +77,7 @@ function AdminSettingsPage() {
         <UsersSection currentUserId={user.id} />
         <ActionEnablementSection />
         <ActionPoliciesSection />
+        <PluginsSection />
       </div>
     </PageContainer>
   );
@@ -1781,6 +1784,129 @@ function UsersSection({ currentUserId }: { currentUserId: string }) {
           <p className="text-sm text-red-600 dark:text-red-400">
             Failed to remove user. {(removeUser.error as Error)?.message}
           </p>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+// --- Plugins ---
+
+function PluginsSection() {
+  const { data: plugins, isLoading } = usePlugins();
+  const { data: settings, isLoading: settingsLoading } = usePluginSettings();
+  const updateStatusMutation = useUpdatePluginStatus();
+  const syncMutation = useSyncPlugins();
+  const updateSettingsMutation = useUpdatePluginSettings();
+
+  const capabilityLabel: Record<string, string> = {
+    actions: 'Actions',
+    channels: 'Channels',
+    skills: 'Skills',
+    tools: 'Tools',
+    personas: 'Personas',
+  };
+
+  return (
+    <Section title="Plugins">
+      <div className="space-y-4">
+        {/* Settings */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <label className="flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-400">
+              <input
+                type="checkbox"
+                checked={settings?.allowRepoContent ?? true}
+                onChange={(e) => updateSettingsMutation.mutate({ allowRepoContent: e.target.checked })}
+                disabled={settingsLoading || updateSettingsMutation.isPending}
+                className="h-4 w-4 rounded border-neutral-300 text-blue-600 focus:ring-blue-500 disabled:opacity-40 dark:border-neutral-600"
+              />
+              Allow per-repo content
+            </label>
+            <span className="text-xs text-neutral-400 dark:text-neutral-500">
+              Scan .valet/ in cloned repos for personas, skills, and tools
+            </span>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => syncMutation.mutate()}
+            disabled={syncMutation.isPending}
+          >
+            {syncMutation.isPending ? 'Syncing...' : 'Sync Plugins'}
+          </Button>
+        </div>
+
+        {/* Plugin list */}
+        {isLoading ? (
+          <div className="py-8 text-center text-sm text-neutral-400">Loading plugins...</div>
+        ) : !plugins?.length ? (
+          <div className="py-8 text-center text-sm text-neutral-400">No plugins installed</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-neutral-200 dark:border-neutral-700">
+                <th className="pb-2 text-left font-medium text-neutral-500 dark:text-neutral-400">Plugin</th>
+                <th className="pb-2 text-left font-medium text-neutral-500 dark:text-neutral-400">Capabilities</th>
+                <th className="pb-2 text-left font-medium text-neutral-500 dark:text-neutral-400">Version</th>
+                <th className="pb-2 text-left font-medium text-neutral-500 dark:text-neutral-400">Status</th>
+                <th className="pb-2 text-right font-medium text-neutral-500 dark:text-neutral-400" />
+              </tr>
+            </thead>
+            <tbody>
+              {plugins.map((plugin) => (
+                <tr key={plugin.id} className="border-b border-neutral-100 last:border-0 dark:border-neutral-700/50">
+                  <td className="py-2.5">
+                    <div className="flex items-center gap-2">
+                      {plugin.icon && <span>{plugin.icon}</span>}
+                      <div>
+                        <div className="font-medium text-neutral-900 dark:text-neutral-100">
+                          {plugin.name}
+                        </div>
+                        {plugin.description && (
+                          <div className="text-xs text-neutral-400 dark:text-neutral-500">
+                            {plugin.description}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="py-2.5">
+                    <div className="flex flex-wrap gap-1">
+                      {plugin.capabilities.map((cap) => (
+                        <Badge key={cap} variant="secondary">
+                          {capabilityLabel[cap] || cap}
+                        </Badge>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="py-2.5 text-neutral-500 dark:text-neutral-400">
+                    {plugin.version}
+                  </td>
+                  <td className="py-2.5">
+                    <Badge variant={plugin.status === 'active' ? 'success' : 'error'}>
+                      {plugin.status}
+                    </Badge>
+                  </td>
+                  <td className="py-2.5 text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        updateStatusMutation.mutate({
+                          id: plugin.id,
+                          status: plugin.status === 'active' ? 'disabled' : 'active',
+                        })
+                      }
+                      disabled={updateStatusMutation.isPending}
+                    >
+                      {plugin.status === 'active' ? 'Disable' : 'Enable'}
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
     </Section>
