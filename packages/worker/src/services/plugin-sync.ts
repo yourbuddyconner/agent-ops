@@ -5,8 +5,8 @@ import { pluginContentRegistry } from '../plugins/content-registry.js';
 
 let synced = false;
 
-export async function syncPluginsOnce(d1: D1Database, orgId: string = 'default'): Promise<void> {
-  if (synced) return;
+export async function syncPluginsOnce(d1: D1Database, orgId: string = 'default', force = false): Promise<void> {
+  if (synced && !force) return;
   synced = true;
 
   const appDb = getDb(d1);
