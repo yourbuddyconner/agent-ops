@@ -9,6 +9,7 @@ import {
   useVerifySlackLink,
   useUnlinkSlack,
 } from '@/api/slack';
+import { usePlugins } from '@/api/plugins';
 import { IntegrationCard } from './integration-card';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -33,6 +34,7 @@ export function IntegrationList() {
   const { data: credentials, isLoading: credentialsLoading } = useUserCredentials();
   const { data: telegramConfig, isLoading: telegramLoading } = useTelegramConfig();
   const { data: slackStatus, isLoading: slackLoading } = useSlackUserStatus();
+  const { data: plugins } = usePlugins();
 
   const hasOnePassword = credentials?.some((c) => c.provider === '1password');
   const hasTelegram = !!telegramConfig;
@@ -42,7 +44,7 @@ export function IntegrationList() {
 
   // Build a unified list of items to render
   const allItems = React.useMemo(() => {
-    const items: { key: string; type: '1password' | 'telegram' | 'slack' | 'api'; service: string; status: 'active' | 'pending' | 'error' | 'disconnected'; integration?: Integration }[] = [];
+    const items: { key: string; type: '1password' | 'telegram' | 'slack' | 'api' | 'auto'; service: string; status: 'active' | 'pending' | 'error' | 'disconnected'; integration?: Integration; icon?: string; description?: string }[] = [];
 
     if (hasOnePassword) {
       items.push({ key: '1password', type: '1password', service: '1password', status: 'active' });
@@ -64,8 +66,25 @@ export function IntegrationList() {
       }
     }
 
+    // Add auto-enabled plugins (no auth required) that aren't already represented
+    const existingServices = new Set(items.map((i) => i.service));
+    if (plugins) {
+      for (const plugin of plugins) {
+        if (!plugin.authRequired && plugin.status === 'active' && !existingServices.has(plugin.name)) {
+          items.push({
+            key: `auto:${plugin.name}`,
+            type: 'auto',
+            service: plugin.name,
+            status: 'active',
+            icon: plugin.icon,
+            description: plugin.description,
+          });
+        }
+      }
+    }
+
     return items;
-  }, [hasOnePassword, hasTelegram, hasSlackInstalled, slackStatus?.linked, data?.integrations]);
+  }, [hasOnePassword, hasTelegram, hasSlackInstalled, slackStatus?.linked, data?.integrations, plugins]);
 
   const filteredItems = React.useMemo(() => {
     return allItems.filter((item) => {
@@ -143,6 +162,9 @@ export function IntegrationList() {
             }
             if (item.type === 'slack') {
               return <SlackCard key={item.key} />;
+            }
+            if (item.type === 'auto') {
+              return <AutoEnabledCard key={item.key} service={item.service} icon={item.icon} description={item.description} />;
             }
             return <IntegrationCard key={item.key} integration={item.integration!} />;
           })}
@@ -438,6 +460,37 @@ function SlackLinkFlow({ onClose }: { onClose: () => void }) {
         </p>
       )}
     </div>
+  );
+}
+
+// ─── Auto-Enabled Card ──────────────────────────────────────────────────
+
+const autoServiceLabels: Record<string, string> = {
+  deepwiki: 'DeepWiki',
+};
+
+function AutoEnabledCard({ service, icon, description }: { service: string; icon?: string; description?: string }) {
+  const label = autoServiceLabels[service] ?? service.charAt(0).toUpperCase() + service.slice(1);
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-neutral-100 text-lg dark:bg-neutral-700">
+            {icon ?? '🔌'}
+          </div>
+          <div>
+            <CardTitle className="text-base">{label}</CardTitle>
+            <p className="text-xs text-green-600 dark:text-green-400">Active</p>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <p className="text-xs text-neutral-500 dark:text-neutral-400">
+          No login required{description ? ` — ${description.toLowerCase()}` : ''}
+        </p>
+      </CardContent>
+    </Card>
   );
 }
 
