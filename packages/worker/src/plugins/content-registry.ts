@@ -243,7 +243,7 @@ timeout 10 agent-browser --headed wait --text "Welcome"     # Wait for specific 
     name: "cloudflare",
     version: "0.0.1",
     description: "Cloudflare integration for DNS, zones, and workers",
-    icon: "\\u2601\\uFE0F",
+    icon: "☁️",
     capabilities: ["actions"],
     artifacts: [],
   },

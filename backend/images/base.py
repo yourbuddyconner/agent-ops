@@ -123,6 +123,7 @@ def get_base_image() -> modal.Image:
         # Superpowers plugin + skills for OpenCode
         .run_commands(
             "git clone --depth 1 https://github.com/obra/superpowers.git /opencode-superpowers",
+            "mkdir -p /opencode-config/plugins /opencode-config/skills",
             "ln -s /opencode-superpowers/.opencode/plugins/superpowers.js /opencode-config/plugins/superpowers.js",
             "ln -s /opencode-superpowers/skills /opencode-config/skills/superpowers",
         )
@@ -146,7 +147,7 @@ def get_base_image() -> modal.Image:
                 "DISPLAY": ":99",
                 "HOME": "/root",
                 # Force image rebuild on deploy (change this value to trigger rebuild)
-                "IMAGE_BUILD_VERSION": "2026-03-05-v123-superpowers",
+                "IMAGE_BUILD_VERSION": "2026-03-06-v124-fix-plugin-dirs",
                 "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
                 "AGENT_BROWSER_PROFILE": "/root/.agent-browser-profile",
                 "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright",

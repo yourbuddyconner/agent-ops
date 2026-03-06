@@ -47,8 +47,11 @@ function parsePluginYaml(filePath: string): {
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     }
-    // Convert Unicode escapes like \U0001F310
+    // Convert Unicode escapes like \U0001F310 or \u2601
     value = value.replace(/\\U([0-9A-Fa-f]{8})/g, (_, hex) => {
+      return String.fromCodePoint(Number.parseInt(hex, 16));
+    });
+    value = value.replace(/\\u([0-9A-Fa-f]{4})/g, (_, hex) => {
       return String.fromCodePoint(Number.parseInt(hex, 16));
     });
     result[match[1]] = value;
