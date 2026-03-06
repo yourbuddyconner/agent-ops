@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { OrgPlugin, OrgPluginSettings } from '@valet/shared';
 import { api } from './client';
 
 export const pluginKeys = {
@@ -8,36 +9,17 @@ export const pluginKeys = {
   settings: () => [...pluginKeys.all, 'settings'] as const,
 };
 
-interface PluginRecord {
-  id: string;
-  orgId: string;
-  name: string;
-  version: string;
-  description: string | null;
-  icon: string | null;
-  source: string;
-  capabilities: string[];
-  status: string;
-  installedBy: string;
-  installedAt: string;
-  updatedAt: string;
-}
-
-interface PluginSettings {
-  allowRepoContent: boolean;
-}
-
 export function usePlugins() {
   return useQuery({
     queryKey: pluginKeys.list(),
-    queryFn: () => api.get<{ plugins: PluginRecord[] }>('/plugins').then(r => r.plugins),
+    queryFn: () => api.get<{ plugins: OrgPlugin[] }>('/plugins').then(r => r.plugins),
   });
 }
 
 export function usePluginSettings() {
   return useQuery({
     queryKey: pluginKeys.settings(),
-    queryFn: () => api.get<{ settings: PluginSettings }>('/plugins/settings').then(r => r.settings),
+    queryFn: () => api.get<{ settings: OrgPluginSettings }>('/plugins/settings').then(r => r.settings),
   });
 }
 
@@ -65,7 +47,7 @@ export function useSyncPlugins() {
 export function useUpdatePluginSettings() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: Partial<PluginSettings>) =>
+    mutationFn: (data: Partial<OrgPluginSettings>) =>
       api.put<{ ok: boolean }>('/plugins/settings', data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: pluginKeys.settings() });
