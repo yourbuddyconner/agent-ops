@@ -31,7 +31,10 @@ import { useSlackInstallStatus, useInstallSlack, useUninstallSlack } from '@/api
 import { ActionPoliciesSection } from '@/components/settings/action-policies-section';
 import { usePlugins, usePluginDetail, usePluginSettings, useUpdatePluginStatus, useSyncPlugins, useUpdatePluginSettings } from '@/api/plugins';
 import { Badge } from '@/components/ui/badge';
-import { ActionEnablementSection } from '@/components/settings/action-enablement-section';
+import { useActionCatalog } from '@/api/action-catalog';
+import type { ActionCatalogEntry } from '@/api/action-catalog';
+import { useDisabledActions, useSetServiceDisabledState } from '@/api/disabled-actions';
+import type { DisabledAction } from '@valet/shared';
 
 export const Route = createFileRoute('/settings/admin')({
   component: AdminSettingsPage,
@@ -75,7 +78,6 @@ function AdminSettingsPage() {
         <AccessControlSection />
         <InvitesSection />
         <UsersSection currentUserId={user.id} />
-        <ActionEnablementSection />
         <ActionPoliciesSection />
         <PluginsSection />
       </div>
@@ -1806,18 +1808,96 @@ const artifactTypeLabel: Record<string, string> = {
   tool: 'Tool',
 };
 
+function riskBadgeVariant(risk: string): 'success' | 'warning' | 'error' | 'secondary' {
+  switch (risk) {
+    case 'low': return 'success';
+    case 'medium': return 'warning';
+    case 'high': return 'error';
+    case 'critical': return 'error';
+    default: return 'secondary';
+  }
+}
+
+function buildDisabledIndex(rows: DisabledAction[]) {
+  const disabledServices = new Set<string>();
+  const disabledActions = new Set<string>();
+  for (const row of rows) {
+    if (row.actionId) {
+      disabledActions.add(`${row.service}:${row.actionId}`);
+    } else {
+      disabledServices.add(row.service);
+    }
+  }
+  return { disabledServices, disabledActions };
+}
+
 function PluginsSection() {
   const { data: plugins, isLoading } = usePlugins();
   const { data: settings, isLoading: settingsLoading } = usePluginSettings();
+  const { data: catalog, isLoading: catalogLoading } = useActionCatalog();
+  const { data: disabledRows, isLoading: disabledLoading } = useDisabledActions();
   const updateStatusMutation = useUpdatePluginStatus();
   const syncMutation = useSyncPlugins();
   const updateSettingsMutation = useUpdatePluginSettings();
+  const setStateMutation = useSetServiceDisabledState();
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
+
+  // Index action catalog by service (plugin name)
+  const actionsByService = React.useMemo(() => {
+    const map = new Map<string, ActionCatalogEntry[]>();
+    for (const entry of catalog ?? []) {
+      let list = map.get(entry.service);
+      if (!list) { list = []; map.set(entry.service, list); }
+      list.push(entry);
+    }
+    return map;
+  }, [catalog]);
+
+  const { disabledServices, disabledActions } = React.useMemo(
+    () => buildDisabledIndex(disabledRows ?? []),
+    [disabledRows],
+  );
+
+  function handlePluginToggle(pluginName: string, isCurrentlyActive: boolean) {
+    // Find the plugin record to toggle its status
+    const plugin = plugins?.find(p => p.name === pluginName);
+    if (plugin) {
+      updateStatusMutation.mutate({
+        id: plugin.id,
+        status: isCurrentlyActive ? 'disabled' : 'active',
+      });
+    }
+  }
+
+  function handleServiceToggle(service: string, allEnabled: boolean, someDisabled: boolean) {
+    if (allEnabled || someDisabled) {
+      setStateMutation.mutate({ service, serviceDisabled: true, disabledActionIds: [] });
+    } else {
+      setStateMutation.mutate({ service, serviceDisabled: false, disabledActionIds: [] });
+    }
+  }
+
+  function handleActionToggle(service: string, actionId: string, currentlyEnabled: boolean) {
+    const currentDisabledForService = (disabledRows ?? [])
+      .filter((r) => r.service === service && r.actionId)
+      .map((r) => r.actionId!);
+
+    const newDisabled = currentlyEnabled
+      ? [...currentDisabledForService, actionId]
+      : currentDisabledForService.filter((id) => id !== actionId);
+
+    setStateMutation.mutate({ service, serviceDisabled: false, disabledActionIds: newDisabled });
+  }
+
+  const anyLoading = isLoading || catalogLoading || disabledLoading;
 
   return (
     <Section title="Plugins">
+      <p className="mt-1 mb-4 text-sm text-neutral-500 dark:text-neutral-400">
+        Manage installed plugins. Toggle individual plugins or their actions on/off.
+      </p>
       <div className="space-y-4">
-        {/* Settings */}
+        {/* Settings row */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <label className="flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-400">
@@ -1845,97 +1925,123 @@ function PluginsSection() {
         </div>
 
         {/* Plugin list */}
-        {isLoading ? (
-          <div className="py-8 text-center text-sm text-neutral-400">Loading plugins...</div>
+        {anyLoading ? (
+          <div className="space-y-2">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="h-12 animate-pulse rounded bg-neutral-100 dark:bg-neutral-700" />
+            ))}
+          </div>
         ) : !plugins?.length ? (
           <div className="py-8 text-center text-sm text-neutral-400">No plugins installed</div>
         ) : (
-          <div className="divide-y divide-neutral-100 dark:divide-neutral-700/50">
+          <div className="divide-y divide-neutral-200 rounded-md border border-neutral-200 dark:divide-neutral-700 dark:border-neutral-700">
             {plugins.map((plugin) => {
               const isExpanded = expandedId === plugin.id;
+              const isActive = plugin.status === 'active';
+              const actions = actionsByService.get(plugin.name) ?? [];
+              const hasActions = actions.length > 0;
               const hasContent = plugin.capabilities.some(c => ['skills', 'tools', 'personas'].includes(c));
+              const hasExpandable = hasActions || hasContent;
+
+              // Action enablement state for this plugin
+              const isServiceDisabled = disabledServices.has(plugin.name);
+              const disabledActionCount = actions.filter(
+                (a) => disabledActions.has(`${plugin.name}:${a.actionId}`),
+              ).length;
+              const allActionsEnabled = !isServiceDisabled && disabledActionCount === 0;
+              const someActionsDisabled = !isServiceDisabled && disabledActionCount > 0;
+
               return (
                 <div key={plugin.id}>
-                  <div className="flex items-center gap-3 py-2.5">
-                    {/* Expand toggle */}
-                    <button
-                      type="button"
-                      onClick={() => hasContent ? setExpandedId(isExpanded ? null : plugin.id) : undefined}
-                      className={`flex items-center ${hasContent ? 'cursor-pointer' : 'cursor-default'}`}
-                      disabled={!hasContent}
-                      aria-expanded={hasContent ? isExpanded : undefined}
-                    >
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className={`h-4 w-4 transition-transform ${hasContent ? 'text-neutral-400' : 'text-transparent'} ${isExpanded ? 'rotate-180' : ''}`}
-                      >
-                        <path d="m6 9 6 6 6-6" />
-                      </svg>
-                    </button>
+                  {/* Plugin row */}
+                  <div className="flex items-center gap-3 px-4 py-3">
+                    {/* Plugin enable/disable checkbox */}
+                    <input
+                      type="checkbox"
+                      checked={isActive}
+                      onChange={() => handlePluginToggle(plugin.name, isActive)}
+                      disabled={updateStatusMutation.isPending}
+                      className="h-4 w-4 rounded border-neutral-300 text-blue-600 focus:ring-blue-500 disabled:opacity-40 dark:border-neutral-600"
+                    />
 
-                    {/* Plugin info */}
+                    {/* Clickable area to expand */}
                     <button
                       type="button"
-                      onClick={() => hasContent ? setExpandedId(isExpanded ? null : plugin.id) : undefined}
-                      className="flex flex-1 items-center gap-3 text-left"
-                      disabled={!hasContent}
-                      aria-expanded={hasContent ? isExpanded : undefined}
+                      onClick={() => hasExpandable ? setExpandedId(isExpanded ? null : plugin.id) : undefined}
+                      className={`flex flex-1 items-center gap-3 text-left ${hasExpandable ? 'cursor-pointer' : 'cursor-default'}`}
+                      disabled={!hasExpandable}
+                      aria-expanded={hasExpandable ? isExpanded : undefined}
                     >
                       <div className="flex items-center gap-2 min-w-0">
                         {plugin.icon && <span className="text-base">{plugin.icon}</span>}
-                        <div className="min-w-0">
-                          <span className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                            {plugin.name}
+                        <span className={`text-sm font-medium ${isActive ? 'text-neutral-900 dark:text-neutral-100' : 'text-neutral-400 dark:text-neutral-500'}`}>
+                          {plugin.name}
+                        </span>
+                        {plugin.description && (
+                          <span className="text-xs text-neutral-400 dark:text-neutral-500 truncate max-w-xs">
+                            {plugin.description}
                           </span>
-                          {plugin.description && (
-                            <span className="ml-2 text-xs text-neutral-400 dark:text-neutral-500">
-                              {plugin.description}
-                            </span>
-                          )}
-                        </div>
+                        )}
                       </div>
-                      <div className="flex flex-wrap gap-1 ml-auto mr-4">
-                        {plugin.capabilities.map((cap) => (
-                          <Badge key={cap} variant="secondary">
-                            {capabilityLabel[cap] || cap}
-                          </Badge>
-                        ))}
-                      </div>
-                      <span className="text-xs text-neutral-400 dark:text-neutral-500 w-12 text-right shrink-0">
-                        {plugin.version}
-                      </span>
-                    </button>
 
-                    {/* Status + actions */}
-                    <Badge variant={plugin.status === 'active' ? 'success' : 'error'}>
-                      {plugin.status}
-                    </Badge>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        updateStatusMutation.mutate({
-                          id: plugin.id,
-                          status: plugin.status === 'active' ? 'disabled' : 'active',
-                        })
-                      }
-                      disabled={updateStatusMutation.isPending}
-                    >
-                      {plugin.status === 'active' ? 'Disable' : 'Enable'}
-                    </Button>
+                      <div className="flex items-center gap-2 ml-auto">
+                        {/* Capability badges */}
+                        <div className="flex flex-wrap gap-1">
+                          {plugin.capabilities.map((cap) => (
+                            <Badge key={cap} variant="secondary">
+                              {capabilityLabel[cap] || cap}
+                            </Badge>
+                          ))}
+                        </div>
+
+                        {/* Action disabled status */}
+                        {hasActions && isServiceDisabled && (
+                          <Badge variant="error">Actions off</Badge>
+                        )}
+                        {hasActions && someActionsDisabled && (
+                          <Badge variant="warning">{disabledActionCount} action{disabledActionCount !== 1 ? 's' : ''} off</Badge>
+                        )}
+
+                        {!isActive && (
+                          <Badge variant="error">Disabled</Badge>
+                        )}
+
+                        <span className="text-xs text-neutral-400 dark:text-neutral-500 w-12 text-right shrink-0">
+                          {plugin.version}
+                        </span>
+
+                        {/* Chevron */}
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className={`h-4 w-4 transition-transform ${hasExpandable ? 'text-neutral-400' : 'text-transparent'} ${isExpanded ? 'rotate-180' : ''}`}
+                        >
+                          <path d="m6 9 6 6 6-6" />
+                        </svg>
+                      </div>
+                    </button>
                   </div>
 
-                  {/* Expanded artifact detail */}
+                  {/* Expanded detail */}
                   {isExpanded && (
-                    <PluginArtifactDetail pluginId={plugin.id} typeLabels={artifactTypeLabel} />
+                    <PluginExpandedDetail
+                      plugin={plugin}
+                      actions={actions}
+                      isServiceDisabled={isServiceDisabled}
+                      disabledActions={disabledActions}
+                      allActionsEnabled={allActionsEnabled}
+                      someActionsDisabled={someActionsDisabled}
+                      onServiceToggle={() => handleServiceToggle(plugin.name, allActionsEnabled, someActionsDisabled)}
+                      onActionToggle={(actionId, enabled) => handleActionToggle(plugin.name, actionId, enabled)}
+                      actionMutationPending={setStateMutation.isPending}
+                    />
                   )}
                 </div>
               );
@@ -1947,67 +2053,145 @@ function PluginsSection() {
   );
 }
 
-function PluginArtifactDetail({ pluginId, typeLabels }: { pluginId: string; typeLabels: Record<string, string> }) {
-  const { data: plugin, isLoading } = usePluginDetail(pluginId);
+function PluginExpandedDetail({
+  plugin,
+  actions,
+  isServiceDisabled,
+  disabledActions,
+  allActionsEnabled,
+  someActionsDisabled,
+  onServiceToggle,
+  onActionToggle,
+  actionMutationPending,
+}: {
+  plugin: { id: string; name: string; capabilities: string[] };
+  actions: ActionCatalogEntry[];
+  isServiceDisabled: boolean;
+  disabledActions: Set<string>;
+  allActionsEnabled: boolean;
+  someActionsDisabled: boolean;
+  onServiceToggle: () => void;
+  onActionToggle: (actionId: string, currentlyEnabled: boolean) => void;
+  actionMutationPending: boolean;
+}) {
+  const hasActions = actions.length > 0;
+  const hasContent = plugin.capabilities.some(c => ['skills', 'tools', 'personas'].includes(c));
+  const { data: detail, isLoading: detailLoading } = usePluginDetail(hasContent ? plugin.id : null);
   const [previewFile, setPreviewFile] = React.useState<string | null>(null);
-
-  if (isLoading) {
-    return (
-      <div className="border-t border-neutral-100 bg-neutral-50 px-8 py-4 dark:border-neutral-700/50 dark:bg-neutral-800/50">
-        <span className="text-xs text-neutral-400">Loading artifacts...</span>
-      </div>
-    );
-  }
-
-  const artifacts = plugin?.artifacts ?? [];
-  if (artifacts.length === 0) {
-    return (
-      <div className="border-t border-neutral-100 bg-neutral-50 px-8 py-4 dark:border-neutral-700/50 dark:bg-neutral-800/50">
-        <span className="text-xs text-neutral-400">No content artifacts</span>
-      </div>
-    );
-  }
+  const artifacts = detail?.artifacts ?? [];
 
   return (
     <div className="border-t border-neutral-100 bg-neutral-50 dark:border-neutral-700/50 dark:bg-neutral-800/50">
-      <div className="px-8 py-3">
-        <div className="text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-2">
-          Content Artifacts ({artifacts.length})
+      {/* Actions table */}
+      {hasActions && (
+        <div className="px-6 py-3">
+          <div className="flex items-center gap-3 mb-2">
+            <input
+              type="checkbox"
+              checked={allActionsEnabled}
+              ref={(el) => { if (el) el.indeterminate = someActionsDisabled; }}
+              onChange={onServiceToggle}
+              disabled={actionMutationPending}
+              className="h-4 w-4 rounded border-neutral-300 text-blue-600 focus:ring-blue-500 disabled:opacity-40 dark:border-neutral-600"
+            />
+            <span className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
+              Actions ({actions.length})
+            </span>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-neutral-200 dark:border-neutral-700">
+                <th className="w-10 px-4 py-1.5" />
+                <th className="px-2 py-1.5 text-left text-xs font-medium text-neutral-500 dark:text-neutral-400">Action</th>
+                <th className="px-2 py-1.5 text-left text-xs font-medium text-neutral-500 dark:text-neutral-400">Description</th>
+                <th className="px-4 py-1.5 text-left text-xs font-medium text-neutral-500 dark:text-neutral-400">Risk</th>
+              </tr>
+            </thead>
+            <tbody>
+              {actions.map((action) => {
+                const compositeKey = `${plugin.name}:${action.actionId}`;
+                const actionEnabled = !isServiceDisabled && !disabledActions.has(compositeKey);
+                return (
+                  <tr key={action.actionId} className="border-b border-neutral-100 last:border-0 dark:border-neutral-700/50">
+                    <td className="px-4 py-2">
+                      <input
+                        type="checkbox"
+                        checked={actionEnabled}
+                        disabled={isServiceDisabled || actionMutationPending}
+                        onChange={() => onActionToggle(action.actionId, actionEnabled)}
+                        className="h-4 w-4 rounded border-neutral-300 text-blue-600 focus:ring-blue-500 disabled:opacity-40 dark:border-neutral-600"
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <span className={`text-sm ${actionEnabled ? 'text-neutral-900 dark:text-neutral-100' : 'text-neutral-400 line-through dark:text-neutral-500'}`}>
+                        {action.name}
+                      </span>
+                    </td>
+                    <td className="px-2 py-2">
+                      <span className="text-xs text-neutral-500 dark:text-neutral-400 line-clamp-1">
+                        {action.description}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2">
+                      <Badge variant={riskBadgeVariant(action.riskLevel)}>
+                        {action.riskLevel}
+                      </Badge>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
-        <div className="space-y-1">
-          {artifacts.map((artifact) => (
-            <div key={artifact.id}>
-              <button
-                type="button"
-                onClick={() => setPreviewFile(previewFile === artifact.id ? null : artifact.id)}
-                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-neutral-100 dark:hover:bg-neutral-700/50"
-              >
-                <Badge variant="secondary">{typeLabels[artifact.type] || artifact.type}</Badge>
-                <span className="font-mono text-neutral-600 dark:text-neutral-300">{artifact.filename}</span>
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className={`ml-auto h-3 w-3 text-neutral-400 transition-transform ${previewFile === artifact.id ? 'rotate-180' : ''}`}
-                >
-                  <path d="m6 9 6 6 6-6" />
-                </svg>
-              </button>
-              {previewFile === artifact.id && (
-                <pre className="mt-1 mb-2 ml-2 max-h-64 overflow-auto rounded border border-neutral-200 bg-white p-3 font-mono text-[11px] leading-relaxed text-neutral-700 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-300">
-                  {artifact.content}
-                </pre>
-              )}
+      )}
+
+      {/* Content artifacts */}
+      {hasContent && (
+        <div className={`px-6 py-3 ${hasActions ? 'border-t border-neutral-100 dark:border-neutral-700/50' : ''}`}>
+          <div className="text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-2">
+            Content Artifacts {!detailLoading && `(${artifacts.length})`}
+          </div>
+          {detailLoading ? (
+            <span className="text-xs text-neutral-400">Loading...</span>
+          ) : artifacts.length === 0 ? (
+            <span className="text-xs text-neutral-400">No content artifacts</span>
+          ) : (
+            <div className="space-y-1">
+              {artifacts.map((artifact) => (
+                <div key={artifact.id}>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewFile(previewFile === artifact.id ? null : artifact.id)}
+                    className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-neutral-100 dark:hover:bg-neutral-700/50"
+                  >
+                    <Badge variant="secondary">{artifactTypeLabel[artifact.type] || artifact.type}</Badge>
+                    <span className="font-mono text-neutral-600 dark:text-neutral-300">{artifact.filename}</span>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className={`ml-auto h-3 w-3 text-neutral-400 transition-transform ${previewFile === artifact.id ? 'rotate-180' : ''}`}
+                    >
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                  </button>
+                  {previewFile === artifact.id && (
+                    <pre className="mt-1 mb-2 ml-2 max-h-64 overflow-auto rounded border border-neutral-200 bg-white p-3 font-mono text-[11px] leading-relaxed text-neutral-700 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-300">
+                      {artifact.content}
+                    </pre>
+                  )}
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
-      </div>
+      )}
     </div>
   );
 }
