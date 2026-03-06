@@ -1,18 +1,28 @@
 ---
 # valet-gs3k
 title: Git Commit Signing
-status: exploratory
+status: planned
 type: design-brief
-priority: medium
+priority: high
 tags:
     - security
     - git
     - signing
+    - ssh
+    - turnkey
 created_at: 2026-03-05T00:00:00Z
-updated_at: 2026-03-05T00:00:00Z
+updated_at: 2026-03-06T00:00:00Z
 ---
 
 Some organizations require all commits (including merge commits) to be cryptographically signed, with signing keys custodied on hardware security devices (e.g. YubiKeys). Valet makes commits inside remote sandboxes where the user's hardware key is physically unreachable. We need a model that satisfies signed-commit policies without requiring users to abandon Valet or weaken their security posture.
+
+## Decision
+
+We will pursue SSH-based commit signing using Turnkey 2-of-2 co-signing with
+automated enrollment. See:
+
+- Bean: `.beans/valet-ssh2of2--enterprise-ssh-signing-architecture.md`
+- Design: `docs/plans/2026-03-06-ssh-2of2-commit-signing-design.md`
 
 ## Current State
 
@@ -162,8 +172,6 @@ Git supports three signing formats. The choice affects what key types work and h
 
 ## Recommendation
 
-No single approach is recommended yet. The decision depends on the security posture assessment. However, the approaches are not mutually exclusive — Valet could support a configurable signing backend per org:
-
-- **Default:** Approach 1 (platform-managed keys) for orgs that just need "Verified" badges
-- **Strict:** Approach 2 (Turnkey co-signing) for orgs with hardware-custody mandates
-- **Keyless:** Approach 3 (Sigstore) for orgs that accept OIDC-based identity attestation
+The chosen direction is **Approach 2 (Turnkey co-signing)** with SSH signing
+format and per-push approvals. Other approaches remain documented for future
+trade-offs, but current execution should follow the Turnkey architecture.
