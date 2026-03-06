@@ -19,11 +19,18 @@
     { "path": "./packages/sdk" },
     { "path": "./packages/channel-telegram" },
     { "path": "./packages/channel-slack" },
+    { "path": "./packages/actions-cloudflare" },
+    { "path": "./packages/actions-deepwiki" },
     { "path": "./packages/actions-github" },
     { "path": "./packages/actions-gmail" },
     { "path": "./packages/actions-google-calendar" },
+    { "path": "./packages/actions-google-drive" },
+    { "path": "./packages/actions-google-sheets" },
     { "path": "./packages/actions-linear" },
     { "path": "./packages/actions-notion" },
+    { "path": "./packages/actions-sentry" },
+    { "path": "./packages/actions-slack" },
+    { "path": "./packages/actions-stripe" },
     { "path": "./packages/worker" }
   ]
 }
