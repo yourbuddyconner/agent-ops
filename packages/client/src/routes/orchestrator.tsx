@@ -234,26 +234,31 @@ function OrchestratorDashboard() {
     setSelectedIds(new Set());
   }, [hideTerminated]);
 
-  // Compute uptime from doStatus
-  const runningStartedAt = (doStatus as any)?.runningStartedAt as string | undefined;
+  // Compute uptime as cumulative active time (excludes hibernation)
+  const runningStartedAt = doStatus?.runningStartedAt ?? null;
+  const baseActiveSeconds = session?.activeSeconds ?? 0;
   const [uptime, setUptime] = React.useState('');
   React.useEffect(() => {
-    if (!runningStartedAt) {
-      setUptime('');
-      return;
-    }
-    const start = new Date(runningStartedAt).getTime();
     const tick = () => {
-      const seconds = Math.floor((Date.now() - start) / 1000);
-      const h = Math.floor(seconds / 3600);
-      const m = Math.floor((seconds % 3600) / 60);
+      // D1 activeSeconds = cumulative time from previous running periods
+      // runningStartedAt = start of current running period (null if hibernated)
+      let totalSeconds = baseActiveSeconds;
+      if (runningStartedAt) {
+        totalSeconds += Math.floor((Date.now() - runningStartedAt) / 1000);
+      }
+      if (totalSeconds <= 0) {
+        setUptime('');
+        return;
+      }
+      const h = Math.floor(totalSeconds / 3600);
+      const m = Math.floor((totalSeconds % 3600) / 60);
       if (h > 0) setUptime(`${h}h ${m}m`);
       else setUptime(`${m}m`);
     };
     tick();
     const id = setInterval(tick, 30_000);
     return () => clearInterval(id);
-  }, [runningStartedAt]);
+  }, [runningStartedAt, baseActiveSeconds]);
 
   // Status label
   const statusLabel = !session

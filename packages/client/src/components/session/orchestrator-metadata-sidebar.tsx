@@ -70,20 +70,24 @@ export function OrchestratorMetadataSidebar({
     ? doStatus.jointState
     : derivedRuntime.jointState;
 
+  const baseActiveSeconds = session?.activeSeconds ?? 0;
   const [elapsed, setElapsed] = useState(0);
   const [pendingTunnelKey, setPendingTunnelKey] = useState<string | null>(null);
   const [copiedPrKey, setCopiedPrKey] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!runningStartedAt) {
-      setElapsed(0);
-      return;
-    }
-    const tick = () => setElapsed(Math.floor((Date.now() - runningStartedAt) / 1000));
+    const tick = () => {
+      // Cumulative active time from D1 + current running period delta
+      let totalSeconds = baseActiveSeconds;
+      if (runningStartedAt) {
+        totalSeconds += Math.floor((Date.now() - runningStartedAt) / 1000);
+      }
+      setElapsed(totalSeconds);
+    };
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [runningStartedAt]);
+  }, [runningStartedAt, baseActiveSeconds]);
 
   const identity = orchInfo?.identity;
   const nonTerminalChildren = useMemo(
@@ -297,7 +301,7 @@ export function OrchestratorMetadataSidebar({
         {/* Sandbox Uptime */}
         <SidebarSection label="Sandbox Uptime">
           <span className="font-mono text-[11px] font-medium text-neutral-600 dark:text-neutral-300 tabular-nums">
-            {runningStartedAt ? formatDuration(elapsed) : '\u2014'}
+            {elapsed > 0 ? formatDuration(elapsed) : '\u2014'}
           </span>
         </SidebarSection>
 

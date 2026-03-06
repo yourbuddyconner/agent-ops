@@ -73,6 +73,7 @@ function rowToSession(row: typeof sessions.$inferSelect & { personaName?: string
     personaId: row.personaId || undefined,
     personaName: (row as any).personaName || undefined,
     isOrchestrator: row.isOrchestrator || undefined,
+    activeSeconds: row.activeSeconds || 0,
     purpose: (row.purpose as SessionPurpose) || 'interactive',
     createdAt: toDate(row.createdAt),
     lastActiveAt: toDate(row.lastActiveAt),

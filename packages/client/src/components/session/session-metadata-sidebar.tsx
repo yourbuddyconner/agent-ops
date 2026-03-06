@@ -30,16 +30,23 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
   const { data: parentSession } = useSession(session?.parentSessionId ?? '', );
   const deleteTunnel = useDeleteSessionTunnel(sessionId);
 
+  const runningStartedAt = typeof doStatus?.runningStartedAt === 'number' ? doStatus.runningStartedAt : null;
+  const baseActiveSeconds = session?.activeSeconds ?? 0;
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
-    if (!session?.createdAt) return;
-    const start = new Date(session.createdAt).getTime();
-    const tick = () => setElapsed(Math.floor((Date.now() - start) / 1000));
+    const tick = () => {
+      // Cumulative active time from D1 + current running period delta
+      let totalSeconds = baseActiveSeconds;
+      if (runningStartedAt) {
+        totalSeconds += Math.floor((Date.now() - runningStartedAt) / 1000);
+      }
+      setElapsed(totalSeconds);
+    };
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [session?.createdAt]);
+  }, [runningStartedAt, baseActiveSeconds]);
 
   const formatDuration = (seconds: number) => {
     const h = Math.floor(seconds / 3600);

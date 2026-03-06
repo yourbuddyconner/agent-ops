@@ -176,6 +176,8 @@ export interface AgentSession {
   personaName?: string;
   // Orchestrator flag
   isOrchestrator?: boolean;
+  // Cumulative active seconds (excludes hibernation time)
+  activeSeconds?: number;
   // Convenience flag for current user
   isOwner?: boolean;
 }
