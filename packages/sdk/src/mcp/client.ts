@@ -138,7 +138,10 @@ export class McpClient {
    * Falls back to no-session mode if initialize fails (some servers don't require it).
    */
   private async ensureInitialized(token?: string): Promise<string | null> {
-    const cacheKey = token || '__no_auth__';
+    // Key on service name — sessions are server-side and survive token rotation.
+    // Using the token as key caused cache misses on every OAuth refresh, forcing
+    // redundant initialize + notify round-trips to the MCP server.
+    const cacheKey = this.serviceName;
     if (this.sessions.has(cacheKey)) {
       return this.sessions.get(cacheKey) ?? null;
     }
