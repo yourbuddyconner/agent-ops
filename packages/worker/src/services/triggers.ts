@@ -190,14 +190,25 @@ export async function runTrigger(
       throw new ValidationError('Schedule triggers targeting orchestrator require a prompt');
     }
 
+    const now = new Date();
+    const timezone = config.timezone || 'UTC';
+    let scheduledDate: string;
+    try {
+      scheduledDate = new Intl.DateTimeFormat('en-US', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: timezone,
+      }).format(now);
+    } catch {
+      scheduledDate = new Intl.DateTimeFormat('en-US', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC',
+      }).format(now);
+    }
     const dispatch = await dispatchOrchestratorPrompt(env, {
       userId,
-      content: prompt,
+      content: `[Today is ${scheduledDate}]\n\n${prompt}`,
     });
 
-    const now = new Date().toISOString();
     if (dispatch.dispatched) {
-      await updateTriggerLastRun(appDb, triggerId, now);
+      await updateTriggerLastRun(appDb, triggerId, now.toISOString());
     }
 
     if (!dispatch.dispatched) {
