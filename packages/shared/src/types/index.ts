@@ -685,6 +685,7 @@ export interface MemoryFile {
   orgId: string;
   path: string;
   content: string;
+  title: string;
   relevance: number;
   pinned: boolean;
   version: number;
