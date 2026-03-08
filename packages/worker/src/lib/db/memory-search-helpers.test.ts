@@ -60,6 +60,10 @@ describe('buildFTS5Query', () => {
   it('sanitizes special characters from plain terms', () => {
     expect(buildFTS5Query('deploy!')).toBe('"deploy"*');
   });
+
+  it('handles multiple negations with OR grouping', () => {
+    expect(buildFTS5Query('deploy -staging -prod')).toBe('"deploy"* NOT ("staging"* OR "prod"*)');
+  });
 });
 
 describe('normalizeBM25', () => {
