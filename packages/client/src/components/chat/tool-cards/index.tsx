@@ -14,6 +14,7 @@ import { LspCard } from './lsp-card';
 import { SkillCard } from './skill-card';
 import { SpawnSessionCard } from './spawn-session-card';
 import { SendMessageCard, ReadMessagesCard } from './session-message-card';
+import { TaskCard } from './task-card';
 import { GenericCard } from './generic-card';
 
 export type { ToolCallData, ToolCallStatus } from './types';
@@ -96,6 +97,10 @@ export function ToolCard({ tool }: { tool: ToolCallData }) {
     case 'load_skill':
       return <SkillCard tool={tool} />;
 
+    case 'task':
+    case 'subagent':
+      return <TaskCard tool={tool} />;
+
     case 'spawn_session':
       return <SpawnSessionCard tool={tool} />;
 
@@ -149,6 +154,9 @@ export function ToolCard({ tool }: { tool: ToolCallData }) {
       return <LspCard tool={tool} />;
     case 'skill':
       return <SkillCard tool={tool} />;
+    case 'task':
+    case 'subagent':
+      return <TaskCard tool={tool} />;
     case 'spawn_session':
     case 'spawnsession':
       return <SpawnSessionCard tool={tool} />;
