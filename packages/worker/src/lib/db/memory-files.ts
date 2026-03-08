@@ -3,6 +3,7 @@ import type { MemoryFile, MemoryFileListing, MemoryFileSearchResult, PatchOperat
 import { eq, and, sql } from 'drizzle-orm';
 import type { AppDb } from '../drizzle.js';
 import { orchestratorMemoryFiles } from '../schema/memory-files.js';
+import { extractTitle, buildFTS5Query, normalizeBM25, extractSnippet, pathBoost } from './memory-search-helpers.js';
 
 const MEMORY_CAP = 200;
 
@@ -103,6 +104,7 @@ export async function writeMemoryFile(
 
   const id = crypto.randomUUID();
   const pinned = normalized.startsWith('preferences/') ? 1 : 0;
+  const title = extractTitle(content, normalized);
 
   // Check if file exists to determine if this is an update
   const existing = await rawDb
@@ -114,16 +116,16 @@ export async function writeMemoryFile(
     // Update existing file
     await rawDb
       .prepare(
-        `UPDATE orchestrator_memory_files SET content = ?, version = version + 1, updated_at = datetime('now'), pinned = ? WHERE id = ?`
+        `UPDATE orchestrator_memory_files SET content = ?, title = ?, version = version + 1, updated_at = datetime('now'), pinned = ? WHERE id = ?`
       )
-      .bind(content, pinned, existing.id)
+      .bind(content, title, pinned, existing.id)
       .run();
 
     // Resync FTS index
     await rawDb.prepare('DELETE FROM orchestrator_memory_files_fts WHERE rowid = ?').bind(existing.rowid).run();
     await rawDb
-      .prepare('INSERT INTO orchestrator_memory_files_fts(rowid, path, content) VALUES (?, ?, ?)')
-      .bind(existing.rowid, normalized, content)
+      .prepare('INSERT INTO orchestrator_memory_files_fts(rowid, path, title, content) VALUES (?, ?, ?, ?)')
+      .bind(existing.rowid, normalized, title, content)
       .run();
 
     return {
@@ -132,7 +134,7 @@ export async function writeMemoryFile(
       orgId: existing.org_id,
       path: normalized,
       content,
-      title: '',
+      title,
       relevance: existing.relevance,
       pinned: pinned === 1,
       version: existing.version + 1,
@@ -145,9 +147,9 @@ export async function writeMemoryFile(
   // Insert new file
   await rawDb
     .prepare(
-      `INSERT INTO orchestrator_memory_files (id, user_id, path, content, pinned) VALUES (?, ?, ?, ?, ?)`
+      `INSERT INTO orchestrator_memory_files (id, user_id, path, title, content, pinned) VALUES (?, ?, ?, ?, ?, ?)`
     )
-    .bind(id, userId, normalized, content, pinned)
+    .bind(id, userId, normalized, title, content, pinned)
     .run();
 
   // Sync FTS index
@@ -157,8 +159,8 @@ export async function writeMemoryFile(
     .first<{ rowid: number }>();
   if (inserted) {
     await rawDb
-      .prepare('INSERT INTO orchestrator_memory_files_fts(rowid, path, content) VALUES (?, ?, ?)')
-      .bind(inserted.rowid, normalized, content)
+      .prepare('INSERT INTO orchestrator_memory_files_fts(rowid, path, title, content) VALUES (?, ?, ?, ?)')
+      .bind(inserted.rowid, normalized, title, content)
       .run();
   }
 
@@ -171,7 +173,7 @@ export async function writeMemoryFile(
     orgId: 'default',
     path: normalized,
     content,
-    title: '',
+    title,
     relevance: 1.0,
     pinned: pinned === 1,
     version: 1,
@@ -309,19 +311,21 @@ export async function patchMemoryFile(
     return { content: '', version: 0, applied: 0, skipped };
   }
 
+  const title = extractTitle(content, normalized);
+
   if (fileExists) {
     // Update existing
     const newVersion = existing!.version + 1;
     await rawDb
-      .prepare(`UPDATE orchestrator_memory_files SET content = ?, version = ?, updated_at = datetime('now') WHERE id = ?`)
-      .bind(content, newVersion, existing!.id)
+      .prepare(`UPDATE orchestrator_memory_files SET content = ?, title = ?, version = ?, updated_at = datetime('now') WHERE id = ?`)
+      .bind(content, title, newVersion, existing!.id)
       .run();
 
     // Resync FTS
     await rawDb.prepare('DELETE FROM orchestrator_memory_files_fts WHERE rowid = ?').bind(existing!.rowid).run();
     await rawDb
-      .prepare('INSERT INTO orchestrator_memory_files_fts(rowid, path, content) VALUES (?, ?, ?)')
-      .bind(existing!.rowid, normalized, content)
+      .prepare('INSERT INTO orchestrator_memory_files_fts(rowid, path, title, content) VALUES (?, ?, ?, ?)')
+      .bind(existing!.rowid, normalized, title, content)
       .run();
 
     return { content, version: newVersion, applied, skipped };
@@ -388,39 +392,57 @@ export async function searchMemoryFiles(
   userId: string,
   query: string,
   pathPrefix?: string,
+  limit = 20,
 ): Promise<MemoryFileSearchResult[]> {
-  // Tokenize query words and join with OR for broad matching
-  const ftsQuery = query
-    .replace(/[^\w\s]/g, '')
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((w) => `"${w}"`)
-    .join(' OR ');
-
+  let ftsQuery = buildFTS5Query(query);
   if (!ftsQuery) return [];
 
-  let sql_query = `
-    SELECT m.path, m.relevance, SUBSTR(m.content, 1, 200) as snippet
-    FROM orchestrator_memory_files m
-    JOIN orchestrator_memory_files_fts fts ON fts.rowid = m.rowid
-    WHERE fts MATCH ? AND m.user_id = ?`;
-  const params: (string | number)[] = [ftsQuery, userId];
+  const queryTerms = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length >= 2)
+    .map((t) => t.replace(/[^\w]/g, ''));
 
-  if (pathPrefix) {
-    const normalized = normalizePath(pathPrefix);
-    const prefix = normalized.endsWith('/') ? normalized : normalized + '/';
-    sql_query += ' AND m.path LIKE ?';
-    params.push(prefix + '%');
+  const runSearch = async (q: string): Promise<any[]> => {
+    let sqlStr = `
+      SELECT m.path, m.title, m.content,
+             bm25(orchestrator_memory_files_fts, 0, 10, 1) as bm25_score
+      FROM orchestrator_memory_files m
+      JOIN orchestrator_memory_files_fts ON orchestrator_memory_files_fts.rowid = m.rowid
+      WHERE orchestrator_memory_files_fts MATCH ? AND m.user_id = ?`;
+    const params: (string | number)[] = [q, userId];
+
+    if (pathPrefix) {
+      const normalized = normalizePath(pathPrefix);
+      const prefix = normalized.endsWith('/') ? normalized : normalized + '/';
+      sqlStr += ' AND m.path LIKE ?';
+      params.push(prefix + '%');
+    }
+
+    const safeLimit = Math.max(1, Math.min(Math.floor(limit), 200));
+    sqlStr += ` ORDER BY bm25_score LIMIT ${safeLimit}`;
+    const result = await rawDb.prepare(sqlStr).bind(...params).all();
+    return result.results || [];
+  };
+
+  let rows = await runSearch(ftsQuery);
+  if (rows.length === 0) {
+    const orQuery = ftsQuery.replace(/ AND /g, ' OR ');
+    rows = await runSearch(orQuery);
   }
 
-  sql_query += ' ORDER BY bm25(orchestrator_memory_files_fts) LIMIT 20';
+  const scored = rows.map((row: any) => {
+    const bm25 = normalizeBM25(row.bm25_score as number);
+    const boost = pathBoost(row.path as string, queryTerms);
+    return {
+      path: row.path as string,
+      snippet: extractSnippet(row.content as string, queryTerms),
+      relevance: Math.min(bm25 + boost, 1.0),
+    };
+  });
 
-  const result = await rawDb.prepare(sql_query).bind(...params).all();
-  return (result.results || []).map((row: any) => ({
-    path: row.path as string,
-    snippet: row.snippet as string,
-    relevance: row.relevance as number,
-  }));
+  scored.sort((a, b) => b.relevance - a.relevance);
+  return scored;
 }
 
 // ─── Relevance Boost ────────────────────────────────────────────────────────
