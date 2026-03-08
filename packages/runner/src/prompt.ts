@@ -3322,6 +3322,12 @@ export class PromptHandler {
       }
 
     } else if (currentStatus === "error") {
+      // Suppress abort errors from wait_for_event — the Runner already force-completed
+      // it and sent idle status; the abort error is a stale artifact of killing OpenCode.
+      if (toolName === "wait_for_event" && this.waitForEventForced) {
+        console.log(`[PromptHandler] Suppressing post-abort error for wait_for_event`);
+        return;
+      }
       console.log(`[PromptHandler] Tool "${toolName}" error: ${state.error}`);
       this.agentClient.sendToolUpdate(this.turnId!, callID, toolName, "error", state.input ?? undefined, undefined, state.error ?? undefined);
     }
