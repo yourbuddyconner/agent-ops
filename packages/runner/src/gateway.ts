@@ -525,7 +525,7 @@ export interface GatewayCallbacks {
   onMemWrite?: (path: string, content: string) => Promise<{ file: unknown }>;
   onMemPatch?: (path: string, operations: unknown[]) => Promise<{ result: unknown }>;
   onMemRm?: (path: string) => Promise<{ deleted: number }>;
-  onMemSearch?: (query: string, path?: string) => Promise<{ results: unknown[] }>;
+  onMemSearch?: (query: string, path?: string, limit?: number) => Promise<{ results: unknown[] }>;
   onListRepos?: (source?: string) => Promise<{ repos: unknown[] }>;
   onListPersonas?: () => Promise<{ personas: unknown[] }>;
   onListChannels?: () => Promise<{ channels: unknown[] }>;
@@ -972,7 +972,9 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
         return c.json({ error: "Missing required query param: query" }, 400);
       }
       const path = c.req.query("path") || undefined;
-      const result = await callbacks.onMemSearch(query, path);
+      const limitParam = c.req.query("limit");
+      const limit = limitParam ? Math.min(parseInt(limitParam, 10) || 20, 50) : 20;
+      const result = await callbacks.onMemSearch(query, path, limit);
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] Memory search error:", err);

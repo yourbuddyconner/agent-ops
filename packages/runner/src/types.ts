@@ -166,7 +166,7 @@ export type RunnerToDOMessage =
   | { type: "mem-write"; requestId: string; path: string; content: string }
   | { type: "mem-patch"; requestId: string; path: string; operations: unknown[] }
   | { type: "mem-rm"; requestId: string; path: string }
-  | { type: "mem-search"; requestId: string; query: string; path?: string }
+  | { type: "mem-search"; requestId: string; query: string; path?: string; limit?: number }
   | { type: "list-repos"; requestId: string; source?: string }
   | { type: "list-personas"; requestId: string }
   | { type: "list-channels"; requestId: string }

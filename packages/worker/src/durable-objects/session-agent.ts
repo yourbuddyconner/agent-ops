@@ -2914,7 +2914,7 @@ export class SessionAgentDO {
         break;
 
       case 'mem-search':
-        await this.handleMemSearch(msg.requestId!, msg.query!, msg.path);
+        await this.handleMemSearch(msg.requestId!, msg.query!, msg.path, msg.limit);
         break;
 
       case 'list-repos':
@@ -3508,10 +3508,10 @@ export class SessionAgentDO {
     }
   }
 
-  private async handleMemSearch(requestId: string, query: string, path?: string) {
+  private async handleMemSearch(requestId: string, query: string, path?: string, limit?: number) {
     try {
       const userId = this.getStateValue('userId')!;
-      const results = await searchMemoryFiles(this.env.DB, userId, query, path);
+      const results = await searchMemoryFiles(this.env.DB, userId, query, path, limit ?? 20);
       this.sendToRunner({ type: 'mem-search-result', requestId, results } as any);
     } catch (err) {
       console.error('[SessionAgentDO] Failed to search memory files:', err);

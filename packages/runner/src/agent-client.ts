@@ -421,10 +421,10 @@ export class AgentClient {
     });
   }
 
-  requestMemSearch(query: string, path?: string): Promise<{ results: unknown[] }> {
+  requestMemSearch(query: string, path?: string, limit?: number): Promise<{ results: unknown[] }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
-      this.send({ type: "mem-search", requestId, query, path });
+      this.send({ type: "mem-search", requestId, query, path, limit });
     });
   }
 

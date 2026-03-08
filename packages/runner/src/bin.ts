@@ -163,8 +163,8 @@ async function main() {
     onMemRm: async (path) => {
       return await agentClient.requestMemRm(path);
     },
-    onMemSearch: async (query, path) => {
-      return await agentClient.requestMemSearch(query, path);
+    onMemSearch: async (query, path, limit) => {
+      return await agentClient.requestMemSearch(query, path, limit);
     },
     onListRepos: async (source) => {
       return await agentClient.requestListRepos(source);
