@@ -1,6 +1,13 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
-import type { AgentPersona, PersonaVisibility } from './types';
+import type {
+  AgentPersona,
+  PersonaVisibility,
+  PersonaToolConfig,
+  PersonaSkillAttachment,
+  SkillSummary,
+} from './types';
+import { skillKeys } from './skills';
 
 export const personaKeys = {
   all: ['personas'] as const,
@@ -98,6 +105,91 @@ export function useUpdatePersonaFiles() {
     }) => api.put<{ ok: boolean }>(`/personas/${personaId}/files`, files),
     onSuccess: (_, { personaId }) => {
       queryClient.invalidateQueries({ queryKey: personaKeys.detail(personaId) });
+    },
+  });
+}
+
+// --- Persona Tools ---
+
+export function usePersonaTools(personaId: string) {
+  return useQuery({
+    queryKey: [...personaKeys.detail(personaId), 'tools'] as const,
+    queryFn: () =>
+      api.get<{ tools: PersonaToolConfig[] }>(`/personas/${personaId}/tools`),
+    enabled: !!personaId,
+    select: (data) => data.tools,
+  });
+}
+
+export function useUpdatePersonaTools() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      personaId,
+      tools,
+    }: {
+      personaId: string;
+      tools: { service: string; actionId?: string; enabled: boolean }[];
+    }) => api.put<{ ok: boolean }>(`/personas/${personaId}/tools`, tools),
+    onSuccess: (_, { personaId }) => {
+      queryClient.invalidateQueries({ queryKey: personaKeys.detail(personaId) });
+    },
+  });
+}
+
+// --- Persona Skills ---
+
+export function usePersonaSkills(personaId: string) {
+  return useQuery({
+    queryKey: [...personaKeys.detail(personaId), 'skills'] as const,
+    queryFn: () =>
+      api.get<{ skills: (PersonaSkillAttachment & { skill: SkillSummary })[] }>(
+        `/personas/${personaId}/skills`
+      ),
+    enabled: !!personaId,
+    select: (data) => data.skills,
+  });
+}
+
+export function useAttachSkillToPersona() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      personaId,
+      skillId,
+      sortOrder,
+    }: {
+      personaId: string;
+      skillId: string;
+      sortOrder?: number;
+    }) =>
+      api.post<{ attachment: PersonaSkillAttachment }>(
+        `/personas/${personaId}/skills`,
+        { skillId, sortOrder }
+      ),
+    onSuccess: (_, { personaId }) => {
+      queryClient.invalidateQueries({ queryKey: personaKeys.detail(personaId) });
+      queryClient.invalidateQueries({ queryKey: skillKeys.all });
+    },
+  });
+}
+
+export function useDetachSkillFromPersona() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      personaId,
+      skillId,
+    }: {
+      personaId: string;
+      skillId: string;
+    }) => api.delete<{ ok: boolean }>(`/personas/${personaId}/skills/${skillId}`),
+    onSuccess: (_, { personaId }) => {
+      queryClient.invalidateQueries({ queryKey: personaKeys.detail(personaId) });
+      queryClient.invalidateQueries({ queryKey: skillKeys.all });
     },
   });
 }
