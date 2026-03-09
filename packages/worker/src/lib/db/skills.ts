@@ -274,6 +274,26 @@ export async function deleteOrphanedSyncSkills(
 
 // ─── Persona Skills ─────────────────────────────────────────────────────────
 
+export async function getPersonaSkillsForApi(
+  db: AppDb,
+  personaId: string,
+) {
+  return db
+    .select({
+      id: skills.id,
+      name: skills.name,
+      slug: skills.slug,
+      description: skills.description,
+      source: skills.source,
+      visibility: skills.visibility,
+      sortOrder: personaSkills.sortOrder,
+    })
+    .from(personaSkills)
+    .innerJoin(skills, eq(personaSkills.skillId, skills.id))
+    .where(and(eq(personaSkills.personaId, personaId), eq(skills.status, 'active')))
+    .orderBy(personaSkills.sortOrder);
+}
+
 export async function getPersonaSkills(
   db: AppDb,
   personaId: string,

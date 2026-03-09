@@ -282,7 +282,7 @@ personasRouter.get('/:id/skills', async (c) => {
     return c.json({ error: 'Persona not found' }, 404);
   }
 
-  const skills = await db.getPersonaSkills(c.get('db'), id);
+  const skills = await db.getPersonaSkillsForApi(c.get('db'), id);
   return c.json({ skills });
 });
 
