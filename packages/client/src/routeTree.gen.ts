@@ -22,10 +22,8 @@ import { Route as IntegrationsIndexRouteImport } from './routes/integrations/ind
 import { Route as WorkflowsExecutionsRouteImport } from './routes/workflows/executions'
 import { Route as WorkflowsWorkflowIdRouteImport } from './routes/workflows/$workflowId'
 import { Route as SettingsUsageRouteImport } from './routes/settings/usage'
-import { Route as SettingsPersonasRouteImport } from './routes/settings/personas'
 import { Route as SettingsSkillsRouteImport } from './routes/settings/skills'
-import { Route as SettingsPersonasIdRouteImport } from './routes/settings/personas.$id'
-import { Route as SettingsSkillsIdRouteImport } from './routes/settings/skills.$id'
+import { Route as SettingsPersonasRouteImport } from './routes/settings/personas'
 import { Route as SettingsAdminRouteImport } from './routes/settings/admin'
 import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId'
 import { Route as InviteCodeRouteImport } from './routes/invite/$code'
@@ -35,6 +33,8 @@ import { Route as SessionsSessionIdIndexRouteImport } from './routes/sessions/$s
 import { Route as AutomationWorkflowsIndexRouteImport } from './routes/automation/workflows/index'
 import { Route as AutomationTriggersIndexRouteImport } from './routes/automation/triggers/index'
 import { Route as AutomationExecutionsIndexRouteImport } from './routes/automation/executions/index'
+import { Route as SettingsSkillsIdRouteImport } from './routes/settings/skills.$id'
+import { Route as SettingsPersonasIdRouteImport } from './routes/settings/personas.$id'
 import { Route as SessionsJoinTokenRouteImport } from './routes/sessions/join/$token'
 import { Route as AutomationWorkflowsWorkflowIdRouteImport } from './routes/automation/workflows/$workflowId'
 
@@ -103,24 +103,14 @@ const SettingsUsageRoute = SettingsUsageRouteImport.update({
   path: '/settings/usage',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SettingsPersonasRoute = SettingsPersonasRouteImport.update({
-  id: '/settings/personas',
-  path: '/settings/personas',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const SettingsSkillsRoute = SettingsSkillsRouteImport.update({
   id: '/settings/skills',
   path: '/settings/skills',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SettingsPersonasIdRoute = SettingsPersonasIdRouteImport.update({
-  id: '/settings/personas/$id',
-  path: '/settings/personas/$id',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SettingsSkillsIdRoute = SettingsSkillsIdRouteImport.update({
-  id: '/settings/skills/$id',
-  path: '/settings/skills/$id',
+const SettingsPersonasRoute = SettingsPersonasRouteImport.update({
+  id: '/settings/personas',
+  path: '/settings/personas',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsAdminRoute = SettingsAdminRouteImport.update({
@@ -170,6 +160,16 @@ const AutomationExecutionsIndexRoute =
     path: '/executions/',
     getParentRoute: () => AutomationRoute,
   } as any)
+const SettingsSkillsIdRoute = SettingsSkillsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => SettingsSkillsRoute,
+} as any)
+const SettingsPersonasIdRoute = SettingsPersonasIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => SettingsPersonasRoute,
+} as any)
 const SessionsJoinTokenRoute = SessionsJoinTokenRouteImport.update({
   id: '/sessions/join/$token',
   path: '/sessions/join/$token',
@@ -182,7 +182,7 @@ const AutomationWorkflowsWorkflowIdRoute =
     getParentRoute: () => AutomationRoute,
   } as any)
 
-interface FileRoutesByFullPath {
+export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/automation': typeof AutomationRouteWithChildren
   '/inbox': typeof InboxRoute
@@ -194,10 +194,8 @@ interface FileRoutesByFullPath {
   '/invite/$code': typeof InviteCodeRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
   '/settings/admin': typeof SettingsAdminRoute
-  '/settings/personas': typeof SettingsPersonasRoute
-  '/settings/personas/$id': typeof SettingsPersonasIdRoute
-  '/settings/skills': typeof SettingsSkillsRoute
-  '/settings/skills/$id': typeof SettingsSkillsIdRoute
+  '/settings/personas': typeof SettingsPersonasRouteWithChildren
+  '/settings/skills': typeof SettingsSkillsRouteWithChildren
   '/settings/usage': typeof SettingsUsageRoute
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
   '/workflows/executions': typeof WorkflowsExecutionsRoute
@@ -207,12 +205,14 @@ interface FileRoutesByFullPath {
   '/workflows/': typeof WorkflowsIndexRoute
   '/automation/workflows/$workflowId': typeof AutomationWorkflowsWorkflowIdRoute
   '/sessions/join/$token': typeof SessionsJoinTokenRoute
+  '/settings/personas/$id': typeof SettingsPersonasIdRoute
+  '/settings/skills/$id': typeof SettingsSkillsIdRoute
   '/automation/executions/': typeof AutomationExecutionsIndexRoute
   '/automation/triggers/': typeof AutomationTriggersIndexRoute
   '/automation/workflows/': typeof AutomationWorkflowsIndexRoute
   '/sessions/$sessionId/': typeof SessionsSessionIdIndexRoute
 }
-interface FileRoutesByTo {
+export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/automation': typeof AutomationRouteWithChildren
   '/inbox': typeof InboxRoute
@@ -223,10 +223,8 @@ interface FileRoutesByTo {
   '/integrations/callback': typeof IntegrationsCallbackRoute
   '/invite/$code': typeof InviteCodeRoute
   '/settings/admin': typeof SettingsAdminRoute
-  '/settings/personas': typeof SettingsPersonasRoute
-  '/settings/personas/$id': typeof SettingsPersonasIdRoute
-  '/settings/skills': typeof SettingsSkillsRoute
-  '/settings/skills/$id': typeof SettingsSkillsIdRoute
+  '/settings/personas': typeof SettingsPersonasRouteWithChildren
+  '/settings/skills': typeof SettingsSkillsRouteWithChildren
   '/settings/usage': typeof SettingsUsageRoute
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
   '/workflows/executions': typeof WorkflowsExecutionsRoute
@@ -236,12 +234,14 @@ interface FileRoutesByTo {
   '/workflows': typeof WorkflowsIndexRoute
   '/automation/workflows/$workflowId': typeof AutomationWorkflowsWorkflowIdRoute
   '/sessions/join/$token': typeof SessionsJoinTokenRoute
+  '/settings/personas/$id': typeof SettingsPersonasIdRoute
+  '/settings/skills/$id': typeof SettingsSkillsIdRoute
   '/automation/executions': typeof AutomationExecutionsIndexRoute
   '/automation/triggers': typeof AutomationTriggersIndexRoute
   '/automation/workflows': typeof AutomationWorkflowsIndexRoute
   '/sessions/$sessionId': typeof SessionsSessionIdIndexRoute
 }
-interface FileRoutesById {
+export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/automation': typeof AutomationRouteWithChildren
@@ -254,10 +254,8 @@ interface FileRoutesById {
   '/invite/$code': typeof InviteCodeRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRouteWithChildren
   '/settings/admin': typeof SettingsAdminRoute
-  '/settings/personas': typeof SettingsPersonasRoute
-  '/settings/personas/$id': typeof SettingsPersonasIdRoute
-  '/settings/skills': typeof SettingsSkillsRoute
-  '/settings/skills/$id': typeof SettingsSkillsIdRoute
+  '/settings/personas': typeof SettingsPersonasRouteWithChildren
+  '/settings/skills': typeof SettingsSkillsRouteWithChildren
   '/settings/usage': typeof SettingsUsageRoute
   '/workflows/$workflowId': typeof WorkflowsWorkflowIdRoute
   '/workflows/executions': typeof WorkflowsExecutionsRoute
@@ -267,12 +265,14 @@ interface FileRoutesById {
   '/workflows/': typeof WorkflowsIndexRoute
   '/automation/workflows/$workflowId': typeof AutomationWorkflowsWorkflowIdRoute
   '/sessions/join/$token': typeof SessionsJoinTokenRoute
+  '/settings/personas/$id': typeof SettingsPersonasIdRoute
+  '/settings/skills/$id': typeof SettingsSkillsIdRoute
   '/automation/executions/': typeof AutomationExecutionsIndexRoute
   '/automation/triggers/': typeof AutomationTriggersIndexRoute
   '/automation/workflows/': typeof AutomationWorkflowsIndexRoute
   '/sessions/$sessionId/': typeof SessionsSessionIdIndexRoute
 }
-interface FileRouteTypes {
+export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
@@ -287,9 +287,7 @@ interface FileRouteTypes {
     | '/sessions/$sessionId'
     | '/settings/admin'
     | '/settings/personas'
-    | '/settings/personas/$id'
     | '/settings/skills'
-    | '/settings/skills/$id'
     | '/settings/usage'
     | '/workflows/$workflowId'
     | '/workflows/executions'
@@ -299,6 +297,8 @@ interface FileRouteTypes {
     | '/workflows/'
     | '/automation/workflows/$workflowId'
     | '/sessions/join/$token'
+    | '/settings/personas/$id'
+    | '/settings/skills/$id'
     | '/automation/executions/'
     | '/automation/triggers/'
     | '/automation/workflows/'
@@ -316,9 +316,7 @@ interface FileRouteTypes {
     | '/invite/$code'
     | '/settings/admin'
     | '/settings/personas'
-    | '/settings/personas/$id'
     | '/settings/skills'
-    | '/settings/skills/$id'
     | '/settings/usage'
     | '/workflows/$workflowId'
     | '/workflows/executions'
@@ -328,6 +326,8 @@ interface FileRouteTypes {
     | '/workflows'
     | '/automation/workflows/$workflowId'
     | '/sessions/join/$token'
+    | '/settings/personas/$id'
+    | '/settings/skills/$id'
     | '/automation/executions'
     | '/automation/triggers'
     | '/automation/workflows'
@@ -346,9 +346,7 @@ interface FileRouteTypes {
     | '/sessions/$sessionId'
     | '/settings/admin'
     | '/settings/personas'
-    | '/settings/personas/$id'
     | '/settings/skills'
-    | '/settings/skills/$id'
     | '/settings/usage'
     | '/workflows/$workflowId'
     | '/workflows/executions'
@@ -358,13 +356,15 @@ interface FileRouteTypes {
     | '/workflows/'
     | '/automation/workflows/$workflowId'
     | '/sessions/join/$token'
+    | '/settings/personas/$id'
+    | '/settings/skills/$id'
     | '/automation/executions/'
     | '/automation/triggers/'
     | '/automation/workflows/'
     | '/sessions/$sessionId/'
   fileRoutesById: FileRoutesById
 }
-interface RootRouteChildren {
+export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AutomationRoute: typeof AutomationRouteWithChildren
   InboxRoute: typeof InboxRoute
@@ -376,10 +376,8 @@ interface RootRouteChildren {
   InviteCodeRoute: typeof InviteCodeRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRouteWithChildren
   SettingsAdminRoute: typeof SettingsAdminRoute
-  SettingsPersonasRoute: typeof SettingsPersonasRoute
-  SettingsPersonasIdRoute: typeof SettingsPersonasIdRoute
-  SettingsSkillsRoute: typeof SettingsSkillsRoute
-  SettingsSkillsIdRoute: typeof SettingsSkillsIdRoute
+  SettingsPersonasRoute: typeof SettingsPersonasRouteWithChildren
+  SettingsSkillsRoute: typeof SettingsSkillsRouteWithChildren
   SettingsUsageRoute: typeof SettingsUsageRoute
   WorkflowsWorkflowIdRoute: typeof WorkflowsWorkflowIdRoute
   WorkflowsExecutionsRoute: typeof WorkflowsExecutionsRoute
@@ -483,20 +481,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsUsageRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/settings/personas': {
-      id: '/settings/personas'
-      path: '/settings/personas'
-      fullPath: '/settings/personas'
-      preLoaderRoute: typeof SettingsPersonasRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/settings/personas/$id': {
-      id: '/settings/personas/$id'
-      path: '/settings/personas/$id'
-      fullPath: '/settings/personas/$id'
-      preLoaderRoute: typeof SettingsPersonasIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/settings/skills': {
       id: '/settings/skills'
       path: '/settings/skills'
@@ -504,11 +488,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsSkillsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/settings/skills/$id': {
-      id: '/settings/skills/$id'
-      path: '/settings/skills/$id'
-      fullPath: '/settings/skills/$id'
-      preLoaderRoute: typeof SettingsSkillsIdRouteImport
+    '/settings/personas': {
+      id: '/settings/personas'
+      path: '/settings/personas'
+      fullPath: '/settings/personas'
+      preLoaderRoute: typeof SettingsPersonasRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings/admin': {
@@ -574,6 +558,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AutomationExecutionsIndexRouteImport
       parentRoute: typeof AutomationRoute
     }
+    '/settings/skills/$id': {
+      id: '/settings/skills/$id'
+      path: '/$id'
+      fullPath: '/settings/skills/$id'
+      preLoaderRoute: typeof SettingsSkillsIdRouteImport
+      parentRoute: typeof SettingsSkillsRoute
+    }
+    '/settings/personas/$id': {
+      id: '/settings/personas/$id'
+      path: '/$id'
+      fullPath: '/settings/personas/$id'
+      preLoaderRoute: typeof SettingsPersonasIdRouteImport
+      parentRoute: typeof SettingsPersonasRoute
+    }
     '/sessions/join/$token': {
       id: '/sessions/join/$token'
       path: '/sessions/join/$token'
@@ -620,6 +618,29 @@ const SessionsSessionIdRouteChildren: SessionsSessionIdRouteChildren = {
 const SessionsSessionIdRouteWithChildren =
   SessionsSessionIdRoute._addFileChildren(SessionsSessionIdRouteChildren)
 
+interface SettingsPersonasRouteChildren {
+  SettingsPersonasIdRoute: typeof SettingsPersonasIdRoute
+}
+
+const SettingsPersonasRouteChildren: SettingsPersonasRouteChildren = {
+  SettingsPersonasIdRoute: SettingsPersonasIdRoute,
+}
+
+const SettingsPersonasRouteWithChildren =
+  SettingsPersonasRoute._addFileChildren(SettingsPersonasRouteChildren)
+
+interface SettingsSkillsRouteChildren {
+  SettingsSkillsIdRoute: typeof SettingsSkillsIdRoute
+}
+
+const SettingsSkillsRouteChildren: SettingsSkillsRouteChildren = {
+  SettingsSkillsIdRoute: SettingsSkillsIdRoute,
+}
+
+const SettingsSkillsRouteWithChildren = SettingsSkillsRoute._addFileChildren(
+  SettingsSkillsRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AutomationRoute: AutomationRouteWithChildren,
@@ -632,10 +653,8 @@ const rootRouteChildren: RootRouteChildren = {
   InviteCodeRoute: InviteCodeRoute,
   SessionsSessionIdRoute: SessionsSessionIdRouteWithChildren,
   SettingsAdminRoute: SettingsAdminRoute,
-  SettingsPersonasRoute: SettingsPersonasRoute,
-  SettingsPersonasIdRoute: SettingsPersonasIdRoute,
-  SettingsSkillsRoute: SettingsSkillsRoute,
-  SettingsSkillsIdRoute: SettingsSkillsIdRoute,
+  SettingsPersonasRoute: SettingsPersonasRouteWithChildren,
+  SettingsSkillsRoute: SettingsSkillsRouteWithChildren,
   SettingsUsageRoute: SettingsUsageRoute,
   WorkflowsWorkflowIdRoute: WorkflowsWorkflowIdRoute,
   WorkflowsExecutionsRoute: WorkflowsExecutionsRoute,

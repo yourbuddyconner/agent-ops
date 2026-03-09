@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute, Link, Outlet, useMatch } from '@tanstack/react-router';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/search-input';
@@ -8,7 +8,7 @@ import { useSkills, useSearchSkills } from '@/api/skills';
 import type { SkillSource } from '@/api/types';
 
 export const Route = createFileRoute('/settings/skills')({
-  component: SkillsPage,
+  component: SkillsLayout,
 });
 
 const sourceFilters: Array<{ label: string; value: SkillSource | undefined }> = [
@@ -18,7 +18,17 @@ const sourceFilters: Array<{ label: string; value: SkillSource | undefined }> = 
   { label: 'Managed', value: 'managed' },
 ];
 
-function SkillsPage() {
+function SkillsLayout() {
+  const childMatch = useMatch({ from: '/settings/skills/$id', shouldThrow: false });
+
+  if (childMatch) {
+    return <Outlet />;
+  }
+
+  return <SkillsListPage />;
+}
+
+function SkillsListPage() {
   const [search, setSearch] = React.useState('');
   const [sourceFilter, setSourceFilter] = React.useState<SkillSource | undefined>(undefined);
 

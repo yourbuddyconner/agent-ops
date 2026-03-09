@@ -52,7 +52,7 @@ export function Sidebar() {
             const isActive =
               item.href === '/'
                 ? currentPath === '/'
-                : currentPath.startsWith(item.href);
+                : currentPath === item.href || currentPath.startsWith(item.href + '/');
             const badgeCount = item.showBadge ? inboxCount : undefined;
 
             return (
