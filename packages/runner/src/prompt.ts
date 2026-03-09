@@ -729,6 +729,11 @@ export class PromptHandler {
       channel.opencodeSessionId = await this.createSession();
       this.ocSessionToChannel.set(channel.opencodeSessionId, channel);
       this.agentClient.sendChannelSessionCreated(channel.channelKey, channel.opencodeSessionId);
+      // Notify DO when a new OpenCode session is created for a thread channel
+      if (channel.channelKey.startsWith("thread:")) {
+        const threadId = channel.channelKey.slice(7);
+        this.agentClient.sendThreadCreated(threadId, channel.opencodeSessionId);
+      }
     }
     if (!this.eventStreamActive) {
       await this.startEventStream();
@@ -744,6 +749,11 @@ export class PromptHandler {
     channel.opencodeSessionId = await this.createSession();
     this.ocSessionToChannel.set(channel.opencodeSessionId, channel);
     this.agentClient.sendChannelSessionCreated(channel.channelKey, channel.opencodeSessionId);
+    // Notify DO when a new OpenCode session is created for a thread channel
+    if (channel.channelKey.startsWith("thread:")) {
+      const threadId = channel.channelKey.slice(7);
+      this.agentClient.sendThreadCreated(threadId, channel.opencodeSessionId);
+    }
     if (!this.eventStreamActive) {
       await this.startEventStream();
     }
@@ -3092,10 +3102,28 @@ export class PromptHandler {
         break;
       }
 
+      case "session.updated": {
+        // Forward title/summary updates for thread channels to the DO
+        const updatedSessionId = (props.id ?? props.sessionID ?? props.sessionId) as string | undefined;
+        if (updatedSessionId) {
+          const updatedChannel = this.ocSessionToChannel.get(updatedSessionId);
+          if (updatedChannel && updatedChannel.channelKey.startsWith("thread:")) {
+            const threadId = updatedChannel.channelKey.slice(7);
+            const summary = props.summary as Record<string, unknown> | undefined;
+            this.agentClient.sendThreadUpdated(threadId, {
+              title: typeof props.title === "string" ? props.title : undefined,
+              summaryAdditions: typeof summary?.additions === "number" ? summary.additions : undefined,
+              summaryDeletions: typeof summary?.deletions === "number" ? summary.deletions : undefined,
+              summaryFiles: typeof summary?.files === "number" ? summary.files : undefined,
+            });
+          }
+        }
+        break;
+      }
+
       case "server.connected":
       case "server.heartbeat":
       case "session.created":
-      case "session.updated":
       case "session.deleted":
       case "session.diff":
       case "message.removed":

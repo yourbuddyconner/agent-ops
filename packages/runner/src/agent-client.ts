@@ -286,6 +286,14 @@ export class AgentClient {
     this.send({ type: "session-reset", channelType, channelId, requestId });
   }
 
+  sendThreadCreated(threadId: string, opencodeSessionId: string): void {
+    this.send({ type: "thread.created", threadId, opencodeSessionId });
+  }
+
+  sendThreadUpdated(threadId: string, info: { title?: string; summaryAdditions?: number; summaryDeletions?: number; summaryFiles?: number }): void {
+    this.send({ type: "thread.updated", threadId, ...info });
+  }
+
   // ─── V2 Parts-Based Message Protocol ──────────────────────────────
 
   sendTurnCreate(turnId: string, context?: { channelType?: string; channelId?: string; opencodeSessionId?: string }): void {
