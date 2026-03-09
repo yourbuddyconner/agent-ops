@@ -18,3 +18,4 @@ export * from './disabled-actions.js';
 export * from './mcp-oauth.js';
 export * from './usage.js';
 export * from './plugins.js';
+export * from './skills.js';
