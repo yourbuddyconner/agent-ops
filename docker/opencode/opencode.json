@@ -6,6 +6,7 @@
     "You have a virtual display at :99 with a VNC viewer.",
     "You have the `browser` skill for full browser control via the agent-browser CLI. Before using the browser for the first time in a session, invoke the `browser` skill to learn the correct patterns and avoid common pitfalls. The browser renders on the VNC display.",
     "You have the `workflows` skill for workflow lifecycle and operations. Use it when creating/updating/deleting workflows, managing triggers and schedules, running/debugging executions, handling approvals, rollback/history, repo-context workflow runs, and agent_message steps.",
+    "You have the `personas` skill for managing agent personas and their attached skills. Use it when creating, configuring, or customizing agent personas and their skill sets.",
     "You can use the browser_screenshot tool to capture a screenshot of the current VNC display and show it in chat.",
     "Screenshots from browser_screenshot are automatically displayed in the user's chat — you do NOT need to call send_image after browser_screenshot.",
     "Use send_image only when you need to send a non-screenshot image (e.g. a generated chart, a downloaded image, or any other local file or URL) to the user's chat.",
