@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { createFileRoute, useNavigate } from '@tanstack/react-router';
+import { createFileRoute, useNavigate, Outlet, useMatch } from '@tanstack/react-router';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -8,10 +8,20 @@ import { useAuthStore } from '@/stores/auth';
 import type { AgentPersona } from '@/api/types';
 
 export const Route = createFileRoute('/settings/personas')({
-  component: PersonasPage,
+  component: PersonasLayout,
 });
 
-function PersonasPage() {
+function PersonasLayout() {
+  const childMatch = useMatch({ from: '/settings/personas/$id', shouldThrow: false });
+
+  if (childMatch) {
+    return <Outlet />;
+  }
+
+  return <PersonasListPage />;
+}
+
+function PersonasListPage() {
   const { data: personas, isLoading } = usePersonas();
   const deletePersona = useDeletePersona();
   const navigate = useNavigate();

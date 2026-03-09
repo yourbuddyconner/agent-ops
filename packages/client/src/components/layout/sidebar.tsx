@@ -49,10 +49,18 @@ export function Sidebar() {
       <nav className="flex-1 px-2 py-1">
         <ul className="space-y-0.5">
           {navItems.map((item) => {
-            const isActive =
+            const matchesThis =
               item.href === '/'
                 ? currentPath === '/'
                 : currentPath === item.href || currentPath.startsWith(item.href + '/');
+            // If a more-specific nav item also matches, this one shouldn't be active
+            const hasMoreSpecificMatch = matchesThis && navItems.some(
+              (other) =>
+                other.href !== item.href &&
+                other.href.startsWith(item.href + '/') &&
+                (currentPath === other.href || currentPath.startsWith(other.href + '/'))
+            );
+            const isActive = matchesThis && !hasMoreSpecificMatch;
             const badgeCount = item.showBadge ? inboxCount : undefined;
 
             return (
