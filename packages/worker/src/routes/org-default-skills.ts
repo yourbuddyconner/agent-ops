@@ -4,7 +4,7 @@ import { zValidator } from '@hono/zod-validator';
 import type { Env, Variables } from '../env.js';
 import { adminMiddleware } from '../middleware/admin.js';
 import { ValidationError } from '@valet/shared';
-import { getOrgDefaultSkills, setOrgDefaultSkills, validateSkillIds } from '../lib/db.js';
+import { getOrgDefaultSkillsRich, setOrgDefaultSkills, validateSkillIds } from '../lib/db.js';
 
 export const orgDefaultSkillsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -14,7 +14,7 @@ orgDefaultSkillsRouter.use('*', adminMiddleware);
 // GET / — list org default skills
 orgDefaultSkillsRouter.get('/', async (c) => {
   const db = c.get('db');
-  const skills = await getOrgDefaultSkills(db, 'default');
+  const skills = await getOrgDefaultSkillsRich(db, 'default');
   return c.json({ skills });
 });
 

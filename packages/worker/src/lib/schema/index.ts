@@ -19,3 +19,4 @@ export * from './mcp-oauth.js';
 export * from './usage.js';
 export * from './plugins.js';
 export * from './skills.js';
+export * from './persona-tools.js';

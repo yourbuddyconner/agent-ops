@@ -274,6 +274,26 @@ export async function deleteOrphanedSyncSkills(
 
 // ─── Persona Skills ─────────────────────────────────────────────────────────
 
+export async function getPersonaSkillsForApi(
+  db: AppDb,
+  personaId: string,
+) {
+  return db
+    .select({
+      id: skills.id,
+      name: skills.name,
+      slug: skills.slug,
+      description: skills.description,
+      source: skills.source,
+      visibility: skills.visibility,
+      sortOrder: personaSkills.sortOrder,
+    })
+    .from(personaSkills)
+    .innerJoin(skills, eq(personaSkills.skillId, skills.id))
+    .where(and(eq(personaSkills.personaId, personaId), eq(skills.status, 'active')))
+    .orderBy(personaSkills.sortOrder);
+}
+
 export async function getPersonaSkills(
   db: AppDb,
   personaId: string,
@@ -345,6 +365,32 @@ export async function getOrgDefaultSkills(
     filename: `${r.slug}.md`,
     content: r.content,
   }));
+}
+
+export async function getOrgDefaultSkillsRich(
+  db: AppDb,
+  orgId: string,
+): Promise<SkillSummary[]> {
+  const rows = await db
+    .select({
+      id: skills.id,
+      name: skills.name,
+      slug: skills.slug,
+      source: skills.source,
+      description: skills.description,
+      visibility: skills.visibility,
+      ownerId: skills.ownerId,
+      updatedAt: skills.updatedAt,
+    })
+    .from(orgDefaultSkills)
+    .innerJoin(skills, eq(skills.id, orgDefaultSkills.skillId))
+    .where(and(
+      eq(orgDefaultSkills.orgId, orgId),
+      eq(skills.status, 'active'),
+    ))
+    .orderBy(asc(skills.name));
+
+  return rows as SkillSummary[];
 }
 
 export async function setOrgDefaultSkills(

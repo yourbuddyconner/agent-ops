@@ -30,3 +30,4 @@ export * from './db/disabled-actions.js';
 export * from './db/usage.js';
 export * from './db/plugins.js';
 export * from './db/skills.js';
+export * from './db/persona-tools.js';

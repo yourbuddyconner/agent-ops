@@ -282,7 +282,7 @@ personasRouter.get('/:id/skills', async (c) => {
     return c.json({ error: 'Persona not found' }, 404);
   }
 
-  const skills = await db.getPersonaSkills(c.get('db'), id);
+  const skills = await db.getPersonaSkillsForApi(c.get('db'), id);
   return c.json({ skills });
 });
 
@@ -330,4 +330,60 @@ personasRouter.delete('/:id/skills/:skillId', async (c) => {
 
   await db.detachSkillFromPersona(c.get('db'), id, skillId);
   return c.json({ detached: true });
+});
+
+// ─── Persona-Tool Configuration ─────────────────────────────────────────────
+
+/**
+ * GET /api/personas/:id/tools
+ * List tool configurations for a persona.
+ */
+personasRouter.get('/:id/tools', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
+  // Check visibility: private personas only visible to creator or admin
+  if (persona.visibility === 'private' && persona.createdBy !== user.id && user.role !== 'admin') {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
+  const tools = await db.getPersonaTools(c.get('db'), id);
+  return c.json({ tools });
+});
+
+const setPersonaToolsSchema = z.object({
+  tools: z.array(
+    z.object({
+      service: z.string().min(1),
+      actionId: z.string().min(1).optional(),
+      enabled: z.boolean(),
+    })
+  ),
+});
+
+/**
+ * PUT /api/personas/:id/tools
+ * Replace all tool configuration for a persona (creator or admin only).
+ */
+personasRouter.put('/:id/tools', zValidator('json', setPersonaToolsSchema), async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+  const body = c.req.valid('json');
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
+  if (persona.createdBy !== user.id && user.role !== 'admin') {
+    throw new ForbiddenError('Only the creator or an admin can edit this persona');
+  }
+
+  await db.setPersonaTools(c.get('db'), id, body.tools);
+  return c.json({ ok: true });
 });
