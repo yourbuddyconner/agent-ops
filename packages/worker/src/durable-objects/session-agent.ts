@@ -292,6 +292,7 @@ interface RunnerMessage {
   toModel?: string;
   reason?: string;
   model?: string;
+  personaId?: string;
   path?: string;
   ref?: string;
   executionId?: string;
@@ -2856,6 +2857,7 @@ export class SessionAgentDO {
           sourceIssueNumber: msg.sourceIssueNumber,
           sourceRepoFullName: msg.sourceRepoFullName,
           model: msg.model,
+          personaId: msg.personaId,
         });
         break;
 
@@ -3105,7 +3107,7 @@ export class SessionAgentDO {
     params: {
       task: string; workspace: string; repoUrl?: string; branch?: string; ref?: string; title?: string;
       sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string;
-      model?: string;
+      model?: string; personaId?: string;
     },
   ) {
     try {
@@ -3149,6 +3151,7 @@ export class SessionAgentDO {
         workspace: params.workspace,
         title: params.title || params.workspace,
         parentSessionId,
+        personaId: params.personaId,
       });
 
       // Create git state for child (always create if we have any git context)

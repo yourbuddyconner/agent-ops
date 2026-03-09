@@ -49,6 +49,10 @@ export default tool({
       .string()
       .optional()
       .describe("Model ID for the child session to use (e.g. 'anthropic/claude-sonnet-4-5-20250929'). If not specified, inherits parent's model preferences."),
+    persona_id: tool.schema
+      .string()
+      .optional()
+      .describe("Persona ID to use for the child session. The persona's instructions and attached skills will be loaded at session start."),
   },
   async execute(args) {
     if (process.env.PARENT_SESSION_ID) {
@@ -75,6 +79,7 @@ export default tool({
           sourceIssueNumber: args.source_issue_number,
           sourceRepoFullName: args.source_repo_full_name,
           model: args.model,
+          personaId: args.persona_id,
         }),
       })
 

@@ -416,6 +416,7 @@ export interface SpawnChildParams {
   sourceIssueNumber?: number;
   sourceRepoFullName?: string;
   model?: string;
+  personaId?: string;
 }
 
 export interface MessageEntry {
@@ -676,7 +677,7 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json({ error: "Spawn child handler not configured" }, 500);
     }
     try {
-      const body = await c.req.json() as { task?: string; workspace?: string; repoUrl?: string; branch?: string; ref?: string; title?: string; sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string; model?: string };
+      const body = await c.req.json() as { task?: string; workspace?: string; repoUrl?: string; branch?: string; ref?: string; title?: string; sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string; model?: string; personaId?: string };
       if (!body.task || !body.workspace) {
         return c.json({ error: "Missing required fields: task, workspace" }, 400);
       }
@@ -692,6 +693,7 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
         sourceIssueNumber: body.sourceIssueNumber,
         sourceRepoFullName: body.sourceRepoFullName,
         model: body.model,
+        personaId: body.personaId,
       });
       return c.json(result);
     } catch (err) {

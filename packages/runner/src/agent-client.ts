@@ -365,6 +365,7 @@ export class AgentClient {
     sourceIssueNumber?: number;
     sourceRepoFullName?: string;
     model?: string;
+    personaId?: string;
   }): Promise<{ childSessionId: string }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, SPAWN_CHILD_TIMEOUT_MS, () => {
