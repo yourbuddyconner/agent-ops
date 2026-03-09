@@ -675,12 +675,20 @@ deploy-worker: generate-registries ## Deploy Cloudflare Worker
 	@echo "$(GREEN)✓ Worker deployed$(NC)"
 
 _wrangler-config: ## Generate wrangler.deploy.toml from .env.deploy values
-	@sed -e 's|$${CF_WORKER_NAME}|$(CF_WORKER_NAME)|g' \
-		-e 's|$${D1_DATABASE_NAME}|$(D1_DATABASE_NAME)|g' \
-		-e 's|$${D1_DATABASE_ID}|$(D1_DATABASE_ID)|g' \
-		-e 's|$${R2_BUCKET_NAME}|$(R2_BUCKET_NAME)|g' \
-		-e 's|$${ALLOWED_EMAILS}|$(ALLOWED_EMAILS)|g' \
-		-e 's|$${MODAL_BACKEND_URL}|$(MODAL_BACKEND_URL)|g' \
+	@DB_ID="$(D1_DATABASE_ID)"; \
+	if [ -z "$$DB_ID" ]; then \
+		DB_ID=$$(wrangler d1 list --json 2>/dev/null | jq -r '.[] | select(.name=="$(D1_DATABASE_NAME)") | .uuid' 2>/dev/null); \
+	fi; \
+	if [ -z "$$DB_ID" ] || [ "$$DB_ID" = "null" ]; then \
+		echo "Error: Could not discover D1 database ID for '$(D1_DATABASE_NAME)'. Run: wrangler d1 create $(D1_DATABASE_NAME)"; \
+		exit 1; \
+	fi; \
+	sed -e "s|\$${CF_WORKER_NAME}|$(CF_WORKER_NAME)|g" \
+		-e "s|\$${D1_DATABASE_NAME}|$(D1_DATABASE_NAME)|g" \
+		-e "s|\$${D1_DATABASE_ID}|$$DB_ID|g" \
+		-e "s|\$${R2_BUCKET_NAME}|$(R2_BUCKET_NAME)|g" \
+		-e "s|\$${ALLOWED_EMAILS}|$(ALLOWED_EMAILS)|g" \
+		-e "s|\$${MODAL_BACKEND_URL}|$(MODAL_BACKEND_URL)|g" \
 		packages/worker/wrangler.toml > packages/worker/wrangler.deploy.toml
 
 deploy-migrate: ## Apply D1 migrations to production
