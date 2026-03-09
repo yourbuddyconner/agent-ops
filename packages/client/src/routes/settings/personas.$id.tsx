@@ -19,17 +19,11 @@ import { useAvailableModels } from '@/api/sessions';
 import { SkillPicker } from '@/components/skills/skill-picker';
 import { PersonaToolPicker } from '@/components/personas/persona-tool-picker';
 import type { PersonaVisibility } from '@/api/types';
+import { slugify } from '@/lib/format';
 
 export const Route = createFileRoute('/settings/personas/$id')({
   component: PersonaEditorPage,
 });
-
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-}
 
 function PersonaEditorPage() {
   const { id } = Route.useParams();
@@ -177,11 +171,11 @@ function PersonaEditorPage() {
   const attachedSkills = React.useMemo(() => {
     if (!personaSkills) return [];
     return personaSkills.map((ps) => ({
-      id: ps.skill.id,
-      name: ps.skill.name,
-      slug: ps.skill.slug,
-      source: ps.skill.source,
-      description: ps.skill.description,
+      id: ps.id,
+      name: ps.name,
+      slug: ps.slug,
+      source: ps.source,
+      description: ps.description,
       sortOrder: ps.sortOrder,
     }));
   }, [personaSkills]);

@@ -63,6 +63,17 @@ export function SkillPicker({ attachedSkills, onAttach, onDetach }: SkillPickerP
     };
   }, [dropdownOpen]);
 
+  // Debounce the search query
+  React.useEffect(() => {
+    if (!query.trim()) {
+      setDebouncedQuery('');
+      setDropdownOpen(false);
+      return;
+    }
+    const timer = setTimeout(() => setDebouncedQuery(query), 300);
+    return () => clearTimeout(timer);
+  }, [query]);
+
   // Open dropdown when debounced query is non-empty
   React.useEffect(() => {
     if (debouncedQuery.length > 0) {
@@ -72,10 +83,6 @@ export function SkillPicker({ attachedSkills, onAttach, onDetach }: SkillPickerP
 
   const handleSearchChange = (value: string) => {
     setQuery(value);
-    setDebouncedQuery(value);
-    if (!value.trim()) {
-      setDropdownOpen(false);
-    }
   };
 
   const handleAttach = (skillId: string) => {
@@ -93,7 +100,7 @@ export function SkillPicker({ attachedSkills, onAttach, onDetach }: SkillPickerP
           value={query}
           onChange={handleSearchChange}
           placeholder="Search skills to attach..."
-          debounceMs={0}
+          debounceMs={0} /* debounce handled via useEffect above */
         />
 
         {/* Dropdown results */}

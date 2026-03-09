@@ -6,17 +6,11 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { useSkill, useCreateSkill, useUpdateSkill, useDeleteSkill } from '@/api/skills';
 import type { SkillVisibility } from '@/api/types';
+import { slugify } from '@/lib/format';
 
 export const Route = createFileRoute('/settings/skills/$id')({
   component: SkillEditorPage,
 });
-
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-}
 
 const sourceBadgeVariant = {
   builtin: 'default',

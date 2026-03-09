@@ -3,7 +3,7 @@ import type { AppDb } from '../drizzle.js';
 import type { AgentPersona, AgentPersonaFile, PersonaVisibility } from '@valet/shared';
 import { eq, and, sql, asc } from 'drizzle-orm';
 import { getDb } from '../drizzle.js';
-import { agentPersonas, agentPersonaFiles, orgRepoPersonaDefaults } from '../schema/index.js';
+import { agentPersonas, agentPersonaFiles, orgRepoPersonaDefaults, personaTools, personaSkills } from '../schema/index.js';
 
 export async function createPersona(
   db: AppDb,
@@ -162,6 +162,10 @@ export async function updatePersona(
 }
 
 export async function deletePersona(db: AppDb, id: string): Promise<void> {
+  // Clean up related rows before deleting the persona
+  await db.delete(personaTools).where(eq(personaTools.personaId, id));
+  await db.delete(personaSkills).where(eq(personaSkills.personaId, id));
+  await db.delete(agentPersonaFiles).where(eq(agentPersonaFiles.personaId, id));
   await db.delete(agentPersonas).where(eq(agentPersonas.id, id));
 }
 

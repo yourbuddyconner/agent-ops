@@ -59,6 +59,13 @@ export function formatDuration(seconds: number): string {
   return `${hours}h ${minutes}m`;
 }
 
+export function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 export function formatRelativeTime(date: Date | string): string {
   const d = parseServerDate(date);
   const now = new Date();

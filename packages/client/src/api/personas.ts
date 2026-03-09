@@ -4,8 +4,6 @@ import type {
   AgentPersona,
   PersonaVisibility,
   PersonaToolConfig,
-  PersonaSkillAttachment,
-  SkillSummary,
 } from './types';
 import { skillKeys } from './skills';
 
@@ -131,7 +129,7 @@ export function useUpdatePersonaTools() {
     }: {
       personaId: string;
       tools: { service: string; actionId?: string; enabled: boolean }[];
-    }) => api.put<{ ok: boolean }>(`/personas/${personaId}/tools`, tools),
+    }) => api.put<{ ok: boolean }>(`/personas/${personaId}/tools`, { tools }),
     onSuccess: (_, { personaId }) => {
       queryClient.invalidateQueries({ queryKey: personaKeys.detail(personaId) });
     },
@@ -140,11 +138,21 @@ export function useUpdatePersonaTools() {
 
 // --- Persona Skills ---
 
+interface PersonaSkillRow {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  source: string;
+  visibility: string;
+  sortOrder: number;
+}
+
 export function usePersonaSkills(personaId: string) {
   return useQuery({
     queryKey: [...personaKeys.detail(personaId), 'skills'] as const,
     queryFn: () =>
-      api.get<{ skills: (PersonaSkillAttachment & { skill: SkillSummary })[] }>(
+      api.get<{ skills: PersonaSkillRow[] }>(
         `/personas/${personaId}/skills`
       ),
     enabled: !!personaId,
