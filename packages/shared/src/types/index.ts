@@ -1073,3 +1073,17 @@ export interface PersonaSkillAttachment {
   sortOrder: number;
   createdAt: string;
 }
+
+export interface PersonaToolConfig {
+  id: string;
+  personaId: string;
+  service: string;
+  actionId: string | null;
+  enabled: boolean;
+  createdAt: string;
+}
+
+export interface PersonaToolWhitelist {
+  services: string[];
+  excludedActions: Array<{ service: string; actionId: string }>;
+}
