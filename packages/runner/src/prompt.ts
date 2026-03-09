@@ -803,15 +803,16 @@ export class PromptHandler {
     }
   }
 
-  private extractChannelContext(channel: ChannelSession): { channelType?: string; channelId?: string } {
+  private extractChannelContext(channel: ChannelSession): { channelType?: string; channelId?: string; threadId?: string } {
     const idx = channel.channelKey.indexOf(":");
     if (idx <= 0 || idx >= channel.channelKey.length - 1) {
       return {};
     }
-    return {
-      channelType: channel.channelKey.slice(0, idx),
-      channelId: channel.channelKey.slice(idx + 1),
-    };
+    const channelType = channel.channelKey.slice(0, idx);
+    const channelId = channel.channelKey.slice(idx + 1);
+    // For thread channels (key = "thread:<threadId>"), extract threadId
+    const threadId = channelType === "thread" ? channelId : undefined;
+    return { channelType, channelId, threadId };
   }
 
 
@@ -2117,10 +2118,12 @@ export class PromptHandler {
     const turnId = crypto.randomUUID();
     this.turnId = turnId;
     const channel = this.activeChannel;
+    const channelContext = channel ? this.extractChannelContext(channel) : {};
     this.agentClient.sendTurnCreate(turnId, {
-      channelType: channel?.channelKey.split(":")[0],
-      channelId: channel?.channelKey.split(":").slice(1).join(":"),
+      channelType: channelContext.channelType,
+      channelId: channelContext.channelId,
       opencodeSessionId: channel?.opencodeSessionId ?? undefined,
+      threadId: channelContext.threadId,
     });
   }
 

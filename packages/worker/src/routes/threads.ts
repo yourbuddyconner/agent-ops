@@ -98,8 +98,25 @@ threadsRouter.post('/:sessionId/threads/:threadId/continue', async (c) => {
     throw new NotFoundError('Thread', threadId);
   }
 
+  // Fetch last ~20 messages from the old thread for continuation context
+  const msgResult = await c.env.DB
+    .prepare(
+      'SELECT role, content FROM messages WHERE session_id = ? AND thread_id = ? ORDER BY created_at DESC LIMIT 20'
+    )
+    .bind(sessionId, threadId)
+    .all();
+
+  const oldMessages = (msgResult.results || []).reverse();
+  const continuationContext = oldMessages
+    .map((row: any) => {
+      const content = (row.content as string) || '';
+      const truncated = content.length > 500 ? content.slice(0, 500) + '...' : content;
+      return `[${row.role}]: ${truncated}`;
+    })
+    .join('\n');
+
   const id = crypto.randomUUID();
   const thread = await db.createThread(c.env.DB, { id, sessionId });
 
-  return c.json({ thread }, 201);
+  return c.json({ thread, continuationContext }, 201);
 });

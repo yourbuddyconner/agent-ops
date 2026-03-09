@@ -296,13 +296,14 @@ export class AgentClient {
 
   // ─── V2 Parts-Based Message Protocol ──────────────────────────────
 
-  sendTurnCreate(turnId: string, context?: { channelType?: string; channelId?: string; opencodeSessionId?: string }): void {
+  sendTurnCreate(turnId: string, context?: { channelType?: string; channelId?: string; opencodeSessionId?: string; threadId?: string }): void {
     this.send({
       type: "message.create",
       turnId,
       ...(context?.channelType ? { channelType: context.channelType } : {}),
       ...(context?.channelId ? { channelId: context.channelId } : {}),
       ...(context?.opencodeSessionId ? { opencodeSessionId: context.opencodeSessionId } : {}),
+      ...(context?.threadId ? { threadId: context.threadId } : {}),
     });
   }
 

@@ -24,13 +24,15 @@ import { useIsMobile } from '@/hooks/use-is-mobile';
 
 interface ChatContainerProps {
   sessionId: string;
+  initialThreadId?: string;
+  initialContinuationContext?: string;
 }
 
 function isFinalSessionStatus(status: string) {
   return status === 'terminated' || status === 'archived';
 }
 
-export function ChatContainer({ sessionId }: ChatContainerProps) {
+export function ChatContainer({ sessionId, initialThreadId, initialContinuationContext }: ChatContainerProps) {
   const router = useRouter();
   const navigate = useNavigate();
   const isMobile = useIsMobile();
@@ -103,7 +105,8 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
 
 
   // Thread state (orchestrator sessions only)
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(initialThreadId ?? null);
+  const pendingContinuationContext = useRef<string | undefined>(initialContinuationContext);
   const createThread = useCreateThread(sessionId);
   const { data: threadsData } = useThreads(sessionId);
   const activeThread = useMemo(
@@ -207,7 +210,9 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
         return;
       }
 
-      sendMessage(content, model, attachments, channelType, channelId, queueModePreference, threadId ?? undefined);
+      const continuation = pendingContinuationContext.current;
+      pendingContinuationContext.current = undefined;
+      sendMessage(content, model, attachments, channelType, channelId, queueModePreference, threadId ?? undefined, continuation);
     },
     [sendMessage, selectedChannelOption, queueModePreference, isDispatchBusy, activeThreadId, isOrchestrator, createThread]
   );

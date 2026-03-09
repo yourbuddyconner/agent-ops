@@ -1056,7 +1056,7 @@ export function useChat(sessionId: string) {
   });
 
   const sendMessage = useCallback(
-    (content: string, model?: string, attachments?: PromptAttachment[], channelType?: string, channelId?: string, queueModeOverride?: QueueMode, threadId?: string) => {
+    (content: string, model?: string, attachments?: PromptAttachment[], channelType?: string, channelId?: string, queueModeOverride?: QueueMode, threadId?: string, continuationContext?: string) => {
       if (!isConnected) return;
 
       send({
@@ -1068,6 +1068,7 @@ export function useChat(sessionId: string) {
         ...(channelType ? { channelType } : {}),
         ...(channelId ? { channelId } : {}),
         ...(threadId ? { threadId } : {}),
+        ...(continuationContext ? { continuationContext } : {}),
       });
       // Start thinking indicator when user sends a message
       setState((prev) => ({ ...prev, isAgentThinking: true }));

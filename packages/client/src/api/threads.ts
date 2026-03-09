@@ -48,7 +48,7 @@ export function useContinueThread(sessionId: string) {
 
   return useMutation({
     mutationFn: (threadId: string) =>
-      api.post<{ thread: SessionThread }>(
+      api.post<{ thread: SessionThread; continuationContext?: string }>(
         `/sessions/${sessionId}/threads/${threadId}/continue`,
         {}
       ),

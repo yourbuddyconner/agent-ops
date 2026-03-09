@@ -18,8 +18,15 @@ function ThreadDetailPage() {
 
   const handleContinue = () => {
     continueThread.mutate(threadId, {
-      onSuccess: () => {
-        void navigate({ to: '/sessions/$sessionId', params: { sessionId } });
+      onSuccess: (data) => {
+        void navigate({
+          to: '/sessions/$sessionId',
+          params: { sessionId },
+          search: {
+            threadId: data.thread.id,
+            ...(data.continuationContext ? { continuationContext: data.continuationContext } : {}),
+          },
+        });
       },
     });
   };

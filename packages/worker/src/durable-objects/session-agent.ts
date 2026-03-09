@@ -1,7 +1,7 @@
 import type { Env } from '../env.js';
 import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, readMemoryFile, listMemoryFiles, writeMemoryFile, patchMemoryFile, deleteMemoryFile, deleteMemoryFilesUnderPath, searchMemoryFiles, boostMemoryFileRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels, batchInsertUsageEvents, setCatalogCache, updateThread } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, readMemoryFile, listMemoryFiles, writeMemoryFile, patchMemoryFile, deleteMemoryFile, deleteMemoryFilesUnderPath, searchMemoryFiles, boostMemoryFileRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels, batchInsertUsageEvents, setCatalogCache, updateThread, incrementThreadMessageCount } from '../lib/db.js';
 import { getCredential, type CredentialResult } from '../services/credentials.js';
 import { getSlackBotToken } from '../services/slack.js';
 import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
@@ -150,6 +150,7 @@ interface ClientMessage {
   channelType?: string;
   channelId?: string;
   threadId?: string;
+  continuationContext?: string;
   invocationId?: string;
   reason?: string;
 }
@@ -419,6 +420,7 @@ interface RunnerOutbound {
   opencodeSessionId?: string;
   // Thread routing
   threadId?: string;
+  continuationContext?: string;
   // Orchestrator result fields
   memories?: unknown[];
   memory?: unknown;
@@ -1534,6 +1536,7 @@ export class SessionAgentDO {
         const wsChannelType = (msg as any).channelType as string | undefined;
         const wsChannelId = (msg as any).channelId as string | undefined;
         const wsThreadId = msg.threadId;
+        const wsContinuationContext = msg.continuationContext;
         const wsQueueMode = (msg as any).queueMode || this.getStateValue('queueMode') || 'followup';
         switch (wsQueueMode) {
           case 'steer':
@@ -1543,7 +1546,7 @@ export class SessionAgentDO {
             await this.handleCollectPrompt(msg.content || '', msg.model, author, attachments, wsChannelType, wsChannelId);
             break;
           default:
-            await this.handlePrompt(msg.content || '', msg.model, author, attachments, wsChannelType, wsChannelId, wsThreadId);
+            await this.handlePrompt(msg.content || '', msg.model, author, attachments, wsChannelType, wsChannelId, wsThreadId, wsContinuationContext);
             break;
         }
         break;
@@ -1646,6 +1649,7 @@ export class SessionAgentDO {
     channelType?: string,
     channelId?: string,
     threadId?: string,
+    continuationContext?: string,
   ) {
     // Update idle tracking
     this.setStateValue('lastUserActivityAt', String(Date.now()));
@@ -1679,6 +1683,11 @@ export class SessionAgentDO {
       author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null,
       channelType || null, channelId || null, threadId || null
     );
+
+    // Increment thread message count for user message
+    if (threadId) {
+      this.ctx.waitUntil(incrementThreadMessageCount(this.env.DB, threadId));
+    }
 
     // Broadcast user message to all clients (includes author info + channel metadata)
     this.broadcastToClients({
@@ -1812,6 +1821,7 @@ export class SessionAgentDO {
       gitEmail: author?.gitEmail,
       opencodeSessionId: channelOcSessionId,
       modelPreferences: resolvedModelPrefs,
+      continuationContext,
     });
     if (!dispatched) {
       // Runner disappeared between the check and send — revert to queued for recovery
@@ -2532,6 +2542,10 @@ export class SessionAgentDO {
         if (this.pendingChannelReply && !this.pendingChannelReply.handled && finalContent) {
           this.pendingChannelReply.resultContent = finalContent;
           this.pendingChannelReply.resultMessageId = turnId;
+        }
+        // Increment thread message count for assistant message
+        if (turn.threadId) {
+          this.ctx.waitUntil(incrementThreadMessageCount(this.env.DB, turn.threadId));
         }
         // Clean up active turn
         this.activeTurns.delete(turnId);
