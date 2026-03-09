@@ -131,6 +131,7 @@ interface WebSocketInitMessage {
       authorAvatarUrl?: string;
       channelType?: string;
       channelId?: string;
+      threadId?: string;
       createdAt: number;
     }>;
   };
@@ -163,6 +164,7 @@ interface WebSocketMessageMessage {
     authorAvatarUrl?: string;
     channelType?: string;
     channelId?: string;
+    threadId?: string;
     createdAt: number;
   };
 }
@@ -518,6 +520,7 @@ export function useChat(sessionId: string) {
             authorAvatarUrl: m.authorAvatarUrl,
             channelType: m.channelType,
             channelId: m.channelId,
+            threadId: m.threadId,
             createdAt: new Date(m.createdAt * 1000),
           })),
           status: message.session.status,
@@ -585,6 +588,7 @@ export function useChat(sessionId: string) {
           authorAvatarUrl: d.authorAvatarUrl,
           channelType: d.channelType,
           channelId: d.channelId,
+          threadId: d.threadId,
           createdAt: new Date(d.createdAt * 1000),
         };
         setState((prev) => {
@@ -1052,7 +1056,7 @@ export function useChat(sessionId: string) {
   });
 
   const sendMessage = useCallback(
-    (content: string, model?: string, attachments?: PromptAttachment[], channelType?: string, channelId?: string, queueModeOverride?: QueueMode) => {
+    (content: string, model?: string, attachments?: PromptAttachment[], channelType?: string, channelId?: string, queueModeOverride?: QueueMode, threadId?: string) => {
       if (!isConnected) return;
 
       send({
@@ -1063,6 +1067,7 @@ export function useChat(sessionId: string) {
         queueMode: queueModeOverride || userQueueMode,
         ...(channelType ? { channelType } : {}),
         ...(channelId ? { channelId } : {}),
+        ...(threadId ? { threadId } : {}),
       });
       // Start thinking indicator when user sends a message
       setState((prev) => ({ ...prev, isAgentThinking: true }));

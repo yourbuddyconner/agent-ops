@@ -940,7 +940,7 @@ export class SessionAgentDO {
 
     // Send full session state as a single init message (prevents duplicates on reconnect)
     const messages = this.ctx.storage.sql
-      .exec('SELECT id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, message_format, created_at FROM messages ORDER BY created_at ASC')
+      .exec('SELECT id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, thread_id, message_format, created_at FROM messages ORDER BY created_at ASC')
       .toArray();
 
     const status = this.getStateValue('status') || 'idle';
@@ -994,6 +994,7 @@ export class SessionAgentDO {
           authorAvatarUrl: msg.author_avatar_url || undefined,
           channelType: msg.channel_type || undefined,
           channelId: msg.channel_id || undefined,
+          threadId: msg.thread_id || undefined,
           createdAt: msg.created_at,
         })),
       },
@@ -1693,6 +1694,7 @@ export class SessionAgentDO {
         authorAvatarUrl: author?.avatarUrl,
         channelType,
         channelId,
+        threadId,
         createdAt: Math.floor(Date.now() / 1000),
       },
     });
@@ -2382,6 +2384,7 @@ export class SessionAgentDO {
             createdAt: Math.floor(Date.now() / 1000),
             ...(msg.channelType ? { channelType: msg.channelType } : {}),
             ...(msg.channelId ? { channelId: msg.channelId } : {}),
+            ...(msg.threadId ? { threadId: msg.threadId } : {}),
           },
         });
         break;
@@ -2468,6 +2471,7 @@ export class SessionAgentDO {
             content: turn.text,
             parts: turn.parts,
             ...(turn.channelType ? { channelType: turn.channelType, channelId: turn.channelId } : {}),
+            ...(turn.threadId ? { threadId: turn.threadId } : {}),
           },
         });
         break;
@@ -2521,6 +2525,7 @@ export class SessionAgentDO {
             content: finalContent,
             parts: turn.parts,
             ...(turn.channelType ? { channelType: turn.channelType, channelId: turn.channelId } : {}),
+            ...(turn.threadId ? { threadId: turn.threadId } : {}),
           },
         });
         // Track result content for auto channel reply

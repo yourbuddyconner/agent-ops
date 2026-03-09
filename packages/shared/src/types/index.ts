@@ -197,6 +197,7 @@ export interface Message {
   channelType?: string;
   channelId?: string;
   opencodeSessionId?: string;
+  threadId?: string;
   createdAt: Date;
 }
 
