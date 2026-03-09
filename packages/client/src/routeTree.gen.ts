@@ -183,16 +183,18 @@ const AutomationWorkflowsWorkflowIdRoute =
     path: '/workflows/$workflowId',
     getParentRoute: () => AutomationRoute,
   } as any)
-const SessionsSessionIdThreadsIndexRoute = SessionsSessionIdThreadsIndexRouteImport.update({
-  id: '/threads/',
-  path: '/threads/',
-  getParentRoute: () => SessionsSessionIdRoute,
-} as any)
-const SessionsSessionIdThreadsThreadIdRoute = SessionsSessionIdThreadsThreadIdRouteImport.update({
-  id: '/threads/$threadId',
-  path: '/threads/$threadId',
-  getParentRoute: () => SessionsSessionIdRoute,
-} as any)
+const SessionsSessionIdThreadsIndexRoute =
+  SessionsSessionIdThreadsIndexRouteImport.update({
+    id: '/threads/',
+    path: '/threads/',
+    getParentRoute: () => SessionsSessionIdRoute,
+  } as any)
+const SessionsSessionIdThreadsThreadIdRoute =
+  SessionsSessionIdThreadsThreadIdRouteImport.update({
+    id: '/threads/$threadId',
+    path: '/threads/$threadId',
+    getParentRoute: () => SessionsSessionIdRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -223,8 +225,8 @@ export interface FileRoutesByFullPath {
   '/automation/triggers/': typeof AutomationTriggersIndexRoute
   '/automation/workflows/': typeof AutomationWorkflowsIndexRoute
   '/sessions/$sessionId/': typeof SessionsSessionIdIndexRoute
-  '/sessions/$sessionId/threads/': typeof SessionsSessionIdThreadsIndexRoute
   '/sessions/$sessionId/threads/$threadId': typeof SessionsSessionIdThreadsThreadIdRoute
+  '/sessions/$sessionId/threads/': typeof SessionsSessionIdThreadsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -254,8 +256,8 @@ export interface FileRoutesByTo {
   '/automation/triggers': typeof AutomationTriggersIndexRoute
   '/automation/workflows': typeof AutomationWorkflowsIndexRoute
   '/sessions/$sessionId': typeof SessionsSessionIdIndexRoute
-  '/sessions/$sessionId/threads': typeof SessionsSessionIdThreadsIndexRoute
   '/sessions/$sessionId/threads/$threadId': typeof SessionsSessionIdThreadsThreadIdRoute
+  '/sessions/$sessionId/threads': typeof SessionsSessionIdThreadsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -287,8 +289,8 @@ export interface FileRoutesById {
   '/automation/triggers/': typeof AutomationTriggersIndexRoute
   '/automation/workflows/': typeof AutomationWorkflowsIndexRoute
   '/sessions/$sessionId/': typeof SessionsSessionIdIndexRoute
-  '/sessions/$sessionId/threads/': typeof SessionsSessionIdThreadsIndexRoute
   '/sessions/$sessionId/threads/$threadId': typeof SessionsSessionIdThreadsThreadIdRoute
+  '/sessions/$sessionId/threads/': typeof SessionsSessionIdThreadsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -321,8 +323,8 @@ export interface FileRouteTypes {
     | '/automation/triggers/'
     | '/automation/workflows/'
     | '/sessions/$sessionId/'
-    | '/sessions/$sessionId/threads/'
     | '/sessions/$sessionId/threads/$threadId'
+    | '/sessions/$sessionId/threads/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -352,8 +354,8 @@ export interface FileRouteTypes {
     | '/automation/triggers'
     | '/automation/workflows'
     | '/sessions/$sessionId'
-    | '/sessions/$sessionId/threads'
     | '/sessions/$sessionId/threads/$threadId'
+    | '/sessions/$sessionId/threads'
   id:
     | '__root__'
     | '/'
@@ -384,8 +386,8 @@ export interface FileRouteTypes {
     | '/automation/triggers/'
     | '/automation/workflows/'
     | '/sessions/$sessionId/'
-    | '/sessions/$sessionId/threads/'
     | '/sessions/$sessionId/threads/$threadId'
+    | '/sessions/$sessionId/threads/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -561,20 +563,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SessionsSessionIdIndexRouteImport
       parentRoute: typeof SessionsSessionIdRoute
     }
-    '/sessions/$sessionId/threads/': {
-      id: '/sessions/$sessionId/threads/'
-      path: '/threads'
-      fullPath: '/sessions/$sessionId/threads/'
-      preLoaderRoute: typeof SessionsSessionIdThreadsIndexRouteImport
-      parentRoute: typeof SessionsSessionIdRoute
-    }
-    '/sessions/$sessionId/threads/$threadId': {
-      id: '/sessions/$sessionId/threads/$threadId'
-      path: '/threads/$threadId'
-      fullPath: '/sessions/$sessionId/threads/$threadId'
-      preLoaderRoute: typeof SessionsSessionIdThreadsThreadIdRouteImport
-      parentRoute: typeof SessionsSessionIdRoute
-    }
     '/automation/workflows/': {
       id: '/automation/workflows/'
       path: '/workflows'
@@ -624,6 +612,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AutomationWorkflowsWorkflowIdRouteImport
       parentRoute: typeof AutomationRoute
     }
+    '/sessions/$sessionId/threads/': {
+      id: '/sessions/$sessionId/threads/'
+      path: '/threads'
+      fullPath: '/sessions/$sessionId/threads/'
+      preLoaderRoute: typeof SessionsSessionIdThreadsIndexRouteImport
+      parentRoute: typeof SessionsSessionIdRoute
+    }
+    '/sessions/$sessionId/threads/$threadId': {
+      id: '/sessions/$sessionId/threads/$threadId'
+      path: '/threads/$threadId'
+      fullPath: '/sessions/$sessionId/threads/$threadId'
+      preLoaderRoute: typeof SessionsSessionIdThreadsThreadIdRouteImport
+      parentRoute: typeof SessionsSessionIdRoute
+    }
   }
 }
 
@@ -647,14 +649,14 @@ const AutomationRouteWithChildren = AutomationRoute._addFileChildren(
 
 interface SessionsSessionIdRouteChildren {
   SessionsSessionIdIndexRoute: typeof SessionsSessionIdIndexRoute
-  SessionsSessionIdThreadsIndexRoute: typeof SessionsSessionIdThreadsIndexRoute
   SessionsSessionIdThreadsThreadIdRoute: typeof SessionsSessionIdThreadsThreadIdRoute
+  SessionsSessionIdThreadsIndexRoute: typeof SessionsSessionIdThreadsIndexRoute
 }
 
 const SessionsSessionIdRouteChildren: SessionsSessionIdRouteChildren = {
   SessionsSessionIdIndexRoute: SessionsSessionIdIndexRoute,
-  SessionsSessionIdThreadsIndexRoute: SessionsSessionIdThreadsIndexRoute,
   SessionsSessionIdThreadsThreadIdRoute: SessionsSessionIdThreadsThreadIdRoute,
+  SessionsSessionIdThreadsIndexRoute: SessionsSessionIdThreadsIndexRoute,
 }
 
 const SessionsSessionIdRouteWithChildren =

@@ -23,10 +23,18 @@ export function useThreads(sessionId: string) {
 export function useThread(sessionId: string, threadId: string) {
   return useQuery({
     queryKey: threadKeys.detail(sessionId, threadId),
-    queryFn: () =>
-      api.get<{ thread: SessionThread; messages: Message[] }>(
+    queryFn: async () => {
+      const data = await api.get<{ thread: SessionThread; messages: Message[] }>(
         `/sessions/${sessionId}/threads/${threadId}`
-      ),
+      );
+      return {
+        ...data,
+        messages: data.messages.map((m) => ({
+          ...m,
+          createdAt: new Date(m.createdAt),
+        })),
+      };
+    },
     enabled: !!sessionId && !!threadId,
   });
 }
