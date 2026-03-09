@@ -59,6 +59,9 @@ export type {
   ProviderModelEntry,
   AvailableModels,
   UsageStatsResponse,
+  SessionThread,
+  ThreadStatus,
+  ListThreadsResponse,
 } from '@valet/shared';
 
 export type { GitHub, Gmail, GoogleCalendar } from '@valet/shared';
