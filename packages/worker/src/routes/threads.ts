@@ -45,6 +45,28 @@ threadsRouter.post('/:sessionId/threads', async (c) => {
 });
 
 /**
+ * GET /api/sessions/:sessionId/threads/active
+ * Get the current active thread, or create one if none exists.
+ * This is the primary entry point for channel adapters routing messages.
+ */
+threadsRouter.get('/:sessionId/threads/active', async (c) => {
+  const user = c.get('user');
+  const { sessionId } = c.req.param();
+
+  await db.assertSessionAccess(c.get('db'), sessionId, user.id, 'viewer');
+
+  let thread = await db.getActiveThread(c.env.DB, sessionId);
+
+  if (!thread) {
+    // Auto-create a thread if none exists
+    const id = crypto.randomUUID();
+    thread = await db.createThread(c.env.DB, { id, sessionId });
+  }
+
+  return c.json({ thread });
+});
+
+/**
  * GET /api/sessions/:sessionId/threads/:threadId
  * Get thread detail with messages.
  */

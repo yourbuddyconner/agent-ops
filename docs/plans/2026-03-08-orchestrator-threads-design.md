@@ -63,6 +63,7 @@ ALTER TABLE messages ADD COLUMN thread_id TEXT REFERENCES session_threads(id);
 | `GET` | `/api/sessions/:sessionId/threads` | List threads (paginated, newest first) |
 | `POST` | `/api/sessions/:sessionId/threads` | Create a new thread |
 | `GET` | `/api/sessions/:sessionId/threads/:threadId` | Thread detail + messages |
+| `GET` | `/api/sessions/:sessionId/threads/active` | Get or create the active thread (for channel adapters) |
 | `POST` | `/api/sessions/:sessionId/threads/:threadId/continue` | Start new thread seeded with summary of this thread |
 
 ### Modifications to existing endpoints
@@ -137,6 +138,17 @@ OpenCode publishes `session.updated` events for both. The Runner subscribes to t
 ### Scope
 
 - Threads are orchestrator-only. Non-orchestrator sessions are unaffected.
+
+## Channel Integration Surface
+
+Threads are designed to be channel-agnostic. Any channel adapter (web, Slack, Telegram) can integrate with threads via:
+
+- **`GET /threads/active`** — get-or-create the active thread. This is the primary entry point for routing incoming messages from any channel.
+- **`POST /threads`** — explicitly create a new thread (e.g., user sends `/new` command via Slack).
+- **Messages carry `channelType`/`channelId`** — each message records which channel it came from, enabling per-channel response routing.
+- **The DO translates `threadId` to channel routing** — internally, `channelType='thread', channelId=threadId` routes to the correct OpenCode session regardless of which external channel the message originated from.
+
+Slack-specific routing (DMs vs channel @mentions, user mapping, onboarding) is out of scope for this feature and will be designed separately.
 
 ## Not Building (YAGNI)
 
