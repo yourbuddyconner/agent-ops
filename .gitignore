@@ -1,6 +1,9 @@
 # Worktrees
 .worktrees/
 
+# Claude Code
+.claude/worktrees/
+
 # Dependencies
 node_modules/
 
