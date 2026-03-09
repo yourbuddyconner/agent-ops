@@ -41,6 +41,8 @@ import { disabledActionsRouter } from './routes/disabled-actions.js';
 import { actionInvocationsRouter } from './routes/action-invocations.js';
 import { usageRouter } from './routes/usage.js';
 import { pluginsRouter } from './routes/plugins.js';
+import { skillsRouter } from './routes/skills.js';
+import { orgDefaultSkillsRouter } from './routes/org-default-skills.js';
 import {
   enqueueWorkflowApprovalNotificationIfMissing,
   getTerminatedOrchestratorSessions,
@@ -158,11 +160,13 @@ app.route('/api/me/telegram', telegramApiRouter);
 app.route('/api/admin/slack', slackAdminRouter);
 app.route('/api/admin/action-policies', actionPoliciesRouter);
 app.route('/api/admin/disabled-actions', disabledActionsRouter);
+app.route('/api/admin/default-skills', orgDefaultSkillsRouter);
 app.route('/api/action-invocations', actionInvocationsRouter);
 app.route('/api/me/slack', slackUserRouter);
 app.route('/api/invites', invitesApiRouter);
 app.route('/api/usage', usageRouter);
 app.route('/api/plugins', pluginsRouter);
+app.route('/api/skills', skillsRouter);
 
 // Agent container proxy (protected)
 app.use('/agent/*', authMiddleware);

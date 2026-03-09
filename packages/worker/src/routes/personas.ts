@@ -261,3 +261,73 @@ personasRouter.delete('/:id/files/:fileId', async (c) => {
   await db.deletePersonaFile(c.get('db'), fileId);
   return c.json({ ok: true });
 });
+
+// ─── Persona-Skill Attachments ─────────────────────────────────────────────
+
+/**
+ * GET /api/personas/:id/skills
+ * List skills attached to a persona.
+ */
+personasRouter.get('/:id/skills', async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
+  // Check visibility: private personas only visible to creator or admin
+  if (persona.visibility === 'private' && persona.createdBy !== user.id && user.role !== 'admin') {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
+  const skills = await db.getPersonaSkills(c.get('db'), id);
+  return c.json({ skills });
+});
+
+const attachSkillSchema = z.object({
+  skillId: z.string().min(1),
+  sortOrder: z.number().int().min(0).optional(),
+});
+
+/**
+ * POST /api/personas/:id/skills
+ * Attach a skill to a persona (creator or admin only).
+ */
+personasRouter.post('/:id/skills', zValidator('json', attachSkillSchema), async (c) => {
+  const user = c.get('user');
+  const { id } = c.req.param();
+  const body = c.req.valid('json');
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+  if (persona.createdBy !== user.id && user.role !== 'admin') {
+    throw new ForbiddenError('Only the creator or an admin can edit this persona');
+  }
+
+  await db.attachSkillToPersona(c.get('db'), crypto.randomUUID(), id, body.skillId, body.sortOrder ?? 0);
+  return c.json({ attached: true }, 201);
+});
+
+/**
+ * DELETE /api/personas/:id/skills/:skillId
+ * Detach a skill from a persona (creator or admin only).
+ */
+personasRouter.delete('/:id/skills/:skillId', async (c) => {
+  const user = c.get('user');
+  const { id, skillId } = c.req.param();
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+  if (persona.createdBy !== user.id && user.role !== 'admin') {
+    throw new ForbiddenError('Only the creator or an admin can edit this persona');
+  }
+
+  await db.detachSkillFromPersona(c.get('db'), id, skillId);
+  return c.json({ detached: true });
+});

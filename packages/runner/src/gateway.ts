@@ -14,6 +14,7 @@
  */
 
 import { Hono } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 const app = new Hono();
 
@@ -582,6 +583,8 @@ export interface GatewayCallbacks {
   // Tool Discovery & Invocation
   onListTools?: (service?: string, query?: string) => Promise<{ tools: unknown[]; warnings?: Array<{ service: string; displayName: string; reason: string; message: string }> }>;
   onCallTool?: (toolId: string, params: Record<string, unknown>) => Promise<{ result: unknown }>;
+  // Skill API
+  onSkillApi?: (action: string, payload?: Record<string, unknown>) => Promise<{ data?: unknown; error?: string; statusCode?: number }>;
 }
 
 export function startGateway(port: number, callbacks: GatewayCallbacks): void {
@@ -1547,6 +1550,91 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] Call tool error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // ─── Skill API ─────────────────────────────────────────────────────────
+
+  app.get("/api/skills", async (c) => {
+    if (!callbacks.onSkillApi) {
+      return c.json({ error: "Skill API handler not configured" }, 500);
+    }
+    try {
+      const q = c.req.query("q") || undefined;
+      const source = c.req.query("source") || undefined;
+      const visibility = c.req.query("visibility") || undefined;
+      const result = await callbacks.onSkillApi(q ? "search" : "list", { q, source, visibility });
+      if (result.error) return c.json({ error: result.error }, (result.statusCode ?? 500) as ContentfulStatusCode);
+      return c.json(result.data ?? {});
+    } catch (err) {
+      console.error("[Gateway] Skill search/list error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.get("/api/skills/:id", async (c) => {
+    if (!callbacks.onSkillApi) {
+      return c.json({ error: "Skill API handler not configured" }, 500);
+    }
+    try {
+      const id = c.req.param("id");
+      const result = await callbacks.onSkillApi("get", { id });
+      if (result.error) return c.json({ error: result.error }, (result.statusCode ?? 500) as ContentfulStatusCode);
+      if (!result.data) return c.json({ error: "Skill not found" }, 404);
+      return c.json(result.data);
+    } catch (err) {
+      console.error("[Gateway] Skill get error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post("/api/skills", async (c) => {
+    if (!callbacks.onSkillApi) {
+      return c.json({ error: "Skill API handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      if (!body.name || !body.content) {
+        return c.json({ error: "Missing required fields: name, content" }, 400);
+      }
+      const result = await callbacks.onSkillApi("create", body);
+      if (result.error) return c.json({ error: result.error }, (result.statusCode ?? 500) as ContentfulStatusCode);
+      return c.json(result.data ?? {}, 201);
+    } catch (err) {
+      console.error("[Gateway] Skill create error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.put("/api/skills/:id", async (c) => {
+    if (!callbacks.onSkillApi) {
+      return c.json({ error: "Skill API handler not configured" }, 500);
+    }
+    try {
+      const id = c.req.param("id");
+      const body = await c.req.json() as Record<string, unknown>;
+      const result = await callbacks.onSkillApi("update", { id, ...body });
+      if (result.error) return c.json({ error: result.error }, (result.statusCode ?? 500) as ContentfulStatusCode);
+      if (!result.data) return c.json({ error: "Skill not found or not editable" }, 404);
+      return c.json(result.data);
+    } catch (err) {
+      console.error("[Gateway] Skill update error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.delete("/api/skills/:id", async (c) => {
+    if (!callbacks.onSkillApi) {
+      return c.json({ error: "Skill API handler not configured" }, 500);
+    }
+    try {
+      const id = c.req.param("id");
+      const result = await callbacks.onSkillApi("delete", { id });
+      if (result.error) return c.json({ error: result.error }, (result.statusCode ?? 500) as ContentfulStatusCode);
+      return c.json(result.data ?? { deleted: true });
+    } catch (err) {
+      console.error("[Gateway] Skill delete error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });
