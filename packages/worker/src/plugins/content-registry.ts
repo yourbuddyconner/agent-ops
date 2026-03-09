@@ -464,7 +464,7 @@ You can attach builtin or plugin skills to personas — they don't need to be ma
 
 - **Add a skill:** \`attach_skill_to_persona(personaId, skillId)\`
 - **Remove a skill:** \`detach_skill_from_persona(personaId, skillId)\`
-- **Reorder:** Detach and re-attach with a different \`sortOrder\` (lower = loaded first)
+- **Reorder:** Re-attach with a different \`sortOrder\` — attaching an already-attached skill updates its sort order (lower = loaded first)
 
 ## Tool Reference
 

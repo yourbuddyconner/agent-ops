@@ -4790,6 +4790,11 @@ export class SessionAgentDO {
           this.sendToRunner({ type: 'persona-api-result', requestId, error: 'Only the creator can modify this persona', statusCode: 403 });
           return;
         }
+        const skill = await getSkill(this.appDb, skillId);
+        if (!skill) {
+          this.sendToRunner({ type: 'persona-api-result', requestId, error: 'Skill not found', statusCode: 404 });
+          return;
+        }
         await attachSkillToPersona(this.appDb, crypto.randomUUID(), personaId, skillId, sortOrder);
         this.sendToRunner({ type: 'persona-api-result', requestId, data: { attached: true } });
         return;
@@ -4811,7 +4816,11 @@ export class SessionAgentDO {
           this.sendToRunner({ type: 'persona-api-result', requestId, error: 'Only the creator can modify this persona', statusCode: 403 });
           return;
         }
-        await detachSkillFromPersona(this.appDb, personaId, skillId);
+        const changes = await detachSkillFromPersona(this.appDb, personaId, skillId);
+        if (changes === 0) {
+          this.sendToRunner({ type: 'persona-api-result', requestId, error: 'Skill was not attached to this persona', statusCode: 404 });
+          return;
+        }
         this.sendToRunner({ type: 'persona-api-result', requestId, data: { detached: true } });
         return;
       }

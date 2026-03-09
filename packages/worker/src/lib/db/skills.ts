@@ -342,17 +342,21 @@ export async function attachSkillToPersona(
     personaId,
     skillId,
     sortOrder,
-  }).onConflictDoNothing();
+  }).onConflictDoUpdate({
+    target: [personaSkills.personaId, personaSkills.skillId],
+    set: { sortOrder },
+  });
 }
 
 export async function detachSkillFromPersona(
   db: AppDb,
   personaId: string,
   skillId: string,
-): Promise<void> {
-  await db.delete(personaSkills).where(
+): Promise<number> {
+  const result = await db.delete(personaSkills).where(
     and(eq(personaSkills.personaId, personaId), eq(personaSkills.skillId, skillId)),
   );
+  return (result as any).meta?.changes ?? 0;
 }
 
 // ─── Org Default Skills ─────────────────────────────────────────────────────
