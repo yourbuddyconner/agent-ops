@@ -39,7 +39,7 @@ skillsRouter.get('/:id', async (c) => {
   // Try by ID first, then fall back to slug lookup
   let skill = await db.getSkill(c.get('db'), id);
   if (!skill) {
-    skill = await db.getSkillBySlug(c.get('db'), 'default', id);
+    skill = await db.getSkillBySlug(c.get('db'), 'default', id, user.id);
   }
   if (!skill) {
     return c.json({ error: 'Skill not found' }, 404);

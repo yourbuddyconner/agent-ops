@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
+import { zValidator } from '@hono/zod-validator';
 import type { Env, Variables } from '../env.js';
 import { adminMiddleware } from '../middleware/admin.js';
 import { ValidationError } from '@valet/shared';
-import { getOrgDefaultSkills, setOrgDefaultSkills } from '../lib/db.js';
+import { getOrgDefaultSkills, setOrgDefaultSkills, validateSkillIds } from '../lib/db.js';
 
 export const orgDefaultSkillsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -16,15 +18,24 @@ orgDefaultSkillsRouter.get('/', async (c) => {
   return c.json({ skills });
 });
 
-// PUT / — replace org default skills
-orgDefaultSkillsRouter.put('/', async (c) => {
-  const db = c.get('db');
-  const body = await c.req.json<{ skillIds: string[] }>();
+const setOrgDefaultSkillsSchema = z.object({
+  skillIds: z.array(z.string().min(1)),
+});
 
-  if (!Array.isArray(body.skillIds)) {
-    throw new ValidationError('skillIds must be an array');
+// PUT / — replace org default skills
+orgDefaultSkillsRouter.put('/', zValidator('json', setOrgDefaultSkillsSchema), async (c) => {
+  const db = c.get('db');
+  const { skillIds } = c.req.valid('json');
+
+  // Validate all skill IDs exist
+  if (skillIds.length > 0) {
+    const validIds = await validateSkillIds(db, skillIds);
+    const invalidIds = skillIds.filter((id) => !validIds.has(id));
+    if (invalidIds.length > 0) {
+      throw new ValidationError(`Invalid skill IDs: ${invalidIds.join(', ')}`);
+    }
   }
 
-  await setOrgDefaultSkills(db, 'default', body.skillIds);
+  await setOrgDefaultSkills(db, 'default', skillIds);
   return c.json({ updated: true });
 });

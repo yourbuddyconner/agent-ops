@@ -269,7 +269,19 @@ personasRouter.delete('/:id/files/:fileId', async (c) => {
  * List skills attached to a persona.
  */
 personasRouter.get('/:id/skills', async (c) => {
+  const user = c.get('user');
   const { id } = c.req.param();
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
+  // Check visibility: private personas only visible to creator or admin
+  if (persona.visibility === 'private' && persona.createdBy !== user.id && user.role !== 'admin') {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+
   const skills = await db.getPersonaSkills(c.get('db'), id);
   return c.json({ skills });
 });

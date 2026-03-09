@@ -1,4 +1,4 @@
-import { eq, and, sql, asc } from 'drizzle-orm';
+import { eq, and, or, sql, asc, inArray } from 'drizzle-orm';
 import type { AppDb } from '../drizzle.js';
 import { skills, personaSkills, orgDefaultSkills } from '../schema/index.js';
 import type { Skill, SkillSummary, SkillSource, SkillVisibility } from '@valet/shared';
@@ -115,13 +115,26 @@ export async function getSkillBySlug(
   db: AppDb,
   orgId: string,
   slug: string,
-  ownerId?: string,
+  userId?: string,
 ): Promise<Skill | null> {
-  const conditions = [eq(skills.orgId, orgId), eq(skills.slug, slug)];
-  if (ownerId !== undefined) {
-    conditions.push(eq(skills.ownerId, ownerId));
+  const baseConditions = [eq(skills.orgId, orgId), eq(skills.slug, slug)];
+
+  if (userId !== undefined) {
+    // Return skills the user can see: their own private skills OR shared skills
+    const row = await db
+      .select()
+      .from(skills)
+      .where(and(
+        ...baseConditions,
+        or(eq(skills.ownerId, userId), eq(skills.visibility, 'shared')),
+      ))
+      .get();
+    if (!row) return null;
+    return rowToSkill(row);
   }
-  const row = await db.select().from(skills).where(and(...conditions)).get();
+
+  // No userId hint — return any matching skill (legacy behavior)
+  const row = await db.select().from(skills).where(and(...baseConditions)).get();
   if (!row) return null;
   return rowToSkill(row);
 }
@@ -352,6 +365,18 @@ export async function setOrgDefaultSkills(
       })),
     );
   }
+}
+
+// ─── Validation ──────────────────────────────────────────────────────────────
+
+export async function validateSkillIds(db: AppDb, ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+
+  const rows = await db
+    .select({ id: skills.id })
+    .from(skills)
+    .where(inArray(skills.id, ids));
+  return new Set(rows.map((r) => r.id));
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

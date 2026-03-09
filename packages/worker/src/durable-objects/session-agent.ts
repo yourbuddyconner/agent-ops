@@ -4511,7 +4511,7 @@ export class SessionAgentDO {
         // Try by ID first, then fall back to slug lookup
         let skill = await getSkill(this.appDb, id);
         if (!skill) {
-          skill = await getSkillBySlug(this.appDb, orgId, id);
+          skill = await getSkillBySlug(this.appDb, orgId, id, userId);
         }
         if (!skill) {
           this.sendToRunner({ type: 'skill-api-result', requestId, error: 'Skill not found', statusCode: 404 });
