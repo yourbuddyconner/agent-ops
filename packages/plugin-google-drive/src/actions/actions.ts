@@ -491,12 +491,18 @@ async function executeAction(
 
       case 'drive.create_file': {
         const p = createFile.params.parse(params);
-        const contentType = p.mimeType || 'text/plain';
+        const requestedMime = p.mimeType || 'text/plain';
+        const isGoogleType = requestedMime.startsWith('application/vnd.google-apps.');
+        // Google Apps MIME types (e.g. application/vnd.google-apps.document) are only
+        // valid as metadata mimeType to trigger conversion — the actual upload content
+        // must use a convertible type like text/plain or text/html.
+        const uploadContentType = isGoogleType ? 'text/plain' : requestedMime;
         const metadata: Record<string, unknown> = { name: p.name };
+        if (isGoogleType) metadata.mimeType = requestedMime;
         if (p.folderId) metadata.parents = [p.folderId];
         if (p.description) metadata.description = p.description;
 
-        const { body, boundary } = buildMultipartBody(metadata, p.content, contentType);
+        const { body, boundary } = buildMultipartBody(metadata, p.content, uploadContentType);
         const qs = new URLSearchParams({
           uploadType: 'multipart',
           fields: FILE_FIELDS,
