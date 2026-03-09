@@ -3,6 +3,8 @@ import { getDb } from '../lib/drizzle.js';
 import * as db from '../lib/db.js';
 import { pluginContentRegistry } from '../plugins/content-registry.js';
 
+const BUILTIN_SKILL_PLUGINS = new Set(['browser', 'workflows', 'sandbox-tunnels']);
+
 let syncPromise: Promise<void> | null = null;
 
 export async function syncPluginsOnce(d1: D1Database, orgId: string = 'default', force = false): Promise<void> {
@@ -39,14 +41,30 @@ async function doSync(d1: D1Database, orgId: string): Promise<void> {
 
     // Upsert each artifact (ON CONFLICT handles updates)
     for (const artifact of plugin.artifacts) {
-      await db.upsertPluginArtifact(appDb, {
-        id: crypto.randomUUID(),
-        pluginId,
-        type: artifact.type,
-        filename: artifact.filename,
-        content: artifact.content,
-        sortOrder: artifact.sortOrder,
-      });
+      if (artifact.type === 'skill') {
+        // Route skill artifacts to the unified skills table
+        const slug = artifact.filename.replace('.md', '').replace(/_/g, '-');
+        const source = BUILTIN_SKILL_PLUGINS.has(plugin.name) ? 'builtin' as const : 'plugin' as const;
+        await db.upsertSkillFromSync(appDb, {
+          id: `skill:${orgId}:${slug}`,
+          orgId,
+          source,
+          name: slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+          slug,
+          content: artifact.content,
+          visibility: 'shared',
+        });
+      } else {
+        // Non-skill artifacts (tools, personas) continue using plugin_artifacts
+        await db.upsertPluginArtifact(appDb, {
+          id: crypto.randomUUID(),
+          pluginId,
+          type: artifact.type,
+          filename: artifact.filename,
+          content: artifact.content,
+          sortOrder: artifact.sortOrder,
+        });
+      }
     }
   }
 }
