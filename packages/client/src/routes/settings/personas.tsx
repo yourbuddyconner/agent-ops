@@ -1,10 +1,9 @@
 import * as React from 'react';
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { usePersonas, useCreatePersona, useUpdatePersona, useDeletePersona, useUpdatePersonaFiles, usePersona } from '@/api/personas';
-import { PersonaEditor, type PersonaFormData } from '@/components/personas/persona-editor';
+import { usePersonas, useDeletePersona } from '@/api/personas';
 import { useAuthStore } from '@/stores/auth';
 import type { AgentPersona } from '@/api/types';
 
@@ -14,59 +13,19 @@ export const Route = createFileRoute('/settings/personas')({
 
 function PersonasPage() {
   const { data: personas, isLoading } = usePersonas();
-  const createPersona = useCreatePersona();
-  const updatePersona = useUpdatePersona();
-  const updateFiles = useUpdatePersonaFiles();
   const deletePersona = useDeletePersona();
+  const navigate = useNavigate();
 
-  const [editorOpen, setEditorOpen] = React.useState(false);
-  const [editingId, setEditingId] = React.useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = React.useState<string | null>(null);
-
-  const { data: editingPersona } = usePersona(editingId || '');
 
   const user = useAuthStore((s) => s.user);
 
   const handleCreate = () => {
-    setEditingId(null);
-    setEditorOpen(true);
+    navigate({ to: '/settings/personas/$id', params: { id: 'new' } });
   };
 
   const handleEdit = (id: string) => {
-    setEditingId(id);
-    setEditorOpen(true);
-  };
-
-  const handleSave = async (data: PersonaFormData) => {
-    if (editingId) {
-      // Update persona metadata
-      await updatePersona.mutateAsync({
-        id: editingId,
-        name: data.name,
-        slug: data.slug,
-        description: data.description || undefined,
-        icon: data.icon || undefined,
-        defaultModel: data.defaultModel || undefined,
-        visibility: data.visibility,
-      });
-      // Update files
-      await updateFiles.mutateAsync({
-        personaId: editingId,
-        files: data.files,
-      });
-    } else {
-      await createPersona.mutateAsync({
-        name: data.name,
-        slug: data.slug,
-        description: data.description || undefined,
-        icon: data.icon || undefined,
-        defaultModel: data.defaultModel || undefined,
-        visibility: data.visibility,
-        files: data.files,
-      });
-    }
-    setEditorOpen(false);
-    setEditingId(null);
+    navigate({ to: '/settings/personas/$id', params: { id } });
   };
 
   const handleDelete = (id: string) => {
@@ -122,17 +81,6 @@ function PersonasPage() {
           ))}
         </div>
       )}
-
-      <PersonaEditor
-        open={editorOpen}
-        onOpenChange={(v) => {
-          setEditorOpen(v);
-          if (!v) setEditingId(null);
-        }}
-        persona={editingId ? editingPersona : null}
-        onSave={handleSave}
-        isSaving={createPersona.isPending || updatePersona.isPending || updateFiles.isPending}
-      />
     </PageContainer>
   );
 }

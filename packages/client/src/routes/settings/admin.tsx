@@ -35,6 +35,8 @@ import { useActionCatalog } from '@/api/action-catalog';
 import type { ActionCatalogEntry } from '@/api/action-catalog';
 import { useDisabledActions, useSetServiceDisabledState } from '@/api/disabled-actions';
 import type { DisabledAction } from '@valet/shared';
+import { useOrgDefaultSkills, useUpdateOrgDefaultSkills } from '@/api/org-default-skills';
+import { SkillPicker } from '@/components/skills/skill-picker';
 
 export const Route = createFileRoute('/settings/admin')({
   component: AdminSettingsPage,
@@ -78,6 +80,7 @@ function AdminSettingsPage() {
         <AccessControlSection />
         <InvitesSection />
         <UsersSection currentUserId={user.id} />
+        <DefaultSkillsSection />
         <ActionPoliciesSection />
         <PluginsSection />
       </div>
@@ -1829,6 +1832,56 @@ function buildDisabledIndex(rows: DisabledAction[]) {
     }
   }
   return { disabledServices, disabledActions };
+}
+
+// --- Default Skills ---
+
+function DefaultSkillsSection() {
+  const { data: defaultSkills, isLoading } = useOrgDefaultSkills();
+  const updateMutation = useUpdateOrgDefaultSkills();
+
+  const attachedSkills = React.useMemo(
+    () =>
+      (defaultSkills ?? []).map((s, i) => ({
+        id: s.id,
+        name: s.name,
+        slug: s.slug,
+        source: s.source,
+        description: s.description,
+        sortOrder: i,
+      })),
+    [defaultSkills],
+  );
+
+  const currentIds = React.useMemo(
+    () => (defaultSkills ?? []).map((s) => s.id),
+    [defaultSkills],
+  );
+
+  function handleAttach(skillId: string) {
+    updateMutation.mutate([...currentIds, skillId]);
+  }
+
+  function handleDetach(skillId: string) {
+    updateMutation.mutate(currentIds.filter((id) => id !== skillId));
+  }
+
+  return (
+    <Section title="Default Skills">
+      <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-4">
+        Skills that are automatically loaded for sessions without a persona or with a persona that has no skills attached.
+      </p>
+      {isLoading ? (
+        <p className="text-sm text-neutral-400">Loading...</p>
+      ) : (
+        <SkillPicker
+          attachedSkills={attachedSkills}
+          onAttach={handleAttach}
+          onDetach={handleDetach}
+        />
+      )}
+    </Section>
+  );
 }
 
 function PluginsSection() {

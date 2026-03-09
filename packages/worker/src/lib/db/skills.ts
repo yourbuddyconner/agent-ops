@@ -367,6 +367,32 @@ export async function getOrgDefaultSkills(
   }));
 }
 
+export async function getOrgDefaultSkillsRich(
+  db: AppDb,
+  orgId: string,
+): Promise<SkillSummary[]> {
+  const rows = await db
+    .select({
+      id: skills.id,
+      name: skills.name,
+      slug: skills.slug,
+      source: skills.source,
+      description: skills.description,
+      visibility: skills.visibility,
+      ownerId: skills.ownerId,
+      updatedAt: skills.updatedAt,
+    })
+    .from(orgDefaultSkills)
+    .innerJoin(skills, eq(skills.id, orgDefaultSkills.skillId))
+    .where(and(
+      eq(orgDefaultSkills.orgId, orgId),
+      eq(skills.status, 'active'),
+    ))
+    .orderBy(asc(skills.name));
+
+  return rows as SkillSummary[];
+}
+
 export async function setOrgDefaultSkills(
   db: AppDb,
   orgId: string,
