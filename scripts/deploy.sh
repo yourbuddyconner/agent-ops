@@ -25,26 +25,60 @@ MODAL_DEPLOY_CMD="${MODAL_DEPLOY_CMD:-uv run --project backend modal deploy}"
 
 # ─── Shared Helpers ──────────────────────────────────────────────────────────
 
+# Discover D1 database ID. Fails if DB doesn't exist.
 discover_d1_id() {
-    if [ -z "${D1_DATABASE_ID:-}" ] || [ "${D1_DATABASE_ID}" = "your-d1-database-id" ]; then
-        D1_DATABASE_ID=$(wrangler d1 list --json 2>/dev/null \
-            | jq -r --arg name "$D1_DATABASE_NAME" '.[] | select(.name==$name) | .uuid' 2>/dev/null) || true
-        if [ -z "${D1_DATABASE_ID:-}" ] || [ "$D1_DATABASE_ID" = "null" ]; then
-            echo -e "${RED}Could not discover D1 database ID for '${D1_DATABASE_NAME}'.${NC}"
-            echo "Run: wrangler d1 create ${D1_DATABASE_NAME}"
-            exit 1
-        fi
+    _resolve_d1_id
+    if [ -z "${D1_DATABASE_ID:-}" ] || [ "$D1_DATABASE_ID" = "null" ]; then
+        echo -e "${RED}Could not discover D1 database ID for '${D1_DATABASE_NAME}'.${NC}"
+        echo "Run: wrangler d1 create ${D1_DATABASE_NAME}"
+        exit 1
     fi
     echo -e "${GREEN}✓ D1: ${D1_DATABASE_NAME} (${D1_DATABASE_ID})${NC}"
 }
 
+# Discover or create D1 database. Used by cmd_all for first-time setup.
+ensure_d1() {
+    _resolve_d1_id
+    if [ -z "${D1_DATABASE_ID:-}" ] || [ "$D1_DATABASE_ID" = "null" ]; then
+        echo "  Creating ${D1_DATABASE_NAME}..."
+        wrangler d1 create "$D1_DATABASE_NAME" >/dev/null
+        D1_DATABASE_ID=$(wrangler d1 list --json \
+            | jq -r --arg name "$D1_DATABASE_NAME" '.[] | select(.name==$name) | .uuid')
+    fi
+    echo -e "${GREEN}✓ D1: ${D1_DATABASE_NAME} (${D1_DATABASE_ID})${NC}"
+}
+
+# Internal: resolve D1_DATABASE_ID from wrangler if not already set.
+_resolve_d1_id() {
+    if [ -z "${D1_DATABASE_ID:-}" ] || [ "${D1_DATABASE_ID}" = "your-d1-database-id" ]; then
+        D1_DATABASE_ID=$(wrangler d1 list --json 2>/dev/null \
+            | jq -r --arg name "$D1_DATABASE_NAME" '.[] | select(.name==$name) | .uuid' 2>/dev/null) || true
+    fi
+}
+
+# Discover Modal backend URL. Required=true (default) exits on failure;
+# required=false warns and leaves MODAL_BACKEND_URL empty.
 discover_modal_url() {
+    local required="${1:-true}"
     if [ -z "${MODAL_BACKEND_URL:-}" ]; then
-        command -v modal >/dev/null || { echo -e "${RED}modal CLI not found. Install: uv tool install modal${NC}"; exit 1; }
+        if ! command -v modal >/dev/null 2>&1; then
+            if [ "$required" = "true" ]; then
+                echo -e "${RED}modal CLI not found. Install: uv tool install modal${NC}"; exit 1
+            else
+                echo -e "${YELLOW}modal CLI not found — MODAL_BACKEND_URL will be empty${NC}"
+                MODAL_BACKEND_URL=""
+                return
+            fi
+        fi
         MODAL_WS=$(modal profile current 2>/dev/null | head -1 | awk '{print $1}') || true
         if [ -z "${MODAL_WS:-}" ]; then
-            echo -e "${RED}Cannot detect Modal workspace. Run: modal token set${NC}"
-            exit 1
+            if [ "$required" = "true" ]; then
+                echo -e "${RED}Cannot detect Modal workspace. Run: modal token set${NC}"; exit 1
+            else
+                echo -e "${YELLOW}Cannot detect Modal workspace — MODAL_BACKEND_URL will be empty${NC}"
+                MODAL_BACKEND_URL=""
+                return
+            fi
         fi
         MODAL_BACKEND_URL="https://${MODAL_WS}--{label}.modal.run"
         echo -e "${GREEN}✓ Modal (workspace: ${MODAL_WS})${NC}"
@@ -110,7 +144,7 @@ cmd_migrate() {
     echo -e "${GREEN}Applying D1 migrations...${NC}"
     preflight wrangler jq
     discover_d1_id
-    discover_modal_url
+    discover_modal_url false
     echo ""
 
     generate_wrangler_config
@@ -162,17 +196,7 @@ cmd_all() {
 
     # --- Step 1: Ensure D1 database ---
     echo "Step 1/7: D1 database..."
-    if [ -z "${D1_DATABASE_ID:-}" ] || [ "${D1_DATABASE_ID}" = "your-d1-database-id" ]; then
-        D1_DATABASE_ID=$(wrangler d1 list --json 2>/dev/null \
-            | jq -r --arg name "$D1_DATABASE_NAME" '.[] | select(.name==$name) | .uuid' 2>/dev/null) || true
-        if [ -z "${D1_DATABASE_ID:-}" ] || [ "$D1_DATABASE_ID" = "null" ]; then
-            echo "  Creating ${D1_DATABASE_NAME}..."
-            wrangler d1 create "$D1_DATABASE_NAME" >/dev/null
-            D1_DATABASE_ID=$(wrangler d1 list --json \
-                | jq -r --arg name "$D1_DATABASE_NAME" '.[] | select(.name==$name) | .uuid')
-        fi
-    fi
-    echo -e "${GREEN}✓ D1: ${D1_DATABASE_NAME} (${D1_DATABASE_ID})${NC}"
+    ensure_d1
 
     # --- Step 2: Ensure R2 bucket ---
     echo ""
