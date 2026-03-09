@@ -17,7 +17,8 @@ skillsRouter.get('/', async (c) => {
   const q = c.req.query('q');
 
   if (q) {
-    const skills = await db.searchSkills(c.get('db'), 'default', user.id, q);
+    const source = c.req.query('source') as db.ListSkillsFilters['source'];
+    const skills = await db.searchSkills(c.get('db'), 'default', user.id, q, { source });
     return c.json({ skills });
   }
 
@@ -35,7 +36,11 @@ skillsRouter.get('/:id', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
 
-  const skill = await db.getSkill(c.get('db'), id);
+  // Try by ID first, then fall back to slug lookup
+  let skill = await db.getSkill(c.get('db'), id);
+  if (!skill) {
+    skill = await db.getSkillBySlug(c.get('db'), 'default', id);
+  }
   if (!skill) {
     return c.json({ error: 'Skill not found' }, 404);
   }

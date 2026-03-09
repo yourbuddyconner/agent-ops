@@ -133,9 +133,11 @@ export async function searchSkills(
   orgId: string,
   userId: string,
   query: string,
-  limit: number = 20,
+  options?: { source?: SkillSource; limit?: number },
 ): Promise<SkillSummary[]> {
-  const results = await db.all<SkillSummary>(sql`
+  const limit = options?.limit ?? 20;
+
+  let q = sql`
     SELECT s.id, s.name, s.slug, s.description, s.source, s.visibility, s.owner_id as "ownerId", s.updated_at as "updatedAt"
     FROM skills s
     INNER JOIN skills_fts f ON f.rowid = s.rowid
@@ -143,9 +145,15 @@ export async function searchSkills(
       AND s.org_id = ${orgId}
       AND s.status = 'active'
       AND (s.visibility = 'shared' OR s.owner_id = ${userId})
-    ORDER BY rank
-    LIMIT ${limit}
-  `);
+  `;
+
+  if (options?.source) {
+    q = sql`${q} AND s.source = ${options.source}`;
+  }
+
+  q = sql`${q} ORDER BY rank LIMIT ${limit}`;
+
+  const results = await db.all<SkillSummary>(q);
   return results;
 }
 

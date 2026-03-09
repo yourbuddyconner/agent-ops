@@ -18,7 +18,7 @@ import { invokeAction, markExecuted, markFailed, approveInvocation, denyInvocati
 import { updateInvocationStatus } from '../lib/db/actions.js';
 import { getDisabledActionsIndex, isActionDisabled } from '../lib/db/disabled-actions.js';
 import { getActivePluginArtifacts, getPluginSettings, getAutoEnabledServices } from '../lib/db/plugins.js';
-import { getPersonaSkills, getOrgDefaultSkills, searchSkills, listSkills, getSkill, createSkill, updateSkill, deleteSkill } from '../lib/db.js';
+import { getPersonaSkills, getOrgDefaultSkills, searchSkills, listSkills, getSkill, getSkillBySlug, createSkill, updateSkill, deleteSkill } from '../lib/db.js';
 import type { ChannelTarget, ChannelContext } from '@valet/sdk';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
 
@@ -4487,7 +4487,8 @@ export class SessionAgentDO {
 
       if (action === 'search') {
         const q = typeof payload?.q === 'string' ? payload.q : '';
-        const skills = await searchSkills(this.appDb, orgId, userId, q);
+        const source = typeof payload?.source === 'string' ? payload.source as any : undefined;
+        const skills = await searchSkills(this.appDb, orgId, userId, q, { source });
         this.sendToRunner({ type: 'skill-api-result', requestId, data: { skills } } as any);
         return;
       }
@@ -4506,7 +4507,11 @@ export class SessionAgentDO {
           this.sendToRunner({ type: 'skill-api-result', requestId, error: 'id is required' } as any);
           return;
         }
-        const skill = await getSkill(this.appDb, id);
+        // Try by ID first, then fall back to slug lookup
+        let skill = await getSkill(this.appDb, id);
+        if (!skill) {
+          skill = await getSkillBySlug(this.appDb, orgId, id);
+        }
         if (!skill) {
           this.sendToRunner({ type: 'skill-api-result', requestId, error: 'Skill not found' } as any);
           return;

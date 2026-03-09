@@ -281,11 +281,20 @@ const attachSkillSchema = z.object({
 
 /**
  * POST /api/personas/:id/skills
- * Attach a skill to a persona.
+ * Attach a skill to a persona (creator or admin only).
  */
 personasRouter.post('/:id/skills', zValidator('json', attachSkillSchema), async (c) => {
+  const user = c.get('user');
   const { id } = c.req.param();
   const body = c.req.valid('json');
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+  if (persona.createdBy !== user.id && user.role !== 'admin') {
+    throw new ForbiddenError('Only the creator or an admin can edit this persona');
+  }
 
   await db.attachSkillToPersona(c.get('db'), crypto.randomUUID(), id, body.skillId, body.sortOrder ?? 0);
   return c.json({ attached: true }, 201);
@@ -293,10 +302,20 @@ personasRouter.post('/:id/skills', zValidator('json', attachSkillSchema), async 
 
 /**
  * DELETE /api/personas/:id/skills/:skillId
- * Detach a skill from a persona.
+ * Detach a skill from a persona (creator or admin only).
  */
 personasRouter.delete('/:id/skills/:skillId', async (c) => {
+  const user = c.get('user');
   const { id, skillId } = c.req.param();
+
+  const persona = await db.getPersonaWithFiles(c.env.DB, id);
+  if (!persona) {
+    return c.json({ error: 'Persona not found' }, 404);
+  }
+  if (persona.createdBy !== user.id && user.role !== 'admin') {
+    throw new ForbiddenError('Only the creator or an admin can edit this persona');
+  }
+
   await db.detachSkillFromPersona(c.get('db'), id, skillId);
   return c.json({ detached: true });
 });
