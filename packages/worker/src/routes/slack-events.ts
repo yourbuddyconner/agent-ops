@@ -229,6 +229,9 @@ slackEventsRouter.post('/slack/events', async (c) => {
   // ─── Resolve orchestrator thread ──────────────────────────────────────
   // Map the external channel thread to an orchestrator thread (session_threads).
   // This is channel-agnostic: any channel with threading passes its thread ID.
+  // Note: if the orchestrator session rotates, old mappings become stale and are
+  // cleaned up via CASCADE when the old session is archived. A new mapping is
+  // created automatically on the next message in that Slack thread.
   let orchestratorThreadId: string | undefined;
   if (threadId) {
     let targetSessionId: string | undefined;
@@ -241,14 +244,19 @@ slackEventsRouter.post('/slack/events', async (c) => {
     }
 
     if (targetSessionId) {
-      orchestratorThreadId = await db.getOrCreateChannelThread(c.env.DB, {
-        channelType: 'slack',
-        channelId: message.channelId,
-        externalThreadId: threadId,
-        sessionId: targetSessionId,
-        userId,
-      });
-      console.log(`[Slack] Resolved thread: external=${threadId} → orchestrator=${orchestratorThreadId}`);
+      try {
+        orchestratorThreadId = await db.getOrCreateChannelThread(c.env.DB, {
+          channelType: 'slack',
+          channelId: message.channelId,
+          externalThreadId: threadId,
+          sessionId: targetSessionId,
+          userId,
+        });
+        console.log(`[Slack] Resolved thread: external=${threadId} → orchestrator=${orchestratorThreadId} session=${targetSessionId}`);
+      } catch (err) {
+        // Thread resolution is best-effort — don't block message dispatch
+        console.error(`[Slack] Failed to resolve thread mapping:`, err);
+      }
     }
   }
 
