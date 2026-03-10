@@ -15,6 +15,8 @@ function rowToThread(row: any): SessionThread {
     status: (row.status as ThreadStatus) || 'active',
     messageCount: row.message_count ?? 0,
     firstMessagePreview: row.first_message_preview || undefined,
+    channelType: row.channel_type || undefined,
+    channelId: row.channel_id || undefined,
     createdAt: new Date(row.created_at),
     lastActiveAt: new Date(row.last_active_at),
   };
@@ -87,8 +89,11 @@ export async function listThreads(
        WHERE m.thread_id = t.id AND m.role = 'user'
        ORDER BY m.created_at ASC
        LIMIT 1
-      ) as first_message_preview
+      ) as first_message_preview,
+      ctm.channel_type,
+      ctm.channel_id
     FROM session_threads t
+    LEFT JOIN channel_thread_mappings ctm ON ctm.thread_id = t.id
     WHERE t.session_id = ?`;
 
   const params: (string | number)[] = [sessionId];

@@ -215,6 +215,8 @@ export interface SessionThread {
   status: ThreadStatus;
   messageCount: number;
   firstMessagePreview?: string;
+  channelType?: string;
+  channelId?: string;
   createdAt: Date;
   lastActiveAt: Date;
 }
