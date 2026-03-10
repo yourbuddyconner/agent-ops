@@ -4,16 +4,42 @@ import type {
   ActionSource,
   TriggerSource,
 } from '@valet/sdk';
+import type { Env } from '../env.js';
+import type { CredentialResult } from '../services/credentials.js';
 import { installedIntegrations } from './packages.js';
+import { defaultCredentialResolver } from './resolvers/default.js';
+import { slackCredentialResolver } from './resolvers/slack.js';
+
+// ─── Credential Resolver ────────────────────────────────────────────────────
+
+/**
+ * A credential resolver fetches credentials for a service.
+ * Custom resolvers override the default per-user D1 lookup.
+ */
+export type CredentialResolver = (
+  service: string,
+  env: Env,
+  userId: string,
+  scope: 'user' | 'org',
+  options?: { forceRefresh?: boolean },
+) => Promise<CredentialResult>;
+
+// ─── Registry ───────────────────────────────────────────────────────────────
 
 export class IntegrationRegistry {
   private packages = new Map<string, IntegrationPackage>();
+  private credentialResolvers = new Map<string, CredentialResolver>();
 
   init(): void {
     for (const pkg of installedIntegrations) {
       this.packages.set(pkg.service, pkg);
     }
+
+    // Register custom credential resolvers
+    this.credentialResolvers.set('slack', slackCredentialResolver);
   }
+
+  // ─── Package Accessors ──────────────────────────────────────────────────
 
   getPackage(service: string): IntegrationPackage | undefined {
     return this.packages.get(service);
@@ -37,6 +63,27 @@ export class IntegrationRegistry {
 
   listPackages(): IntegrationPackage[] {
     return Array.from(this.packages.values());
+  }
+
+  // ─── Credential Resolution ──────────────────────────────────────────────
+
+  registerCredentialResolver(service: string, resolver: CredentialResolver): void {
+    this.credentialResolvers.set(service, resolver);
+  }
+
+  /**
+   * Resolve credentials for a service.
+   * Uses a custom resolver if registered, otherwise the default (per-user D1 lookup).
+   */
+  resolveCredentials(
+    service: string,
+    env: Env,
+    userId: string,
+    scope: 'user' | 'org',
+    options?: { forceRefresh?: boolean },
+  ): Promise<CredentialResult> {
+    const resolver = this.credentialResolvers.get(service) ?? defaultCredentialResolver;
+    return resolver(service, env, userId, scope, options);
   }
 }
 

@@ -8329,22 +8329,24 @@ export class SessionAgentDO {
         // No-auth services (e.g. DeepWiki) skip credential lookup entirely.
         const provider = integrationRegistry.getProvider(integration.service);
         let credCtx: { credentials: { access_token: string } } | undefined;
+        const isOrgScopedIntegration = 'scope' in integration && integration.scope === 'org';
         if (provider?.authType === 'none') {
           // No credentials needed — pass undefined context
           console.log(`[SessionAgentDO] list-tools: ${integration.service} is no-auth, skipping credential lookup`);
         } else {
-          const credentialUserId = ('scope' in integration && integration.scope === 'org' && 'userId' in integration)
+          const credentialUserId = (isOrgScopedIntegration && 'userId' in integration)
             ? (integration as { userId: string }).userId
             : userId;
+          const scope = isOrgScopedIntegration ? 'org' as const : 'user' as const;
 
           // Check credential cache first
           let credResult = this.getCachedCredential(credentialUserId, integration.service);
           if (!credResult) {
-            credResult = await getCredential(this.env, credentialUserId, integration.service);
+            credResult = await integrationRegistry.resolveCredentials(integration.service, this.env, credentialUserId, scope);
             // If the initial credential fetch fails with a refreshable reason, try force-refresh
             if (!credResult.ok && (credResult.error.reason === 'expired' || credResult.error.reason === 'refresh_failed')) {
               console.log(`[SessionAgentDO] list-tools: ${integration.service} credential ${credResult.error.reason}, attempting force-refresh`);
-              credResult = await getCredential(this.env, credentialUserId, integration.service, { forceRefresh: true });
+              credResult = await integrationRegistry.resolveCredentials(integration.service, this.env, credentialUserId, scope, { forceRefresh: true });
             }
             // Only cache successful results — failure states (not_found, revoked) are
             // transient and should be re-checked so newly connected integrations work immediately.
@@ -8379,7 +8381,7 @@ export class SessionAgentDO {
             ? (integration as { userId: string }).userId
             : userId;
           this.invalidateCachedCredential(credentialUserId, integration.service);
-          const refreshed = await getCredential(this.env, credentialUserId, integration.service, { forceRefresh: true });
+          const refreshed = await integrationRegistry.resolveCredentials(integration.service, this.env, credentialUserId, isOrgScopedIntegration ? 'org' : 'user', { forceRefresh: true });
           if (refreshed.ok && refreshed.credential.refreshed) {
             console.log(`[SessionAgentDO] list-tools: ${integration.service} returned 0 actions, retrying with force-refreshed token`);
             this.setCachedCredential(credentialUserId, integration.service, refreshed);
@@ -8539,7 +8541,7 @@ export class SessionAgentDO {
         let listCtx: { credentials: { access_token: string } } | undefined;
         if (fallbackProvider?.authType !== 'none') {
           let listCredResult = this.getCachedCredential(userId, service)
-            || await getCredential(this.env, userId, service);
+            || await integrationRegistry.resolveCredentials(service, this.env, userId, isOrgScoped ? 'org' : 'user');
           if (listCredResult.ok) {
             this.setCachedCredential(userId, service, listCredResult);
           }
@@ -8669,54 +8671,43 @@ export class SessionAgentDO {
     if (provider?.authType === 'none') {
       // No-auth services (e.g. DeepWiki) don't need credentials
       credentials = {};
-    } else if (isOrgScoped && service === 'slack') {
-      // Slack uses a bot token for org-scoped integrations
-      const botToken = await getSlackBotToken(this.env);
-      if (!botToken) {
-        this.sendToRunner({ type: 'call-tool-result', requestId, error: `No bot token found for "${service}". Reinstall in Settings.` } as any);
-        await markFailed(this.appDb, invocationId, 'No bot token found');
-        return;
-      }
-      credentials = { bot_token: botToken };
-    } else if (isOrgScoped) {
-      // Non-Slack org-scoped integrations: try to resolve credentials for the calling user
-      let credResult = this.getCachedCredential(userId, service)
-        || await getCredential(this.env, userId, service);
-      if (credResult.ok) {
-        this.setCachedCredential(userId, service, credResult);
-      }
-      if (!credResult.ok) {
-        this.sendToRunner({ type: 'call-tool-result', requestId, error: `No credentials found for org-scoped "${service}": ${credResult.error.message}. Connect it in Settings > Integrations.` } as any);
-        await markFailed(this.appDb, invocationId, `No credentials for org-scoped service: ${credResult.error.message}`);
-        return;
-      }
-      credentials = { access_token: credResult.credential.accessToken };
     } else {
+      const scope = isOrgScoped ? 'org' as const : 'user' as const;
       let credResult = this.getCachedCredential(userId, service)
-        || await getCredential(this.env, userId, service);
+        || await integrationRegistry.resolveCredentials(service, this.env, userId, scope);
       if (credResult.ok) {
         this.setCachedCredential(userId, service, credResult);
       }
       if (!credResult.ok) {
-        this.sendToRunner({ type: 'call-tool-result', requestId, error: `No credentials found for "${service}": ${credResult.error.message}` } as any);
+        const scopeLabel = isOrgScoped ? `org-scoped "${service}"` : `"${service}"`;
+        this.sendToRunner({ type: 'call-tool-result', requestId, error: `No credentials found for ${scopeLabel}: ${credResult.error.message}. Connect it in Settings > Integrations.` } as any);
         await markFailed(this.appDb, invocationId, `No credentials: ${credResult.error.message}`);
         return;
       }
-      credentials = { access_token: credResult.credential.accessToken };
+      // Map resolved credential to the format actions expect
+      const token = credResult.credential.accessToken;
+      credentials = credResult.credential.credentialType === 'bot_token'
+        ? { bot_token: token } as Record<string, string>
+        : { access_token: token };
     }
 
     // Execute the action
     let actionResult = await actionSource.execute(actionId, params, { credentials, userId });
 
-    // If auth error, retry once with force-refreshed credentials (user-scoped only, skip no-auth services)
-    if (!isOrgScoped && provider?.authType !== 'none' && !actionResult.success && actionResult.error && /\b(401|403|unauthorized|invalid.credentials|token.*expired|token.*revoked)\b/i.test(actionResult.error)) {
+    // If auth error, retry once with force-refreshed credentials (skip no-auth and bot_token services which have nothing to refresh)
+    if (provider?.authType !== 'none' && provider?.authType !== 'bot_token' && !actionResult.success && actionResult.error && /\b(401|403|unauthorized|invalid.credentials|token.*expired|token.*revoked)\b/i.test(actionResult.error)) {
+      const scope = isOrgScoped ? 'org' as const : 'user' as const;
       console.log(`[SessionAgentDO] Tool "${toolId}" returned auth error, retrying with refreshed credentials`);
       this.invalidateCachedCredential(userId, service);
-      const refreshedCred = await getCredential(this.env, userId, service, { forceRefresh: true });
+      const refreshedCred = await integrationRegistry.resolveCredentials(service, this.env, userId, scope, { forceRefresh: true });
       if (refreshedCred.ok) {
         this.setCachedCredential(userId, service, refreshedCred);
+        const refreshedToken = refreshedCred.credential.accessToken;
+        const refreshedCredentials: Record<string, string> = refreshedCred.credential.credentialType === 'bot_token'
+          ? { bot_token: refreshedToken }
+          : { access_token: refreshedToken };
         actionResult = await actionSource.execute(actionId, params, {
-          credentials: { access_token: refreshedCred.credential.accessToken },
+          credentials: refreshedCredentials,
           userId,
         });
       }
