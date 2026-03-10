@@ -268,6 +268,7 @@ export async function dispatchOrchestratorPrompt(
     authorEmail?: string;
     channelType?: string;
     channelId?: string;
+    threadId?: string;
     attachments?: Array<{ type: string; mime: string; url: string; filename?: string }>;
   }
 ): Promise<OrchestratorPromptDispatchResult> {
@@ -301,6 +302,7 @@ export async function dispatchOrchestratorPrompt(
     authorEmail: params.authorEmail,
     channelType: params.channelType,
     channelId: params.channelId,
+    threadId: params.threadId,
   });
 
   const doId = env.SESSIONS.idFromName(sessionId);
@@ -312,6 +314,7 @@ export async function dispatchOrchestratorPrompt(
       content,
       channelType: params.channelType,
       channelId: params.channelId,
+      threadId: params.threadId,
       attachments: params.attachments,
       authorName: params.authorName,
       authorEmail: params.authorEmail,
