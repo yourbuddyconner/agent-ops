@@ -49,7 +49,16 @@ export async function getOrCreateChannelThread(
     params.channelId,
     params.externalThreadId,
   );
-  if (existing) return existing.threadId;
+  if (existing) {
+    // Auto-reactivate if the thread was archived (no-op for active threads)
+    await db
+      .prepare(
+        "UPDATE session_threads SET status = 'active', last_active_at = datetime('now') WHERE id = ? AND status = 'archived'"
+      )
+      .bind(existing.threadId)
+      .run();
+    return existing.threadId;
+  }
 
   // Create orchestrator thread optimistically
   const threadId = crypto.randomUUID();
