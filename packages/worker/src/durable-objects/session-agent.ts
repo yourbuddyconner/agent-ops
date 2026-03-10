@@ -8236,12 +8236,40 @@ export class SessionAgentDO {
         this.pendingChannelReply.handled = true;
       }
 
+      // Clean up Slack update loop if active — channel_reply replaces streaming
+      if (channelType === 'slack' && this.slackUpdateLoop) {
+        // Delete the streaming placeholder message, then tear down the loop
+        const loopTarget: ChannelTarget = { channelType: 'slack', channelId: this.slackUpdateLoop.channelId, threadId: this.slackUpdateLoop.threadId };
+        const loopCtx: ChannelContext = { token: this.slackUpdateLoop.token, userId: userId || '' };
+        transport.deleteMessage?.(loopTarget, this.slackUpdateLoop.messageTs, loopCtx)
+          ?.catch(err => console.warn('[SessionAgentDO] Failed to delete streaming placeholder:', err));
+        if (this.slackUpdateLoop.flushTimer !== null) {
+          clearTimeout(this.slackUpdateLoop.flushTimer);
+        }
+        this.slackUpdateLoop = null;
+      }
+
       // Resolve follow-up reminder if this is a substantive reply (followUp !== false)
       if (followUp !== false) {
         this.resolveChannelFollowups(channelType, channelId);
       }
 
       this.sendToRunner({ type: 'channel-reply-result', requestId, success: true } as any);
+
+      // Explicitly clear the shimmer "thinking" indicator for Slack
+      if (channelType === 'slack') {
+        const slackTransport = transport as import('@valet/plugin-slack/channels').SlackTransport;
+        if (slackTransport.setThreadStatus) {
+          const parsed = this.parseSlackChannelId(channelType, channelId);
+          if (parsed.threadId) {
+            slackTransport.setThreadStatus(
+              { channelType: 'slack', channelId: parsed.channelId, threadId: parsed.threadId },
+              '',
+              ctx,
+            ).catch(err => console.warn('[SessionAgentDO] Failed to clear shimmer:', err));
+          }
+        }
+      }
 
       // Store image as a system message for web UI visibility
       if (imageBase64) {

@@ -264,9 +264,9 @@ slackEventsRouter.post('/slack/events', async (c) => {
     return c.json({ ok: true });
   }
 
-  // Encode thread_ts in channelId for non-DM channels so the agent can reply
-  // in the correct thread. DMs don't need this — they're a single conversation.
-  const dispatchChannelId = (!isDm && threadId) ? `${message.channelId}:${threadId}` : message.channelId;
+  // Encode thread_ts in channelId so the agent can reply in the correct thread.
+  // With "Agents & AI Apps" enabled, DMs are also threaded (each message starts a thread).
+  const dispatchChannelId = threadId ? `${message.channelId}:${threadId}` : message.channelId;
 
   if (binding) {
     console.log(`[Slack] Bound session dispatch: session=${binding.sessionId} channelId=${dispatchChannelId}`);
