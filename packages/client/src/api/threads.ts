@@ -77,3 +77,33 @@ export function useContinueThread(sessionId: string) {
     },
   });
 }
+
+export function useDismissThread(sessionId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (threadId: string) =>
+      api.patch<{ thread: SessionThread }>(
+        `/sessions/${sessionId}/threads/${threadId}`,
+        { status: 'archived' }
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: threadKeys.list(sessionId) });
+    },
+  });
+}
+
+export function useReactivateThread(sessionId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (threadId: string) =>
+      api.patch<{ thread: SessionThread }>(
+        `/sessions/${sessionId}/threads/${threadId}`,
+        { status: 'active' }
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: threadKeys.list(sessionId) });
+    },
+  });
+}
