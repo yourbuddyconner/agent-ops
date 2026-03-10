@@ -1,7 +1,7 @@
 import type { Env } from '../env.js';
 import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, readMemoryFile, listMemoryFiles, writeMemoryFile, patchMemoryFile, deleteMemoryFile, deleteMemoryFilesUnderPath, searchMemoryFiles, boostMemoryFileRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels, batchInsertUsageEvents, setCatalogCache, updateThread, incrementThreadMessageCount } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, readMemoryFile, listMemoryFiles, writeMemoryFile, patchMemoryFile, deleteMemoryFile, deleteMemoryFilesUnderPath, searchMemoryFiles, boostMemoryFileRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentity, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels, batchInsertUsageEvents, setCatalogCache, updateThread, incrementThreadMessageCount } from '../lib/db.js';
 import { getCredential, type CredentialResult } from '../services/credentials.js';
 import { getSlackBotToken } from '../services/slack.js';
 import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
@@ -640,6 +640,20 @@ export class SessionAgentDO {
     resultContent: string | null;
     resultMessageId: string | null;
     handled: boolean;
+  } | null = null;
+
+  /** Active Slack message update loop for streaming text to a channel. */
+  private slackUpdateLoop: {
+    channelId: string;           // raw Slack channel ID
+    threadId: string;            // thread_ts
+    messageTs: string;           // ts of the posted message (for chat.update)
+    token: string;               // bot token
+    accumulatedText: string;     // full text sent so far
+    pendingDelta: string;        // buffered text not yet flushed
+    flushTimer: ReturnType<typeof setTimeout> | null;
+    lastFlushAt: number;         // timestamp of last chat.update call
+    personaName?: string;        // orchestrator persona name
+    personaAvatar?: string;      // orchestrator persona avatar URL
   } | null = null;
 
   /** Drizzle AppDb instance wrapping the D1 binding. */
@@ -2449,6 +2463,11 @@ export class SessionAgentDO {
           messageId: msg.turnId,
           ...(turn.channelType ? { channelType: turn.channelType, channelId: turn.channelId } : {}),
         });
+        // Stream to Slack via update loop if this prompt originated from Slack
+        if (!this.slackUpdateLoop && this.pendingChannelReply?.channelType === 'slack') {
+          await this.initSlackUpdateLoop('slack', this.pendingChannelReply.channelId);
+        }
+        this.queueSlackUpdateDelta(delta);
         break;
       }
 
@@ -2559,6 +2578,13 @@ export class SessionAgentDO {
             ...(turn.threadId ? { threadId: turn.threadId } : {}),
           },
         });
+        // Finalize Slack update loop — replaces flushPendingChannelReply for streamed responses
+        if (this.slackUpdateLoop) {
+          await this.finalizeSlackUpdateLoop(finalContent);
+          if (this.pendingChannelReply) {
+            this.pendingChannelReply.handled = true;
+          }
+        }
         // Track result content for auto channel reply
         if (this.pendingChannelReply && !this.pendingChannelReply.handled && finalContent) {
           this.pendingChannelReply.resultContent = finalContent;
@@ -2575,6 +2601,13 @@ export class SessionAgentDO {
       }
 
       case 'complete': {
+        // Clean up update loop if still active (error without finalize)
+        if (this.slackUpdateLoop) {
+          await this.finalizeSlackUpdateLoop();
+          if (this.pendingChannelReply) {
+            this.pendingChannelReply.handled = true;
+          }
+        }
         // Prompt finished — auto-reply to originating channel if needed
         const pendingReply = this.pendingChannelReply;
         console.log(`[SessionAgentDO] Complete received: pendingChannelReply=${pendingReply ? `${pendingReply.channelType}:${pendingReply.channelId} handled=${pendingReply.handled} resultContent=${pendingReply.resultContent?.length ?? 0}chars` : 'null'} queueLength=${this.getQueueLength()} runnerBusy=${this.getStateValue('runnerBusy')}`);
@@ -8974,6 +9007,141 @@ export class SessionAgentDO {
         },
       });
     }
+  }
+
+  /**
+   * Start the Slack update loop: post an initial message with persona identity,
+   * then update it as text streams in.
+   */
+  private async initSlackUpdateLoop(channelType: string, channelId: string): Promise<void> {
+    if (channelType !== 'slack' || this.slackUpdateLoop) return;
+
+    const userId = this.getStateValue('userId');
+    if (!userId) return;
+
+    const token = await getSlackBotToken(this.env) ?? undefined;
+    if (!token) return;
+
+    const transport = channelRegistry.getTransport('slack');
+    if (!transport?.editMessage) return;
+
+    // Parse composite channelId
+    const parsed = this.parseSlackChannelId('slack', channelId);
+    if (!parsed.threadId) return;
+
+    // Look up orchestrator persona for custom name/avatar
+    let personaName: string | undefined;
+    let personaAvatar: string | undefined;
+    try {
+      const identity = await getOrchestratorIdentity(this.appDb, userId);
+      if (identity) {
+        personaName = identity.name;
+        personaAvatar = identity.avatar;
+      }
+    } catch {
+      // Non-fatal: fall back to default bot identity
+    }
+
+    const target: ChannelTarget = { channelType: 'slack', channelId: parsed.channelId, threadId: parsed.threadId };
+    const ctx: ChannelContext = { token, userId };
+
+    // Post initial message with persona identity
+    const result = await transport.sendMessage(target, {
+      text: '...',
+      platformOptions: {
+        ...(personaName ? { username: personaName } : {}),
+        ...(personaAvatar ? { icon_url: personaAvatar } : {}),
+      },
+    }, ctx);
+
+    if (!result.success || !result.messageId) {
+      console.error(`[SessionAgentDO] Failed to post initial Slack message: ${result.error}`);
+      return;
+    }
+
+    this.slackUpdateLoop = {
+      channelId: parsed.channelId,
+      threadId: parsed.threadId,
+      messageTs: result.messageId,
+      token,
+      accumulatedText: '',
+      pendingDelta: '',
+      flushTimer: null,
+      lastFlushAt: Date.now(),
+      personaName,
+      personaAvatar,
+    };
+
+    console.log(`[SessionAgentDO] Slack update loop started: channel=${parsed.channelId} thread=${parsed.threadId} persona=${personaName || 'default'}`);
+  }
+
+  /**
+   * Queue a text delta for the Slack update loop.
+   * Buffers and flushes at ~1 second intervals to respect chat.update rate limits.
+   */
+  private queueSlackUpdateDelta(delta: string): void {
+    if (!this.slackUpdateLoop) return;
+
+    this.slackUpdateLoop.pendingDelta += delta;
+    this.slackUpdateLoop.accumulatedText += delta;
+
+    if (this.slackUpdateLoop.flushTimer === null) {
+      // Ensure at least 1 second between chat.update calls
+      const elapsed = Date.now() - this.slackUpdateLoop.lastFlushAt;
+      const delay = Math.max(0, 1000 - elapsed);
+      this.slackUpdateLoop.flushTimer = setTimeout(() => this.flushSlackUpdate(), delay);
+    }
+  }
+
+  /**
+   * Flush buffered text to Slack via chat.update.
+   */
+  private flushSlackUpdate(): void {
+    if (!this.slackUpdateLoop || !this.slackUpdateLoop.pendingDelta) {
+      if (this.slackUpdateLoop) this.slackUpdateLoop.flushTimer = null;
+      return;
+    }
+
+    const loop = this.slackUpdateLoop;
+    loop.pendingDelta = '';
+    loop.flushTimer = null;
+    loop.lastFlushAt = Date.now();
+
+    const transport = channelRegistry.getTransport('slack');
+    if (!transport?.editMessage) return;
+
+    const target: ChannelTarget = { channelType: 'slack', channelId: loop.channelId, threadId: loop.threadId };
+    const ctx: ChannelContext = { token: loop.token, userId: this.getStateValue('userId') || '' };
+
+    // Fire-and-forget; the accumulated text is the full message so far
+    transport.editMessage(target, loop.messageTs, { markdown: loop.accumulatedText }, ctx);
+  }
+
+  /**
+   * Finalize the Slack update loop with the complete response text.
+   */
+  private async finalizeSlackUpdateLoop(finalMarkdown?: string): Promise<void> {
+    if (!this.slackUpdateLoop) return;
+
+    const loop = this.slackUpdateLoop;
+    this.slackUpdateLoop = null;
+
+    // Cancel any pending flush timer
+    if (loop.flushTimer !== null) {
+      clearTimeout(loop.flushTimer);
+    }
+
+    // Do a final chat.update with the complete text
+    const transport = channelRegistry.getTransport('slack');
+    if (!transport?.editMessage) return;
+
+    const finalText = finalMarkdown || loop.accumulatedText;
+    const target: ChannelTarget = { channelType: 'slack', channelId: loop.channelId, threadId: loop.threadId };
+    const ctx: ChannelContext = { token: loop.token, userId: this.getStateValue('userId') || '' };
+
+    await transport.editMessage(target, loop.messageTs, { markdown: finalText }, ctx);
+
+    console.log(`[SessionAgentDO] Slack update loop finalized: channel=${loop.channelId} messageTs=${loop.messageTs} totalChars=${finalText.length}`);
   }
 
   // ─── Channel Follow-up Helpers ─────────────────────────────────────
