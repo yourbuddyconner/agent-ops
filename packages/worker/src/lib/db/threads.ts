@@ -76,7 +76,7 @@ export async function getActiveThread(
 export async function listThreads(
   db: D1Database,
   sessionId: string,
-  options: { cursor?: string; limit?: number } = {}
+  options: { cursor?: string; limit?: number; status?: string } = {}
 ): Promise<{ threads: SessionThread[]; cursor?: string; hasMore: boolean }> {
   const limit = options.limit || 20;
 
@@ -92,6 +92,11 @@ export async function listThreads(
     WHERE t.session_id = ?`;
 
   const params: (string | number)[] = [sessionId];
+
+  if (options.status) {
+    query += ' AND t.status = ?';
+    params.push(options.status);
+  }
 
   if (options.cursor) {
     query += ' AND t.last_active_at < ?';
