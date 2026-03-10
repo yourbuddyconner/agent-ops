@@ -188,6 +188,17 @@ export async function updateThread(
     .run();
 }
 
+export async function updateThreadStatus(
+  db: D1Database,
+  threadId: string,
+  status: ThreadStatus
+): Promise<void> {
+  await db
+    .prepare('UPDATE session_threads SET status = ? WHERE id = ?')
+    .bind(status, threadId)
+    .run();
+}
+
 export async function incrementThreadMessageCount(
   db: D1Database,
   threadId: string
