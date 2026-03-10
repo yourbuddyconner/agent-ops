@@ -387,6 +387,9 @@ export class ChannelSession {
   // in this runner process. We re-sync it before first prompt dispatch.
   adoptedPersistedSession = false;
 
+  // Orchestrator thread ID passed from DO (may differ from channel-derived threadId)
+  promptThreadId: string | undefined = undefined;
+
   // Track current prompt so we can route events back to the DO
   activeMessageId: string | null = null;
   streamedContent = "";
@@ -810,8 +813,9 @@ export class PromptHandler {
     }
     const channelType = channel.channelKey.slice(0, idx);
     const channelId = channel.channelKey.slice(idx + 1);
-    // For thread channels (key = "thread:<threadId>"), extract threadId
-    const threadId = channelType === "thread" ? channelId : undefined;
+    // For thread channels (key = "thread:<threadId>"), extract threadId.
+    // Otherwise, use the orchestrator threadId passed from the DO prompt.
+    const threadId = channelType === "thread" ? channelId : channel.promptThreadId;
     return { channelType, channelId, threadId };
   }
 
@@ -1257,12 +1261,14 @@ export class PromptHandler {
     });
   }
 
-  async handlePrompt(messageId: string, content: string, model?: string, author?: { authorId?: string; gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string, opencodeSessionId?: string, continuationContext?: string): Promise<void> {
+  async handlePrompt(messageId: string, content: string, model?: string, author?: { authorId?: string; gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string, opencodeSessionId?: string, continuationContext?: string, threadId?: string): Promise<void> {
     console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length})` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}${channelType ? ` (channel: ${channelType})` : ''}${continuationContext ? ' (with continuation context)' : ''}`);
 
     // Resolve per-channel session
     const channel = this.getOrCreateChannel(channelType, channelId);
     this.activeChannel = channel;
+    // Store the orchestrator threadId so it flows through to message.create
+    channel.promptThreadId = threadId ?? undefined;
     this.applyPersistedOpenCodeSessionId(channel, opencodeSessionId);
 
     try {

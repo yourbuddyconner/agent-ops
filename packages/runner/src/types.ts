@@ -39,6 +39,7 @@ export type DOToRunnerMessage =
       attachments?: PromptAttachment[];
       modelPreferences?: string[];
       channelType?: string; channelId?: string;
+      threadId?: string;
       opencodeSessionId?: string;
       continuationContext?: string;
       authorId?: string; authorEmail?: string; authorName?: string;
