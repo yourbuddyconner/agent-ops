@@ -132,6 +132,30 @@ export class SlackTransport implements ChannelTransport {
 
     const eventType = event.type as string | undefined;
 
+    // Handle assistant thread events (Agents & AI Apps surface)
+    if (eventType === 'assistant_thread_started' || eventType === 'assistant_thread_context_changed') {
+      const assistantThread = event.assistant_thread as Record<string, unknown> | undefined;
+      const channel = (event.channel as string) || (assistantThread?.channel_id as string);
+      const threadTs = (assistantThread?.thread_ts as string) || (event.thread_ts as string);
+      const senderUserId = (assistantThread?.user_id as string) || '';
+      if (!channel || !threadTs) return null;
+
+      return {
+        channelType: 'slack',
+        channelId: channel,
+        senderId: senderUserId,
+        senderName: '',
+        text: '',
+        attachments: [],
+        metadata: {
+          teamId,
+          threadTs,
+          slackEventType: eventType,
+          slackChannelType: event.channel_type,
+        },
+      };
+    }
+
     // Handle message events and app_mention events
     if (eventType !== 'message' && eventType !== 'app_mention') return null;
 

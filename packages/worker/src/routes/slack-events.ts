@@ -3,6 +3,7 @@ import type { Env, Variables } from '../env.js';
 import { channelScopeKey } from '@valet/shared';
 import type { ChannelTarget, ChannelContext } from '@valet/sdk';
 import { verifySlackSignature } from '@valet/plugin-slack/channels';
+import type { SlackTransport } from '@valet/plugin-slack/channels';
 import { channelRegistry } from '../channels/registry.js';
 import * as db from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
@@ -89,16 +90,22 @@ slackEventsRouter.post('/slack/events', async (c) => {
 
   // Extract event-level fields for routing decisions before full parse
   const event = payload.event as Record<string, unknown> | undefined;
-  const slackUserId = (event?.user as string) || null;
+  const eventType = event?.type as string | undefined;
 
-  if (!slackUserId) {
+  // Assistant thread events store user_id inside event.assistant_thread, not event.user
+  const isAssistantEvent = eventType === 'assistant_thread_started' || eventType === 'assistant_thread_context_changed';
+  const assistantThread = event?.assistant_thread as Record<string, unknown> | undefined;
+  const slackUserId = (event?.user as string) || (assistantThread?.user_id as string) || null;
+
+  if (!slackUserId && !isAssistantEvent) {
     console.log(`[Slack] No user in event for team_id=${teamId}`);
     return c.json({ ok: true });
   }
 
   // Resolve Slack display names in parallel: sender + bot (for mention cleanup)
+  // Skip user profile resolution for assistant events (no user interaction yet)
   const [slackUserProfile, botInfo] = await Promise.all([
-    getSlackUserInfo(botToken, slackUserId),
+    slackUserId ? getSlackUserInfo(botToken, slackUserId) : Promise.resolve(null),
     getSlackBotInfo(botToken), // discovers bot_id via auth.test, then calls bots.info
   ]);
   const resolvedSenderName = slackUserProfile?.displayName || slackUserProfile?.realName || undefined;
@@ -122,6 +129,26 @@ slackEventsRouter.post('/slack/events', async (c) => {
   });
 
   if (!message) {
+    return c.json({ ok: true });
+  }
+
+  // ─── Assistant thread events (Agents & AI Apps) ────────────────────────
+  if (message.metadata?.slackEventType === 'assistant_thread_started') {
+    const slackTransport = transport as SlackTransport;
+    const threadTs = message.metadata.threadTs as string;
+    if (slackTransport.setSuggestedPrompts && threadTs) {
+      const target: ChannelTarget = { channelType: 'slack', channelId: message.channelId, threadId: threadTs };
+      const ctx: ChannelContext = { token: botToken, userId: '' };
+      await slackTransport.setSuggestedPrompts(target, [
+        { title: 'Check session status', message: '/status' },
+        { title: 'List active sessions', message: '/sessions' },
+        { title: 'Start a new task', message: 'Start a new coding session' },
+      ], ctx, 'How can I help?');
+    }
+    return c.json({ ok: true });
+  }
+
+  if (message.metadata?.slackEventType === 'assistant_thread_context_changed') {
     return c.json({ ok: true });
   }
 
@@ -163,7 +190,9 @@ slackEventsRouter.post('/slack/events', async (c) => {
   }
 
   // ─── Identity resolution ───────────────────────────────────────────────
-  const userId = await db.resolveUserByExternalId(c.get('db'), 'slack', slackUserId);
+  // slackUserId is guaranteed non-null here: assistant events return early above,
+  // and non-assistant events without a user are filtered out at line 99.
+  const userId = await db.resolveUserByExternalId(c.get('db'), 'slack', slackUserId!);
   if (!userId) {
     console.log(`[Slack] No identity link for slack user=${slackUserId}`);
     // For @mentions and DMs, reply with account linking instructions
