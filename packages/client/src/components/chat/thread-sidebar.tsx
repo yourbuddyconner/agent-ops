@@ -5,7 +5,7 @@ import { api } from '@/api/client';
 import { formatChannelLabel } from '@valet/sdk';
 import { getChannelIcon } from '@valet/sdk/ui';
 import type { SessionThread } from '@/api/types';
-import { cn } from '@/lib/utils';
+import { cn } from '@/lib/cn';
 
 // ─── Unread Tracking ──────────────────────────────────────────────────────────
 
