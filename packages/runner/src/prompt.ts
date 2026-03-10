@@ -3177,6 +3177,10 @@ export class PromptHandler {
   private handlePartUpdated(props: Record<string, unknown>): void {
     if (!this.activeMessageId) return;
 
+    // After wait_for_event force-complete + abort, suppress stale SSE events
+    // (the abort causes OpenCode to emit "The operation was aborted." text).
+    if (this.waitForEventForced) return;
+
     // The part can be a tool part or a text part
     const part = props.part as Record<string, unknown> | undefined;
     if (!part) return;
@@ -3387,6 +3391,9 @@ export class PromptHandler {
   }
 
   private handleMessageUpdated(props: Record<string, unknown>): void {
+    // After wait_for_event force-complete + abort, suppress stale SSE events.
+    if (this.waitForEventForced) return;
+
     // OpenCode wraps the message in an "info" property: { info: { role, ... } }
     const info = (props.info ?? props) as Record<string, unknown>;
     const role = info.role as string | undefined;
@@ -3473,6 +3480,9 @@ export class PromptHandler {
   }
 
   private handleSessionStatus(props: Record<string, unknown>): void {
+    // After wait_for_event force-complete + abort, suppress stale SSE events.
+    if (this.waitForEventForced) return;
+
     // SessionStatus is an object: { type: "idle" | "busy" | "retry" }
     const rawStatus = props.status;
     let statusType: string | undefined;
