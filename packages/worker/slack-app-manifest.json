@@ -18,9 +18,11 @@
     "scopes": {
       "bot": [
         "app_mentions:read",
+        "assistant:write",
         "channels:history",
         "channels:read",
         "chat:write",
+        "chat:write.customize",
         "chat:write.public",
         "files:read",
         "groups:history",
@@ -38,6 +40,8 @@
       "request_url": "https://YOUR_WORKER_URL/channels/slack/events",
       "bot_events": [
         "app_mention",
+        "assistant_thread_started",
+        "assistant_thread_context_changed",
         "message.channels",
         "message.groups",
         "message.im"
