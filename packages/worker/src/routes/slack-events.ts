@@ -221,6 +221,37 @@ slackEventsRouter.post('/slack/events', async (c) => {
     });
   }
 
+  // Build scope key and look up channel binding
+  const parts = transport.scopeKeyParts(message, userId);
+  const scopeKey = channelScopeKey(userId, parts.channelType, parts.channelId);
+  const binding = await db.getChannelBindingByScopeKey(c.get('db'), scopeKey);
+
+  // ─── Resolve orchestrator thread ──────────────────────────────────────
+  // Map the external channel thread to an orchestrator thread (session_threads).
+  // This is channel-agnostic: any channel with threading passes its thread ID.
+  let orchestratorThreadId: string | undefined;
+  if (threadId) {
+    let targetSessionId: string | undefined;
+
+    if (binding) {
+      targetSessionId = binding.sessionId;
+    } else {
+      const orchSession = await db.getOrchestratorSession(c.env.DB, userId);
+      targetSessionId = orchSession?.id;
+    }
+
+    if (targetSessionId) {
+      orchestratorThreadId = await db.getOrCreateChannelThread(c.env.DB, {
+        channelType: 'slack',
+        channelId: message.channelId,
+        externalThreadId: threadId,
+        sessionId: targetSessionId,
+        userId,
+      });
+      console.log(`[Slack] Resolved thread: external=${threadId} → orchestrator=${orchestratorThreadId}`);
+    }
+  }
+
   // Handle slash commands
   if (message.command) {
     const ctx: ChannelContext = { token: botToken, userId };
@@ -236,11 +267,6 @@ slackEventsRouter.post('/slack/events', async (c) => {
   // Encode thread_ts in channelId for non-DM channels so the agent can reply
   // in the correct thread. DMs don't need this — they're a single conversation.
   const dispatchChannelId = (!isDm && threadId) ? `${message.channelId}:${threadId}` : message.channelId;
-
-  // Build scope key and look up channel binding
-  const parts = transport.scopeKeyParts(message, userId);
-  const scopeKey = channelScopeKey(userId, parts.channelType, parts.channelId);
-  const binding = await db.getChannelBindingByScopeKey(c.get('db'), scopeKey);
 
   if (binding) {
     console.log(`[Slack] Bound session dispatch: session=${binding.sessionId} channelId=${dispatchChannelId}`);
@@ -264,6 +290,7 @@ slackEventsRouter.post('/slack/events', async (c) => {
             queueMode: binding.queueMode,
             channelType: 'slack',
             channelId: dispatchChannelId,
+            threadId: orchestratorThreadId,
             authorName: message.senderName,
           }),
         }),
@@ -301,6 +328,7 @@ slackEventsRouter.post('/slack/events', async (c) => {
     content: message.text || '[Attachment]',
     channelType: 'slack',
     channelId: dispatchChannelId,
+    threadId: orchestratorThreadId,
     authorName: message.senderName,
     attachments: attachments.length > 0 ? attachments : undefined,
   });
