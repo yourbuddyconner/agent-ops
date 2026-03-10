@@ -61,7 +61,9 @@ export function IntegrationList() {
       });
     }
     if (data?.integrations) {
+      const dedicatedServices = new Set(items.map((i) => i.service));
       for (const integration of data.integrations) {
+        if (dedicatedServices.has(integration.service)) continue;
         items.push({ key: integration.id, type: 'api', service: integration.service, status: integration.status, integration });
       }
     }
