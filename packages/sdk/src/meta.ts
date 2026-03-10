@@ -105,11 +105,40 @@ export function listChannelMeta(): ChannelMeta[] {
   return [...knownChannels];
 }
 
-/** Format a channel label for display. */
+/** Format a channel label for display (synchronous fallback — prefer resolveLabel from transport). */
 export function formatChannelLabel(channelType: string, channelId: string): string {
   const meta = getChannelMeta(channelType);
   if (channelType === 'web') return meta.displayName;
-  if (channelType === 'slack') return channelId === 'default' ? meta.displayName : `Slack #${channelId}`;
   if (channelId === 'default') return meta.displayName;
+  if (channelType === 'slack') {
+    // Parse composite ID to show a better fallback than the raw string.
+    // Formats: "teamId:channelId:threadTs", "channelId:threadTs", or bare ID.
+    const parts = channelId.split(':');
+    const isSlackId = (s: string) => /^[A-Z]/.test(s);
+    const isThreadTs = (s: string) => /^\d+\.\d+$/.test(s);
+
+    let hasThread = false;
+    let slackId: string | undefined;
+
+    if (parts.length >= 3 && isSlackId(parts[1])) {
+      slackId = parts[1];
+      hasThread = isThreadTs(parts[2]);
+    } else if (parts.length === 2) {
+      if (isSlackId(parts[0]) && isThreadTs(parts[1])) {
+        slackId = parts[0]; hasThread = true;
+      } else if (isSlackId(parts[1])) {
+        slackId = parts[1];
+      } else if (isSlackId(parts[0])) {
+        slackId = parts[0];
+      }
+    } else if (isSlackId(parts[0])) {
+      slackId = parts[0];
+    }
+
+    if (!slackId) return hasThread ? 'Slack (thread)' : 'Slack';
+
+    const prefix = slackId.startsWith('D') ? 'Slack DM' : slackId.startsWith('G') ? 'Slack Group DM' : `Slack #${slackId}`;
+    return hasThread ? `${prefix} (thread)` : prefix;
+  }
   return meta.displayName;
 }

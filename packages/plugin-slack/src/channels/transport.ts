@@ -374,10 +374,42 @@ export class SlackTransport implements ChannelTransport {
   }
 
   async resolveLabel(channelId: string, ctx: ChannelContext): Promise<string> {
-    // Composite channelId format: "teamId:slackChannelId:threadTs" or "teamId:slackChannelId"
+    // Composite channelId comes in several formats:
+    //   3-part: "teamId:slackChannelId:threadTs" (from scopeKeyParts)
+    //   2-part: "slackChannelId:threadTs" (from dispatch encoding)
+    //   1-part: bare channelId or threadTs
+    // Slack channel IDs start with a letter (C/D/G/W), thread timestamps are numeric (e.g. "1773177297.231269").
     const parts = channelId.split(':');
-    const slackChannelId = parts.length >= 2 ? parts[1] : parts[0];
-    const hasThread = parts.length >= 3;
+    let slackChannelId: string | undefined;
+    let hasThread = false;
+
+    const isSlackId = (s: string) => /^[A-Z]/.test(s);
+    const isThreadTs = (s: string) => /^\d+\.\d+$/.test(s);
+
+    if (parts.length >= 3) {
+      // teamId:channelId:threadTs
+      slackChannelId = isSlackId(parts[1]) ? parts[1] : undefined;
+      hasThread = isThreadTs(parts[2]);
+    } else if (parts.length === 2) {
+      // channelId:threadTs or teamId:channelId
+      if (isSlackId(parts[0]) && isThreadTs(parts[1])) {
+        slackChannelId = parts[0];
+        hasThread = true;
+      } else if (isSlackId(parts[1])) {
+        slackChannelId = parts[1];
+      } else if (isSlackId(parts[0])) {
+        slackChannelId = parts[0];
+      }
+    } else if (isSlackId(parts[0])) {
+      slackChannelId = parts[0];
+    } else if (isThreadTs(parts[0])) {
+      // Bare threadTs with no channel ID — can only infer it's a thread
+      return 'Slack DM (thread)';
+    }
+
+    if (!slackChannelId) {
+      return hasThread ? 'Slack (thread)' : 'Slack';
+    }
 
     // Try to resolve channel name via conversations.info
     let channelName: string | undefined;
