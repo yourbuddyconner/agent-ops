@@ -56,14 +56,25 @@ export async function getOrCreateChannelThread(
     params.userId,
   );
   if (existing) {
-    // Auto-reactivate if the thread was archived (no-op for active threads)
+    if (existing.sessionId === params.sessionId) {
+      // Mapping matches current session — reuse it
+      // Auto-reactivate if the thread was archived (no-op for active threads)
+      await db
+        .prepare(
+          "UPDATE session_threads SET status = 'active', last_active_at = datetime('now') WHERE id = ? AND status = 'archived'"
+        )
+        .bind(existing.threadId)
+        .run();
+      return existing.threadId;
+    }
+    // Stale mapping from a previous session (e.g., orchestrator was reset).
+    // Delete it so we can create a fresh mapping for the current session.
     await db
       .prepare(
-        "UPDATE session_threads SET status = 'active', last_active_at = datetime('now') WHERE id = ? AND status = 'archived'"
+        'DELETE FROM channel_thread_mappings WHERE channel_type = ? AND channel_id = ? AND external_thread_id = ? AND user_id = ?'
       )
-      .bind(existing.threadId)
+      .bind(params.channelType, params.channelId, params.externalThreadId, params.userId)
       .run();
-    return existing.threadId;
   }
 
   // Create orchestrator thread optimistically
