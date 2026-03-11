@@ -85,7 +85,9 @@ export async function installSlackApp(
     installedBy,
   });
 
-  // Create org-scoped integration row so tools (list_tools/call_tool) discover Slack
+  // Ensure an active org-scoped integration row exists so tools discover Slack.
+  // On reinstall the INSERT may fail (unique constraint on userId+service),
+  // so always update the existing row to 'active' as a fallback.
   try {
     const integrationId = crypto.randomUUID();
     await db.createIntegration(appDb, {
@@ -97,7 +99,12 @@ export async function installSlackApp(
     });
     await db.updateIntegrationStatus(appDb, integrationId, 'active');
   } catch {
-    // Integration row may already exist from a previous install — ignore duplicate
+    // Row already exists — reactivate it
+    const existing = (await db.getUserIntegrations(appDb, installedBy))
+      .find((i) => i.service === 'slack');
+    if (existing && existing.status !== 'active') {
+      await db.updateIntegrationStatus(appDb, existing.id, 'active');
+    }
   }
 
   return { ok: true, install };
@@ -366,9 +373,8 @@ export async function getSlackBotInfo(
 export async function getSlackBotToken(env: Env): Promise<string | null> {
   const appDb = getDb(env.DB);
   const install = await db.getOrgSlackInstallAny(appDb);
-  if (install) return decryptString(install.encryptedBotToken, env.ENCRYPTION_KEY);
-  // Fall back to env var for simple bot-token-only setups
-  return env.SLACK_BOT_TOKEN || null;
+  if (!install) return null;
+  return decryptString(install.encryptedBotToken, env.ENCRYPTION_KEY);
 }
 
 // ─── Initiate Slack Link ────────────────────────────────────────────────────
