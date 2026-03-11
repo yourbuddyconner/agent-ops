@@ -74,6 +74,13 @@ Detailed per-subsystem specifications live in `docs/specs/`. These are the sourc
 
 Boundary rules are enforced: each spec declares what it does NOT cover. Don't add content to the wrong spec — create or update the correct one.
 
+### Design Specs & Implementation Plans (Superpowers)
+
+When using superpowers skills (brainstorming → writing-plans → executing-plans), design specs and implementation plans go in the existing project directories — NOT in a `docs/superpowers/` folder:
+
+- **Design specs** → `docs/specs/YYYY-MM-DD-<topic>-design.md`
+- **Implementation plans** → `docs/plans/YYYY-MM-DD-<topic>.md`
+
 ## Key Architectural Decisions
 
 These are decided and locked in. Do not revisit:

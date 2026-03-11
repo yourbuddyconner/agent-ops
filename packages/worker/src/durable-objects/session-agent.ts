@@ -698,6 +698,11 @@ export class SessionAgentDO {
       // Migrate: add continuation_context column for queued thread continuations
       try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN continuation_context TEXT'); } catch { /* already exists */ }
 
+      // Migrate: add context_prefix + reply channel columns for thread context routing
+      try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN context_prefix TEXT'); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN reply_channel_type TEXT'); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN reply_channel_id TEXT'); } catch { /* already exists */ }
+
       this.initialized = true;
     });
   }
@@ -799,7 +804,7 @@ export class SessionAgentDO {
       }
       case '/prompt': {
         // HTTP-based prompt submission (alternative to WebSocket)
-        const body = await request.json() as { content?: string; model?: string; attachments?: PromptAttachment[]; interrupt?: boolean; queueMode?: string; channelType?: string; channelId?: string; threadId?: string; authorName?: string; authorEmail?: string; authorId?: string };
+        const body = await request.json() as { content?: string; contextPrefix?: string; model?: string; attachments?: PromptAttachment[]; interrupt?: boolean; queueMode?: string; channelType?: string; channelId?: string; threadId?: string; authorName?: string; authorEmail?: string; authorId?: string };
         const content = body.content ?? '';
         const attachments = sanitizePromptAttachments(body.attachments);
         console.log(`[SessionAgentDO] /prompt HTTP: content="${content.slice(0, 60)}" channelType=${body.channelType || 'none'} channelId=${body.channelId || 'none'} queueMode=${body.queueMode || 'default'} authorName=${body.authorName || 'none'} authorId=${body.authorId || 'none'}`);
@@ -819,13 +824,13 @@ export class SessionAgentDO {
 
         switch (effectiveMode) {
           case 'steer':
-            await this.handleInterruptPrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId);
+            await this.handleInterruptPrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId, body.contextPrefix);
             break;
           case 'collect':
-            await this.handleCollectPrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId);
+            await this.handleCollectPrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId, body.contextPrefix);
             break;
           default:
-            await this.handlePrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId);
+            await this.handlePrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId, undefined, body.contextPrefix);
             break;
         }
         console.log(`[SessionAgentDO] /prompt HTTP: completed, runnerBusy=${this.getStateValue('runnerBusy')}`);
@@ -1267,8 +1272,14 @@ export class SessionAgentDO {
     const nowSecs = Math.floor(now / 1000);
 
     // ─── Collect Mode Flush Check (Phase D) ──────────────────────────
-    const collectFlushAt = this.getStateValue('collectFlushAt');
-    if (collectFlushAt && now >= parseInt(collectFlushAt)) {
+    // Check both per-channel keys (collectFlushAt:{channelKey}) and legacy key (collectFlushAt)
+    const perChannelFlushRows = this.ctx.storage.sql
+      .exec("SELECT value FROM state WHERE key LIKE 'collectFlushAt:%' AND value != '' LIMIT 1")
+      .toArray();
+    const hasPerChannelFlush = perChannelFlushRows.length > 0 && parseInt(perChannelFlushRows[0].value as string) <= now;
+    const legacyCollectFlushAt = this.getStateValue('collectFlushAt');
+    const hasLegacyFlush = !!legacyCollectFlushAt && now >= parseInt(legacyCollectFlushAt);
+    if (hasPerChannelFlush || hasLegacyFlush) {
       await this.flushCollectBuffer();
     }
 
@@ -1718,10 +1729,18 @@ export class SessionAgentDO {
     channelId?: string,
     threadId?: string,
     continuationContext?: string,
+    contextPrefix?: string,
   ) {
-    // Translate threadId to channel routing so the Runner creates a separate
-    // OpenCode session per thread (Issue 1)
-    if (threadId && !channelType) {
+    // Preserve original channel info for reply tracking (e.g., slack:C123:thread_ts)
+    // before normalizing to thread-based routing.
+    const replyChannelType = channelType;
+    const replyChannelId = channelId;
+
+    // When a threadId is present, always route via the thread — regardless of
+    // whether the message originated from Slack, the web UI, or any other channel.
+    // This ensures all messages targeting the same orchestrator thread converge on
+    // a single OpenCode session so the agent sees the full conversation.
+    if (threadId) {
       channelType = 'thread';
       channelId = threadId;
     }
@@ -1813,10 +1832,11 @@ export class SessionAgentDO {
       // — queue the prompt with author info + channel metadata
       const reason = !runnerConnected ? 'no runner connected' : 'runner not ready';
       this.ctx.storage.sql.exec(
-        "INSERT INTO prompt_queue (id, content, attachments, model, status, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key, thread_id, continuation_context) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO prompt_queue (id, content, attachments, model, status, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key, thread_id, continuation_context, context_prefix, reply_channel_type, reply_channel_id) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         messageId, content, serializedQueuedAttachments, model || null,
         author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null,
-        channelType || null, channelId || null, channelKey, threadId || null, continuationContext || null
+        channelType || null, channelId || null, channelKey, threadId || null, continuationContext || null,
+        contextPrefix || null, replyChannelType || null, replyChannelId || null
       );
       this.appendAuditLog(
         'prompt.queued',
@@ -1834,10 +1854,11 @@ export class SessionAgentDO {
       // Runner is processing another prompt — queue with author info + channel metadata
       console.log(`[SessionAgentDO] handlePrompt: QUEUING (runnerBusy=true) channel=${channelKey} messageId=${messageId}`);
       this.ctx.storage.sql.exec(
-        "INSERT INTO prompt_queue (id, content, attachments, model, status, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key, thread_id, continuation_context) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO prompt_queue (id, content, attachments, model, status, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key, thread_id, continuation_context, context_prefix, reply_channel_type, reply_channel_id) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         messageId, content, serializedQueuedAttachments, model || null,
         author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null,
-        channelType || null, channelId || null, channelKey, threadId || null, continuationContext || null
+        channelType || null, channelId || null, channelKey, threadId || null, continuationContext || null,
+        contextPrefix || null, replyChannelType || null, replyChannelId || null
       );
       this.appendAuditLog(
         'prompt.queued',
@@ -1854,10 +1875,11 @@ export class SessionAgentDO {
     console.log(`[SessionAgentDO] handlePrompt: DISPATCHING DIRECTLY channel=${channelKey} messageId=${messageId}`);
     // Insert into prompt_queue as 'processing' so it can be recovered if the runner disconnects
     this.ctx.storage.sql.exec(
-      "INSERT INTO prompt_queue (id, content, attachments, model, status, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key, thread_id, continuation_context) VALUES (?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO prompt_queue (id, content, attachments, model, status, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key, thread_id, continuation_context, context_prefix, reply_channel_type, reply_channel_id) VALUES (?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       messageId, content, serializedQueuedAttachments, model || null,
       author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null,
-      channelType || null, channelId || null, channelKey, threadId || null, continuationContext || null
+      channelType || null, channelId || null, channelKey, threadId || null, continuationContext || null,
+      contextPrefix || null, replyChannelType || null, replyChannelId || null
     );
 
     // Forward directly to runner with author info + channel metadata
@@ -1868,12 +1890,14 @@ export class SessionAgentDO {
     this.rescheduleIdleAlarm();
     console.log('[SessionAgentDO] handlePrompt: dispatching to runner (DO_CODE_VERSION=v2-pipeline-2)');
 
-    // Track channel context for auto-reply on completion (threads are web UI conversations, not external channels)
-    if (channelType && channelId && this.requiresExplicitChannelReply(channelType)) {
-      this.pendingChannelReply = { channelType, channelId, resultContent: null, resultMessageId: null, handled: false };
+    // Track channel context for auto-reply on completion using the ORIGINAL channel
+    // (e.g., slack:C123:thread_ts), not the normalized thread routing key.
+    // This ensures the agent is prompted to reply via the originating channel.
+    if (replyChannelType && replyChannelId && this.requiresExplicitChannelReply(replyChannelType)) {
+      this.pendingChannelReply = { channelType: replyChannelType, channelId: replyChannelId, resultContent: null, resultMessageId: null, handled: false };
 
       // Record a follow-up reminder so the agent gets nudged if it doesn't send a substantive reply
-      this.insertChannelFollowup(channelType, channelId, content);
+      this.insertChannelFollowup(replyChannelType, replyChannelId, content);
     } else {
       this.pendingChannelReply = null;
     }
@@ -1882,11 +1906,16 @@ export class SessionAgentDO {
     const ownerId = this.getStateValue('userId');
     const ownerDetails = ownerId ? await this.getUserDetails(ownerId) : undefined;
     const resolvedModelPrefs = await this.resolveModelPreferences(ownerDetails);
+    // Agent sees contextPrefix + content; stored messages/queue only have the user's actual message
+    const agentContent = contextPrefix
+      ? `${contextPrefix}\n\n${content}`
+      : content;
+
     const channelOcSessionId = this.getChannelOcSessionId(channelKey);
     const dispatched = this.sendToRunner({
       type: 'prompt',
       messageId,
-      content,
+      content: agentContent,
       model,
       attachments: normalizedAttachments.length > 0 ? normalizedAttachments : undefined,
       channelType,
@@ -1981,21 +2010,20 @@ export class SessionAgentDO {
     channelType?: string,
     channelId?: string,
     threadId?: string,
+    contextPrefix?: string,
   ) {
-    // Translate threadId to channel routing (Issue 1)
-    if (threadId && !channelType) {
-      channelType = 'thread';
-      channelId = threadId;
-    }
+    // Normalize threadId to channel routing for abort targeting
+    const abortChannelType = threadId ? 'thread' : channelType;
+    const abortChannelId = threadId ? threadId : channelId;
 
     const runnerBusy = this.getStateValue('runnerBusy') === 'true';
     if (runnerBusy) {
       // Abort current work (channel-scoped if channel info provided)
-      await this.handleAbort(channelType, channelId);
+      await this.handleAbort(abortChannelType, abortChannelId);
     }
     // Queue the new prompt — when the runner confirms abort, handlePromptComplete
     // will drain the queue and send this prompt to the runner
-    await this.handlePrompt(content, model, author, attachments, channelType, channelId, threadId);
+    await this.handlePrompt(content, model, author, attachments, channelType, channelId, threadId, undefined, contextPrefix);
   }
 
   // ─── Collect Mode (Phase D) ──────────────────────────────────────────
@@ -2008,6 +2036,7 @@ export class SessionAgentDO {
     channelType?: string,
     channelId?: string,
     threadId?: string,
+    contextPrefix?: string,
   ) {
     // Update idle tracking
     this.setStateValue('lastUserActivityAt', String(Date.now()));
@@ -2049,9 +2078,9 @@ export class SessionAgentDO {
     const collectChannelKey = this.channelKeyFrom(channelType, channelId);
     const bufferStateKey = `collectBuffer:${collectChannelKey}`;
     const bufferRaw = this.getStateValue(bufferStateKey);
-    const buffer: Array<{ content: string; model?: string; author?: typeof author; attachments?: PromptAttachment[]; channelType?: string; channelId?: string; threadId?: string }> =
+    const buffer: Array<{ content: string; model?: string; author?: typeof author; attachments?: PromptAttachment[]; channelType?: string; channelId?: string; threadId?: string; contextPrefix?: string }> =
       bufferRaw ? JSON.parse(bufferRaw) : [];
-    buffer.push({ content, model, author, attachments: normalizedAttachments.length > 0 ? normalizedAttachments : undefined, channelType, channelId, threadId });
+    buffer.push({ content, model, author, attachments: normalizedAttachments.length > 0 ? normalizedAttachments : undefined, channelType, channelId, threadId, contextPrefix });
     this.setStateValue(bufferStateKey, JSON.stringify(buffer));
 
     // Set flush time (per-channel)
@@ -2127,7 +2156,7 @@ export class SessionAgentDO {
         continue;
       }
 
-      const buffer: Array<{ content: string; model?: string; author?: any; attachments?: PromptAttachment[]; channelType?: string; channelId?: string; threadId?: string }> = JSON.parse(bufferRaw);
+      const buffer: Array<{ content: string; model?: string; author?: any; attachments?: PromptAttachment[]; channelType?: string; channelId?: string; threadId?: string; contextPrefix?: string }> = JSON.parse(bufferRaw);
       if (buffer.length === 0) {
         this.setStateValue(bufferStateKey, '');
         this.setStateValue(key, '');
@@ -2146,9 +2175,11 @@ export class SessionAgentDO {
       const channelId = lastEntry.channelId;
       // Preserve threadId so the merged prompt maintains thread association
       const threadId = lastEntry.threadId;
+      // Use the first entry's contextPrefix (thread history from initial invocation)
+      const mergedContextPrefix = buffer.find((b) => b.contextPrefix)?.contextPrefix;
 
       // Send merged prompt through normal flow with channel and thread info
-      await this.handlePrompt(mergedContent, lastEntry.model, lastEntry.author, allAttachments, channelType, channelId, threadId);
+      await this.handlePrompt(mergedContent, lastEntry.model, lastEntry.author, allAttachments, channelType, channelId, threadId, undefined, mergedContextPrefix);
       flushed = true;
     }
 
@@ -6734,7 +6765,7 @@ export class SessionAgentDO {
     }
 
     const next = this.ctx.storage.sql
-      .exec("SELECT id, content, attachments, model, author_id, author_email, author_name, channel_type, channel_id, queue_type, workflow_execution_id, workflow_payload, thread_id, continuation_context FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
+      .exec("SELECT id, content, attachments, model, author_id, author_email, author_name, channel_type, channel_id, queue_type, workflow_execution_id, workflow_payload, thread_id, continuation_context, context_prefix, reply_channel_type, reply_channel_id FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
       .toArray();
 
     if (next.length === 0) {
@@ -6805,14 +6836,19 @@ export class SessionAgentDO {
       this.setStateValue('currentPromptAuthorId', authorId);
     }
 
-    // Track channel context for auto-reply on completion (threads are web UI conversations, not external channels)
+    // Track channel context for auto-reply on completion using the ORIGINAL channel
+    // (e.g., slack:C123:thread_ts), not the normalized thread routing key.
     const queueChannelType = (prompt.channel_type as string) || undefined;
     const queueChannelId = (prompt.channel_id as string) || undefined;
-    if (queueChannelType && queueChannelId && this.requiresExplicitChannelReply(queueChannelType)) {
-      this.pendingChannelReply = { channelType: queueChannelType, channelId: queueChannelId, resultContent: null, resultMessageId: null, handled: false };
+    // Only use reply_channel columns if they exist — do NOT fall back to the
+    // normalized channel_type ('thread') which always fails requiresExplicitChannelReply.
+    const queueReplyChannelType = (prompt.reply_channel_type as string) || undefined;
+    const queueReplyChannelId = (prompt.reply_channel_id as string) || undefined;
+    if (queueReplyChannelType && queueReplyChannelId && this.requiresExplicitChannelReply(queueReplyChannelType)) {
+      this.pendingChannelReply = { channelType: queueReplyChannelType, channelId: queueReplyChannelId, resultContent: null, resultMessageId: null, handled: false };
 
       // Record a follow-up reminder so the agent gets nudged if it doesn't send a substantive reply
-      this.insertChannelFollowup(queueChannelType, queueChannelId, prompt.content as string);
+      this.insertChannelFollowup(queueReplyChannelType, queueReplyChannelId, prompt.content as string);
     } else {
       this.pendingChannelReply = null;
     }
@@ -6825,10 +6861,17 @@ export class SessionAgentDO {
     const queueOcSessionId = this.getChannelOcSessionId(queueChannelKey);
     const queueThreadId = (prompt.thread_id as string) || undefined;
     const queueContinuationContext = (prompt.continuation_context as string) || undefined;
+    const queueContextPrefix = (prompt.context_prefix as string) || undefined;
+
+    // Agent sees contextPrefix + content; stored messages only have the user's actual message
+    const queueAgentContent = queueContextPrefix
+      ? `${queueContextPrefix}\n\n${prompt.content as string}`
+      : prompt.content as string;
+
     const queueDispatched = this.sendToRunner({
       type: 'prompt',
       messageId: prompt.id as string,
-      content: prompt.content as string,
+      content: queueAgentContent,
       model: (prompt.model as string) || undefined,
       attachments: attachments.length > 0 ? attachments : undefined,
       channelType: queueChannelType,
@@ -7713,13 +7756,18 @@ export class SessionAgentDO {
    */
   private recoverPendingChannelReply(): { channelType: string; channelId: string; resultContent: string | null; resultMessageId: string | null; handled: boolean } | null {
     const rows = this.ctx.storage.sql
-      .exec("SELECT channel_type, channel_id FROM prompt_queue WHERE status = 'processing' LIMIT 1")
+      .exec("SELECT channel_type, channel_id, reply_channel_type, reply_channel_id FROM prompt_queue WHERE status = 'processing' LIMIT 1")
       .toArray();
-    if (rows.length === 0 || !rows[0].channel_type || !rows[0].channel_id) return null;
+    if (rows.length === 0) return null;
+
+    // Prefer reply channel (original Slack channel) over normalized thread channel
+    const channelType = (rows[0].reply_channel_type as string) || (rows[0].channel_type as string) || null;
+    const channelId = (rows[0].reply_channel_id as string) || (rows[0].channel_id as string) || null;
+    if (!channelType || !channelId) return null;
 
     const recovered = {
-      channelType: rows[0].channel_type as string,
-      channelId: rows[0].channel_id as string,
+      channelType,
+      channelId,
       resultContent: null as string | null,
       resultMessageId: null as string | null,
       handled: false,

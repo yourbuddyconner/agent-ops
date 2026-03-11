@@ -293,6 +293,13 @@ export async function dispatchOrchestratorPrompt(
   }
 
   console.log(`[OrchestratorDispatch] Dispatching to session=${sessionId} status=${session.status}`);
+
+  // Normalize channel metadata to match what the DO stores: when a threadId is
+  // present, the DO routes via thread:threadId. D1 must store the same values
+  // so both stores are consistent for the same message.
+  const normalizedChannelType = params.threadId ? 'thread' : params.channelType;
+  const normalizedChannelId = params.threadId ? params.threadId : params.channelId;
+
   const messageId = crypto.randomUUID();
   await db.saveMessage(env.DB, {
     id: messageId,
@@ -302,15 +309,10 @@ export async function dispatchOrchestratorPrompt(
     authorId: params.userId,
     authorName: params.authorName,
     authorEmail: params.authorEmail,
-    channelType: params.channelType,
-    channelId: params.channelId,
+    channelType: normalizedChannelType,
+    channelId: normalizedChannelId,
     threadId: params.threadId,
   });
-
-  // Agent sees context prefix + content; DB only stores the user's actual message
-  const agentContent = params.contextPrefix
-    ? `${params.contextPrefix}\n\n${content}`
-    : content;
 
   const doId = env.SESSIONS.idFromName(sessionId);
   const sessionDO = env.SESSIONS.get(doId);
@@ -318,7 +320,8 @@ export async function dispatchOrchestratorPrompt(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      content: agentContent,
+      content,
+      contextPrefix: params.contextPrefix,
       channelType: params.channelType,
       channelId: params.channelId,
       threadId: params.threadId,

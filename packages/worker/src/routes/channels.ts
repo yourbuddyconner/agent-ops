@@ -121,7 +121,7 @@ channelsRouter.get('/channels/label', async (c) => {
 
   const transport = channelRegistry.getTransport(channelType);
   if (!transport?.resolveLabel) {
-    // No resolver — return a simple fallback
+    console.log(`[ChannelLabel] No resolver for channelType=${channelType}`);
     return c.json({ label: null });
   }
 
@@ -136,13 +136,16 @@ channelsRouter.get('/channels/label', async (c) => {
   }
 
   if (!token) {
+    console.log(`[ChannelLabel] No token for channelType=${channelType}`);
     return c.json({ label: null });
   }
 
   try {
     const label = await transport.resolveLabel(channelId, { token, userId: user.id });
+    console.log(`[ChannelLabel] Resolved: channelType=${channelType} channelId=${channelId} → ${label}`);
     return c.json({ label });
-  } catch {
+  } catch (err) {
+    console.error(`[ChannelLabel] Failed to resolve: channelType=${channelType} channelId=${channelId}`, err);
     return c.json({ label: null });
   }
 });

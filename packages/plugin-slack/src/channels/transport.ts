@@ -415,6 +415,9 @@ export class SlackTransport implements ChannelTransport {
     let channelName: string | undefined;
     try {
       const result = await slackApiCall('conversations.info', { channel: slackChannelId }, ctx.token);
+      if (!result.ok) {
+        console.log(`[SlackTransport] resolveLabel: conversations.info failed for ${slackChannelId}: ${result.error || 'unknown'}`);
+      }
       if (result.ok) {
         const channel = result.channel as Record<string, unknown> | undefined;
         if (channel) {
