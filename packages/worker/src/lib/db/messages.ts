@@ -21,7 +21,7 @@ export async function getSessionMessages(
   sessionId: string,
   options: { limit?: number; after?: string } = {}
 ): Promise<Message[]> {
-  const limit = options.limit || 100;
+  const limit = options.limit || 5000;
 
   const conditions = [eq(messages.sessionId, sessionId)];
   if (options.after) {

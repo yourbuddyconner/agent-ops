@@ -634,6 +634,9 @@ export class SessionAgentDO {
     threadId?: string;
   }>();
 
+  /** Debounce timer for flushing messages to D1 during active turns. */
+  private d1FlushTimer: ReturnType<typeof setTimeout> | null = null;
+
   private pendingChannelReply: {
     channelType: string;
     channelId: string;
@@ -984,7 +987,8 @@ export class SessionAgentDO {
       .exec('SELECT event_type, summary, actor_id, metadata, created_at FROM audit_log ORDER BY id ASC')
       .toArray();
 
-    server.send(JSON.stringify({
+    // Build init payload — messages included for clients that haven't loaded from D1 yet
+    const initPayload = JSON.stringify({
       type: 'init',
       session: {
         id: sessionId,
@@ -1023,7 +1027,38 @@ export class SessionAgentDO {
           createdAt: row.created_at,
         })),
       },
-    }));
+    });
+
+    try {
+      server.send(initPayload);
+    } catch (err) {
+      // Init payload too large for WebSocket frame (1MB limit).
+      // Send a lightweight init without messages — the client will load from D1 REST API.
+      console.error(`[SessionAgentDO] Init payload too large (${(initPayload.length / 1024).toFixed(0)}KB), sending without messages:`, err);
+      server.send(JSON.stringify({
+        type: 'init',
+        session: { id: sessionId, status, workspace, title, messages: [] },
+        data: {
+          sandboxRunning: !!sandboxId,
+          runnerConnected: this.ctx.getWebSockets('runner').length > 0,
+          runnerBusy: this.getStateValue('runnerBusy') === 'true',
+          promptsQueued: this.getQueueLength(),
+          connectedClients: this.getClientSockets().length + 1,
+          connectedUsers,
+          availableModels,
+          defaultModel,
+          auditLog: auditLogRows.map((row) => ({
+            eventType: row.event_type,
+            summary: row.summary,
+            actorId: row.actor_id || undefined,
+            metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
+            createdAt: row.created_at,
+          })),
+        },
+      }));
+      // Trigger a flush so D1 has the latest data for the REST API fallback
+      this.ctx.waitUntil(this.flushMessagesToD1());
+    }
 
     // Send any pending questions
     const pendingQuestions = this.ctx.storage.sql
@@ -2503,6 +2538,8 @@ export class SessionAgentDO {
           "UPDATE messages SET parts = ?, content = ? WHERE id = ?",
           JSON.stringify(turn.parts), turn.text, msg.turnId
         );
+        // Schedule debounced D1 flush so tool updates survive page refresh
+        this.scheduleDebouncedFlush();
         // Broadcast the full updated message to clients
         this.broadcastToClients({
           type: 'message.updated',
@@ -5851,7 +5888,19 @@ export class SessionAgentDO {
 
   // ─── D1 Message Archival ───────────────────────────────────────────
   // Flush messages from DO's internal SQLite to D1 for permanent archival.
-  // Uses INSERT OR IGNORE to deduplicate with route-level saves.
+  // Uses INSERT OR REPLACE so active turns with partial tool data get updated.
+
+  /**
+   * Schedule a debounced flush to D1. Called during active tool work so that
+   * in-progress turns are persisted within a few seconds, surviving page refresh.
+   */
+  private scheduleDebouncedFlush(): void {
+    if (this.d1FlushTimer) return; // already scheduled
+    this.d1FlushTimer = setTimeout(() => {
+      this.d1FlushTimer = null;
+      this.ctx.waitUntil(this.flushMessagesToD1());
+    }, 3_000);
+  }
 
   private async flushMessagesToD1(): Promise<void> {
     const sessionId = this.getStateValue('sessionId');
@@ -5860,31 +5909,21 @@ export class SessionAgentDO {
     const lastFlushStr = this.getStateValue('lastD1FlushAt');
     const lastFlushAt = lastFlushStr ? parseInt(lastFlushStr) : 0;
 
-    // Query DO's internal messages for rows created after last flush
+    // Query DO's internal messages for rows created after last flush.
+    // Include active turns — INSERT OR REPLACE will update partial data in D1
+    // so clients loading from D1 on page refresh see the latest state.
     const rows = this.ctx.storage.sql
       .exec(
-        'SELECT id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id, message_format, thread_id, created_at FROM messages WHERE created_at > ? ORDER BY created_at ASC LIMIT 50',
+        'SELECT id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id, message_format, thread_id, created_at FROM messages WHERE created_at > ? ORDER BY created_at ASC LIMIT 200',
         lastFlushAt
       )
       .toArray();
 
     if (rows.length === 0) return;
 
-    // Skip active v2 turns that haven't been finalized yet
-    const activeTurnIds = new Set(this.activeTurns.keys());
-    const flushable = rows.filter((row) => !activeTurnIds.has(row.id as string));
-    if (flushable.length === 0) return;
-
-    // Find the minimum timestamp of any skipped active turn so we don't advance
-    // the watermark past it (otherwise those rows would be permanently lost from D1)
-    const skippedActiveTs = rows
-      .filter((row) => activeTurnIds.has(row.id as string))
-      .map((row) => row.created_at as number);
-    const minSkippedTs = skippedActiveTs.length > 0 ? Math.min(...skippedActiveTs) : null;
-
     // Batch write to D1 — use INSERT OR REPLACE (content updates on finalize)
     try {
-      await batchUpsertMessages(this.env.DB, sessionId, flushable.map((row) => ({
+      await batchUpsertMessages(this.env.DB, sessionId, rows.map((row) => ({
         id: row.id as string,
         role: row.role as string,
         content: row.content as string,
@@ -5899,11 +5938,18 @@ export class SessionAgentDO {
         messageFormat: (row.message_format as string) || 'v2',
         threadId: row.thread_id as string | null,
       })));
-      // Update last flush timestamp — don't advance past any skipped active turns
-      const latestFlushed = flushable[flushable.length - 1].created_at as number;
-      const safeWatermark = minSkippedTs !== null ? Math.min(latestFlushed, minSkippedTs - 1) : latestFlushed;
+      // Advance watermark — active turns will be re-flushed with updated parts
+      // on subsequent flushes since INSERT OR REPLACE handles the upsert.
+      // Don't advance past active turns so they get picked up again.
+      const activeTurnIds = new Set(this.activeTurns.keys());
+      const activeTs = rows
+        .filter((row) => activeTurnIds.has(row.id as string))
+        .map((row) => row.created_at as number);
+      const minActiveTs = activeTs.length > 0 ? Math.min(...activeTs) : null;
+      const latestFlushed = rows[rows.length - 1].created_at as number;
+      const safeWatermark = minActiveTs !== null ? Math.min(latestFlushed, minActiveTs - 1) : latestFlushed;
       this.setStateValue('lastD1FlushAt', String(safeWatermark));
-      console.log(`[SessionAgentDO] Flushed ${flushable.length} messages to D1 (watermark=${safeWatermark}${minSkippedTs !== null ? `, active turns held back` : ''})`);
+      console.log(`[SessionAgentDO] Flushed ${rows.length} messages to D1 (watermark=${safeWatermark}${minActiveTs !== null ? `, active turns will re-flush` : ''})`);
     } catch (err) {
       console.error('[SessionAgentDO] Failed to flush messages to D1:', err);
     }

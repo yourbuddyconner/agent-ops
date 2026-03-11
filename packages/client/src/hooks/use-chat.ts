@@ -448,6 +448,65 @@ export function useChat(sessionId: string) {
     }
   }, [sessionId]);
 
+  // Load messages from D1 REST API on mount / session change.
+  // This ensures message history survives page refresh even if the WebSocket
+  // init payload is too large (>1MB) or arrives with stale data.
+  const d1LoadedRef = useRef(false);
+  useEffect(() => {
+    d1LoadedRef.current = false;
+    if (!sessionId) return;
+    let cancelled = false;
+    api.get<{ messages: Array<{
+      id: string;
+      sessionId: string;
+      role: 'user' | 'assistant' | 'system' | 'tool';
+      content: string;
+      parts?: MessagePart[];
+      authorId?: string;
+      authorEmail?: string;
+      authorName?: string;
+      authorAvatarUrl?: string;
+      channelType?: string;
+      channelId?: string;
+      threadId?: string;
+      createdAt: string;
+    }> }>(`/sessions/${sessionId}/messages`).then((res) => {
+      if (cancelled || !res.messages?.length) return;
+      d1LoadedRef.current = true;
+      setState((prev) => {
+        // Merge D1 messages with any already present (from WebSocket init that may have arrived first)
+        const existing = new Map(prev.messages.map((m) => [m.id, m]));
+        for (const m of res.messages) {
+          if (!existing.has(m.id)) {
+            existing.set(m.id, {
+              id: m.id,
+              sessionId: m.sessionId,
+              role: m.role,
+              content: m.content,
+              parts: m.parts,
+              authorId: m.authorId,
+              authorEmail: m.authorEmail,
+              authorName: m.authorName,
+              authorAvatarUrl: m.authorAvatarUrl,
+              channelType: m.channelType,
+              channelId: m.channelId,
+              threadId: m.threadId,
+              createdAt: new Date(m.createdAt),
+            });
+          }
+        }
+        // Sort by createdAt to maintain order
+        const merged = Array.from(existing.values()).sort(
+          (a, b) => a.createdAt.getTime() - b.createdAt.getTime()
+        );
+        return { ...prev, messages: merged };
+      });
+    }).catch((err) => {
+      console.warn('[useChat] Failed to load messages from D1:', err);
+    });
+    return () => { cancelled = true; };
+  }, [sessionId]);
+
   const wsUrl = sessionId ? `/api/sessions/${sessionId}/ws?role=client` : null;
 
   const logIdRef = useRef(0);
@@ -458,27 +517,6 @@ export function useChat(sessionId: string) {
     switch (message.type) {
       case 'init': {
         const initModels = Array.isArray(message.data?.availableModels) ? message.data.availableModels as ProviderModels[] : [];
-
-        // Reconstruct child session events from stored spawn_session tool calls
-        const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-        const restoredChildEvents: ChildSessionEvent[] = [];
-        for (const m of message.session.messages) {
-          if (m.role === 'tool' && m.parts && typeof m.parts === 'object') {
-            const p = m.parts as unknown as Record<string, unknown>;
-            if (typeof p.toolName === 'string' && p.toolName === 'spawn_session' && typeof p.result === 'string') {
-              const match = p.result.match(/Child session spawned:\s*(\S+)/) || p.result.match(UUID_RE);
-              const childId = match ? (match[1] || match[0]) : null;
-              if (childId) {
-                const args = (p.args ?? {}) as Record<string, unknown>;
-                restoredChildEvents.push({
-                  childSessionId: childId,
-                  title: (args.title as string) || (args.workspace as string) || undefined,
-                  timestamp: m.createdAt * 1000,
-                });
-              }
-            }
-          }
-        }
 
         // Normalize connectedUsers — may be string[] (legacy) or ConnectedUser[]
         const rawUsers = message.data?.connectedUsers;
@@ -507,41 +545,80 @@ export function useChat(sessionId: string) {
         }));
         logIdRef.current = seededLogEntries.length;
 
-        setState({
-          messages: message.session.messages.map((m) => ({
-            id: m.id,
-            sessionId: sessionIdRef.current,
-            role: m.role,
-            content: m.content,
-            parts: m.parts,
-            authorId: m.authorId,
-            authorEmail: m.authorEmail,
-            authorName: m.authorName,
-            authorAvatarUrl: m.authorAvatarUrl,
-            channelType: m.channelType,
-            channelId: m.channelId,
-            threadId: m.threadId,
-            createdAt: new Date(m.createdAt * 1000),
-          })),
-          status: message.session.status,
-          pendingQuestions: [],
-          connectedUsers: normalizedUsers,
-          logEntries: seededLogEntries,
-          isAgentThinking: terminalSession ? false : agentWorking,
-          agentStatus: initialAgentStatus,
-          agentStatusDetail: initialAgentStatus === 'queued' ? 'Message queued — waking session...' : undefined,
-          availableModels: initModels,
-          diffData: null,
-          diffLoading: false,
-          runnerConnected: !!message.data?.runnerConnected,
-          sessionTitle: message.session.title,
-          childSessionEvents: restoredChildEvents,
-          pendingActionApprovals: [],
-          reviewResult: null,
-          reviewError: null,
-          reviewLoading: false,
-          reviewDiffFiles: null,
-          integrationAuthErrors: [],
+        // Merge init messages with any already loaded from D1 REST API.
+        // WebSocket init has the most up-to-date parts (from DO SQLite),
+        // D1 may have older messages that weren't in the init (if init was truncated).
+        const initMessages = message.session.messages.map((m) => ({
+          id: m.id,
+          sessionId: sessionIdRef.current,
+          role: m.role,
+          content: m.content,
+          parts: m.parts,
+          authorId: m.authorId,
+          authorEmail: m.authorEmail,
+          authorName: m.authorName,
+          authorAvatarUrl: m.authorAvatarUrl,
+          channelType: m.channelType,
+          channelId: m.channelId,
+          threadId: m.threadId,
+          createdAt: new Date(m.createdAt * 1000),
+        }));
+
+        setState((prev) => {
+          // Build merged map: start with D1-loaded messages, overlay init messages
+          // (init is fresher — has latest parts from DO SQLite)
+          const merged = new Map(prev.messages.map((m) => [m.id, m]));
+          for (const m of initMessages) {
+            merged.set(m.id, m); // init wins — has latest tool-update state
+          }
+          const sortedMessages = Array.from(merged.values()).sort(
+            (a, b) => a.createdAt.getTime() - b.createdAt.getTime()
+          );
+
+          // Reconstruct child session events from merged messages (covers both D1 and init)
+          const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+          const restoredChildEvents: ChildSessionEvent[] = [];
+          for (const m of sortedMessages) {
+            if (m.role === 'tool' && m.parts && typeof m.parts === 'object') {
+              const p = m.parts as unknown as Record<string, unknown>;
+              if (typeof p.toolName === 'string' && p.toolName === 'spawn_session' && typeof p.result === 'string') {
+                const match = p.result.match(/Child session spawned:\s*(\S+)/) || p.result.match(UUID_RE);
+                const childId = match ? (match[1] || match[0]) : null;
+                if (childId) {
+                  const args = (p.args ?? {}) as Record<string, unknown>;
+                  restoredChildEvents.push({
+                    childSessionId: childId,
+                    title: (args.title as string) || (args.workspace as string) || undefined,
+                    timestamp: m.createdAt.getTime(),
+                  });
+                }
+              }
+            }
+          }
+
+          return {
+            ...prev,
+            messages: sortedMessages,
+            status: message.session.status,
+            pendingQuestions: [],
+            connectedUsers: normalizedUsers,
+            logEntries: seededLogEntries,
+            isAgentThinking: terminalSession ? false : agentWorking,
+            agentStatus: initialAgentStatus,
+            agentStatusDetail: initialAgentStatus === 'queued' ? 'Message queued — waking session...' : undefined,
+            availableModels: initModels,
+            diffData: null,
+            diffLoading: false,
+            runnerConnected: !!message.data?.runnerConnected,
+            sessionTitle: message.session.title,
+            childSessionEvents: restoredChildEvents,
+            pendingActionApprovals: [],
+            reviewResult: null,
+            reviewError: null,
+            reviewLoading: false,
+            reviewDiffFiles: null,
+            integrationAuthErrors: [],
+          };
         });
         if (initModels.length > 0) {
           // Use the DO-provided default model, validated against the catalog
@@ -549,7 +626,7 @@ export function useChat(sessionId: string) {
           const raw = typeof message.data?.defaultModel === 'string' ? message.data.defaultModel : null;
           const doDefaultModel = raw && allIds.includes(raw) ? raw : null;
 
-          if (message.session.messages.length === 0) {
+          if (message.session.messages.length === 0 && initMessages.length === 0 && !d1LoadedRef.current) {
             // Fresh session — clear stale localStorage and apply DO default
             try {
               localStorage.removeItem(`valet:model:${sessionIdRef.current}`);
