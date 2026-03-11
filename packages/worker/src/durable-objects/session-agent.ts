@@ -1,7 +1,7 @@
 import type { Env } from '../env.js';
 import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, readMemoryFile, listMemoryFiles, writeMemoryFile, patchMemoryFile, deleteMemoryFile, deleteMemoryFilesUnderPath, searchMemoryFiles, boostMemoryFileRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentity, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels, batchInsertUsageEvents, setCatalogCache, updateThread, incrementThreadMessageCount } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, readMemoryFile, listMemoryFiles, writeMemoryFile, patchMemoryFile, deleteMemoryFile, deleteMemoryFilesUnderPath, searchMemoryFiles, boostMemoryFileRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentity, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels, batchInsertUsageEvents, setCatalogCache, updateThread, incrementThreadMessageCount, getUserIdentityLinks } from '../lib/db.js';
 import { getCredential, type CredentialResult } from '../services/credentials.js';
 import { getSlackBotToken } from '../services/slack.js';
 import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
@@ -8775,6 +8775,13 @@ export class SessionAgentDO {
       credentials = credResult.credential.credentialType === 'bot_token'
         ? { bot_token: token } as Record<string, string>
         : { access_token: token };
+
+      // For Slack: inject the session owner's Slack user ID so dm_owner works
+      if (service === 'slack') {
+        const identityLinks = await getUserIdentityLinks(this.appDb, userId);
+        const slackLink = identityLinks.find((l) => l.provider === 'slack');
+        if (slackLink) credentials.owner_slack_user_id = slackLink.externalId;
+      }
     }
 
     // Execute the action
@@ -8792,6 +8799,10 @@ export class SessionAgentDO {
         const refreshedCredentials: Record<string, string> = refreshedCred.credential.credentialType === 'bot_token'
           ? { bot_token: refreshedToken }
           : { access_token: refreshedToken };
+        // Re-inject service-specific credential extras (e.g. owner_slack_user_id)
+        if (service === 'slack' && credentials.owner_slack_user_id) {
+          refreshedCredentials.owner_slack_user_id = credentials.owner_slack_user_id;
+        }
         actionResult = await actionSource.execute(actionId, params, {
           credentials: refreshedCredentials,
           userId,
