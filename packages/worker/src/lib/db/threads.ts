@@ -93,7 +93,10 @@ export async function listThreads(
       ctm.channel_type,
       ctm.channel_id
     FROM session_threads t
-    LEFT JOIN channel_thread_mappings ctm ON ctm.thread_id = t.id
+    LEFT JOIN (
+      SELECT DISTINCT thread_id, channel_type, channel_id
+      FROM channel_thread_mappings
+    ) ctm ON ctm.thread_id = t.id
     WHERE t.session_id = ?`;
 
   const params: (string | number)[] = [sessionId];

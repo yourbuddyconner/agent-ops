@@ -2,6 +2,7 @@ import { getSlackUserInfo } from './slack.js';
 
 const SLACK_API = 'https://slack.com/api';
 const MAX_THREAD_MESSAGES = 200;
+const MAX_RETRIES = 2;
 
 export interface ThreadContextMessage {
   ts: string;
@@ -23,6 +24,7 @@ export async function fetchThreadReplies(
 ): Promise<ThreadContextMessage[]> {
   const allMessages: ThreadContextMessage[] = [];
   let cursor: string | undefined;
+  let retryCount = 0;
 
   // Paginate through thread replies
   do {
@@ -46,10 +48,14 @@ export async function fetchThreadReplies(
       break;
     }
 
-    // Retry on 429 rate limit with Retry-After backoff
+    // Retry on 429 rate limit with Retry-After backoff (max 2 retries)
     if (resp.status === 429) {
-      const retryAfter = parseInt(resp.headers.get('Retry-After') || '1', 10);
-      console.log(`[SlackThreads] Rate limited, retrying after ${retryAfter}s`);
+      if (++retryCount > MAX_RETRIES) {
+        console.error(`[SlackThreads] Rate limit retries exhausted`);
+        break;
+      }
+      const retryAfter = Math.min(parseInt(resp.headers.get('Retry-After') || '1', 10), 5);
+      console.log(`[SlackThreads] Rate limited, retrying after ${retryAfter}s (attempt ${retryCount}/${MAX_RETRIES})`);
       await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
       continue;
     }
