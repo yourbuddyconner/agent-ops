@@ -3337,6 +3337,7 @@ export class PromptHandler {
       this.ensureTurnCreated();
       this.agentClient.sendToolUpdate(this.turnId!, callID, toolName, "completed", state.input ?? undefined);
       this.finalizeResponse(true);
+      this.agentClient.sendComplete();
       this.agentClient.sendAgentStatus("idle");
       this.idleNotified = true;
       if (this.sessionId) {
@@ -3383,7 +3384,9 @@ export class PromptHandler {
         console.log(`[PromptHandler] wait_for_event completed — aborting OpenCode and finalizing turn`);
         this.waitForEventForced = true;
         this.finalizeResponse(true);
-        // Ensure DO clears runnerBusy even if no other events arrive
+        // Send complete so the DO clears runnerBusy and drains the prompt queue.
+        // Without this, child session notifications get queued but never processed.
+        this.agentClient.sendComplete();
         this.agentClient.sendAgentStatus("idle");
         this.idleNotified = true;
         // Abort OpenCode generation so it fully yields
