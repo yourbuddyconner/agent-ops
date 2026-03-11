@@ -35,9 +35,12 @@ export function buildFTS5Query(raw: string): string {
       if (!phrase) continue;
       (isNegation ? notTerms : terms).push(`"${phrase}"`);
     } else {
-      const sanitized = clean.replace(/[^\w]/g, '').toLowerCase();
-      if (!sanitized || sanitized.length < 2) continue;
-      (isNegation ? notTerms : terms).push(`"${sanitized}"*`);
+      // Split on non-word chars (hyphens, dots, etc.) to match FTS5 unicode61 tokenization
+      const subTokens = clean.split(/[^\w]+/).map(s => s.toLowerCase()).filter(s => s.length >= 2);
+      if (subTokens.length === 0) continue;
+      for (const sub of subTokens) {
+        (isNegation ? notTerms : terms).push(`"${sub}"*`);
+      }
     }
   }
 

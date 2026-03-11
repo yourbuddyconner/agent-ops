@@ -406,7 +406,7 @@ export async function searchMemoryFiles(
   const runSearch = async (q: string): Promise<any[]> => {
     let sqlStr = `
       SELECT m.path, m.title, m.content,
-             bm25(orchestrator_memory_files_fts, 0, 10, 1) as bm25_score
+             bm25(orchestrator_memory_files_fts, 5, 10, 1) as bm25_score
       FROM orchestrator_memory_files m
       JOIN orchestrator_memory_files_fts ON orchestrator_memory_files_fts.rowid = m.rowid
       WHERE orchestrator_memory_files_fts MATCH ? AND m.user_id = ?`;

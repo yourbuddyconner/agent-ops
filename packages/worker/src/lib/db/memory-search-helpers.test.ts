@@ -61,6 +61,18 @@ describe('buildFTS5Query', () => {
     expect(buildFTS5Query('deploy!')).toBe('"deploy"*');
   });
 
+  it('splits hyphenated terms to match FTS5 tokenization', () => {
+    expect(buildFTS5Query('valet-demo-feedback-board')).toBe(
+      '"valet"* AND "demo"* AND "feedback"* AND "board"*',
+    );
+  });
+
+  it('splits dotted terms to match FTS5 tokenization', () => {
+    expect(buildFTS5Query('my.project.name')).toBe(
+      '"my"* AND "project"* AND "name"*',
+    );
+  });
+
   it('handles multiple negations with OR grouping', () => {
     expect(buildFTS5Query('deploy -staging -prod')).toBe('"deploy"* NOT ("staging"* OR "prod"*)');
   });
