@@ -11,9 +11,10 @@ export const channelThreadMappings = sqliteTable('channel_thread_mappings', {
   channelId: text().notNull(),
   externalThreadId: text().notNull(),
   userId: text().notNull(),
+  lastSeenTs: text(),
   createdAt: text().notNull().default(sql`(datetime('now'))`),
 }, (table) => [
-  uniqueIndex('idx_channel_thread_mappings_lookup').on(table.channelType, table.channelId, table.externalThreadId),
+  uniqueIndex('idx_channel_thread_mappings_user_lookup').on(table.channelType, table.channelId, table.externalThreadId, table.userId),
   index('idx_channel_thread_mappings_thread').on(table.threadId),
   index('idx_channel_thread_mappings_session').on(table.sessionId),
 ]);
