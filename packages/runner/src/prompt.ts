@@ -3367,6 +3367,7 @@ export class PromptHandler {
       // wait_for_event: forcibly end the turn so the agent actually stops
       if (toolName === "wait_for_event") {
         console.log(`[PromptHandler] wait_for_event completed — aborting OpenCode and finalizing turn`);
+        this.waitForEventForced = true;
         this.finalizeResponse(true);
         // Ensure DO clears runnerBusy even if no other events arrive
         this.agentClient.sendAgentStatus("idle");

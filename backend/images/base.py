@@ -147,10 +147,12 @@ def get_base_image() -> modal.Image:
                 "DISPLAY": ":99",
                 "HOME": "/root",
                 # Force image rebuild on deploy (change this value to trigger rebuild)
-                "IMAGE_BUILD_VERSION": "2026-03-10-v2-zod-v4",
+                "IMAGE_BUILD_VERSION": "2026-03-10-v3-bash-timeout-abort-fix",
                 "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
                 "AGENT_BROWSER_PROFILE": "/root/.agent-browser-profile",
                 "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright",
+                # 6 min default bash timeout (OpenCode default is 2 min)
+                "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": "360000",
             }
         )
     )
