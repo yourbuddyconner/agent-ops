@@ -82,6 +82,11 @@ def get_base_image() -> modal.Image:
             'curl -fsSL -o /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64"',
             "chmod +x /usr/local/bin/ttyd",
         )
+        # cloudflared (Cloudflare Quick Tunnels for unique per-tunnel hostnames)
+        .run_commands(
+            'curl -fsSL -o /usr/local/bin/cloudflared "https://github.com/cloudflare/cloudflared/releases/download/2026.2.0/cloudflared-linux-amd64"',
+            "chmod +x /usr/local/bin/cloudflared",
+        )
         # whisper.cpp (speech-to-text) — build from source with shared libs installed
         .apt_install("cmake")
         .run_commands(
