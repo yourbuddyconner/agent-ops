@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ActionDefinition, ActionSource, ActionContext, ActionResult } from '@valet/sdk';
-import { slackFetch } from './api.js';
+import { slackFetch, slackGet } from './api.js';
 
 /** Build a descriptive error from a Slack API response. */
 async function slackError(res: Response, data?: { ok: boolean; error?: string }): Promise<ActionResult> {
@@ -211,7 +211,7 @@ async function executeAction(
 
       case 'slack.list_channels': {
         // Single page — bot typically isn't in hundreds of channels
-        const res = await slackFetch('conversations.list', token, {
+        const res = await slackGet('conversations.list', token, {
           types: 'public_channel,private_channel',
           limit: 200,
           exclude_archived: true,
@@ -230,7 +230,7 @@ async function executeAction(
 
       case 'slack.read_history': {
         const p = readHistory.params.parse(params);
-        const res = await slackFetch('conversations.history', token, {
+        const res = await slackGet('conversations.history', token, {
           channel: p.channel,
           limit: p.limit || 20,
         });
@@ -244,7 +244,7 @@ async function executeAction(
 
       case 'slack.read_thread': {
         const p = readThread.params.parse(params);
-        const res = await slackFetch('conversations.replies', token, {
+        const res = await slackGet('conversations.replies', token, {
           channel: p.channel,
           ts: p.thread_ts,
           limit: 100,
@@ -259,7 +259,7 @@ async function executeAction(
 
       case 'slack.list_users': {
         // Single page — most workspaces under 200 humans
-        const res = await slackFetch('users.list', token, { limit: 200 });
+        const res = await slackGet('users.list', token, { limit: 200 });
         if (!res.ok) return slackError(res);
         const data = (await res.json()) as { ok: boolean; error?: string; members?: unknown[] };
         if (!data.ok) return slackError(res, data);
