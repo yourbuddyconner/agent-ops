@@ -76,7 +76,7 @@ export default tool({
     include_token: tool.schema
       .boolean()
       .optional()
-      .describe("Append token to URLs when available (default: true)"),
+      .describe("Append token to URLs when available (default: false)"),
     set_api_url_from: tool.schema
       .string()
       .optional()
@@ -114,7 +114,7 @@ export default tool({
       if (!tokenValue) {
         tokenValue = await mintTunnelToken(process.env.JWT_SECRET || "", sessionId) || undefined
       }
-      const shouldAppendToken = args.include_token !== false && !!tokenValue
+      const shouldAppendToken = args.include_token === true && !!tokenValue
 
       const params = new URLSearchParams({ sessionId })
       const res = await fetch(`http://localhost:9000/api/session-status?${params}`)

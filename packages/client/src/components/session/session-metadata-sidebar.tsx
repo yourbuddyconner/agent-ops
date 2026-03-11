@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from '@tanstack/react-router';
-import { useSession, useSessionGitState, useSessionChildren, useSessionFilesChanged, useSessionDoStatus, useDeleteSessionTunnel, useSessionToken } from '@/api/sessions';
+import { useSession, useSessionGitState, useSessionChildren, useSessionFilesChanged, useSessionDoStatus, useDeleteSessionTunnel } from '@/api/sessions';
 import { useDrawer } from '@/routes/sessions/$sessionId';
 import { Badge } from '@/components/ui/badge';
 import type { PRState, SessionFileChanged } from '@/api/types';
@@ -23,7 +23,7 @@ interface SessionMetadataSidebarProps {
 export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedModel, compact = false, embedded = false }: SessionMetadataSidebarProps) {
   const { data: session } = useSession(sessionId);
   const { data: doStatus } = useSessionDoStatus(sessionId);
-  const { data: tokenData } = useSessionToken(sessionId);
+
   const { data: gitState } = useSessionGitState(sessionId);
   const { data: childSessions } = useSessionChildren(sessionId);
   const { data: filesChanged } = useSessionFilesChanged(sessionId);
@@ -297,7 +297,7 @@ export function SessionMetadataSidebar({ sessionId, connectedUsers, selectedMode
                     <div className="ml-auto flex items-center gap-1.5">
                       {tunnel.url && (
                         <a
-                          href={buildTunnelOpenUrl(tunnel.url, tokenData?.token)}
+                          href={tunnel.url}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="rounded-sm border border-border/70 bg-surface-1 px-2 py-[2px] font-mono text-[9px] text-neutral-600 transition-colors hover:text-accent dark:bg-surface-2 dark:text-neutral-400 dark:hover:text-accent"
@@ -534,18 +534,6 @@ export function StatItem({ label, value }: { label: string; value: number | stri
       </span>
     </div>
   );
-}
-
-function buildTunnelOpenUrl(url: string, token?: string) {
-  if (!token) return url;
-  try {
-    const parsed = new URL(url);
-    parsed.searchParams.set('token', token);
-    return parsed.toString();
-  } catch {
-    const sep = url.includes('?') ? '&' : '?';
-    return `${url}${sep}token=${encodeURIComponent(token)}`;
-  }
 }
 
 function CopyableText({ text }: { text: string }) {
