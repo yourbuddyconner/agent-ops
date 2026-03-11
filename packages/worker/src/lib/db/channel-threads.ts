@@ -10,16 +10,21 @@ export async function getChannelThreadMapping(
   channelType: string,
   channelId: string,
   externalThreadId: string,
-): Promise<{ threadId: string; sessionId: string } | null> {
+  userId: string,
+): Promise<{ threadId: string; sessionId: string; lastSeenTs: string | null } | null> {
   const row = await db
     .prepare(
-      'SELECT thread_id, session_id FROM channel_thread_mappings WHERE channel_type = ? AND channel_id = ? AND external_thread_id = ?'
+      'SELECT thread_id, session_id, last_seen_ts FROM channel_thread_mappings WHERE channel_type = ? AND channel_id = ? AND external_thread_id = ? AND user_id = ?'
     )
-    .bind(channelType, channelId, externalThreadId)
+    .bind(channelType, channelId, externalThreadId, userId)
     .first();
 
   if (!row) return null;
-  return { threadId: row.thread_id as string, sessionId: row.session_id as string };
+  return {
+    threadId: row.thread_id as string,
+    sessionId: row.session_id as string,
+    lastSeenTs: row.last_seen_ts as string | null,
+  };
 }
 
 /**
@@ -48,6 +53,7 @@ export async function getOrCreateChannelThread(
     params.channelType,
     params.channelId,
     params.externalThreadId,
+    params.userId,
   );
   if (existing) {
     // Auto-reactivate if the thread was archived (no-op for active threads)
@@ -89,6 +95,7 @@ export async function getOrCreateChannelThread(
     params.channelType,
     params.channelId,
     params.externalThreadId,
+    params.userId,
   );
 
   // If we lost the race, clean up our orphaned thread
@@ -97,4 +104,23 @@ export async function getOrCreateChannelThread(
   }
 
   return winner!.threadId;
+}
+
+/**
+ * Update the last-seen cursor for a user's thread mapping.
+ */
+export async function updateThreadCursor(
+  db: D1Database,
+  channelType: string,
+  channelId: string,
+  externalThreadId: string,
+  userId: string,
+  lastSeenTs: string,
+): Promise<void> {
+  await db
+    .prepare(
+      'UPDATE channel_thread_mappings SET last_seen_ts = ? WHERE channel_type = ? AND channel_id = ? AND external_thread_id = ? AND user_id = ?'
+    )
+    .bind(lastSeenTs, channelType, channelId, externalThreadId, userId)
+    .run();
 }
