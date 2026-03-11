@@ -10,6 +10,8 @@ import { decryptString } from '../lib/crypto.js';
 import { dispatchOrchestratorPrompt } from '../lib/workflow-runtime.js';
 import { handleChannelCommand } from './channel-webhooks.js';
 import { getSlackUserInfo, getSlackBotInfo } from '../services/slack.js';
+import { buildThreadContext } from '../services/slack-threads.js';
+import { updateThreadCursor } from '../lib/db/channel-threads.js';
 
 export const slackEventsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -18,9 +20,13 @@ export const slackEventsRouter = new Hono<{ Bindings: Env; Variables: Variables 
  *
  * Routing rules:
  * 1. DMs (channel_type === 'im') → always route
- * 2. @mention (event.type === 'app_mention') → route + track thread
- * 3. Reply in a tracked thread → route
- * 4. Everything else → ignore (200 OK)
+ * 2. @mention (event.type === 'app_mention') → route to mentioning user's orchestrator
+ *    with thread context pulled from Slack API
+ * 3. Everything else → ignore (200 OK)
+ *
+ * FUTURE (push model): Non-mention messages in tracked threads could be broadcast
+ * to subscribed orchestrators for ambient awareness. See comments at routing decision
+ * points for hook locations.
  *
  * Bot replies always thread on the invoking message.
  */
@@ -166,7 +172,6 @@ slackEventsRouter.post('/slack/events', async (c) => {
   // ─── Routing decision ──────────────────────────────────────────────────
   const isDm = slackChannelType === 'im';
   const isMention = slackEventType === 'app_mention';
-  const isThreadReply = !!threadTs;
 
   let shouldRoute = false;
 
@@ -174,17 +179,11 @@ slackEventsRouter.post('/slack/events', async (c) => {
     // DMs → always route
     shouldRoute = true;
   } else if (isMention) {
-    // @mention → route + track thread for follow-ups
+    // @mention in any channel → route to mentioning user's orchestrator
     shouldRoute = true;
-  } else if (isThreadReply) {
-    // Thread reply → only route if we've seen a mention in this thread
-    shouldRoute = await db.isSlackBotThread(c.get('db'), teamId, message.channelId, threadTs);
-    if (!shouldRoute) {
-      console.log(`[Slack] Ignoring thread reply in untracked thread: channel=${message.channelId} thread=${threadTs}`);
-      return c.json({ ok: true });
-    }
   } else {
-    // Regular channel message, no mention, not in a thread → ignore
+    // Regular channel message (no mention) → ignore
+    // FUTURE: push-model hook — broadcast to subscribed orchestrators for ambient awareness
     console.log(`[Slack] Ignoring non-mention channel message: channel=${message.channelId}`);
     return c.json({ ok: true });
   }
@@ -210,21 +209,15 @@ slackEventsRouter.post('/slack/events', async (c) => {
     return c.json({ ok: true });
   }
 
-  // ─── Track @mention threads ────────────────────────────────────────────
-  if (isMention && threadId) {
-    await db.trackSlackBotThread(c.get('db'), {
-      id: crypto.randomUUID(),
-      teamId,
-      channelId: message.channelId,
-      threadTs: threadId,
-      userId,
-    });
+  // Build scope key and look up channel binding (DMs only — public channels use multi-orchestrator routing)
+  let binding: Awaited<ReturnType<typeof db.getChannelBindingByScopeKey>> = null;
+  if (isDm) {
+    const parts = transport.scopeKeyParts(message, userId);
+    const scopeKey = channelScopeKey(userId, parts.channelType, parts.channelId);
+    binding = await db.getChannelBindingByScopeKey(c.get('db'), scopeKey);
+  } else {
+    console.log(`[Slack] Public channel mention — skipping binding lookup, using multi-orchestrator routing`);
   }
-
-  // Build scope key and look up channel binding
-  const parts = transport.scopeKeyParts(message, userId);
-  const scopeKey = channelScopeKey(userId, parts.channelType, parts.channelId);
-  const binding = await db.getChannelBindingByScopeKey(c.get('db'), scopeKey);
 
   // ─── Resolve orchestrator thread ──────────────────────────────────────
   // Map the external channel thread to an orchestrator thread (session_threads).
@@ -253,6 +246,11 @@ slackEventsRouter.post('/slack/events', async (c) => {
           userId,
         });
         console.log(`[Slack] Resolved thread: external=${threadId} → orchestrator=${orchestratorThreadId} session=${targetSessionId}`);
+
+        // Set initial cursor for new thread mappings (public channels only)
+        if (orchestratorThreadId && !isDm && messageId) {
+          await updateThreadCursor(c.env.DB, 'slack', message.channelId, threadId, userId, messageId);
+        }
       } catch (err) {
         // Thread resolution is best-effort — don't block message dispatch
         console.error(`[Slack] Failed to resolve thread mapping:`, err);
@@ -318,8 +316,42 @@ slackEventsRouter.post('/slack/events', async (c) => {
     } catch (err) {
       console.error(`[Slack] Failed to route to session ${binding.sessionId}:`, err);
     }
-  } else {
-    console.log(`[Slack] No binding for scopeKey=${scopeKey}, falling through to orchestrator`);
+  } else if (isDm) {
+    console.log(`[Slack] No binding for DM, falling through to orchestrator`);
+  }
+
+  // ─── Pull thread context for public channel mentions ──────────────────
+  // FUTURE: push-model hook — in a push model, context would already be available
+  // from real-time broadcast. This pull path fetches on-demand from Slack API.
+  let contentWithContext = message.text || '[Attachment]';
+  if (!isDm && threadId) {
+    try {
+      // Look up existing cursor for this user's view of the thread
+      const existingMapping = await db.getChannelThreadMapping(
+        c.env.DB, 'slack', message.channelId, threadId, userId
+      );
+
+      const context = await buildThreadContext(
+        botToken,
+        message.channelId,
+        threadId,
+        existingMapping?.lastSeenTs || null,
+        messageId || threadId,
+      );
+
+      if (context) {
+        contentWithContext = `${context}\n\n${contentWithContext}`;
+      }
+
+      // Advance cursor to current message
+      if (existingMapping && messageId) {
+        await updateThreadCursor(c.env.DB, 'slack', message.channelId, threadId, userId, messageId);
+      }
+      // If no existing mapping, cursor will be set when getOrCreateChannelThread runs below
+    } catch (err) {
+      // Thread context is best-effort — don't block message dispatch
+      console.error(`[Slack] Failed to fetch thread context:`, err);
+    }
   }
 
   // Dispatch to orchestrator
@@ -333,7 +365,7 @@ slackEventsRouter.post('/slack/events', async (c) => {
   console.log(`[Slack] Orchestrator dispatch: userId=${userId} channelId=${dispatchChannelId}`);
   const result = await dispatchOrchestratorPrompt(c.env, {
     userId,
-    content: message.text || '[Attachment]',
+    content: contentWithContext,
     channelType: 'slack',
     channelId: dispatchChannelId,
     threadId: orchestratorThreadId,
