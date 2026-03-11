@@ -18,6 +18,7 @@ function SessionChatPage() {
 
   return (
     <ChatContainer
+      key={sessionId}
       sessionId={sessionId}
       initialThreadId={threadId}
     />
