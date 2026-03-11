@@ -1759,9 +1759,12 @@ export class SessionAgentDO {
       channelType || null, channelId || null, threadId || null
     );
 
-    // Increment thread message count for user message
+    // Increment thread message count for user message and notify UI of new thread
     if (threadId) {
       this.ctx.waitUntil(incrementThreadMessageCount(this.env.DB, threadId));
+      // Broadcast thread.created so the UI updates the thread list in real-time.
+      // Harmless if the thread already exists — the frontend just invalidates its cache.
+      this.broadcastToClients({ type: 'thread.created', threadId });
     }
 
     // Broadcast user message to all clients (includes author info + channel metadata)
