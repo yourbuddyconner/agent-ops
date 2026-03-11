@@ -3,7 +3,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
 import { useAuthStore } from '@/stores/auth';
 import { useLogout, useUpdateProfile } from '@/api/auth';
-import { useOrchestratorInfo, useUpdateOrchestratorIdentity, useCheckHandle, useNotificationPreferences, useUpdateNotificationPreferences, useIdentityLinks, useCreateIdentityLink, useDeleteIdentityLink } from '@/api/orchestrator';
+import { useOrchestratorInfo, useUpdateOrchestratorIdentity, useCheckHandle, useNotificationPreferences, useUpdateNotificationPreferences, useIdentityLinks, useDeleteIdentityLink } from '@/api/orchestrator';
 import { useAvailableModels } from '@/api/sessions';
 import type { ProviderModels } from '@/api/sessions';
 import type { QueueMode } from '@valet/shared';
@@ -318,49 +318,18 @@ function GitConfigSection() {
   );
 }
 
-const IDENTITY_PROVIDERS = [
-  { value: 'slack', label: 'Slack' },
-  { value: 'github', label: 'GitHub' },
-  { value: 'linear', label: 'Linear' },
-] as const;
 
 function IdentityLinksSection() {
   const { data: links, isLoading } = useIdentityLinks();
-  const createLink = useCreateIdentityLink();
   const deleteLink = useDeleteIdentityLink();
-  const [provider, setProvider] = React.useState('slack');
-  const [externalId, setExternalId] = React.useState('');
-  const [externalName, setExternalName] = React.useState('');
-  const [teamId, setTeamId] = React.useState('');
-
-  function handleCreate(e: React.FormEvent) {
-    e.preventDefault();
-    if (!externalId.trim()) return;
-    createLink.mutate(
-      {
-        provider,
-        externalId: externalId.trim(),
-        externalName: externalName.trim() || undefined,
-        teamId: teamId.trim() || undefined,
-      },
-      {
-        onSuccess: () => {
-          setExternalId('');
-          setExternalName('');
-          setTeamId('');
-        },
-      },
-    );
-  }
 
   return (
     <SettingsSection title="Linked Identities">
       <div className="space-y-4">
         <p className="text-sm text-neutral-500 dark:text-neutral-400">
-          Link your external identities (Slack, GitHub, etc.) so prompts from those platforms can be routed to your orchestrator.
+          External identities are linked automatically when you connect integrations. Prompts from linked platforms are routed to your orchestrator.
         </p>
 
-        {/* Existing links */}
         {isLoading ? (
           <div className="text-sm text-neutral-400 dark:text-neutral-500">Loading...</div>
         ) : links && links.length > 0 ? (
@@ -405,91 +374,8 @@ function IdentityLinksSection() {
             </table>
           </div>
         ) : (
-          <p className="text-sm text-neutral-400 dark:text-neutral-500">No linked identities yet.</p>
+          <p className="text-sm text-neutral-400 dark:text-neutral-500">No linked identities yet. Connect an integration to link automatically.</p>
         )}
-
-        {/* Add form */}
-        <form onSubmit={handleCreate} className="space-y-3">
-          <div className="grid grid-cols-2 gap-3 max-w-lg">
-            <div>
-              <label htmlFor="identity-provider" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                Provider
-              </label>
-              <select
-                id="identity-provider"
-                value={provider}
-                onChange={(e) => setProvider(e.target.value)}
-                className="mt-1 block w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
-              >
-                {IDENTITY_PROVIDERS.map((p) => (
-                  <option key={p.value} value={p.value}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label htmlFor="identity-external-id" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                External ID
-              </label>
-              <input
-                id="identity-external-id"
-                type="text"
-                value={externalId}
-                onChange={(e) => setExternalId(e.target.value)}
-                placeholder="U0123456789"
-                className="mt-1 block w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
-              />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3 max-w-lg">
-            <div>
-              <label htmlFor="identity-name" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                Display Name
-                <span className="ml-1 text-xs text-neutral-400">(optional)</span>
-              </label>
-              <input
-                id="identity-name"
-                type="text"
-                value={externalName}
-                onChange={(e) => setExternalName(e.target.value)}
-                placeholder="@johndoe"
-                className="mt-1 block w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
-              />
-            </div>
-            {provider === 'slack' && (
-              <div>
-                <label htmlFor="identity-team" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                  Team/Workspace ID
-                  <span className="ml-1 text-xs text-neutral-400">(optional)</span>
-                </label>
-                <input
-                  id="identity-team"
-                  type="text"
-                  value={teamId}
-                  onChange={(e) => setTeamId(e.target.value)}
-                  placeholder="T0123456789"
-                  className="mt-1 block w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400"
-                />
-              </div>
-            )}
-          </div>
-          <div className="flex items-center gap-3">
-            <Button
-              type="submit"
-              disabled={!externalId.trim() || createLink.isPending}
-            >
-              {createLink.isPending ? 'Linking...' : 'Link Identity'}
-            </Button>
-            {createLink.isError && (
-              <span className="text-sm text-red-600 dark:text-red-400">
-                {(createLink.error as any)?.message?.includes('409')
-                  ? 'This identity is already linked'
-                  : 'Failed to link identity'}
-              </span>
-            )}
-          </div>
-        </form>
       </div>
     </SettingsSection>
   );
