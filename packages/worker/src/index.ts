@@ -45,6 +45,7 @@ import { pluginsRouter } from './routes/plugins.js';
 import { skillsRouter } from './routes/skills.js';
 import { orgDefaultSkillsRouter } from './routes/org-default-skills.js';
 import { avatarsRouter } from './routes/avatars.js';
+import { repoProviderRouter } from './routes/repo-providers.js';
 import {
   enqueueWorkflowApprovalNotificationIfMissing,
   getTerminatedOrchestratorSessions,
@@ -177,6 +178,7 @@ app.route('/api/invites', invitesApiRouter);
 app.route('/api/usage', usageRouter);
 app.route('/api/plugins', pluginsRouter);
 app.route('/api/skills', skillsRouter);
+app.route('/api/repo-providers', repoProviderRouter);
 
 // Agent container proxy (protected)
 app.use('/agent/*', authMiddleware);
