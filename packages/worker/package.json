@@ -25,6 +25,7 @@
     "@valet/plugin-email-auth": "workspace:*",
     "@valet/plugin-github": "workspace:*",
     "@valet/plugin-gmail": "workspace:*",
+    "@valet/plugin-google-auth": "workspace:*",
     "@valet/plugin-google-calendar": "workspace:*",
     "@valet/plugin-google-docs": "workspace:*",
     "@valet/plugin-google-drive": "workspace:*",

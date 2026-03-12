@@ -1,0 +1,5 @@
+name: google-auth
+version: 0.1.0
+description: Google OAuth identity provider
+icon: google
+enabled: true

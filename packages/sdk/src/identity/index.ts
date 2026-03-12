@@ -17,6 +17,7 @@ export interface CallbackData {
   email?: string;
   password?: string;
   state?: string;
+  redirectUri?: string;
 }
 
 export interface IdentityResult {
