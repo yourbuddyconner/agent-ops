@@ -38,6 +38,7 @@ function rowToIdentity(row: typeof orchestratorIdentities.$inferSelect): Orchest
     handle: row.handle,
     avatar: row.avatar || undefined,
     customInstructions: row.customInstructions || undefined,
+    personaId: row.personaId || undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -65,7 +66,7 @@ export async function getOrchestratorIdentityByHandle(db: AppDb, handle: string,
 
 export async function createOrchestratorIdentity(
   db: AppDb,
-  data: { id: string; userId: string; name: string; handle: string; avatar?: string; customInstructions?: string; orgId?: string }
+  data: { id: string; userId: string; name: string; handle: string; avatar?: string; customInstructions?: string; personaId?: string; orgId?: string }
 ): Promise<OrchestratorIdentity> {
   const orgId = data.orgId || 'default';
 
@@ -78,6 +79,7 @@ export async function createOrchestratorIdentity(
     handle: data.handle,
     avatar: data.avatar || null,
     customInstructions: data.customInstructions || null,
+    personaId: data.personaId || null,
   });
 
   return {
@@ -89,6 +91,7 @@ export async function createOrchestratorIdentity(
     handle: data.handle,
     avatar: data.avatar,
     customInstructions: data.customInstructions,
+    personaId: data.personaId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -97,7 +100,7 @@ export async function createOrchestratorIdentity(
 export async function updateOrchestratorIdentity(
   db: AppDb,
   id: string,
-  updates: Partial<Pick<OrchestratorIdentity, 'name' | 'handle' | 'avatar' | 'customInstructions'>>
+  updates: Partial<Pick<OrchestratorIdentity, 'name' | 'handle' | 'avatar' | 'customInstructions' | 'personaId'>>
 ): Promise<void> {
   const setValues: Record<string, unknown> = {};
 
@@ -105,6 +108,7 @@ export async function updateOrchestratorIdentity(
   if (updates.handle !== undefined) setValues.handle = updates.handle;
   if (updates.avatar !== undefined) setValues.avatar = updates.avatar || null;
   if (updates.customInstructions !== undefined) setValues.customInstructions = updates.customInstructions || null;
+  if (updates.personaId !== undefined) setValues.personaId = updates.personaId || null;
 
   if (Object.keys(setValues).length === 0) return;
 

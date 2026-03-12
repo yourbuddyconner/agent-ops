@@ -703,6 +703,7 @@ export interface OrchestratorIdentity {
   handle: string;
   avatar?: string;
   customInstructions?: string;
+  personaId?: string;
   createdAt: string;
   updatedAt: string;
 }
