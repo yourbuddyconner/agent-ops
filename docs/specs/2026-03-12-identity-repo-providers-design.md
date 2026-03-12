@@ -32,8 +32,8 @@ interface IdentityProvider {
   readonly protocol: 'oauth2' | 'oidc' | 'saml' | 'credentials';
 
   // Phase 1: generate the redirect URL (OAuth/OIDC/SAML)
-  // Returns null for 'credentials' protocol (no redirect needed)
-  getAuthUrl?(config: ProviderConfig, callbackUrl: string, state: string): string;
+  // Required for redirect-based protocols. Not present on 'credentials' protocol.
+  getAuthUrl(config: ProviderConfig, callbackUrl: string, state: string): string;
 
   // Phase 2: process the callback or direct login
   // OAuth/OIDC: code exchange. SAML: assertion parsing. Credentials: password verification.
@@ -76,7 +76,7 @@ interface IdentityResult {
 1. Login page queries `GET /api/auth/providers` — returns enabled identity providers.
 2. For redirect-based providers (OAuth/OIDC/SAML): user clicks button, worker calls `getAuthUrl()`, redirects out, callback returns to generic `GET/POST /auth/:provider/callback`, worker calls `handleCallback()`.
 3. For credentials protocol (email/password): login form POSTs directly to `POST /auth/email/login`, worker calls `handleCallback()` with email+password.
-4. All paths produce an `IdentityResult`. Existing user-upsert logic (find by external ID, then email, then create) becomes provider-agnostic.
+4. All paths produce an `IdentityResult`. Existing user-upsert logic (find by external ID, then email, then create) becomes provider-agnostic. The `auth_sessions` table's `provider` column stores the identity provider ID (e.g., `'github'`, `'google'`, `'email'`, `'keycloak'`).
 
 **Scopes:**
 
@@ -107,13 +107,16 @@ interface RepoProvider {
 
   validateRepo(credential: RepoCredential, repoUrl: string): Promise<RepoValidation>;
 
-  // Sandbox credential injection
+  // Sandbox credential injection — full session setup (env vars + git config)
   assembleSessionEnv(credential: RepoCredential, opts: {
     repoUrl: string;
     branch?: string;
     ref?: string;
     gitUser: { name: string; email: string };
   }): Promise<SessionRepoEnv>;
+
+  // Mint a fresh short-lived access token (for token refresh during long sessions)
+  mintToken(credential: RepoCredential): Promise<{ accessToken: string; expiresAt?: string }>;
 
   // Provider-specific agent tools in their own namespace
   getActionSource?(credential: RepoCredential): ActionSource;
@@ -170,22 +173,41 @@ The existing `credentials` table extends to support org-level credentials via a 
 
 **Schema migration:**
 
+SQLite does not support `ALTER COLUMN` or `DROP COLUMN` (reliably). The migration uses the standard SQLite table-recreation pattern:
+
 ```sql
--- Replace user_id with polymorphic owner
-ALTER TABLE credentials ADD COLUMN owner_type TEXT;   -- 'user' | 'org'
-ALTER TABLE credentials ADD COLUMN owner_id TEXT;     -- user ID or org ID
-ALTER TABLE credentials ADD COLUMN metadata TEXT;     -- JSON: non-secret provider-specific data
+-- 1. Create new table with polymorphic owner
+CREATE TABLE credentials_new (
+  id TEXT PRIMARY KEY,
+  owner_type TEXT NOT NULL,              -- 'user' | 'org'
+  owner_id TEXT NOT NULL,                -- user ID or org ID
+  provider TEXT NOT NULL,
+  credential_type TEXT NOT NULL DEFAULT 'oauth2',
+  encrypted_data TEXT NOT NULL,
+  metadata TEXT,                         -- JSON: non-secret provider-specific data
+  scopes TEXT,
+  expires_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
--- Backfill existing rows
-UPDATE credentials SET owner_type = 'user', owner_id = user_id;
+-- 2. Backfill from existing table
+INSERT INTO credentials_new (id, owner_type, owner_id, provider, credential_type, encrypted_data, scopes, expires_at, created_at, updated_at)
+  SELECT id, 'user', user_id, provider, COALESCE(credential_type, 'oauth2'), encrypted_data, scopes, expires_at, created_at, updated_at
+  FROM credentials;
 
--- New unique constraint
+-- 3. Swap tables
+DROP TABLE credentials;
+ALTER TABLE credentials_new RENAME TO credentials;
+
+-- 4. Create indexes
 CREATE UNIQUE INDEX credentials_owner_unique
   ON credentials(owner_type, owner_id, provider, credential_type);
-
--- Drop old unique index on (user_id, provider)
--- Drop user_id column (or keep as computed/derived for backward compat during migration)
+CREATE INDEX credentials_owner_lookup
+  ON credentials(owner_type, owner_id);
 ```
+
+Note: `owner_id` is not a foreign key — it references either `users(id)` or `organizations(id)` depending on `owner_type`. Cascade cleanup is handled in application code (user deletion and org deletion handlers).
 
 **Example rows after migration:**
 
@@ -201,7 +223,8 @@ CREATE UNIQUE INDEX credentials_owner_unique
 1. Determine repo provider from the repo URL (pattern matching or explicit selection).
 2. Look up org-level installation: `owner_type='org', owner_id=:orgId, provider=:provider, credential_type='app_install'`.
 3. Fall back to user-level personal installation: `owner_type='user', owner_id=:userId, provider=:provider, credential_type='app_install'`.
-4. Pass resolved credential to `repoProvider.assembleSessionEnv()`.
+4. If no installation found at either level, session creation fails with a clear error: "No {provider} installation covers this repo. Ask your org admin to install the Valet app, or install it on your personal account."
+5. Pass resolved credential to `repoProvider.assembleSessionEnv()`.
 
 **Credential cache in SessionAgentDO:**
 
@@ -222,11 +245,14 @@ All git configuration moves from `start.sh` to the runner process. At startup, a
 ```bash
 # Runner writes this git config:
 git config --global credential.helper \
-  '!f() { curl -s http://localhost:9000/git/credentials; }; f'
+  '!f() { curl -s --data-binary @- http://localhost:9000/git/credentials; }; f'
 ```
 
+Git pipes the request context (`protocol`, `host`, etc.) to the credential helper's stdin. The shell wrapper forwards this to the runner endpoint via `--data-binary @-`, allowing the runner to discriminate by host if needed (e.g., multiple git remotes).
+
 The runner's Hono gateway (`/git/credentials` endpoint):
-- Returns the current token from memory.
+- Parses the git credential request (host, protocol).
+- Returns credentials in git's required `key=value\n` format: `username=oauth2\npassword=<token>\n`.
 - If the token is expired, requests a refresh from the DO over the WebSocket, waits for the response, returns the fresh token.
 - Provider-agnostic — works identically for GitHub App tokens (1-hour TTL) and code.storage JWTs.
 
@@ -235,13 +261,21 @@ The runner's Hono gateway (`/git/credentials` endpoint):
 1. Git operation triggers the credential helper.
 2. Runner checks token expiry in memory.
 3. If expired, sends `repo:refresh-token` message over WebSocket to DO.
-4. DO resolves the repo provider, calls `assembleSessionEnv()` to mint a fresh token.
+4. DO resolves the repo provider, calls `mintToken()` to get a fresh access token.
 5. DO sends new token back over WebSocket.
 6. Runner updates in-memory token, credential helper returns it to git.
 
-**Environment variables:**
+**Repo clone moves to the runner:**
 
-The sandbox receives `REPO_TOKEN` (not `GITHUB_TOKEN`) and `REPO_URL` as provider-agnostic env vars. `start.sh` no longer handles git credential configuration — that responsibility moves entirely to the runner.
+Currently `start.sh` clones the repo at sandbox boot using env vars. Since the runner now owns git credential configuration and receives credentials from the DO after connecting, the repo clone must also move to the runner. The sequence:
+
+1. `start.sh` starts OS-level services (Xvfb, code-server, ttyd) — no git operations.
+2. Runner starts, connects to DO via WebSocket, receives session config including repo credentials.
+3. Runner applies git config and sets up the credential helper endpoint.
+4. Runner clones the repo (shallow, single-branch for ephemeral sessions).
+5. Runner signals "ready" to the DO.
+
+This eliminates the current ordering dependency where `start.sh` needs `GITHUB_TOKEN` as an env var before the runner connects. The sandbox env vars still include `REPO_URL` and `REPO_BRANCH` for reference, but `REPO_TOKEN` is no longer injected as an env var — it's held only in runner memory and served via the credential helper.
 
 ### 5. Plugin Structure
 
