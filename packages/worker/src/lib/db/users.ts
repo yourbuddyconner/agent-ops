@@ -150,6 +150,27 @@ export async function backfillGitConfig(
   return getUserById(db, userId);
 }
 
+export async function updateUserPasswordHash(
+  db: AppDb,
+  userId: string,
+  passwordHash: string,
+  identityProvider: string,
+): Promise<void> {
+  await db
+    .update(users)
+    .set({ passwordHash, identityProvider, updatedAt: sql`datetime('now')` })
+    .where(eq(users.id, userId));
+}
+
+export async function findUserWithPasswordHash(
+  db: AppDb,
+  email: string,
+): Promise<(User & { passwordHash: string | null }) | null> {
+  const row = await db.select().from(users).where(eq(users.email, email)).get();
+  if (!row) return null;
+  return { ...rowToUser(row), passwordHash: row.passwordHash };
+}
+
 export async function updateUserRole(db: AppDb, userId: string, role: UserRole): Promise<void> {
   await db
     .update(users)

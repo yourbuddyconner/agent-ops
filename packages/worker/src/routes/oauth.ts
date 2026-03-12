@@ -1,7 +1,10 @@
 import { Hono } from 'hono';
 import type { Env, Variables } from '../env.js';
 import { signJWT, verifyJWT } from '../lib/jwt.js';
+import { identityRegistry } from '../identity/registry.js';
+import { getEnvString } from '../env.js';
 import * as oauthService from '../services/oauth.js';
+import type { ProviderConfig } from '@valet/sdk/identity';
 
 export const oauthRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -9,6 +12,7 @@ export const oauthRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 async function createStateJWT(env: Env, provider: string, inviteCode?: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const payload: any = { sub: provider, sid: crypto.randomUUID(), iat: now, exp: now + 5 * 60 };
   if (inviteCode) {
     payload.invite_code = inviteCode;
@@ -16,136 +20,169 @@ async function createStateJWT(env: Env, provider: string, inviteCode?: string): 
   return signJWT(payload, env.ENCRYPTION_KEY);
 }
 
-async function parseStateJWT(state: string, env: Env): Promise<{ valid: boolean; inviteCode?: string }> {
+async function parseStateJWT(state: string, env: Env): Promise<{ valid: boolean; inviteCode?: string; provider?: string }> {
   const payload = await verifyJWT(state, env.ENCRYPTION_KEY);
   if (!payload) return { valid: false };
-  return { valid: true, inviteCode: (payload as any).invite_code };
+  return {
+    valid: true,
+    inviteCode: (payload as any).invite_code,
+    provider: (payload as any).sub,
+  };
 }
 
 function getFrontendUrl(env: Env): string {
   return env.FRONTEND_URL || 'http://localhost:5173';
 }
 
-function getWorkerUrl(env: Env, req: Request): string {
+function getWorkerUrl(_env: Env, req: Request): string {
   const url = new URL(req.url);
   return `${url.protocol}//${url.host}`;
 }
 
-// ─── GitHub OAuth ─────────────────────────────────────────────────────────────
+function resolveProviderConfig(env: Env, provider: { configKeys: string[] }): ProviderConfig {
+  const config: ProviderConfig = {};
+  for (const key of provider.configKeys) {
+    const value = getEnvString(env, key);
+    if (value) {
+      if (key.endsWith('_CLIENT_ID')) config.clientId = value;
+      else if (key.endsWith('_CLIENT_SECRET')) config.clientSecret = value;
+      else config[key] = value;
+    }
+  }
+  return config;
+}
 
-/**
- * GET /auth/github — Redirect to GitHub OAuth
- */
-oauthRouter.get('/github', async (c) => {
-  const inviteCode = c.req.query('invite_code');
-  const state = await createStateJWT(c.env, 'github', inviteCode);
-  const workerUrl = getWorkerUrl(c.env, c.req.raw);
+// ─── Public Routes ───────────────────────────────────────────────────────────
 
-  const params = new URLSearchParams({
-    client_id: c.env.GITHUB_CLIENT_ID,
-    redirect_uri: `${workerUrl}/auth/github/callback`,
-    scope: 'repo read:user user:email',
-    state,
-  });
-
-  return c.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
+// GET /auth/providers — list enabled identity providers (no auth required)
+oauthRouter.get('/providers', async (c) => {
+  const providers = identityRegistry.listEnabled();
+  return c.json(providers.map(p => ({
+    id: p.id,
+    displayName: p.displayName,
+    icon: p.icon,
+    brandColor: p.brandColor,
+    protocol: p.protocol,
+  })));
 });
 
-/**
- * GET /auth/github/callback — Exchange code for token, find/create user, issue session
- */
-oauthRouter.get('/github/callback', async (c) => {
-  const frontendUrl = getFrontendUrl(c.env);
-  const code = c.req.query('code');
-  const state = c.req.query('state');
+// POST /auth/email/login — email/password login
+oauthRouter.post('/email/login', async (c) => {
+  const { email, password } = await c.req.json<{ email: string; password: string }>();
 
-  if (!code || !state) {
-    return c.redirect(`${frontendUrl}/login?error=missing_params`);
-  }
-
-  const stateResult = await parseStateJWT(state, c.env);
-  if (!stateResult.valid) {
-    return c.redirect(`${frontendUrl}/login?error=invalid_state`);
+  if (!email || !password) {
+    return c.json({ error: 'Email and password are required' }, 400);
   }
 
   try {
+    const result = await oauthService.handleEmailLogin(c.env, { email, password });
+    if (!result.ok) return c.json({ error: result.error }, 401);
+    return c.json({ sessionToken: result.sessionToken });
+  } catch (err) {
+    console.error('Email login error:', err);
+    return c.json({ error: 'login_failed' }, 500);
+  }
+});
+
+// POST /auth/email/register — email/password registration
+oauthRouter.post('/email/register', async (c) => {
+  const { email, password, name, inviteCode } = await c.req.json<{
+    email: string;
+    password: string;
+    name?: string;
+    inviteCode?: string;
+  }>();
+
+  if (!email || !password) {
+    return c.json({ error: 'Email and password are required' }, 400);
+  }
+
+  try {
+    const result = await oauthService.handleEmailRegister(c.env, { email, password, name, inviteCode });
+    if (!result.ok) return c.json({ error: result.error }, 400);
+    return c.json({ sessionToken: result.sessionToken });
+  } catch (err) {
+    console.error('Email register error:', err);
+    return c.json({ error: 'registration_failed' }, 500);
+  }
+});
+
+// GET /auth/:provider — redirect to identity provider (OAuth/OIDC/SAML)
+oauthRouter.get('/:provider', async (c) => {
+  const providerId = c.req.param('provider');
+  const provider = identityRegistry.get(providerId);
+  if (!provider) return c.redirect(`${getFrontendUrl(c.env)}/login?error=unknown_provider`);
+  if (provider.protocol === 'credentials') return c.redirect(`${getFrontendUrl(c.env)}/login?error=use_form`);
+  if (!provider.getAuthUrl) return c.redirect(`${getFrontendUrl(c.env)}/login?error=no_redirect`);
+
+  const inviteCode = c.req.query('invite_code');
+  const state = await createStateJWT(c.env, providerId, inviteCode);
+  const workerUrl = getWorkerUrl(c.env, c.req.raw);
+  const callbackUrl = `${workerUrl}/auth/${providerId}/callback`;
+  const config = resolveProviderConfig(c.env, provider);
+  const authUrl = provider.getAuthUrl(config, callbackUrl, state);
+
+  return c.redirect(authUrl);
+});
+
+// GET /auth/:provider/callback — handle OAuth/OIDC callback
+oauthRouter.get('/:provider/callback', async (c) => {
+  const frontendUrl = getFrontendUrl(c.env);
+  const providerId = c.req.param('provider');
+  const code = c.req.query('code');
+  const state = c.req.query('state');
+
+  if (!code || !state) return c.redirect(`${frontendUrl}/login?error=missing_params`);
+
+  const stateResult = await parseStateJWT(state, c.env);
+  if (!stateResult.valid) return c.redirect(`${frontendUrl}/login?error=invalid_state`);
+
+  const provider = identityRegistry.get(providerId);
+  if (!provider) return c.redirect(`${frontendUrl}/login?error=unknown_provider`);
+
+  try {
     const workerUrl = getWorkerUrl(c.env, c.req.raw);
-    const result = await oauthService.handleGitHubCallback(c.env, {
+    const config = resolveProviderConfig(c.env, provider);
+    const identity = await provider.handleCallback(config, {
       code,
-      inviteCode: stateResult.inviteCode,
-      workerUrl,
+      state,
+      redirectUri: `${workerUrl}/auth/${providerId}/callback`,
     });
 
-    if (!result.ok) {
-      return c.redirect(`${frontendUrl}/login?error=${result.error}`);
-    }
+    const result = await oauthService.finalizeIdentityLogin(c.env, identity, providerId, stateResult.inviteCode);
+    if (!result.ok) return c.redirect(`${frontendUrl}/login?error=${result.error}`);
 
     return c.redirect(
-      `${frontendUrl}/auth/callback?token=${encodeURIComponent(result.sessionToken)}&provider=github`
+      `${frontendUrl}/auth/callback?token=${encodeURIComponent(result.sessionToken)}&provider=${providerId}`
     );
   } catch (err) {
-    console.error('GitHub OAuth error:', err);
+    console.error(`${providerId} OAuth error:`, err);
     return c.redirect(`${frontendUrl}/login?error=oauth_error`);
   }
 });
 
-// ─── Google OAuth ─────────────────────────────────────────────────────────────
-
-/**
- * GET /auth/google — Redirect to Google OAuth
- */
-oauthRouter.get('/google', async (c) => {
-  const inviteCode = c.req.query('invite_code');
-  const state = await createStateJWT(c.env, 'google', inviteCode);
-  const workerUrl = getWorkerUrl(c.env, c.req.raw);
-
-  const params = new URLSearchParams({
-    client_id: c.env.GOOGLE_CLIENT_ID,
-    redirect_uri: `${workerUrl}/auth/google/callback`,
-    response_type: 'code',
-    scope: 'openid email profile',
-    state,
-    access_type: 'offline',
-    prompt: 'consent',
-  });
-
-  return c.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
-});
-
-/**
- * GET /auth/google/callback — Exchange code for token, find/create user, issue session
- */
-oauthRouter.get('/google/callback', async (c) => {
+// POST /auth/:provider/callback — handle SAML POST callback
+oauthRouter.post('/:provider/callback', async (c) => {
   const frontendUrl = getFrontendUrl(c.env);
-  const code = c.req.query('code');
-  const state = c.req.query('state');
-
-  if (!code || !state) {
-    return c.redirect(`${frontendUrl}/login?error=missing_params`);
-  }
-
-  const stateResult = await parseStateJWT(state, c.env);
-  if (!stateResult.valid) {
-    return c.redirect(`${frontendUrl}/login?error=invalid_state`);
-  }
+  const providerId = c.req.param('provider');
+  const provider = identityRegistry.get(providerId);
+  if (!provider) return c.redirect(`${frontendUrl}/login?error=unknown_provider`);
 
   try {
-    const workerUrl = getWorkerUrl(c.env, c.req.raw);
-    const result = await oauthService.handleGoogleCallback(c.env, {
-      code,
-      inviteCode: stateResult.inviteCode,
-      workerUrl,
+    const body = await c.req.parseBody();
+    const config = resolveProviderConfig(c.env, provider);
+    const identity = await provider.handleCallback(config, {
+      samlResponse: body.SAMLResponse as string,
     });
 
-    if (!result.ok) {
-      return c.redirect(`${frontendUrl}/login?error=${result.error}`);
-    }
+    const result = await oauthService.finalizeIdentityLogin(c.env, identity, providerId);
+    if (!result.ok) return c.redirect(`${frontendUrl}/login?error=${result.error}`);
 
     return c.redirect(
-      `${frontendUrl}/auth/callback?token=${encodeURIComponent(result.sessionToken)}&provider=google`
+      `${frontendUrl}/auth/callback?token=${encodeURIComponent(result.sessionToken)}&provider=${providerId}`
     );
   } catch (err) {
-    console.error('Google OAuth error:', err);
-    return c.redirect(`${frontendUrl}/login?error=oauth_error`);
+    console.error(`${providerId} SAML error:`, err);
+    return c.redirect(`${frontendUrl}/login?error=auth_error`);
   }
 });
