@@ -3,7 +3,32 @@ import { api } from './client';
 import { useAuthStore } from '@/stores/auth';
 import type { QueueMode, User, UserCredential } from '@valet/shared';
 
+// --- Auth Provider Discovery (unauthenticated, hits /auth not /api) ---
+
+export interface AuthProviderInfo {
+  id: string;
+  displayName: string;
+  icon: string;
+  brandColor?: string;
+  protocol: 'oauth2' | 'oidc' | 'saml' | 'credentials';
+}
+
+function getWorkerBaseUrl(): string {
+  const apiUrl = import.meta.env.VITE_API_URL;
+  if (apiUrl) {
+    return apiUrl.replace(/\/api$/, '');
+  }
+  return 'http://localhost:8787';
+}
+
+export async function fetchAuthProviders(): Promise<AuthProviderInfo[]> {
+  const res = await fetch(`${getWorkerBaseUrl()}/auth/providers`);
+  if (!res.ok) throw new Error('Failed to fetch auth providers');
+  return res.json();
+}
+
 export const authKeys = {
+  providers: ['auth', 'providers'] as const,
   credentials: () => ['auth', 'credentials'] as const,
 };
 
