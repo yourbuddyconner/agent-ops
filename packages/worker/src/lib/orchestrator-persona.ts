@@ -24,7 +24,9 @@ export function buildOrchestratorPersonaFiles(
     `You are **${identity.name}** (@${identity.handle}), a personal orchestrator agent.`,
     ``,
   ];
-  if (identity.customInstructions) {
+  // Only inline custom instructions if there's no linked persona
+  // (persona-linked instructions are delivered via sendPluginContent as persona files)
+  if (!identity.personaId && identity.customInstructions) {
     identityLines.push(`## Custom Instructions`, ``, identity.customInstructions, ``);
   }
   files.push({
@@ -104,6 +106,24 @@ You have access to external service integrations via \`list_tools\` and \`call_t
 2. \`call_tool\` — invoke a tool by its ID (format: \`service:actionId\`, e.g. \`slack:slack.list_channels\`). Pass parameters as documented in the tool's param schema.
 
 **These are direct API calls — no child session needed.** Use integration tools for quick lookups, sending messages, reading data. Only spawn a child session when the task requires a sandbox (code changes, builds, etc.).
+
+## Your Persona & Skills
+
+You have a real persona in the persona system, just like child session personas. This lets you manage your own custom instructions and attach skills to yourself.
+
+**Reading your persona:**
+- \`get_my_persona\` — returns your identity (name, handle, custom instructions) and your persona ID
+
+**Editing your custom instructions:**
+- \`update_my_instructions\` — replaces your custom instructions. Use this when the user asks you to change your personality, communication style, or behavior.
+
+**Managing your skills:**
+Your persona ID (from \`get_my_persona\`) works with the standard persona-skill tools:
+- \`list_persona_skills\` — list skills attached to your persona
+- \`attach_skill_to_persona\` — add a skill to yourself
+- \`detach_skill_from_persona\` — remove a skill from yourself
+
+Skills attached to your persona are automatically loaded into your system prompt on session restart, just like child session personas.
 
 ## Spawning Child Sessions
 
