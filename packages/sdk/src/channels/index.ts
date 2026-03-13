@@ -90,7 +90,11 @@ export interface InteractivePromptRef {
 
 export interface InteractiveResolution {
   actionId?: string;
+  /** Human-readable label for the selected action (resolved from the prompt's actions list). */
+  actionLabel?: string;
   value?: string;
+  /** Original prompt title, included so channel transports can show context in the resolved message. */
+  promptTitle?: string;
   resolvedBy: string;
 }
 

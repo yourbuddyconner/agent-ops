@@ -578,8 +578,9 @@ export class SlackTransport implements ChannelTransport {
     } else if (resolution.actionId === 'deny') {
       statusText = `❌ Denied by ${resolution.resolvedBy}`;
       if (resolution.value) statusText += `: ${resolution.value}`;
-    } else if (resolution.actionId) {
-      statusText = `Resolved: *${resolution.actionId}* by ${resolution.resolvedBy}`;
+    } else if (resolution.actionLabel || resolution.actionId) {
+      const label = resolution.actionLabel || resolution.actionId;
+      statusText = `*${label}* — selected by ${resolution.resolvedBy}`;
     } else if (resolution.value) {
       const preview = resolution.value.length > 100
         ? resolution.value.slice(0, 97) + '...'
@@ -587,6 +588,11 @@ export class SlackTransport implements ChannelTransport {
       statusText = `Answered by ${resolution.resolvedBy}: ${preview}`;
     } else {
       statusText = `Resolved by ${resolution.resolvedBy}`;
+    }
+
+    // Prepend original question for context
+    if (resolution.promptTitle) {
+      statusText = `${resolution.promptTitle}\n\n${statusText}`;
     }
 
     const blocks = [

@@ -8951,9 +8951,20 @@ export class SessionAgentDO {
 
     const row = rows[0];
     const promptType = row.type as string;
+    const promptTitle = (row.title as string) || '';
     const requestId = row.request_id as string | null;
     const context = row.context ? JSON.parse(row.context as string) : {};
     const channelRefsJson = (row.channel_refs as string) || null;
+
+    // Resolve actionId → human-readable label from the stored actions list
+    let actionLabel: string | undefined;
+    if (resolution.actionId && row.actions) {
+      try {
+        const actions = JSON.parse(row.actions as string) as Array<{ id: string; label: string }>;
+        const match = actions.find(a => a.id === resolution.actionId);
+        if (match) actionLabel = match.label;
+      } catch { /* best-effort */ }
+    }
 
     // Delete the row
     this.ctx.storage.sql.exec('DELETE FROM interactive_prompts WHERE id = ?', promptId);
@@ -9043,8 +9054,8 @@ export class SessionAgentDO {
         this.appendAuditLog('agent.tool_call', `Action ${toolId} denied${reason ? `: ${reason}` : ''}`, undefined, { invocationId: promptId });
       }
     } else if (promptType === 'question') {
-      // Send answer to runner
-      const answer = resolution.actionId || resolution.value || '';
+      // Send answer to runner — use the human-readable label when available
+      const answer = actionLabel || resolution.value || resolution.actionId || '';
       this.sendToRunner({
         type: 'answer',
         questionId: promptId,
@@ -9072,15 +9083,19 @@ export class SessionAgentDO {
 
     // Resolve display name and update channel messages
     if (channelRefsJson) {
-      // Resolve display name for resolvedBy
-      let displayResolution = { ...resolution };
+      // Enrich resolution with label, title, and display name
+      let displayResolution: InteractiveResolution = {
+        ...resolution,
+        ...(actionLabel ? { actionLabel } : {}),
+        ...(promptTitle ? { promptTitle } : {}),
+      };
       if (resolution.resolvedBy && userId) {
         try {
           const user = await getUserById(this.appDb, resolution.resolvedBy);
           if (user?.name) {
-            displayResolution = { ...resolution, resolvedBy: user.name };
+            displayResolution = { ...displayResolution, resolvedBy: user.name };
           } else if (user?.email) {
-            displayResolution = { ...resolution, resolvedBy: user.email };
+            displayResolution = { ...displayResolution, resolvedBy: user.email };
           }
         } catch { /* best-effort */ }
       }
