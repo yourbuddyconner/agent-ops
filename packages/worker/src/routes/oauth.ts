@@ -12,8 +12,24 @@ export const oauthRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const MAX_TRACKED_EMAILS = 10_000;
 
 const loginAttempts = new Map<string, { count: number; firstAttempt: number }>();
+
+/** Evict expired entries when the map exceeds the size cap. */
+function evictExpiredAttempts(): void {
+  if (loginAttempts.size <= MAX_TRACKED_EMAILS) return;
+  const now = Date.now();
+  for (const [key, entry] of loginAttempts) {
+    if (now - entry.firstAttempt > LOCKOUT_WINDOW_MS) loginAttempts.delete(key);
+  }
+  // If still over limit after evicting expired, drop oldest entries
+  if (loginAttempts.size > MAX_TRACKED_EMAILS) {
+    const excess = loginAttempts.size - MAX_TRACKED_EMAILS;
+    const keys = loginAttempts.keys();
+    for (let i = 0; i < excess; i++) keys.next().value && loginAttempts.delete(keys.next().value!);
+  }
+}
 
 function checkLoginAttempts(email: string): { allowed: boolean; retryAfterSeconds?: number } {
   const key = email.toLowerCase();
@@ -40,6 +56,7 @@ function recordFailedLogin(email: string): void {
   } else {
     entry.count++;
   }
+  evictExpiredAttempts();
 }
 
 function clearLoginAttempts(email: string): void {

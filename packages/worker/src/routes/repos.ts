@@ -74,6 +74,7 @@ async function getGitHubToken(env: Env, userId: string): Promise<string> {
 reposRouter.get('/', async (c) => {
   const user = c.get('user');
   const page = parseInt(c.req.query('page') || '1');
+  const perPage = Math.min(parseInt(c.req.query('per_page') || '30'), 100);
   const search = c.req.query('search') || undefined;
   const providerId = c.req.query('provider');
 
@@ -82,7 +83,7 @@ reposRouter.get('/', async (c) => {
     : repoProviderRegistry.list();
 
   if (providers.length === 0) {
-    return c.json({ repos: [], page, perPage: 30 });
+    return c.json({ repos: [], page, perPage });
   }
 
   const allRepos: Array<Record<string, unknown>> = [];
@@ -117,7 +118,7 @@ reposRouter.get('/', async (c) => {
   return c.json({
     repos: allRepos,
     page,
-    perPage: 30,
+    perPage,
   });
 });
 

@@ -82,6 +82,12 @@ repoProviderCallbackRouter.get('/:provider/install/callback', async (c) => {
   const stateParam = c.req.query('state');
   const frontendUrl = c.env.FRONTEND_URL || 'http://localhost:5173';
 
+  // Only GitHub App installations are supported — reject other provider IDs
+  // to prevent storing GitHub App credentials under arbitrary provider names
+  if (providerId !== 'github') {
+    return c.redirect(`${frontendUrl}/settings?tab=repositories&error=unsupported_provider`);
+  }
+
   if (!installationId || !stateParam) {
     return c.redirect(`${frontendUrl}/settings?tab=repositories&error=missing_params`);
   }

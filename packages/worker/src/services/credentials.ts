@@ -279,7 +279,11 @@ export async function getCredential(
   options?: { forceRefresh?: boolean; credentialType?: string },
 ): Promise<CredentialResult> {
   const db = getDb(env.DB);
-  const row = await credentialDb.getCredentialRow(db, ownerType, ownerId, provider, options?.credentialType);
+  // Default to 'oauth2' for providers that can have multiple credential types,
+  // so we don't accidentally return an app_install row for integration calls.
+  const effectiveType = options?.credentialType
+    ?? (provider === 'github' ? 'oauth2' : undefined);
+  const row = await credentialDb.getCredentialRow(db, ownerType, ownerId, provider, effectiveType);
   if (!row) {
     return {
       ok: false,
