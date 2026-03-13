@@ -18,6 +18,8 @@ import type {
   ToolCallStatus,
   WorkflowRunResultEnvelope,
 } from "./types.js";
+import { gitCredentials } from "./git-credentials.js";
+import { setupGitConfig, cloneRepo } from "./git-setup.js";
 
 export interface PromptAuthor {
   authorId?: string;
@@ -49,6 +51,7 @@ export class AgentClient {
   private closing = false;
   private consecutiveUpgradeFailures = 0;
   private hasEverConnected = false;
+  private pendingTokenRefresh: ((result: { accessToken: string; expiresAt?: string }) => void) | null = null;
 
   private promptHandler: ((messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string, opencodeSessionId?: string, continuationContext?: string, threadId?: string) => void | Promise<void>) | null = null;
   private answerHandler: ((questionId: string, answer: string | boolean) => void | Promise<void>) | null = null;
@@ -1308,6 +1311,39 @@ export class AgentClient {
               : undefined,
           );
           break;
+        case "repo-config": {
+          const { token, expiresAt, gitConfig, repoUrl, branch, ref } = msg;
+
+          // Set token in credential manager
+          gitCredentials.setToken(token, expiresAt);
+
+          // Set up refresh callback
+          gitCredentials.setRefreshCallback(async () => {
+            this.send({ type: "repo:refresh-token" });
+            return new Promise((resolve) => {
+              this.pendingTokenRefresh = resolve;
+            });
+          });
+
+          // Apply git config
+          await setupGitConfig(gitConfig);
+
+          // Clone repo if URL provided
+          if (repoUrl) {
+            const result = await cloneRepo({ repoUrl, branch, ref });
+            this.send({ type: "repo:clone-complete", ...result });
+          }
+          break;
+        }
+
+        case "repo-token-refreshed": {
+          if (this.pendingTokenRefresh) {
+            this.pendingTokenRefresh({ accessToken: msg.token, expiresAt: msg.expiresAt });
+            this.pendingTokenRefresh = null;
+          }
+          break;
+        }
+
         default:
           console.warn(
             `[AgentClient] Unhandled DO message type: ${(msg as { type?: unknown }).type ?? "unknown"} keys=[${Object.keys(msg as Record<string, unknown>).join(",")}]`
