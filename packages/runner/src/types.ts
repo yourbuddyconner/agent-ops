@@ -109,7 +109,7 @@ export type DOToRunnerMessage =
   | { type: "new-session"; channelType: string; channelId: string; requestId: string }
   | { type: "init" }
   | { type: "repo-config"; token: string; expiresAt?: string; gitConfig: Record<string, string>; repoUrl?: string; branch?: string; ref?: string }
-  | { type: "repo-token-refreshed"; token: string; expiresAt?: string }
+  | { type: "repo-token-refreshed"; token: string; expiresAt?: string; requestId?: string }
   | {
       type: "opencode-config";
       config: {
@@ -218,7 +218,7 @@ export type RunnerToDOMessage =
   | { type: "command-result"; requestId: string; command: string; result?: unknown; error?: string }
   | { type: "channel-session-created"; channelKey: string; opencodeSessionId: string }
   | { type: "session-reset"; channelType: string; channelId: string; requestId: string }
-  | { type: "repo:refresh-token" }
+  | { type: "repo:refresh-token"; requestId?: string }
   | { type: "repo:clone-complete"; success: boolean; error?: string }
   | { type: "thread.created"; threadId: string; opencodeSessionId: string }
   | { type: "thread.updated"; threadId: string; title?: string; summaryAdditions?: number; summaryDeletions?: number; summaryFiles?: number }

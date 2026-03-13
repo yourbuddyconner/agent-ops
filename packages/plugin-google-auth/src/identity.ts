@@ -32,7 +32,11 @@ async function getGooglePublicKeys(): Promise<GoogleJWK[]> {
 }
 
 function base64UrlDecode(str: string): Uint8Array {
-  const padded = str.replace(/-/g, '+').replace(/_/g, '/');
+  let padded = str.replace(/-/g, '+').replace(/_/g, '/');
+  // Restore padding — JWT base64url segments are typically unpadded
+  const remainder = padded.length % 4;
+  if (remainder === 2) padded += '==';
+  else if (remainder === 3) padded += '=';
   const binary = atob(padded);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);

@@ -202,7 +202,12 @@ export async function handleEmailLogin(
     return { ok: false, error: 'invalid_credentials' };
   }
 
-  const valid = await verifyPassword(params.password, user.passwordHash);
+  let valid: boolean;
+  try {
+    valid = await verifyPassword(params.password, user.passwordHash);
+  } catch {
+    return { ok: false, error: 'invalid_credentials' };
+  }
   if (!valid) {
     return { ok: false, error: 'invalid_credentials' };
   }
@@ -240,10 +245,7 @@ export async function handleEmailRegister(
   // Store password hash and identity provider
   await db.updateUserPasswordHash(appDb, user.id, passwordHash, 'email');
 
-  const userCount = await db.getUserCount(appDb);
-  if (userCount === 1) {
-    await db.updateUserRole(appDb, user.id, 'admin');
-  }
+  await db.promoteIfOnlyUser(appDb, user.id);
 
   // Handle invite
   if (params.inviteCode) {

@@ -276,10 +276,10 @@ export async function getCredential(
   ownerType: string,
   ownerId: string,
   provider: string,
-  options?: { forceRefresh?: boolean },
+  options?: { forceRefresh?: boolean; credentialType?: string },
 ): Promise<CredentialResult> {
   const db = getDb(env.DB);
-  const row = await credentialDb.getCredentialRow(db, ownerType, ownerId, provider);
+  const row = await credentialDb.getCredentialRow(db, ownerType, ownerId, provider, options?.credentialType);
   if (!row) {
     return {
       ok: false,

@@ -45,7 +45,7 @@ import { pluginsRouter } from './routes/plugins.js';
 import { skillsRouter } from './routes/skills.js';
 import { orgDefaultSkillsRouter } from './routes/org-default-skills.js';
 import { avatarsRouter } from './routes/avatars.js';
-import { repoProviderRouter } from './routes/repo-providers.js';
+import { repoProviderRouter, repoProviderCallbackRouter } from './routes/repo-providers.js';
 import {
   enqueueWorkflowApprovalNotificationIfMissing,
   getTerminatedOrchestratorSessions,
@@ -144,6 +144,9 @@ app.route('/avatars', avatarsRouter);
 // Channel webhooks (unauthenticated — platforms send updates here)
 app.route('/channels', channelWebhooksRouter);
 app.route('/channels', slackEventsRouter);
+
+// Repo provider callbacks (unauthenticated — GitHub redirects here after app install)
+app.route('/repo-providers', repoProviderCallbackRouter);
 
 // Protected API routes
 app.use('/api/*', authMiddleware);
@@ -340,7 +343,7 @@ async function reconcileGitHubResources(env: Env): Promise<void> {
   const getTokenForUser = async (userId: string): Promise<string | null> => {
     if (tokenCache.has(userId)) return tokenCache.get(userId) ?? null;
     try {
-      const result = await getCredential(env, 'user', userId, 'github');
+      const result = await getCredential(env, 'user', userId, 'github', { credentialType: 'oauth2' });
       if (!result.ok) {
         tokenCache.set(userId, null);
         return null;

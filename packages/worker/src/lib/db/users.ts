@@ -1,8 +1,8 @@
 import type { AppDb } from '../drizzle.js';
 import type { User, UserRole, QueueMode } from '@valet/shared';
-import { eq, sql, asc, inArray } from 'drizzle-orm';
+import { eq, sql, asc, and, inArray } from 'drizzle-orm';
 import { toDate } from '../drizzle.js';
-import { users } from '../schema/index.js';
+import { users, credentials } from '../schema/index.js';
 
 function rowToUser(row: typeof users.$inferSelect): User {
   return {
@@ -204,6 +204,8 @@ export async function listUsers(db: AppDb): Promise<User[]> {
 }
 
 export async function deleteUser(db: AppDb, userId: string): Promise<void> {
+  // Clean up user-owned credentials (no longer cascade-deleted after migration 0066)
+  await db.delete(credentials).where(and(eq(credentials.ownerType, 'user'), eq(credentials.ownerId, userId)));
   await db.delete(users).where(eq(users.id, userId));
 }
 

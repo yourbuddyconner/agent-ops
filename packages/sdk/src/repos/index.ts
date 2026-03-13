@@ -20,6 +20,13 @@ export interface RepoListItem {
   url: string;
   defaultBranch: string;
   private: boolean;
+  // Optional fields for richer UI display
+  id?: number;
+  name?: string;
+  description?: string | null;
+  cloneUrl?: string;
+  updatedAt?: string;
+  language?: string | null;
 }
 
 export interface RepoList {
@@ -31,6 +38,11 @@ export interface RepoValidation {
   accessible: boolean;
   permissions?: { push: boolean; pull: boolean; admin: boolean };
   error?: string;
+  // Optional repo metadata returned when accessible
+  fullName?: string;
+  defaultBranch?: string;
+  private?: boolean;
+  cloneUrl?: string;
 }
 
 export interface RepoProvider {

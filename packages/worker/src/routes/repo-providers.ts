@@ -23,7 +23,7 @@ repoProviderRouter.get('/', async (c) => {
 // Get GitHub App installation URL (org or personal)
 repoProviderRouter.get('/:provider/install', async (c) => {
   const providerId = c.req.param('provider');
-  const level = c.req.query('level') || 'org'; // 'org' or 'personal'
+  const level = c.req.query('level') || 'personal';
   const user = c.get('user');
 
   if (providerId !== 'github') {
@@ -44,57 +44,6 @@ repoProviderRouter.get('/:provider/install', async (c) => {
   const installUrl = `https://github.com/apps/${appSlug}/installations/new?state=${encodeURIComponent(state)}`;
 
   return c.json({ url: installUrl });
-});
-
-// GitHub App installation callback
-repoProviderRouter.get('/:provider/install/callback', async (c) => {
-  const providerId = c.req.param('provider');
-  const installationId = c.req.query('installation_id');
-  const setupAction = c.req.query('setup_action');
-  const stateParam = c.req.query('state');
-  const user = c.get('user');
-
-  if (!installationId) {
-    return c.json({ error: 'Missing installation_id' }, 400);
-  }
-
-  // Verify signed state JWT
-  let level = 'personal';
-  if (stateParam) {
-    const payload = await verifyJWT(stateParam, c.env.ENCRYPTION_KEY);
-    if (!payload) {
-      return c.json({ error: 'Invalid or expired state' }, 400);
-    }
-    // Verify the state belongs to this user
-    if (payload.sub !== user.id) {
-      return c.json({ error: 'State mismatch' }, 403);
-    }
-    level = payload.sid || 'personal'; // sid holds the level
-  }
-
-  // Determine owner type and ID
-  // TODO: support org-level installations once orgId is available in user context
-  const ownerType = level === 'org' ? 'org' : 'user';
-  const ownerId = user.id;
-
-  // Store the installation credential
-  // App ID + private key go in encryptedData (encrypted at rest via PBKDF2)
-  // Only installationId goes in plaintext metadata for lookups
-  const metadata: Record<string, string> = { installationId };
-
-  if (setupAction === 'install') {
-    await storeCredential(c.env, ownerType, ownerId, providerId, {
-      installation_id: installationId,
-      app_id: c.env.GITHUB_APP_ID || '',
-      private_key: c.env.GITHUB_APP_PRIVATE_KEY || '',
-    }, {
-      credentialType: 'app_install',
-      metadata,
-    });
-  }
-
-  const frontendUrl = c.env.FRONTEND_URL || 'http://localhost:5173';
-  return c.redirect(`${frontendUrl}/settings?tab=repositories&installed=true`);
 });
 
 // List installations for a repo provider
@@ -118,4 +67,58 @@ repoProviderRouter.get('/:provider/installations', async (c) => {
       })),
     ],
   });
+});
+
+/**
+ * GitHub App installation callback — mounted outside /api/* (no auth middleware).
+ * User identity is derived from the signed state JWT, not session auth.
+ */
+export const repoProviderCallbackRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+repoProviderCallbackRouter.get('/:provider/install/callback', async (c) => {
+  const providerId = c.req.param('provider');
+  const installationId = c.req.query('installation_id');
+  const setupAction = c.req.query('setup_action');
+  const stateParam = c.req.query('state');
+  const frontendUrl = c.env.FRONTEND_URL || 'http://localhost:5173';
+
+  if (!installationId || !stateParam) {
+    return c.redirect(`${frontendUrl}/settings?tab=repositories&error=missing_params`);
+  }
+
+  // Verify signed state JWT — this is how we identify the user without session auth
+  const payload = await verifyJWT(stateParam, c.env.ENCRYPTION_KEY);
+  if (!payload || !payload.sub) {
+    return c.redirect(`${frontendUrl}/settings?tab=repositories&error=invalid_state`);
+  }
+  const userId = payload.sub as string;
+  const level = (payload as any).sid || 'personal';
+
+  // Only support personal-level installations until real orgId wiring is available
+  const ownerType = 'user' as const;
+  const ownerId = userId;
+  if (level === 'org') {
+    console.warn('[repo-providers] Org-level install requested but not yet supported, storing as user-level');
+  }
+
+  // Validate required env vars before storing
+  if (!c.env.GITHUB_APP_ID || !c.env.GITHUB_APP_PRIVATE_KEY) {
+    return c.redirect(`${frontendUrl}/settings?tab=repositories&error=app_not_configured`);
+  }
+
+  // Store the installation credential
+  const metadata: Record<string, string> = { installationId };
+
+  if (setupAction === 'install') {
+    await storeCredential(c.env, ownerType, ownerId, providerId, {
+      installation_id: installationId,
+      app_id: c.env.GITHUB_APP_ID,
+      private_key: c.env.GITHUB_APP_PRIVATE_KEY,
+    }, {
+      credentialType: 'app_install',
+      metadata,
+    });
+  }
+
+  return c.redirect(`${frontendUrl}/settings?tab=repositories&installed=true`);
 });

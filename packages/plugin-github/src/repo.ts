@@ -72,6 +72,21 @@ async function mintInstallationToken(
   return { token: data.token, expiresAt: data.expires_at };
 }
 
+function mapGitHubRepo(r: any) {
+  return {
+    id: r.id,
+    name: r.name,
+    fullName: r.full_name,
+    url: r.html_url,
+    cloneUrl: r.clone_url,
+    defaultBranch: r.default_branch,
+    private: r.private,
+    description: r.description ?? null,
+    updatedAt: r.updated_at,
+    language: r.language ?? null,
+  };
+}
+
 // ─── GitHub Repo Provider ──────────────────────────────────────────────────
 
 export const githubRepoProvider: RepoProvider = {
@@ -97,12 +112,7 @@ export const githubRepoProvider: RepoProvider = {
       );
       const data = (await res.json()) as { items: any[]; total_count: number };
       return {
-        repos: data.items.map((r: any) => ({
-          fullName: r.full_name,
-          url: r.html_url,
-          defaultBranch: r.default_branch,
-          private: r.private,
-        })),
+        repos: data.items.map(mapGitHubRepo),
         hasMore: data.total_count > page * 30,
       };
     }
@@ -113,12 +123,7 @@ export const githubRepoProvider: RepoProvider = {
     );
     const data = (await res.json()) as { repositories: any[]; total_count: number };
     return {
-      repos: data.repositories.map((r: any) => ({
-        fullName: r.full_name,
-        url: r.html_url,
-        defaultBranch: r.default_branch,
-        private: r.private,
-      })),
+      repos: data.repositories.map(mapGitHubRepo),
       hasMore: data.total_count > page * 30,
     };
   },
@@ -133,11 +138,19 @@ export const githubRepoProvider: RepoProvider = {
     const res = await githubFetch(`/repos/${owner}/${repo}`, credential.accessToken);
     if (!res.ok) return { accessible: false, error: `Repository not accessible: ${res.status}` };
     const data = (await res.json()) as {
+      full_name: string;
+      default_branch: string;
+      private: boolean;
+      clone_url: string;
       permissions?: { push: boolean; pull: boolean; admin: boolean };
     };
     return {
       accessible: true,
       permissions: data.permissions || { push: false, pull: true, admin: false },
+      fullName: data.full_name,
+      defaultBranch: data.default_branch,
+      private: data.private,
+      cloneUrl: data.clone_url,
     };
   },
 

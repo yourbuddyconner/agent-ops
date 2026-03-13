@@ -59,7 +59,7 @@ async function resolveRepoCredentialForProvider(
  * Used by GitHub-specific routes (pulls, issues, PR creation).
  */
 async function getGitHubToken(env: Env, userId: string): Promise<string> {
-  const result = await getCredential(env, 'user', userId, 'github');
+  const result = await getCredential(env, 'user', userId, 'github', { credentialType: 'oauth2' });
   if (!result.ok) {
     throw new ValidationError('GitHub account not connected');
   }
@@ -85,13 +85,7 @@ reposRouter.get('/', async (c) => {
     return c.json({ repos: [], page, perPage: 30 });
   }
 
-  const allRepos: Array<{
-    fullName: string;
-    url: string;
-    defaultBranch: string;
-    private: boolean;
-    provider: string;
-  }> = [];
+  const allRepos: Array<Record<string, unknown>> = [];
 
   for (const provider of providers) {
     if (!provider) continue;
@@ -101,7 +95,19 @@ reposRouter.get('/', async (c) => {
       const freshCredential: RepoCredential = { ...credential, accessToken: freshToken.accessToken };
       const result = await provider.listRepos(freshCredential, { page, search });
       for (const repo of result.repos) {
-        allRepos.push({ ...repo, provider: provider.id });
+        allRepos.push({
+          id: repo.id ?? 0,
+          name: repo.name ?? repo.fullName.split('/').pop() ?? '',
+          fullName: repo.fullName,
+          private: repo.private,
+          description: repo.description ?? null,
+          url: repo.url,
+          cloneUrl: repo.cloneUrl ?? `${repo.url}.git`,
+          defaultBranch: repo.defaultBranch,
+          updatedAt: repo.updatedAt ?? new Date().toISOString(),
+          language: repo.language ?? null,
+          provider: provider.id,
+        });
       }
     } catch {
       // Skip providers where the user has no credentials
@@ -146,8 +152,11 @@ reposRouter.get('/validate', async (c) => {
     return c.json({
       valid: true,
       repo: {
-        fullName: url,
+        fullName: validation.fullName ?? url,
+        defaultBranch: validation.defaultBranch ?? 'main',
+        private: validation.private ?? false,
         canPush: validation.permissions?.push ?? false,
+        cloneUrl: validation.cloneUrl ?? url,
         provider: provider.id,
       },
     });

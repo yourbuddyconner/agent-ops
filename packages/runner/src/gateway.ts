@@ -340,8 +340,13 @@ app.all("/opencode/*", async (c) => {
   }
 });
 
-// Git credential helper endpoint — local access only, no JWT auth
+// Git credential helper endpoint — loopback only, no JWT auth
 app.post("/git/credentials", async (c) => {
+  // Restrict to loopback to prevent credential leakage from external access
+  const connectingIp = c.req.header("x-forwarded-for") || c.req.header("x-real-ip");
+  if (connectingIp && !["127.0.0.1", "::1", "localhost"].includes(connectingIp)) {
+    return c.text("Forbidden", 403);
+  }
   try {
     const body = await c.req.text();
     // Parse git credential request (key=value lines)

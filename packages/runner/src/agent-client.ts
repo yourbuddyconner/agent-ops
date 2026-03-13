@@ -51,7 +51,7 @@ export class AgentClient {
   private closing = false;
   private consecutiveUpgradeFailures = 0;
   private hasEverConnected = false;
-  private pendingTokenRefresh: ((result: { accessToken: string; expiresAt?: string }) => void) | null = null;
+  private pendingTokenRefresh: { requestId: string; resolve: (result: { accessToken: string; expiresAt?: string }) => void } | null = null;
 
   private promptHandler: ((messageId: string, content: string, model?: string, author?: PromptAuthor, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string, opencodeSessionId?: string, continuationContext?: string, threadId?: string) => void | Promise<void>) | null = null;
   private answerHandler: ((questionId: string, answer: string | boolean) => void | Promise<void>) | null = null;
@@ -1319,9 +1319,10 @@ export class AgentClient {
 
           // Set up refresh callback
           gitCredentials.setRefreshCallback(async () => {
-            this.send({ type: "repo:refresh-token" });
+            const requestId = crypto.randomUUID();
+            this.send({ type: "repo:refresh-token", requestId });
             return new Promise((resolve) => {
-              this.pendingTokenRefresh = resolve;
+              this.pendingTokenRefresh = { requestId, resolve };
             });
           });
 
@@ -1337,8 +1338,8 @@ export class AgentClient {
         }
 
         case "repo-token-refreshed": {
-          if (this.pendingTokenRefresh) {
-            this.pendingTokenRefresh({ accessToken: msg.token, expiresAt: msg.expiresAt });
+          if (this.pendingTokenRefresh && (!msg.requestId || msg.requestId === this.pendingTokenRefresh.requestId)) {
+            this.pendingTokenRefresh.resolve({ accessToken: msg.token, expiresAt: msg.expiresAt });
             this.pendingTokenRefresh = null;
           }
           break;

@@ -656,6 +656,16 @@ export class SessionAgentDO {
   /** Drizzle AppDb instance wrapping the D1 binding. */
   private get appDb(): AppDb { return getDb(this.env.DB); }
 
+  /** Resolve the org ID from org settings. Returns undefined if unavailable. */
+  private async resolveOrgId(): Promise<string | undefined> {
+    try {
+      const orgSettings = await getOrgSettings(this.appDb);
+      return orgSettings?.id;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Returns the channel metadata for the currently active prompt, if any. */
   private get activeChannel(): { channelType: string; channelId: string } | null {
     if (this.pendingChannelReply) {
@@ -3312,7 +3322,7 @@ export class SessionAgentDO {
         break;
 
       case 'repo:refresh-token': {
-        await this.handleRepoTokenRefresh();
+        await this.handleRepoTokenRefresh(msg.requestId);
         break;
       }
 
@@ -3442,7 +3452,7 @@ export class SessionAgentDO {
         // Inject git credentials if the parent doesn't have them (e.g. orchestrator)
         if (!childSpawnRequest.envVars.GITHUB_TOKEN) {
           try {
-            const ghResult = await getCredential(this.env, 'user', userId, 'github');
+            const ghResult = await getCredential(this.env, 'user', userId, 'github', { credentialType: 'oauth2' });
             if (ghResult.ok) {
               childSpawnRequest.envVars.GITHUB_TOKEN = ghResult.credential.accessToken;
             }
@@ -4723,7 +4733,7 @@ export class SessionAgentDO {
   private async handleSkillApi(requestId: string, action: string, payload?: Record<string, unknown>) {
     try {
       const userId = this.getStateValue('userId')!;
-      const orgId = 'default';
+      const orgId = await this.resolveOrgId() ?? 'default';
 
       if (action === 'search') {
         const q = typeof payload?.q === 'string' ? payload.q : '';
@@ -7081,7 +7091,7 @@ export class SessionAgentDO {
     // Try the current prompt author first (for multiplayer attribution)
     const promptAuthorId = this.getStateValue('currentPromptAuthorId');
     if (promptAuthorId) {
-      const authorResult = await getCredential(this.env, 'user', promptAuthorId, 'github');
+      const authorResult = await getCredential(this.env, 'user', promptAuthorId, 'github', { credentialType: 'oauth2' });
       if (authorResult.ok) {
         return authorResult.credential.accessToken;
       }
@@ -7091,7 +7101,7 @@ export class SessionAgentDO {
     const userId = this.getStateValue('userId');
     if (!userId) return null;
 
-    const result = await getCredential(this.env, 'user', userId, 'github');
+    const result = await getCredential(this.env, 'user', userId, 'github', { credentialType: 'oauth2' });
     if (!result.ok) return null;
 
     return result.credential.accessToken;
@@ -9322,7 +9332,7 @@ export class SessionAgentDO {
     const userId = this.getStateValue('userId');
     if (!userId) return;
 
-    const orgId = 'default'; // TODO: resolve from user's org
+    const orgId = await this.resolveOrgId();
 
     try {
       const repoEnv = await assembleRepoEnv(this.appDb, this.env, userId, orgId, {
@@ -9353,7 +9363,7 @@ export class SessionAgentDO {
     }
   }
 
-  private async handleRepoTokenRefresh(): Promise<void> {
+  private async handleRepoTokenRefresh(requestId?: string): Promise<void> {
     const sessionId = this.getStateValue('sessionId');
     if (!sessionId) return;
 
@@ -9364,7 +9374,7 @@ export class SessionAgentDO {
     const userId = this.getStateValue('userId');
     if (!userId) return;
 
-    const orgId = 'default'; // TODO: resolve from user's org
+    const orgId = await this.resolveOrgId();
 
     try {
       const repoEnv = await assembleRepoEnv(this.appDb, this.env, userId, orgId, {
@@ -9381,6 +9391,7 @@ export class SessionAgentDO {
         type: 'repo-token-refreshed',
         token: repoEnv.token,
         expiresAt: repoEnv.expiresAt,
+        requestId,
       });
       console.log('[SessionAgentDO] Sent refreshed repo token to runner');
     } catch (err) {
@@ -9389,7 +9400,7 @@ export class SessionAgentDO {
   }
 
   private async sendPluginContent(): Promise<void> {
-    const orgId = 'default'; // TODO: resolve from user's org
+    const orgId = await this.resolveOrgId() ?? 'default';
 
     let artifacts: Awaited<ReturnType<typeof getActivePluginArtifacts>>;
     let settings: Awaited<ReturnType<typeof getPluginSettings>>;
