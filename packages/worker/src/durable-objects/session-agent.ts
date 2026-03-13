@@ -9097,8 +9097,24 @@ export class SessionAgentDO {
       const userId = this.getStateValue('userId');
       if (!sessionId || !userId) return;
 
-      const bindings = await getSessionChannelBindings(this.appDb, sessionId);
+      // Use user-level bindings first (covers orchestrator-owned Slack bindings),
+      // falling back to session-scoped bindings — same pattern as handleListChannels.
+      let bindings = await listUserChannelBindings(this.appDb, userId);
+      if (bindings.length === 0) {
+        bindings = await getSessionChannelBindings(this.appDb, sessionId);
+      }
+      // Filter out web bindings — prompts are already broadcast to web clients via WebSocket
+      bindings = bindings.filter(b => b.channelType !== 'web');
       if (bindings.length === 0) return;
+
+      // Deduplicate by destination (user-level query may return multiple bindings for same channel)
+      const seen = new Set<string>();
+      bindings = bindings.filter(b => {
+        const key = `${b.channelType}:${b.channelId}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
 
       const refs: Array<{ channelType: string; ref: InteractivePromptRef }> = [];
 
