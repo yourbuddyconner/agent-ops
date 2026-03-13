@@ -6,6 +6,9 @@ import type {
   OutboundMessage,
   RoutingMetadata,
   SendResult,
+  ApprovalRequest,
+  ApprovalMessageRef,
+  ApprovalResolution,
 } from '@valet/sdk';
 import { markdownToSlackMrkdwn } from './format.js';
 
@@ -480,4 +483,125 @@ export class SlackTransport implements ChannelTransport {
 
   // Slack Events API URL is configured in app settings, not per-user
   // registerWebhook / unregisterWebhook are intentionally omitted
+
+  // ─── Approval Interactive Messages ──────────────────────────────────
+
+  async sendApprovalRequest(
+    target: ChannelTarget,
+    approval: ApprovalRequest,
+    ctx: ChannelContext,
+  ): Promise<ApprovalMessageRef | null> {
+    const riskEmoji = approval.riskLevel === 'critical' ? '🔴'
+      : approval.riskLevel === 'high' ? '🟠'
+      : approval.riskLevel === 'medium' ? '🟡'
+      : '🟢';
+
+    const paramsPreview = approval.params
+      ? '```' + JSON.stringify(approval.params, null, 2).slice(0, 500) + '```'
+      : '_No parameters_';
+
+    const expiryUnix = Math.floor(approval.expiresAt / 1000);
+
+    const blocks = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `${riskEmoji} *Action requires approval*\n\`${approval.toolId}\` (risk: *${approval.riskLevel}*)`,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: paramsPreview,
+        },
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `Expires <!date^${expiryUnix}^{date_short_pretty} at {time}|in 10 minutes>`,
+          },
+        ],
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text' as const, text: 'Approve' },
+            style: 'primary',
+            action_id: 'approve_action',
+            value: approval.invocationId,
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text' as const, text: 'Deny' },
+            style: 'danger',
+            action_id: 'deny_action',
+            value: approval.invocationId,
+          },
+        ],
+      },
+    ];
+
+    const body: Record<string, unknown> = {
+      channel: target.channelId,
+      text: `Action ${approval.toolId} requires approval (${approval.riskLevel} risk)`,
+      blocks,
+      unfurl_links: false,
+    };
+
+    if (target.threadId) {
+      body.thread_ts = target.threadId;
+    }
+
+    const result = await slackApiCall('chat.postMessage', body, ctx.token);
+    if (!result.ok) {
+      console.error(`[SlackTransport] sendApprovalRequest error: ${result.error}`);
+      return null;
+    }
+
+    return { messageId: result.ts!, channelId: target.channelId };
+  }
+
+  async updateApprovalStatus(
+    _target: ChannelTarget,
+    ref: ApprovalMessageRef,
+    resolution: ApprovalResolution,
+    ctx: ChannelContext,
+  ): Promise<void> {
+    let statusText: string;
+    if (resolution.status === 'approved') {
+      statusText = `✅ Approved by ${resolution.resolvedBy}`;
+    } else if (resolution.status === 'denied') {
+      statusText = `❌ Denied by ${resolution.resolvedBy}`;
+      if (resolution.reason) statusText += `: ${resolution.reason}`;
+    } else {
+      statusText = '⏰ Expired';
+    }
+
+    const blocks = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: statusText,
+        },
+      },
+    ];
+
+    const result = await slackApiCall('chat.update', {
+      channel: ref.channelId,
+      ts: ref.messageId,
+      text: statusText,
+      blocks,
+    }, ctx.token);
+
+    if (!result.ok) {
+      console.error(`[SlackTransport] updateApprovalStatus error: ${result.error}`);
+    }
+  }
 }
