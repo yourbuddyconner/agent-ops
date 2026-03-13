@@ -477,6 +477,13 @@ slackEventsRouter.post('/slack/events', async (c) => {
  * Must respond with 200 within 3 seconds — actual processing is fire-and-forget.
  */
 slackEventsRouter.post('/slack/interactive', async (c) => {
+  const slackError = (text: string) =>
+    c.json({
+      response_type: 'ephemeral',
+      replace_original: false,
+      text,
+    });
+
   const rawBody = await c.req.text();
 
   // Parse form-encoded body manually (payload is URL-encoded JSON)
@@ -564,29 +571,43 @@ slackEventsRouter.post('/slack/interactive', async (c) => {
   const userId = await db.resolveUserByExternalId(c.get('db'), 'slack', slackUserId);
   if (!userId) {
     console.log(`[Slack Interactive] No identity link for slack user=${slackUserId}`);
-    return c.json({ ok: true });
+    return slackError('Your Slack account is not linked to Valet, so this action cannot be completed.');
   }
 
   // Resolve session ID: use encoded sessionId if available, otherwise fall back to D1 lookup
   if (!sessionId) {
     const inv = await db.getInvocation(c.get('db'), promptId);
     if (!inv || inv.status !== 'pending') {
-      return c.json({ ok: true });
+      return slackError('This prompt is no longer pending.');
     }
     if (inv.userId !== userId) {
       console.log(`[Slack Interactive] User ${userId} not authorized for invocation ${promptId}`);
-      return c.json({ ok: true });
+      return slackError('Only the session owner can respond to this prompt.');
     }
     sessionId = inv.sessionId;
+  }
+
+  const targetSessionId = sessionId;
+  if (!targetSessionId) {
+    return slackError('This prompt could not be resolved to a session.');
+  }
+
+  const session = await db.getSession(c.get('db'), targetSessionId);
+  if (!session) {
+    return slackError('This session could not be found.');
+  }
+  if (session.userId !== userId) {
+    console.log(`[Slack Interactive] User ${userId} not authorized for session ${targetSessionId}`);
+    return slackError('Only the session owner can respond to this prompt.');
   }
 
   // Respond to Slack immediately (3-second deadline)
   // Process resolution asynchronously — the DO validates prompt existence and ownership
   c.executionCtx.waitUntil((async () => {
     try {
-      const doId = c.env.SESSIONS.idFromName(sessionId!);
+      const doId = c.env.SESSIONS.idFromName(targetSessionId);
       const stub = c.env.SESSIONS.get(doId);
-      await stub.fetch(new Request('https://session/prompt-resolved', {
+      const res = await stub.fetch(new Request('https://session/prompt-resolved', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -595,6 +616,10 @@ slackEventsRouter.post('/slack/interactive', async (c) => {
           resolvedBy: userId,
         }),
       }));
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        console.error(`[Slack Interactive] DO rejected prompt resolution: status=${res.status} body=${errText}`);
+      }
     } catch (err) {
       console.error('[Slack Interactive] Failed to notify DO:', err);
     }

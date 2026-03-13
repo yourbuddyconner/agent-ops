@@ -889,10 +889,14 @@ export class SessionAgentDO {
         if (!body.promptId) {
           return new Response(JSON.stringify({ error: 'Missing promptId' }), { status: 400 });
         }
+        const ownerUserId = this.getStateValue('userId');
+        if (!body.resolvedBy || !ownerUserId || body.resolvedBy !== ownerUserId) {
+          return new Response(JSON.stringify({ error: 'Only the session owner can resolve this prompt' }), { status: 403 });
+        }
         await this.handlePromptResolved(body.promptId, {
           actionId: body.actionId,
           value: body.value,
-          resolvedBy: body.resolvedBy || 'system',
+          resolvedBy: body.resolvedBy,
         });
         return Response.json({ success: true });
       }
@@ -8776,7 +8780,20 @@ export class SessionAgentDO {
       if (invocationResult.outcome === 'pending_approval') {
         const expiresAt = Math.floor(Date.now() / 1000) + Math.floor(ACTION_APPROVAL_EXPIRY_MS / 1000);
 
-        const approvalContext = { toolId, service, actionId, params, riskLevel, isOrgScoped, invocationId: invocationResult.invocationId };
+        const approvalContext: Record<string, unknown> = {
+          toolId,
+          service,
+          actionId,
+          params,
+          riskLevel,
+          isOrgScoped,
+          invocationId: invocationResult.invocationId,
+        };
+        const approvalCh = this.activeChannel;
+        if (approvalCh) {
+          approvalContext.channelType = approvalCh.channelType;
+          approvalContext.channelId = approvalCh.channelId;
+        }
 
         // Build body with params preview
         let approvalBody = `\`${toolId}\` (risk: **${riskLevel}**)`;
@@ -9157,11 +9174,9 @@ export class SessionAgentDO {
 
       const targets: Array<{ channelType: string; channelId: string }> = [];
 
-      if (prompt.type === 'question') {
-        const originTarget = this.getPromptOriginTarget(prompt.context);
-        if (originTarget && originTarget.channelType !== 'web') {
-          targets.push(originTarget);
-        }
+      const originTarget = this.getPromptOriginTarget(prompt.context);
+      if (originTarget && originTarget.channelType !== 'web') {
+        targets.push(originTarget);
       } else {
         // Collect channel targets to dispatch the prompt to.
         // Start with D1 bindings (user-level first, then session-scoped fallback).

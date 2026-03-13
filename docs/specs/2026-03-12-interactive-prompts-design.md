@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS interactive_prompts (
 - `context`: JSON blob with type-specific data
   - Approval: `{ toolId, service, actionId, params, riskLevel, isOrgScoped, invocationId }`
   - Question: `{ options }` (if any)
+  - Both prompt types may also include `{ channelType, channelId }` to preserve the exact originating channel target for channel delivery and reply capture
 - `channel_refs`: JSON array of `{ channelType, ref: InteractivePromptRef }`
 
 ### Single Resolution Handler
@@ -159,11 +160,11 @@ const prompt: InteractivePrompt = {
 
 ### Channel Dispatch
 
-After inserting into `interactive_prompts`, iterate session channel bindings and call `transport.sendInteractivePrompt` on each. Store returned refs. Same pattern as the current approval flow but using the generic method.
+After inserting into `interactive_prompts`, resolve the originating channel target from `prompt.context.channelType` / `prompt.context.channelId` when present and send the prompt only to that exact target. This preserves the same lineage as normal channel replies: one originating Slack thread plus the web UI session stream. Only if no origin target is present should the implementation fall back to broader channel binding discovery.
 
 ### Thread Reply Capture (Free-Text Questions)
 
-When a prompt has no `actions` (free-text question), the channel message says "Reply to this thread with your answer." The DO checks for pending text-input prompts when it receives a new message: if the session has a pending prompt of type `"question"` with no actions, and the inbound message is from the session owner, resolve the prompt with the message text.
+When a prompt has no `actions` (free-text question), the channel message says "Reply to this thread with your answer." The DO checks for pending text-input prompts when it receives a new message: if the session has a pending prompt of type `"question"` with no actions, the inbound message is from the session owner, and the inbound channel target matches the prompt's stored origin target, resolve the prompt with the message text.
 
 This check goes in the DO's prompt handler, before normal processing.
 
@@ -193,9 +194,10 @@ Replace message blocks with resolution status text. Same as current `updateAppro
 2. Verify Slack signature
 3. Extract `action_id` and `value` (prompt ID) from `actions[0]`
 4. Resolve Slack user to internal user
-5. Look up which session the prompt belongs to (query D1 `action_invocations` for approvals, or add a session lookup by prompt ID)
-6. Call DO: `POST /prompt-resolved` with `{ promptId, actionId, resolvedBy }`
-7. Return 200 immediately, process asynchronously via `waitUntil`
+5. Resolve the internal user from the Slack actor and verify they own the target session
+6. If unauthorized, return an explicit ephemeral Slack error message
+7. Call DO: `POST /prompt-resolved` with `{ promptId, actionId, resolvedBy }`
+8. Return 200 immediately, process asynchronously via `waitUntil`
 
 The DO route `/prompt-resolved` replaces `/action-approved` and `/action-denied`.
 
