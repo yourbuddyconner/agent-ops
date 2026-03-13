@@ -25,6 +25,14 @@
     "./integrations": {
       "types": "./dist/integrations/index.d.ts",
       "import": "./dist/integrations/index.js"
+    },
+    "./identity": {
+      "types": "./dist/identity/index.d.ts",
+      "import": "./dist/identity/index.js"
+    },
+    "./repos": {
+      "types": "./dist/repos/index.d.ts",
+      "import": "./dist/repos/index.js"
     }
   },
   "scripts": {

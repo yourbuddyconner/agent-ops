@@ -1,7 +1,10 @@
 import type { Env } from '../env.js';
+import type { IdentityResult } from '@valet/sdk/identity';
 import * as db from '../lib/db.js';
 import { getDb } from '../lib/drizzle.js';
-import { storeCredential } from '../services/credentials.js';
+import { storeCredential } from './credentials.js';
+import { hashPassword, verifyPassword } from '@valet/plugin-email-auth/identity';
+import { verifyGoogleIdToken } from '@valet/plugin-google-auth/identity';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -84,7 +87,7 @@ async function finalizeUserLogin(
   isNewUser: boolean,
   inviteCode: string | undefined,
   email: string,
-  provider: 'github' | 'google',
+  provider: string,
 ): Promise<string> {
   const appDb = getDb(env.DB);
   // Accept invite by code (if provided), or fall back to email-based invite
@@ -118,16 +121,169 @@ async function finalizeUserLogin(
   return sessionToken;
 }
 
-// ─── GitHub Callback ────────────────────────────────────────────────────────
+// ─── Generic Identity Login ─────────────────────────────────────────────────
 
 export type OAuthCallbackResult =
   | { ok: true; sessionToken: string }
   | { ok: false; error: string };
 
+export async function finalizeIdentityLogin(
+  env: Env,
+  identity: IdentityResult,
+  providerId: string,
+  inviteCode?: string,
+): Promise<OAuthCallbackResult> {
+  if (!(await isEmailAllowed(env, identity.email, inviteCode))) {
+    return { ok: false, error: 'not_allowed' };
+  }
+
+  const appDb = getDb(env.DB);
+  let user: NonNullable<Awaited<ReturnType<typeof db.findUserByEmail>>> | null = null;
+  let isNewUser = false;
+
+  // Provider-specific lookup first (e.g., GitHub by github_id)
+  if (providerId === 'github' && identity.externalId) {
+    user = await db.findUserByGitHubId(appDb, identity.externalId);
+  }
+
+  // Then try by email
+  if (!user) {
+    user = await db.findUserByEmail(appDb, identity.email);
+  }
+
+  // Create if not found
+  if (!user) {
+    user = await db.getOrCreateUser(appDb, {
+      id: crypto.randomUUID(),
+      email: identity.email,
+      name: identity.name,
+      avatarUrl: identity.avatarUrl,
+    });
+    isNewUser = true;
+
+    await db.promoteIfOnlyUser(appDb, user.id);
+  }
+
+  // Update provider-specific fields
+  if (providerId === 'github' && identity.username) {
+    await db.updateUserGitHub(appDb, user.id, {
+      githubId: identity.externalId,
+      githubUsername: identity.username,
+      name: identity.name || undefined,
+      avatarUrl: identity.avatarUrl,
+    });
+  }
+
+  // Auto-populate git config if not already set
+  if (!user.gitName || !user.gitEmail) {
+    await db.updateUserProfile(appDb, user.id, {
+      gitName: user.gitName || identity.name || identity.username || undefined,
+      gitEmail: user.gitEmail || identity.email,
+    });
+  }
+
+  // Store OAuth credential if the provider returned an access token
+  if (identity.accessToken) {
+    const credentialData: Record<string, string> = {
+      access_token: identity.accessToken,
+    };
+    if (identity.refreshToken) {
+      credentialData.refresh_token = identity.refreshToken;
+    }
+    await storeCredential(env, 'user', user.id, providerId, credentialData, {
+      credentialType: 'oauth2',
+      scopes: identity.scopes,
+      expiresAt: identity.tokenExpiresAt,
+    });
+  }
+
+  // Auto-provision GitHub integration so tools are available immediately
+  if (providerId === 'github') {
+    await db.ensureIntegration(appDb, user.id, 'github');
+  }
+
+  const sessionToken = await finalizeUserLogin(env, user, isNewUser, inviteCode, identity.email, providerId);
+  return { ok: true, sessionToken };
+}
+
+// ─── Email/Password Login ───────────────────────────────────────────────────
+
+export async function handleEmailLogin(
+  env: Env,
+  params: { email: string; password: string },
+): Promise<OAuthCallbackResult> {
+  const appDb = getDb(env.DB);
+  const user = await db.findUserWithPasswordHash(appDb, params.email.toLowerCase());
+  if (!user || !user.passwordHash) {
+    return { ok: false, error: 'invalid_credentials' };
+  }
+
+  let valid: boolean;
+  try {
+    valid = await verifyPassword(params.password, user.passwordHash);
+  } catch {
+    return { ok: false, error: 'invalid_credentials' };
+  }
+  if (!valid) {
+    return { ok: false, error: 'invalid_credentials' };
+  }
+
+  const sessionToken = await finalizeUserLogin(env, user, false, undefined, user.email, 'email');
+  return { ok: true, sessionToken };
+}
+
+// ─── Email/Password Registration ────────────────────────────────────────────
+
+export async function handleEmailRegister(
+  env: Env,
+  params: { email: string; password: string; name?: string; inviteCode?: string },
+): Promise<OAuthCallbackResult> {
+  const email = params.email.toLowerCase();
+
+  if (!(await isEmailAllowed(env, email, params.inviteCode))) {
+    return { ok: false, error: 'not_allowed' };
+  }
+
+  const appDb = getDb(env.DB);
+  const existingUser = await db.findUserByEmail(appDb, email);
+  if (existingUser) {
+    return { ok: false, error: 'email_already_registered' };
+  }
+
+  const passwordHash = await hashPassword(params.password);
+
+  const user = await db.getOrCreateUser(appDb, {
+    id: crypto.randomUUID(),
+    email,
+    name: params.name,
+  });
+
+  // Store password hash and identity provider
+  await db.updateUserPasswordHash(appDb, user.id, passwordHash, 'email');
+
+  await db.promoteIfOnlyUser(appDb, user.id);
+
+  // Handle invite
+  if (params.inviteCode) {
+    const invite = await db.getInviteByCode(appDb, params.inviteCode);
+    if (invite) {
+      await db.markInviteAccepted(appDb, invite.id, user.id);
+      await db.updateUserRole(appDb, user.id, invite.role);
+    }
+  }
+
+  const sessionToken = await finalizeUserLogin(env, user, true, params.inviteCode, email, 'email');
+  return { ok: true, sessionToken };
+}
+
+// ─── Legacy Callbacks (kept for backward compatibility) ─────────────────────
+
 export async function handleGitHubCallback(
   env: Env,
   params: { code: string; inviteCode?: string; workerUrl: string },
 ): Promise<OAuthCallbackResult> {
+  const { storeCredential } = await import('../services/credentials.js');
+
   // Exchange code for access token
   const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
     method: 'POST',
@@ -226,10 +382,7 @@ export async function handleGitHubCallback(
     });
     isNewUser = true;
 
-    const userCount = await db.getUserCount(appDb);
-    if (userCount === 1) {
-      await db.updateUserRole(appDb, user.id, 'admin');
-    }
+    await db.promoteIfOnlyUser(appDb, user.id);
   }
 
   // Update GitHub-specific fields
@@ -257,7 +410,7 @@ export async function handleGitHubCallback(
   }
 
   // Store OAuth credential
-  await storeCredential(env, user.id, 'github', {
+  await storeCredential(env, 'user', user.id, 'github', {
     access_token: tokenData.access_token,
   }, {
     credentialType: 'oauth2',
@@ -271,12 +424,12 @@ export async function handleGitHubCallback(
   return { ok: true, sessionToken };
 }
 
-// ─── Google Callback ────────────────────────────────────────────────────────
-
 export async function handleGoogleCallback(
   env: Env,
   params: { code: string; inviteCode?: string; workerUrl: string },
 ): Promise<OAuthCallbackResult> {
+  const { storeCredential } = await import('../services/credentials.js');
+
   // Exchange code for tokens
   const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
@@ -303,15 +456,14 @@ export async function handleGoogleCallback(
     return { ok: false, error: 'token_exchange_failed' };
   }
 
-  // Decode id_token JWT
-  const idTokenParts = tokenData.id_token.split('.');
-  const payload = JSON.parse(atob(idTokenParts[1])) as {
-    sub: string;
-    email: string;
-    email_verified: boolean;
-    name?: string;
-    picture?: string;
-  };
+  // Verify id_token signature and validate iss/aud/exp claims
+  let payload: { sub: string; email: string; email_verified: boolean; name?: string; picture?: string };
+  try {
+    payload = await verifyGoogleIdToken(tokenData.id_token, env.GOOGLE_CLIENT_ID);
+  } catch (err) {
+    console.error('Google id_token verification failed:', err);
+    return { ok: false, error: 'token_verification_failed' };
+  }
 
   if (!payload.email || !payload.email_verified) {
     return { ok: false, error: 'email_not_verified' };
@@ -335,10 +487,7 @@ export async function handleGoogleCallback(
     });
     isNewUser = true;
 
-    const userCount = await db.getUserCount(appDb);
-    if (userCount === 1) {
-      await db.updateUserRole(appDb, user.id, 'admin');
-    }
+    await db.promoteIfOnlyUser(appDb, user.id);
   }
 
   // Auto-populate git config if not already set
@@ -362,7 +511,7 @@ export async function handleGoogleCallback(
       ? new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
       : undefined;
 
-    await storeCredential(env, user.id, 'google', credentialData, {
+    await storeCredential(env, 'user', user.id, 'google', credentialData, {
       credentialType: 'oauth2',
       scopes: 'openid email profile',
       expiresAt,

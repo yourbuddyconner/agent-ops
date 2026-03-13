@@ -15,6 +15,7 @@
 
 import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { gitCredentials } from "./git-credentials.js";
 
 const app = new Hono();
 
@@ -336,6 +337,32 @@ app.all("/opencode/*", async (c) => {
   } catch (err) {
     console.error(`[Gateway] OpenCode proxy error for ${target}:`, err);
     return new Response(`OpenCode proxy error: ${err}`, { status: 502 });
+  }
+});
+
+// Git credential helper endpoint — secured by per-session secret
+app.post("/git/credentials", async (c) => {
+  // Verify per-session secret to prevent credential leakage
+  const { getCredentialSecret } = await import("./git-setup.js");
+  const expectedSecret = getCredentialSecret();
+  const providedSecret = c.req.header("x-credential-secret");
+  if (!expectedSecret || providedSecret !== expectedSecret) {
+    return c.text("Forbidden", 403);
+  }
+  try {
+    const body = await c.req.text();
+    // Parse git credential request (key=value lines)
+    const lines = body.trim().split("\n");
+    const params: Record<string, string> = {};
+    for (const line of lines) {
+      const [k, v] = line.split("=", 2);
+      if (k && v) params[k] = v;
+    }
+
+    const result = await gitCredentials.getCredentials(params.host);
+    return c.text(result);
+  } catch (_err) {
+    return c.text("", 500);
   }
 });
 

@@ -8,7 +8,7 @@ import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerC
 import { listTriggers, getTrigger, deleteTrigger, createTrigger, getTriggerForRun, updateTriggerLastRun, findScheduleTriggerByNameAndWorkflow, findScheduleTriggersByWorkflow, findScheduleTriggersByName, updateTriggerFull } from '../lib/db/triggers.js';
 import { getExecution, getExecutionWithWorkflowName, getExecutionForAuth, getExecutionSteps, getExecutionOwnerAndStatus, checkIdempotencyKey, createExecution, completeExecutionFull, upsertExecutionStep, listExecutions } from '../lib/db/executions.js';
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
-import { assembleCustomProviders, assembleBuiltInProviderModelConfigs } from '../lib/env-assembly.js';
+import { assembleCustomProviders, assembleBuiltInProviderModelConfigs, assembleRepoEnv } from '../lib/env-assembly.js';
 import { resolveAvailableModels } from '../services/model-catalog.js';
 import { channelRegistry } from '../channels/registry.js';
 import { integrationRegistry } from '../integrations/registry.js';
@@ -227,7 +227,7 @@ function deriveRuntimeStates(args: {
 type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
 
 interface RunnerMessage {
-  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'command-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'mem-read' | 'mem-write' | 'mem-patch' | 'mem-rm' | 'mem-search' | 'list-repos' | 'list-personas' | 'list-channels' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'skill-api' | 'persona-api' | 'workflow-execution-result' | 'workflow-chat-message' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply' | 'audio-transcript' | 'channel-session-created' | 'session-reset' | 'opencode-config-applied' | 'list-tools' | 'call-tool' | 'message.create' | 'message.part.text-delta' | 'message.part.tool-update' | 'message.finalize' | 'usage-report' | 'thread.created' | 'thread.updated';
+  type: 'stream' | 'result' | 'tool' | 'question' | 'screenshot' | 'error' | 'complete' | 'agentStatus' | 'create-pr' | 'update-pr' | 'list-pull-requests' | 'inspect-pull-request' | 'models' | 'aborted' | 'reverted' | 'diff' | 'review-result' | 'command-result' | 'ping' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'spawn-child' | 'session-message' | 'session-messages' | 'terminate-child' | 'self-terminate' | 'mem-read' | 'mem-write' | 'mem-patch' | 'mem-rm' | 'mem-search' | 'list-repos' | 'list-personas' | 'list-channels' | 'get-session-status' | 'list-child-sessions' | 'forward-messages' | 'read-repo-file' | 'workflow-list' | 'workflow-sync' | 'workflow-run' | 'workflow-executions' | 'workflow-api' | 'trigger-api' | 'execution-api' | 'skill-api' | 'persona-api' | 'workflow-execution-result' | 'workflow-chat-message' | 'model-switched' | 'tunnels' | 'mailbox-send' | 'mailbox-check' | 'task-create' | 'task-list' | 'task-update' | 'task-my' | 'channel-reply' | 'audio-transcript' | 'channel-session-created' | 'session-reset' | 'opencode-config-applied' | 'list-tools' | 'call-tool' | 'message.create' | 'message.part.text-delta' | 'message.part.tool-update' | 'message.finalize' | 'usage-report' | 'thread.created' | 'thread.updated' | 'repo:refresh-token' | 'repo:clone-complete';
   restarted?: boolean;
   turnId?: string;
   delta?: string;
@@ -366,6 +366,8 @@ interface RunnerMessage {
   summaryAdditions?: number;
   summaryDeletions?: number;
   summaryFiles?: number;
+  // Repo clone result
+  success?: boolean;
 }
 
 /** Messages sent from DO to clients */
@@ -376,7 +378,7 @@ interface ClientOutbound {
 
 /** Messages sent from DO to runner */
 interface RunnerOutbound {
-  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'opencode-command' | 'pong' | 'init' | 'opencode-config' | 'plugin-content' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'mem-read-result' | 'mem-write-result' | 'mem-patch-result' | 'mem-rm-result' | 'mem-search-result' | 'list-repos-result' | 'list-personas-result' | 'list-channels-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'workflow-api-result' | 'trigger-api-result' | 'execution-api-result' | 'skill-api-result' | 'persona-api-result' | 'workflow-execute' | 'tunnel-delete' | 'channel-reply-result' | 'list-tools-result' | 'call-tool-result' | 'call-tool-pending';
+  type: 'prompt' | 'answer' | 'stop' | 'abort' | 'revert' | 'diff' | 'review' | 'opencode-command' | 'pong' | 'init' | 'opencode-config' | 'plugin-content' | 'repo-config' | 'repo-token-refreshed' | 'spawn-child-result' | 'session-message-result' | 'session-messages-result' | 'create-pr-result' | 'update-pr-result' | 'list-pull-requests-result' | 'inspect-pull-request-result' | 'terminate-child-result' | 'mem-read-result' | 'mem-write-result' | 'mem-patch-result' | 'mem-rm-result' | 'mem-search-result' | 'list-repos-result' | 'list-personas-result' | 'list-channels-result' | 'get-session-status-result' | 'list-child-sessions-result' | 'forward-messages-result' | 'read-repo-file-result' | 'workflow-list-result' | 'workflow-sync-result' | 'workflow-run-result' | 'workflow-executions-result' | 'workflow-api-result' | 'trigger-api-result' | 'execution-api-result' | 'skill-api-result' | 'persona-api-result' | 'workflow-execute' | 'tunnel-delete' | 'channel-reply-result' | 'list-tools-result' | 'call-tool-result' | 'call-tool-pending';
   config?: {
     tools?: Record<string, boolean>;
     providerKeys?: Record<string, string>;
@@ -464,6 +466,12 @@ interface RunnerOutbound {
     tools: Array<{ filename: string; content: string }>;
     allowRepoContent: boolean;
   };
+  // Repo config fields (repo-config / repo-token-refreshed)
+  token?: string;
+  expiresAt?: string;
+  gitConfig?: Record<string, string>;
+  repoUrl?: string;
+  branch?: string;
 }
 
 // ─── Durable SQLite Table Schemas ──────────────────────────────────────────
@@ -589,12 +597,12 @@ export class SessionAgentDO {
   private discoveredToolRiskLevels = new Map<string, string>();
 
   /** In-memory credential cache to avoid repeated D1 lookups + PBKDF2 decryption.
-   *  Keyed by "userId:service", entries expire after CREDENTIAL_CACHE_TTL_MS. */
+   *  Keyed by "ownerType:ownerId:service:credentialType", entries expire after CREDENTIAL_CACHE_TTL_MS. */
   private credentialCache = new Map<string, { result: CredentialResult; expiresAt: number }>();
   private static readonly CREDENTIAL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-  private getCachedCredential(userId: string, service: string): CredentialResult | null {
-    const key = `${userId}:${service}`;
+  private getCachedCredential(ownerType: string, ownerId: string, service: string, credentialType?: string): CredentialResult | null {
+    const key = `${ownerType}:${ownerId}:${service}:${credentialType || '*'}`;
     const entry = this.credentialCache.get(key);
     if (!entry || Date.now() > entry.expiresAt) {
       if (entry) this.credentialCache.delete(key);
@@ -603,16 +611,16 @@ export class SessionAgentDO {
     return entry.result;
   }
 
-  private setCachedCredential(userId: string, service: string, result: CredentialResult): void {
-    const key = `${userId}:${service}`;
+  private setCachedCredential(ownerType: string, ownerId: string, service: string, result: CredentialResult, credentialType?: string): void {
+    const key = `${ownerType}:${ownerId}:${service}:${credentialType || '*'}`;
     this.credentialCache.set(key, {
       result,
       expiresAt: Date.now() + SessionAgentDO.CREDENTIAL_CACHE_TTL_MS,
     });
   }
 
-  private invalidateCachedCredential(userId: string, service: string): void {
-    this.credentialCache.delete(`${userId}:${service}`);
+  private invalidateCachedCredential(ownerType: string, ownerId: string, service: string, credentialType?: string): void {
+    this.credentialCache.delete(`${ownerType}:${ownerId}:${service}:${credentialType || '*'}`);
   }
 
   // ─── Auto Channel Reply Tracking ─────────────────────────────────────
@@ -643,6 +651,16 @@ export class SessionAgentDO {
 
   /** Drizzle AppDb instance wrapping the D1 binding. */
   private get appDb(): AppDb { return getDb(this.env.DB); }
+
+  /** Resolve the org ID from org settings. Returns undefined if unavailable. */
+  private async resolveOrgId(): Promise<string | undefined> {
+    try {
+      const orgSettings = await getOrgSettings(this.appDb);
+      return orgSettings?.id;
+    } catch {
+      return undefined;
+    }
+  }
 
   /** Returns the channel metadata for the currently active prompt, if any. */
   private get activeChannel(): { channelType: string; channelId: string } | null {
@@ -1165,6 +1183,7 @@ export class SessionAgentDO {
     // updated keys (e.g. admin rotated a provider key while sandbox was hibernated).
     this.sendOpenCodeConfig();
     this.sendPluginContent();
+    this.sendRepoConfig();
 
     // Don't dispatch queued work immediately — the runner isn't ready yet.
     // It needs to start its event stream, discover models, and create OpenCode sessions.
@@ -3348,6 +3367,20 @@ export class SessionAgentDO {
         await this.handleCallTool(msg.requestId!, msg.toolId!, msg.params ?? {});
         break;
 
+      case 'repo:refresh-token': {
+        await this.handleRepoTokenRefresh(msg.requestId);
+        break;
+      }
+
+      case 'repo:clone-complete': {
+        if (msg.success !== false) {
+          console.log('[SessionAgentDO] Repo clone completed successfully');
+        } else {
+          console.error('[SessionAgentDO] Repo clone failed:', msg.error);
+        }
+        break;
+      }
+
       case 'ping':
         // Keepalive from runner — respond with pong
         this.sendToRunner({ type: 'pong' });
@@ -3465,7 +3498,7 @@ export class SessionAgentDO {
         // Inject git credentials if the parent doesn't have them (e.g. orchestrator)
         if (!childSpawnRequest.envVars.GITHUB_TOKEN) {
           try {
-            const ghResult = await getCredential(this.env, userId, 'github');
+            const ghResult = await getCredential(this.env, 'user', userId, 'github', { credentialType: 'oauth2' });
             if (ghResult.ok) {
               childSpawnRequest.envVars.GITHUB_TOKEN = ghResult.credential.accessToken;
             }
@@ -4746,7 +4779,7 @@ export class SessionAgentDO {
   private async handleSkillApi(requestId: string, action: string, payload?: Record<string, unknown>) {
     try {
       const userId = this.getStateValue('userId')!;
-      const orgId = 'default';
+      const orgId = await this.resolveOrgId() ?? 'default';
 
       if (action === 'search') {
         const q = typeof payload?.q === 'string' ? payload.q : '';
@@ -7107,7 +7140,7 @@ export class SessionAgentDO {
     // Try the current prompt author first (for multiplayer attribution)
     const promptAuthorId = this.getStateValue('currentPromptAuthorId');
     if (promptAuthorId) {
-      const authorResult = await getCredential(this.env, promptAuthorId, 'github');
+      const authorResult = await getCredential(this.env, 'user', promptAuthorId, 'github', { credentialType: 'oauth2' });
       if (authorResult.ok) {
         return authorResult.credential.accessToken;
       }
@@ -7117,7 +7150,7 @@ export class SessionAgentDO {
     const userId = this.getStateValue('userId');
     if (!userId) return null;
 
-    const result = await getCredential(this.env, userId, 'github');
+    const result = await getCredential(this.env, 'user', userId, 'github', { credentialType: 'oauth2' });
     if (!result.ok) return null;
 
     return result.credential.accessToken;
@@ -8355,7 +8388,7 @@ export class SessionAgentDO {
       if (channelType === 'slack') {
         token = await getSlackBotToken(this.env) ?? undefined;
       } else {
-        const credResult = await getCredential(this.env, userId, channelType);
+        const credResult = await getCredential(this.env, 'user', userId, channelType);
         if (credResult.ok) token = credResult.credential.accessToken;
       }
       if (!token) {
@@ -8527,7 +8560,7 @@ export class SessionAgentDO {
           const scope = isOrgScopedIntegration ? 'org' as const : 'user' as const;
 
           // Check credential cache first
-          let credResult = this.getCachedCredential(credentialUserId, integration.service);
+          let credResult = this.getCachedCredential('user', credentialUserId, integration.service);
           if (!credResult) {
             credResult = await integrationRegistry.resolveCredentials(integration.service, this.env, credentialUserId, scope);
             // If the initial credential fetch fails with a refreshable reason, try force-refresh
@@ -8538,7 +8571,7 @@ export class SessionAgentDO {
             // Only cache successful results — failure states (not_found, revoked) are
             // transient and should be re-checked so newly connected integrations work immediately.
             if (credResult.ok) {
-              this.setCachedCredential(credentialUserId, integration.service, credResult);
+              this.setCachedCredential('user', credentialUserId, integration.service, credResult);
             }
           }
 
@@ -8567,11 +8600,11 @@ export class SessionAgentDO {
           const credentialUserId = ('scope' in integration && integration.scope === 'org' && 'userId' in integration)
             ? (integration as { userId: string }).userId
             : userId;
-          this.invalidateCachedCredential(credentialUserId, integration.service);
+          this.invalidateCachedCredential('user', credentialUserId, integration.service);
           const refreshed = await integrationRegistry.resolveCredentials(integration.service, this.env, credentialUserId, isOrgScopedIntegration ? 'org' : 'user', { forceRefresh: true });
           if (refreshed.ok && refreshed.credential.refreshed) {
             console.log(`[SessionAgentDO] list-tools: ${integration.service} returned 0 actions, retrying with force-refreshed token`);
-            this.setCachedCredential(credentialUserId, integration.service, refreshed);
+            this.setCachedCredential('user', credentialUserId, integration.service, refreshed);
             credCtx = { credentials: { access_token: refreshed.credential.accessToken } };
             actions = await actionSource.listActions(credCtx);
           }
@@ -8746,10 +8779,10 @@ export class SessionAgentDO {
         const fallbackProvider = integrationRegistry.getProvider(service);
         let listCtx: { credentials: { access_token: string } } | undefined;
         if (fallbackProvider?.authType !== 'none') {
-          let listCredResult = this.getCachedCredential(userId, service)
+          let listCredResult = this.getCachedCredential('user', userId, service)
             || await integrationRegistry.resolveCredentials(service, this.env, userId, isOrgScoped ? 'org' : 'user');
           if (listCredResult.ok) {
-            this.setCachedCredential(userId, service, listCredResult);
+            this.setCachedCredential('user', userId, service, listCredResult);
           }
           listCtx = listCredResult.ok
             ? { credentials: { access_token: listCredResult.credential.accessToken } }
@@ -8916,10 +8949,10 @@ export class SessionAgentDO {
       credentials = {};
     } else {
       const scope = isOrgScoped ? 'org' as const : 'user' as const;
-      let credResult = this.getCachedCredential(userId, service)
+      let credResult = this.getCachedCredential('user', userId, service)
         || await integrationRegistry.resolveCredentials(service, this.env, userId, scope);
       if (credResult.ok) {
-        this.setCachedCredential(userId, service, credResult);
+        this.setCachedCredential('user', userId, service, credResult);
       }
       if (!credResult.ok) {
         const scopeLabel = isOrgScoped ? `org-scoped "${service}"` : `"${service}"`;
@@ -8965,10 +8998,10 @@ export class SessionAgentDO {
     if (provider?.authType !== 'none' && provider?.authType !== 'bot_token' && !actionResult.success && actionResult.error && /\b(401|403|unauthorized|invalid.credentials|token.*expired|token.*revoked)\b/i.test(actionResult.error)) {
       const scope = isOrgScoped ? 'org' as const : 'user' as const;
       console.log(`[SessionAgentDO] Tool "${toolId}" returned auth error, retrying with refreshed credentials`);
-      this.invalidateCachedCredential(userId, service);
+      this.invalidateCachedCredential('user', userId, service);
       const refreshedCred = await integrationRegistry.resolveCredentials(service, this.env, userId, scope, { forceRefresh: true });
       if (refreshedCred.ok) {
-        this.setCachedCredential(userId, service, refreshedCred);
+        this.setCachedCredential('user', userId, service, refreshedCred);
         const refreshedToken = refreshedCred.credential.accessToken;
         const refreshedCredentials: Record<string, string> = refreshedCred.credential.credentialType === 'bot_token'
           ? { bot_token: refreshedToken }
@@ -9221,7 +9254,7 @@ export class SessionAgentDO {
         if (target.channelType === 'slack') {
           token = await getSlackBotToken(this.env) ?? undefined;
         } else {
-          const credResult = await getCredential(this.env, userId, target.channelType);
+          const credResult = await getCredential(this.env, 'user', userId, target.channelType);
           if (credResult.ok) token = credResult.credential.accessToken;
         }
         if (!token) continue;
@@ -9280,7 +9313,7 @@ export class SessionAgentDO {
       if (channelType === 'slack') {
         token = await getSlackBotToken(this.env) ?? undefined;
       } else if (userId) {
-        const credResult = await getCredential(this.env, userId, channelType);
+        const credResult = await getCredential(this.env, 'user', userId, channelType);
         if (credResult.ok) token = credResult.credential.accessToken;
       }
       if (!token) continue;
@@ -9410,7 +9443,7 @@ export class SessionAgentDO {
         if (pending.channelType === 'slack') {
           token = await getSlackBotToken(this.env) ?? undefined;
         } else {
-          const credResult = await getCredential(this.env, userId, pending.channelType);
+          const credResult = await getCredential(this.env, 'user', userId, pending.channelType);
           if (credResult.ok) token = credResult.credential.accessToken;
         }
         if (!token) {
@@ -9583,8 +9616,86 @@ export class SessionAgentDO {
     this.sendToRunner({ type: 'opencode-config', config });
   }
 
+  private async sendRepoConfig(): Promise<void> {
+    const sessionId = this.getStateValue('sessionId');
+    if (!sessionId) return;
+
+    const gitState = await getSessionGitState(this.appDb, sessionId);
+    const repoUrl = gitState?.sourceRepoUrl;
+    if (!repoUrl) return;
+
+    const userId = this.getStateValue('userId');
+    if (!userId) return;
+
+    const orgId = await this.resolveOrgId();
+
+    try {
+      const repoEnv = await assembleRepoEnv(this.appDb, this.env, userId, orgId, {
+        repoUrl,
+        branch: gitState.branch ?? undefined,
+        ref: gitState.ref ?? undefined,
+      });
+
+      if (repoEnv.error) {
+        console.warn(`[SessionAgentDO] sendRepoConfig: ${repoEnv.error}`);
+        return;
+      }
+
+      if (repoEnv.token) {
+        this.sendToRunner({
+          type: 'repo-config',
+          token: repoEnv.token,
+          expiresAt: repoEnv.expiresAt,
+          gitConfig: repoEnv.gitConfig,
+          repoUrl,
+          branch: gitState.branch ?? undefined,
+          ref: gitState.ref ?? undefined,
+        });
+        console.log(`[SessionAgentDO] Sent repo-config to runner for ${repoUrl}`);
+      }
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to assemble repo config for runner:', err);
+    }
+  }
+
+  private async handleRepoTokenRefresh(requestId?: string): Promise<void> {
+    const sessionId = this.getStateValue('sessionId');
+    if (!sessionId) return;
+
+    const gitState = await getSessionGitState(this.appDb, sessionId);
+    const repoUrl = gitState?.sourceRepoUrl;
+    if (!repoUrl) return;
+
+    const userId = this.getStateValue('userId');
+    if (!userId) return;
+
+    const orgId = await this.resolveOrgId();
+
+    try {
+      const repoEnv = await assembleRepoEnv(this.appDb, this.env, userId, orgId, {
+        repoUrl,
+        branch: gitState.branch ?? undefined,
+      });
+
+      if (repoEnv.error || !repoEnv.token) {
+        console.error('[SessionAgentDO] Failed to refresh repo token:', repoEnv.error);
+        return;
+      }
+
+      this.sendToRunner({
+        type: 'repo-token-refreshed',
+        token: repoEnv.token,
+        expiresAt: repoEnv.expiresAt,
+        requestId,
+      });
+      console.log('[SessionAgentDO] Sent refreshed repo token to runner');
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to refresh repo token:', err);
+    }
+  }
+
   private async sendPluginContent(): Promise<void> {
-    const orgId = 'default'; // TODO: resolve from user's org
+    const orgId = await this.resolveOrgId() ?? 'default';
 
     let artifacts: Awaited<ReturnType<typeof getActivePluginArtifacts>>;
     let settings: Awaited<ReturnType<typeof getPluginSettings>>;

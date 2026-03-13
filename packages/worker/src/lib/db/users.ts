@@ -1,8 +1,8 @@
 import type { AppDb } from '../drizzle.js';
 import type { User, UserRole, QueueMode } from '@valet/shared';
-import { eq, sql, asc, inArray } from 'drizzle-orm';
+import { eq, sql, asc, and, inArray } from 'drizzle-orm';
 import { toDate } from '../drizzle.js';
-import { users } from '../schema/index.js';
+import { users, credentials } from '../schema/index.js';
 
 function rowToUser(row: typeof users.$inferSelect): User {
   return {
@@ -150,6 +150,27 @@ export async function backfillGitConfig(
   return getUserById(db, userId);
 }
 
+export async function updateUserPasswordHash(
+  db: AppDb,
+  userId: string,
+  passwordHash: string,
+  identityProvider: string,
+): Promise<void> {
+  await db
+    .update(users)
+    .set({ passwordHash, identityProvider, updatedAt: sql`datetime('now')` })
+    .where(eq(users.id, userId));
+}
+
+export async function findUserWithPasswordHash(
+  db: AppDb,
+  email: string,
+): Promise<(User & { passwordHash: string | null }) | null> {
+  const row = await db.select().from(users).where(eq(users.email, email)).get();
+  if (!row) return null;
+  return { ...rowToUser(row), passwordHash: row.passwordHash };
+}
+
 export async function updateUserRole(db: AppDb, userId: string, role: UserRole): Promise<void> {
   await db
     .update(users)
@@ -165,12 +186,26 @@ export async function getUserCount(db: AppDb): Promise<number> {
   return row?.count ?? 0;
 }
 
+/**
+ * Atomically promote a user to admin only if they are the sole user in the system.
+ * Uses a single UPDATE with a subquery to avoid race conditions where two concurrent
+ * registrations both see count=1 and both get promoted.
+ */
+export async function promoteIfOnlyUser(db: AppDb, userId: string): Promise<void> {
+  await db.run(sql`
+    UPDATE users SET role = 'admin', updated_at = datetime('now')
+    WHERE id = ${userId} AND (SELECT COUNT(*) FROM users) = 1
+  `);
+}
+
 export async function listUsers(db: AppDb): Promise<User[]> {
   const rows = await db.select().from(users).orderBy(asc(users.createdAt));
   return rows.map(rowToUser);
 }
 
 export async function deleteUser(db: AppDb, userId: string): Promise<void> {
+  // Clean up user-owned credentials (no longer cascade-deleted after migration 0066)
+  await db.delete(credentials).where(and(eq(credentials.ownerType, 'user'), eq(credentials.ownerId, userId)));
   await db.delete(users).where(eq(users.id, userId));
 }
 

@@ -260,6 +260,14 @@ timeout 10 agent-browser --headed wait --text "Welcome"     # Wait for specific 
     artifacts: [],
   },
   {
+    name: "email-auth",
+    version: "0.1.0",
+    description: "Email/password identity provider",
+    icon: "key",
+    capabilities: [],
+    artifacts: [],
+  },
+  {
     name: "github",
     version: "0.0.1",
     description: "GitHub integration for PRs, issues, repos, and webhooks",
@@ -273,6 +281,14 @@ timeout 10 agent-browser --headed wait --text "Welcome"     # Wait for specific 
     description: "Gmail integration for reading and sending emails",
     icon: "📧",
     capabilities: ["actions"],
+    artifacts: [],
+  },
+  {
+    name: "google-auth",
+    version: "0.1.0",
+    description: "Google OAuth identity provider",
+    icon: "google",
+    capabilities: [],
     artifacts: [],
   },
   {
