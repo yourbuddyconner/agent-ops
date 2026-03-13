@@ -63,6 +63,30 @@ export interface ChannelContext {
   platformCache?: Record<string, unknown>;
 }
 
+// ─── Approval Types ─────────────────────────────────────────────────────────
+
+export interface ApprovalRequest {
+  invocationId: string;
+  sessionId: string;
+  toolId: string;
+  service: string;
+  actionId: string;
+  riskLevel: string;
+  params?: Record<string, unknown>;
+  expiresAt: number;
+}
+
+export interface ApprovalMessageRef {
+  messageId: string;
+  channelId: string;
+  [key: string]: unknown;
+}
+
+export type ApprovalResolution =
+  | { status: 'approved'; resolvedBy: string }
+  | { status: 'denied'; resolvedBy: string; reason?: string }
+  | { status: 'expired' };
+
 // ─── Routing Metadata (passed to parseInbound) ──────────────────────────────
 
 export interface RoutingMetadata {
@@ -112,6 +136,12 @@ export interface ChannelTransport {
 
   /** Unregister the webhook from the platform. */
   unregisterWebhook?(ctx: ChannelContext): Promise<boolean>;
+
+  /** Send an interactive approval request to a channel (e.g. Slack Block Kit buttons). */
+  sendApprovalRequest?(target: ChannelTarget, approval: ApprovalRequest, ctx: ChannelContext): Promise<ApprovalMessageRef | null>;
+
+  /** Update a previously sent approval message with resolution status. */
+  updateApprovalStatus?(target: ChannelTarget, ref: ApprovalMessageRef, resolution: ApprovalResolution, ctx: ChannelContext): Promise<void>;
 }
 
 // ─── Integration Provider (re-exported from integrations module) ─────────────
