@@ -4,6 +4,7 @@ export class GitCredentialManager {
   private refreshCallback:
     | (() => Promise<{ accessToken: string; expiresAt?: string }>)
     | null = null;
+  private pendingRefresh: Promise<{ accessToken: string; expiresAt?: string }> | null = null;
 
   setToken(token: string, expiresAt?: string) {
     this.token = token;
@@ -20,7 +21,13 @@ export class GitCredentialManager {
     // Check if token is expired (with 60s buffer)
     if (this.token && this.expiresAt && Date.now() > this.expiresAt - 60_000) {
       if (this.refreshCallback) {
-        const result = await this.refreshCallback();
+        // Deduplicate concurrent refresh requests — all callers await the same promise
+        if (!this.pendingRefresh) {
+          this.pendingRefresh = this.refreshCallback().finally(() => {
+            this.pendingRefresh = null;
+          });
+        }
+        const result = await this.pendingRefresh;
         this.setToken(result.accessToken, result.expiresAt);
       }
     }

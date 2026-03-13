@@ -83,7 +83,10 @@ export const githubRepoProvider: RepoProvider = {
   urlPatterns: [/github\.com/],
 
   async listRepos(credential: RepoCredential, opts?) {
-    const token = credential.accessToken!;
+    if (!credential.accessToken) {
+      throw new Error('GitHub repo listing requires an access token — mint a token first');
+    }
+    const token = credential.accessToken;
     const page = opts?.page || 1;
     const search = opts?.search;
 
@@ -124,7 +127,10 @@ export const githubRepoProvider: RepoProvider = {
     const match = repoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
     if (!match) return { accessible: false, error: 'Invalid GitHub URL' };
     const [, owner, repo] = match;
-    const res = await githubFetch(`/repos/${owner}/${repo}`, credential.accessToken!);
+    if (!credential.accessToken) {
+      return { accessible: false, error: 'No access token available — mint a token first' };
+    }
+    const res = await githubFetch(`/repos/${owner}/${repo}`, credential.accessToken);
     if (!res.ok) return { accessible: false, error: `Repository not accessible: ${res.status}` };
     const data = (await res.json()) as {
       permissions?: { push: boolean; pull: boolean; admin: boolean };
@@ -153,11 +159,12 @@ export const githubRepoProvider: RepoProvider = {
     if (!credential.installationId) {
       throw new Error('Cannot mint token without installationId');
     }
-    const appId = credential.metadata?.appId;
-    const privateKey = credential.metadata?.privateKey;
+    // appId and privateKey are stored encrypted in the credential data
+    const appId = credential.metadata?.appId || credential.metadata?.app_id;
+    const privateKey = credential.metadata?.privateKey || credential.metadata?.private_key;
     if (!appId || !privateKey) {
       throw new Error(
-        'GitHub App credentials (appId, privateKey) not found in credential metadata',
+        'GitHub App credentials (appId, privateKey) not found in credential',
       );
     }
     const result = await mintInstallationToken(

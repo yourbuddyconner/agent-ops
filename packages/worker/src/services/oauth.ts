@@ -3,6 +3,7 @@ import type { IdentityResult } from '@valet/sdk/identity';
 import * as db from '../lib/db.js';
 import { getDb } from '../lib/drizzle.js';
 import { hashPassword, verifyPassword } from '@valet/plugin-email-auth/identity';
+import { verifyGoogleIdToken } from '@valet/plugin-google-auth/identity';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -159,10 +160,7 @@ export async function finalizeIdentityLogin(
     });
     isNewUser = true;
 
-    const userCount = await db.getUserCount(appDb);
-    if (userCount === 1) {
-      await db.updateUserRole(appDb, user.id, 'admin');
-    }
+    await db.promoteIfOnlyUser(appDb, user.id);
   }
 
   // Update provider-specific fields
@@ -366,10 +364,7 @@ export async function handleGitHubCallback(
     });
     isNewUser = true;
 
-    const userCount = await db.getUserCount(appDb);
-    if (userCount === 1) {
-      await db.updateUserRole(appDb, user.id, 'admin');
-    }
+    await db.promoteIfOnlyUser(appDb, user.id);
   }
 
   // Update GitHub-specific fields
@@ -443,15 +438,14 @@ export async function handleGoogleCallback(
     return { ok: false, error: 'token_exchange_failed' };
   }
 
-  // Decode id_token JWT
-  const idTokenParts = tokenData.id_token.split('.');
-  const payload = JSON.parse(atob(idTokenParts[1])) as {
-    sub: string;
-    email: string;
-    email_verified: boolean;
-    name?: string;
-    picture?: string;
-  };
+  // Verify id_token signature and validate iss/aud/exp claims
+  let payload: { sub: string; email: string; email_verified: boolean; name?: string; picture?: string };
+  try {
+    payload = await verifyGoogleIdToken(tokenData.id_token, env.GOOGLE_CLIENT_ID);
+  } catch (err) {
+    console.error('Google id_token verification failed:', err);
+    return { ok: false, error: 'token_verification_failed' };
+  }
 
   if (!payload.email || !payload.email_verified) {
     return { ok: false, error: 'email_not_verified' };
@@ -475,10 +469,7 @@ export async function handleGoogleCallback(
     });
     isNewUser = true;
 
-    const userCount = await db.getUserCount(appDb);
-    if (userCount === 1) {
-      await db.updateUserRole(appDb, user.id, 'admin');
-    }
+    await db.promoteIfOnlyUser(appDb, user.id);
   }
 
   // Auto-populate git config if not already set

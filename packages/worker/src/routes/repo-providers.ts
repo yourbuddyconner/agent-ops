@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env, Variables } from '../env.js';
+import { signJWT, verifyJWT } from '../lib/jwt.js';
 import { repoProviderRegistry } from '../repos/registry.js';
 import { storeCredential } from '../services/credentials.js';
 import { getDb } from '../lib/drizzle.js';
@@ -34,8 +35,12 @@ repoProviderRouter.get('/:provider/install', async (c) => {
     return c.json({ error: 'GitHub App not configured' }, 500);
   }
 
-  // State encodes the level and user info for the callback
-  const state = btoa(JSON.stringify({ level, userId: user.id }));
+  // State is a signed JWT to prevent forgery
+  const now = Math.floor(Date.now() / 1000);
+  const state = await signJWT(
+    { sub: user.id, sid: level, iat: now, exp: now + 10 * 60 } as any,
+    c.env.ENCRYPTION_KEY,
+  );
   const installUrl = `https://github.com/apps/${appSlug}/installations/new?state=${encodeURIComponent(state)}`;
 
   return c.json({ url: installUrl });
@@ -53,14 +58,18 @@ repoProviderRouter.get('/:provider/install/callback', async (c) => {
     return c.json({ error: 'Missing installation_id' }, 400);
   }
 
+  // Verify signed state JWT
   let level = 'personal';
   if (stateParam) {
-    try {
-      const state = JSON.parse(atob(stateParam));
-      level = state.level || 'personal';
-    } catch {
-      // ignore malformed state
+    const payload = await verifyJWT(stateParam, c.env.ENCRYPTION_KEY);
+    if (!payload) {
+      return c.json({ error: 'Invalid or expired state' }, 400);
     }
+    // Verify the state belongs to this user
+    if (payload.sub !== user.id) {
+      return c.json({ error: 'State mismatch' }, 403);
+    }
+    level = payload.sid || 'personal'; // sid holds the level
   }
 
   // Determine owner type and ID
@@ -69,15 +78,15 @@ repoProviderRouter.get('/:provider/install/callback', async (c) => {
   const ownerId = user.id;
 
   // Store the installation credential
-  const metadata: Record<string, string> = {
-    installationId,
-    appId: c.env.GITHUB_APP_ID || '',
-    privateKey: c.env.GITHUB_APP_PRIVATE_KEY || '',
-  };
+  // App ID + private key go in encryptedData (encrypted at rest via PBKDF2)
+  // Only installationId goes in plaintext metadata for lookups
+  const metadata: Record<string, string> = { installationId };
 
   if (setupAction === 'install') {
     await storeCredential(c.env, ownerType, ownerId, providerId, {
       installation_id: installationId,
+      app_id: c.env.GITHUB_APP_ID || '',
+      private_key: c.env.GITHUB_APP_PRIVATE_KEY || '',
     }, {
       credentialType: 'app_install',
       metadata,

@@ -234,7 +234,7 @@ export function LoginForm() {
 
             {redirectProviders.some(p => p.id === 'github') && (
               <p className="text-center text-xs text-neutral-500 pt-2">
-                GitHub sign-in grants repo access for cloning and PR creation
+                Repo access is configured separately via GitHub App installation
               </p>
             )}
           </>

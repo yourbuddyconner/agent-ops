@@ -7,7 +7,7 @@ export interface RepoCredential {
   installationId?: string;
   accessToken?: string;
   expiresAt?: string;
-  metadata?: Record<string, string>; // provider-specific config (e.g. appId, privateKey for GitHub App)
+  metadata?: Record<string, string>; // provider-specific config (e.g. appId for GitHub App)
 }
 
 export interface SessionRepoEnv {

@@ -97,6 +97,14 @@ oauthRouter.post('/email/register', async (c) => {
     return c.json({ error: 'Email and password are required' }, 400);
   }
 
+  // Password strength: minimum 8 chars and at least one special character
+  if (password.length < 8) {
+    return c.json({ error: 'Password must be at least 8 characters' }, 400);
+  }
+  if (!/[^a-zA-Z0-9]/.test(password)) {
+    return c.json({ error: 'Password must contain at least one special character' }, 400);
+  }
+
   try {
     const result = await oauthService.handleEmailRegister(c.env, { email, password, name, inviteCode });
     if (!result.ok) return c.json({ error: result.error }, 400);
@@ -137,6 +145,11 @@ oauthRouter.get('/:provider/callback', async (c) => {
   const stateResult = await parseStateJWT(state, c.env);
   if (!stateResult.valid) return c.redirect(`${frontendUrl}/login?error=invalid_state`);
 
+  // Verify state was issued for this provider (prevents cross-provider state confusion)
+  if (stateResult.provider !== providerId) {
+    return c.redirect(`${frontendUrl}/login?error=invalid_state`);
+  }
+
   const provider = identityRegistry.get(providerId);
   if (!provider) return c.redirect(`${frontendUrl}/login?error=unknown_provider`);
 
@@ -170,12 +183,20 @@ oauthRouter.post('/:provider/callback', async (c) => {
 
   try {
     const body = await c.req.parseBody();
+
+    // Validate RelayState (same signed JWT used for OAuth state)
+    const relayState = body.RelayState as string | undefined;
+    if (!relayState) return c.redirect(`${frontendUrl}/login?error=missing_state`);
+    const stateResult = await parseStateJWT(relayState, c.env);
+    if (!stateResult.valid) return c.redirect(`${frontendUrl}/login?error=invalid_state`);
+    if (stateResult.provider !== providerId) return c.redirect(`${frontendUrl}/login?error=invalid_state`);
+
     const config = resolveProviderConfig(c.env, provider);
     const identity = await provider.handleCallback(config, {
       samlResponse: body.SAMLResponse as string,
     });
 
-    const result = await oauthService.finalizeIdentityLogin(c.env, identity, providerId);
+    const result = await oauthService.finalizeIdentityLogin(c.env, identity, providerId, stateResult.inviteCode);
     if (!result.ok) return c.redirect(`${frontendUrl}/login?error=${result.error}`);
 
     return c.redirect(

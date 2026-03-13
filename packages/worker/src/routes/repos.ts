@@ -39,10 +39,15 @@ async function resolveRepoCredentialForProvider(
   }
 
   const metadata: Record<string, string> = credRow.metadata ? JSON.parse(credRow.metadata) : {};
+  // Merge decrypted credential fields into metadata so providers can access
+  // secrets (e.g. app_id, private_key) that are stored encrypted in D1
+  for (const [k, v] of Object.entries(credData)) {
+    if (typeof v === 'string') metadata[k] = v;
+  }
 
   return {
     type: credRow.credentialType === 'app_install' ? 'installation' : 'token',
-    installationId: metadata.installationId,
+    installationId: metadata.installationId || metadata.installation_id,
     accessToken: (credData.access_token || credData.token) as string | undefined,
     expiresAt: credRow.expiresAt ?? undefined,
     metadata,

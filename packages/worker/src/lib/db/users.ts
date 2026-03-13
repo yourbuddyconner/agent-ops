@@ -186,6 +186,18 @@ export async function getUserCount(db: AppDb): Promise<number> {
   return row?.count ?? 0;
 }
 
+/**
+ * Atomically promote a user to admin only if they are the sole user in the system.
+ * Uses a single UPDATE with a subquery to avoid race conditions where two concurrent
+ * registrations both see count=1 and both get promoted.
+ */
+export async function promoteIfOnlyUser(db: AppDb, userId: string): Promise<void> {
+  await db.run(sql`
+    UPDATE users SET role = 'admin', updated_at = datetime('now')
+    WHERE id = ${userId} AND (SELECT COUNT(*) FROM users) = 1
+  `);
+}
+
 export async function listUsers(db: AppDb): Promise<User[]> {
   const rows = await db.select().from(users).orderBy(asc(users.createdAt));
   return rows.map(rowToUser);
