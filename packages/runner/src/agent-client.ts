@@ -1321,8 +1321,15 @@ export class AgentClient {
           gitCredentials.setRefreshCallback(async () => {
             const requestId = crypto.randomUUID();
             this.send({ type: "repo:refresh-token", requestId });
-            return new Promise((resolve) => {
+            return new Promise((resolve, reject) => {
               this.pendingTokenRefresh = { requestId, resolve };
+              // Timeout after 30s to prevent hanging forever if DO doesn't respond
+              setTimeout(() => {
+                if (this.pendingTokenRefresh?.requestId === requestId) {
+                  this.pendingTokenRefresh = null;
+                  reject(new Error("Token refresh timed out after 30s"));
+                }
+              }, 30_000);
             });
           });
 

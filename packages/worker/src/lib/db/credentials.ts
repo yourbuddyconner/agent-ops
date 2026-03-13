@@ -154,7 +154,10 @@ export async function hasCredential(
 }
 
 /**
- * Resolve a repo-level credential, preferring org app_install over user app_install.
+ * Resolve a repo-level credential, preferring:
+ * 1. org-level app_install
+ * 2. user-level app_install
+ * 3. user-level oauth2 (fallback for users without app install)
  */
 export async function resolveRepoCredential(
   db: AppDb,
@@ -166,5 +169,8 @@ export async function resolveRepoCredential(
     const orgCred = await getCredentialRow(db, 'org', orgId, provider, 'app_install');
     if (orgCred) return orgCred;
   }
-  return getCredentialRow(db, 'user', userId, provider, 'app_install');
+  const userInstall = await getCredentialRow(db, 'user', userId, provider, 'app_install');
+  if (userInstall) return userInstall;
+  // Fall back to OAuth token for users who haven't set up app install yet
+  return getCredentialRow(db, 'user', userId, provider, 'oauth2');
 }

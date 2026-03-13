@@ -84,6 +84,8 @@ export const githubIdentityProvider: IdentityProvider = {
       name: profile.name || profile.login,
       avatarUrl: profile.avatar_url,
       username: profile.login,
+      accessToken: tokenData.access_token,
+      scopes: 'read:user user:email',
     };
   },
 };

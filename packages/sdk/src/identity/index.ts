@@ -26,6 +26,11 @@ export interface IdentityResult {
   name?: string;
   avatarUrl?: string;
   username?: string;
+  // OAuth tokens to store as credentials (optional — not all providers yield tokens)
+  accessToken?: string;
+  refreshToken?: string;
+  scopes?: string;
+  tokenExpiresAt?: string;
 }
 
 export interface IdentityProvider {

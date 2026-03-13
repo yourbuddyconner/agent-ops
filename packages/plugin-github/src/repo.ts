@@ -169,6 +169,10 @@ export const githubRepoProvider: RepoProvider = {
   },
 
   async mintToken(credential: RepoCredential) {
+    // OAuth tokens don't need minting — return as-is
+    if (credential.type === 'token' && credential.accessToken) {
+      return { accessToken: credential.accessToken, expiresAt: credential.expiresAt };
+    }
     if (!credential.installationId) {
       throw new Error('Cannot mint token without installationId');
     }

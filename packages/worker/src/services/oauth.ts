@@ -2,6 +2,7 @@ import type { Env } from '../env.js';
 import type { IdentityResult } from '@valet/sdk/identity';
 import * as db from '../lib/db.js';
 import { getDb } from '../lib/drizzle.js';
+import { storeCredential } from './credentials.js';
 import { hashPassword, verifyPassword } from '@valet/plugin-email-auth/identity';
 import { verifyGoogleIdToken } from '@valet/plugin-google-auth/identity';
 
@@ -178,6 +179,21 @@ export async function finalizeIdentityLogin(
     await db.updateUserProfile(appDb, user.id, {
       gitName: user.gitName || identity.name || identity.username || undefined,
       gitEmail: user.gitEmail || identity.email,
+    });
+  }
+
+  // Store OAuth credential if the provider returned an access token
+  if (identity.accessToken) {
+    const credentialData: Record<string, string> = {
+      access_token: identity.accessToken,
+    };
+    if (identity.refreshToken) {
+      credentialData.refresh_token = identity.refreshToken;
+    }
+    await storeCredential(env, 'user', user.id, providerId, credentialData, {
+      credentialType: 'oauth2',
+      scopes: identity.scopes,
+      expiresAt: identity.tokenExpiresAt,
     });
   }
 
