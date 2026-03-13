@@ -17,6 +17,7 @@ import { resolveMode } from '../services/action-policy.js';
 import { invokeAction, markExecuted, markFailed, approveInvocation, denyInvocation } from '../services/actions.js';
 import { updateInvocationStatus } from '../lib/db/actions.js';
 import { getDisabledActionsIndex, isActionDisabled } from '../lib/db/disabled-actions.js';
+import { upsertMcpToolCache } from '../lib/db/mcp-tool-cache.js';
 import { getActivePluginArtifacts, getPluginSettings, getAutoEnabledServices } from '../lib/db/plugins.js';
 import { getPersonaSkills, getOrgDefaultSkills, searchSkills, listSkills, getSkill, getSkillBySlug, createSkill, updateSkill, deleteSkill, getPersonaToolWhitelist, createPersona, updatePersona, deletePersona, getPersonaWithFiles, upsertPersonaFile, attachSkillToPersona, detachSkillFromPersona, getPersonaSkillsForApi } from '../lib/db.js';
 import type { ChannelTarget, ChannelContext } from '@valet/sdk';
@@ -8448,6 +8449,7 @@ export class SessionAgentDO {
 
       const tools: unknown[] = [];
       const warnings: Array<{ service: string; displayName: string; reason: string; message: string; integrationId: string }> = [];
+      const mcpCacheEntries: Array<{ service: string; actionId: string; name: string; description: string; riskLevel: string }> = [];
 
       for (const integration of dedupedIntegrations) {
         // If filtering by service, skip non-matching integrations
@@ -8546,6 +8548,15 @@ export class SessionAgentDO {
           // Cache discovered risk levels so handleCallTool doesn't need to re-fetch
           this.discoveredToolRiskLevels.set(compositeId, action.riskLevel);
 
+          // Collect entry for D1 MCP tool cache (so catalog endpoint can surface these)
+          mcpCacheEntries.push({
+            service: integration.service,
+            actionId: action.id,
+            name: action.name,
+            description: action.description,
+            riskLevel: action.riskLevel,
+          });
+
           tools.push({
             id: compositeId,
             name: action.name,
@@ -8554,6 +8565,14 @@ export class SessionAgentDO {
             params: action.inputSchema || this.serializeZodSchema(action.params),
           });
         }
+      }
+
+      // Fire-and-forget: persist discovered tools to D1 cache for the catalog endpoint.
+      // This allows MCP tools to appear in the policy editor UI even without live credentials.
+      if (mcpCacheEntries.length > 0) {
+        upsertMcpToolCache(this.appDb, mcpCacheEntries).catch((err) => {
+          console.warn('[SessionAgentDO] mcp tool cache upsert failed:', err instanceof Error ? err.message : String(err));
+        });
       }
 
       this.sendToRunner({
