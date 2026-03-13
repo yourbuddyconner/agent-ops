@@ -8530,6 +8530,20 @@ export class SessionAgentDO {
         }
 
         console.log(`[SessionAgentDO] list-tools: ${integration.service} returned ${actions.length} actions`);
+
+        // Cache ALL discovered tools for the catalog/policy UI, before any filtering
+        for (const action of actions) {
+          const compositeId = `${integration.service}:${action.id}`;
+          this.discoveredToolRiskLevels.set(compositeId, action.riskLevel);
+          mcpCacheEntries.push({
+            service: integration.service,
+            actionId: action.id,
+            name: action.name,
+            description: action.description,
+            riskLevel: action.riskLevel,
+          });
+        }
+
         for (const action of actions) {
           // If query provided, filter by case-insensitive substring match on name/description/service
           if (query) {
@@ -8544,18 +8558,6 @@ export class SessionAgentDO {
 
           // Skip individually disabled actions
           if (disabledActionSet.has(compositeId)) continue;
-
-          // Cache discovered risk levels so handleCallTool doesn't need to re-fetch
-          this.discoveredToolRiskLevels.set(compositeId, action.riskLevel);
-
-          // Collect entry for D1 MCP tool cache (so catalog endpoint can surface these)
-          mcpCacheEntries.push({
-            service: integration.service,
-            actionId: action.id,
-            name: action.name,
-            description: action.description,
-            riskLevel: action.riskLevel,
-          });
 
           tools.push({
             id: compositeId,
