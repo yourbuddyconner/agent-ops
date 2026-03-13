@@ -214,7 +214,7 @@ export function LoginForm() {
             {redirectProviders.map((provider, idx) => (
               <Button
                 key={provider.id}
-                variant={idx === 0 ? 'default' : 'outline'}
+                variant={idx === 0 ? 'primary' : 'outline'}
                 className="w-full"
                 style={provider.brandColor ? { '--brand-color': provider.brandColor } as React.CSSProperties : undefined}
                 onClick={() => { window.location.href = `${workerUrl}/auth/${provider.id}`; }}
