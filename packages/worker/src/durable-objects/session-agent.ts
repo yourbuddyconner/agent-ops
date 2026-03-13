@@ -1403,8 +1403,6 @@ export class SessionAgentDO {
 
       if (epType === 'approval') {
         const toolId = epContext.toolId || '';
-        const service = epContext.service || '';
-        const actionId = epContext.actionId || '';
 
         // Update D1 status to expired
         this.ctx.waitUntil(
@@ -1416,25 +1414,19 @@ export class SessionAgentDO {
         // Send error to runner to unblock the pending request
         if (epRequestId) {
           this.sendToRunner({ type: 'call-tool-result', requestId: epRequestId, error: `Action "${toolId}" approval expired after 10 minutes` } as any);
+        } else {
+          console.warn(`[SessionAgentDO] Approval prompt ${epId} expired with no request_id — runner may be stuck`);
         }
 
         this.appendAuditLog('agent.tool_call', `Action ${toolId} approval expired`, undefined, { invocationId: epId });
       } else if (epType === 'question') {
-        // Tell runner the question timed out (treated as no answer)
-        if (epRequestId) {
-          this.sendToRunner({
-            type: 'answer',
-            questionId: epId,
-            answer: '__expired__',
-          });
-        } else {
-          // Legacy: use question-answer format
-          this.sendToRunner({
-            type: 'answer',
-            questionId: epId,
-            answer: '__expired__',
-          });
-        }
+        this.sendToRunner({
+          type: 'answer',
+          questionId: epId,
+          answer: '__expired__',
+        });
+
+        this.appendAuditLog('agent.question', `Question ${epId} expired`, undefined, { questionId: epId });
       }
 
       // Broadcast expiry to clients
@@ -1445,10 +1437,10 @@ export class SessionAgentDO {
         context: epContext,
       });
 
-      // Update channel messages
+      // Update channel messages with expired status
       if (epChannelRefs) {
         this.ctx.waitUntil(
-          this.updateChannelInteractivePrompts(epChannelRefs, { resolvedBy: 'system' })
+          this.updateChannelInteractivePrompts(epChannelRefs, { actionId: '__expired__', resolvedBy: 'system' })
         );
       }
     }
@@ -1725,6 +1717,25 @@ export class SessionAgentDO {
     continuationContext?: string,
     contextPrefix?: string,
   ) {
+    // ─── Thread-reply capture for free-text questions ──────────────────
+    // If there's a pending question with no actions (free-text) and this message
+    // came from a channel (not web UI), treat it as the answer.
+    if (channelType && channelType !== 'web') {
+      const freeTextPrompts = this.ctx.storage.sql
+        .exec("SELECT id FROM interactive_prompts WHERE type = 'question' AND status = 'pending' AND (actions IS NULL OR actions = '[]')")
+        .toArray();
+
+      if (freeTextPrompts.length > 0) {
+        const promptId = freeTextPrompts[0].id as string;
+        const answerText = content || '';
+        await this.handlePromptResolved(promptId, {
+          value: answerText,
+          resolvedBy: author?.id || this.getStateValue('userId') || 'user',
+        });
+        return;
+      }
+    }
+
     // Preserve original channel info for reply tracking (e.g., slack:C123:thread_ts)
     // before normalizing to thread-based routing.
     const replyChannelType = channelType;
@@ -8722,6 +8733,14 @@ export class SessionAgentDO {
 
         const approvalContext = { toolId, service, actionId, params, riskLevel, isOrgScoped, invocationId: invocationResult.invocationId };
 
+        // Build body with params preview
+        let approvalBody = `\`${toolId}\` (risk: **${riskLevel}**)`;
+        if (params && Object.keys(params).length > 0) {
+          let paramsJson = JSON.stringify(params, null, 2);
+          if (paramsJson.length > 500) paramsJson = paramsJson.slice(0, 497) + '...';
+          approvalBody += `\n\`\`\`\n${paramsJson}\n\`\`\``;
+        }
+
         // Store in interactive_prompts for alarm-based expiry and later execution
         this.ctx.storage.sql.exec(
           `INSERT OR REPLACE INTO interactive_prompts
@@ -8730,7 +8749,7 @@ export class SessionAgentDO {
           invocationResult.invocationId,
           requestId,
           'Action requires approval',
-          `\`${toolId}\` (risk: **${riskLevel}**)`,
+          approvalBody,
           JSON.stringify([
             { id: 'approve', label: 'Approve', style: 'primary' },
             { id: 'deny', label: 'Deny', style: 'danger' },
@@ -8752,7 +8771,7 @@ export class SessionAgentDO {
           sessionId: sessionId || '',
           type: 'approval',
           title: 'Action requires approval',
-          body: `\`${toolId}\` (risk: **${riskLevel}**)`,
+          body: approvalBody,
           actions: [
             { id: 'approve', label: 'Approve', style: 'primary' },
             { id: 'deny', label: 'Deny', style: 'danger' },

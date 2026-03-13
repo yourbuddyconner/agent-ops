@@ -595,7 +595,7 @@ export function useChat(sessionId: string) {
             messages: sortedMessages,
             status: message.session.status,
             interactivePrompts: [],
-         connectedUsers: normalizedUsers,
+            connectedUsers: normalizedUsers,
             logEntries: seededLogEntries,
             isAgentThinking: terminalSession ? false : agentWorking,
             agentStatus: initialAgentStatus,
@@ -1178,13 +1178,21 @@ export function useChat(sessionId: string) {
 
       send({ type: 'answer', questionId: promptId, answer });
 
-      // Optimistically remove from pending
+      // Mark as resolved (matches approval behavior — removed after 5s delay)
       setState((prev) => ({
         ...prev,
-        interactivePrompts: prev.interactivePrompts.filter(
-          (p) => p.id !== promptId
+        interactivePrompts: prev.interactivePrompts.map(
+          (p) => p.id === promptId ? { ...p, status: 'resolved' as const } : p
         ),
       }));
+      setTimeout(() => {
+        setState((prev) => ({
+          ...prev,
+          interactivePrompts: prev.interactivePrompts.filter(
+            (p) => p.id !== promptId || p.status === 'pending'
+          ),
+        }));
+      }, 5000);
     },
     [isConnected, send]
   );

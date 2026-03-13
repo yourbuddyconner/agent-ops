@@ -567,7 +567,9 @@ export class SlackTransport implements ChannelTransport {
     ctx: ChannelContext,
   ): Promise<void> {
     let statusText: string;
-    if (resolution.actionId === 'approve') {
+    if (resolution.actionId === '__expired__') {
+      statusText = '⏰ Expired';
+    } else if (resolution.actionId === 'approve') {
       statusText = `✅ Approved by ${resolution.resolvedBy}`;
     } else if (resolution.actionId === 'deny') {
       statusText = `❌ Denied by ${resolution.resolvedBy}`;

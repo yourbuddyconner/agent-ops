@@ -68,7 +68,7 @@ export interface ChannelContext {
 export interface InteractivePrompt {
   id: string;
   sessionId: string;
-  type: string;
+  type: 'approval' | 'question' | (string & {});
   title: string;
   body?: string;
   actions: InteractiveAction[];
