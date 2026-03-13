@@ -117,14 +117,27 @@ export const githubRepoProvider: RepoProvider = {
       };
     }
 
+    // Installation tokens use /installation/repositories; OAuth tokens use /user/repos
+    if (credential.type === 'installation') {
+      const res = await githubFetch(
+        `/installation/repositories?per_page=30&page=${page}`,
+        token,
+      );
+      const data = (await res.json()) as { repositories: any[]; total_count: number };
+      return {
+        repos: data.repositories.map(mapGitHubRepo),
+        hasMore: data.total_count > page * 30,
+      };
+    }
+
     const res = await githubFetch(
-      `/installation/repositories?per_page=30&page=${page}`,
+      `/user/repos?per_page=30&page=${page}&sort=updated&affiliation=owner,collaborator,organization_member`,
       token,
     );
-    const data = (await res.json()) as { repositories: any[]; total_count: number };
+    const repos = (await res.json()) as any[];
     return {
-      repos: data.repositories.map(mapGitHubRepo),
-      hasMore: data.total_count > page * 30,
+      repos: repos.map(mapGitHubRepo),
+      hasMore: repos.length === 30,
     };
   },
 

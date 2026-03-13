@@ -158,6 +158,8 @@ export const googleIdentityProvider: IdentityProvider = {
     const tokenData = (await tokenRes.json()) as {
       id_token?: string;
       access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
       error?: string;
     };
 
@@ -177,6 +179,12 @@ export const googleIdentityProvider: IdentityProvider = {
       email: payload.email,
       name: payload.name,
       avatarUrl: payload.picture,
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token,
+      scopes: 'openid email profile',
+      tokenExpiresAt: tokenData.expires_in
+        ? new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
+        : undefined,
     };
   },
 };

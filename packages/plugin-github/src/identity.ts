@@ -32,7 +32,7 @@ export const githubIdentityProvider: IdentityProvider = {
       }),
     });
 
-    const tokenData = (await tokenRes.json()) as { access_token?: string; error?: string };
+    const tokenData = (await tokenRes.json()) as { access_token?: string; scope?: string; error?: string };
     if (!tokenData.access_token) {
       throw new Error(tokenData.error || 'Token exchange failed');
     }
@@ -85,7 +85,7 @@ export const githubIdentityProvider: IdentityProvider = {
       avatarUrl: profile.avatar_url,
       username: profile.login,
       accessToken: tokenData.access_token,
-      scopes: 'read:user user:email',
+      scopes: tokenData.scope || 'read:user user:email',
     };
   },
 };
