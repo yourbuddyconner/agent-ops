@@ -225,6 +225,12 @@ slackEventsRouter.post('/slack/events', async (c) => {
   // Note: if the orchestrator session rotates, old mappings become stale and are
   // cleaned up via CASCADE when the old session is archived. A new mapping is
   // created automatically on the next message in that Slack thread.
+  //
+  // IMPORTANT: Thread resolution MUST succeed to prevent split-brain sessions.
+  // Without a stable orchestratorThreadId, the DO routes via the raw Slack
+  // channelId (slack:D123:threadTs) instead of a unified thread key
+  // (thread:<uuid>), creating a second OpenCode session for the same thread.
+  // We retry on transient failures before falling back.
   let orchestratorThreadId: string | undefined;
   if (threadId) {
     let targetSessionId: string | undefined;
@@ -237,18 +243,28 @@ slackEventsRouter.post('/slack/events', async (c) => {
     }
 
     if (targetSessionId) {
-      try {
-        orchestratorThreadId = await db.getOrCreateChannelThread(c.env.DB, {
-          channelType: 'slack',
-          channelId: message.channelId,
-          externalThreadId: threadId,
-          sessionId: targetSessionId,
-          userId,
-        });
-        console.log(`[Slack] Resolved thread: external=${threadId} → orchestrator=${orchestratorThreadId} session=${targetSessionId}`);
-      } catch (err) {
-        // Thread resolution is best-effort — don't block message dispatch
-        console.error(`[Slack] Failed to resolve thread mapping:`, err);
+      const THREAD_RESOLVE_RETRIES = 3;
+      for (let attempt = 1; attempt <= THREAD_RESOLVE_RETRIES; attempt++) {
+        try {
+          orchestratorThreadId = await db.getOrCreateChannelThread(c.env.DB, {
+            channelType: 'slack',
+            channelId: message.channelId,
+            externalThreadId: threadId,
+            sessionId: targetSessionId,
+            userId,
+          });
+          console.log(`[Slack] Resolved thread: external=${threadId} → orchestrator=${orchestratorThreadId} session=${targetSessionId}`);
+          break;
+        } catch (err) {
+          console.error(`[Slack] Thread resolution attempt ${attempt}/${THREAD_RESOLVE_RETRIES} failed:`, err);
+          if (attempt < THREAD_RESOLVE_RETRIES) {
+            await new Promise((r) => setTimeout(r, 100 * attempt));
+          }
+        }
+      }
+
+      if (!orchestratorThreadId) {
+        console.error(`[Slack] Thread resolution failed after ${THREAD_RESOLVE_RETRIES} attempts — message will be dispatched without thread mapping (may cause split session)`);
       }
     }
   }

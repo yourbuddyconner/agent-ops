@@ -422,6 +422,9 @@ interface RunnerOutbound {
   channelType?: string;
   channelId?: string;
   opencodeSessionId?: string;
+  // Original channel info before thread normalization (for [via ...] prefix in Runner)
+  replyChannelType?: string;
+  replyChannelId?: string;
   // Thread routing
   threadId?: string;
   continuationContext?: string;
@@ -649,6 +652,22 @@ export class SessionAgentDO {
     // Hibernation recovery: check prompt_queue for processing row with channel metadata
     const recovered = this.recoverPendingChannelReply();
     return recovered ? { channelType: recovered.channelType, channelId: recovered.channelId } : null;
+  }
+
+  private sameChannelTarget(
+    a: { channelType?: string | null; channelId?: string | null } | null | undefined,
+    b: { channelType?: string | null; channelId?: string | null } | null | undefined,
+  ): boolean {
+    if (!a?.channelType || !a?.channelId || !b?.channelType || !b?.channelId) return false;
+    return a.channelType === b.channelType && a.channelId === b.channelId;
+  }
+
+  private getPromptOriginTarget(context: Record<string, unknown> | null | undefined): { channelType: string; channelId: string } | null {
+    if (!context || typeof context !== 'object') return null;
+    const channelType = typeof context.channelType === 'string' ? context.channelType : null;
+    const channelId = typeof context.channelId === 'string' ? context.channelId : null;
+    if (!channelType || !channelId) return null;
+    return { channelType, channelId };
   }
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -1724,11 +1743,24 @@ export class SessionAgentDO {
     const sessionOwnerId = this.getStateValue('userId');
     if (channelType && channelType !== 'web' && author?.id && author.id === sessionOwnerId) {
       const freeTextPrompts = this.ctx.storage.sql
-        .exec("SELECT id FROM interactive_prompts WHERE type = 'question' AND status = 'pending' AND (actions IS NULL OR actions = '[]')")
+        .exec("SELECT id, context FROM interactive_prompts WHERE type = 'question' AND status = 'pending' AND (actions IS NULL OR actions = '[]')")
         .toArray();
 
-      if (freeTextPrompts.length > 0) {
-        const promptId = freeTextPrompts[0].id as string;
+      const matchingPrompt = freeTextPrompts.find((row) => {
+        let context: Record<string, unknown> | null = null;
+        if (typeof row.context === 'string' && row.context) {
+          try {
+            context = JSON.parse(row.context as string) as Record<string, unknown>;
+          } catch {
+            context = null;
+          }
+        }
+        const originTarget = this.getPromptOriginTarget(context);
+        return this.sameChannelTarget(originTarget, { channelType, channelId });
+      });
+
+      if (matchingPrompt) {
+        const promptId = matchingPrompt.id as string;
         const answerText = content || '';
         await this.handlePromptResolved(promptId, {
           value: answerText,
@@ -1928,6 +1960,10 @@ export class SessionAgentDO {
       channelType,
       channelId,
       threadId,
+      // Pass original channel info so the Runner can build the [via ...] prefix
+      // even when channelType has been rewritten to 'thread'.
+      replyChannelType: replyChannelType !== channelType ? replyChannelType : undefined,
+      replyChannelId: replyChannelId !== channelId ? replyChannelId : undefined,
       authorId: author?.id,
       authorEmail: author?.email,
       authorName: author?.name,
@@ -2324,7 +2360,11 @@ export class SessionAgentDO {
           ? msg.options.map((opt, i) => ({ id: `option_${i}`, label: opt }))
           : [];
 
-        const context = msg.options ? { options: msg.options } : {};
+        const context: Record<string, unknown> = msg.options ? { options: msg.options } : {};
+        if (questionCh) {
+          context.channelType = questionCh.channelType;
+          context.channelId = questionCh.channelId;
+        }
 
         this.ctx.storage.sql.exec(
           `INSERT INTO interactive_prompts (id, type, request_id, title, actions, context, status, expires_at)
@@ -6879,6 +6919,9 @@ export class SessionAgentDO {
       channelType: queueChannelType,
       channelId: queueChannelId,
       threadId: queueThreadId,
+      // Pass original channel info so the Runner can build the [via ...] prefix
+      replyChannelType: queueReplyChannelType !== queueChannelType ? queueReplyChannelType : undefined,
+      replyChannelId: queueReplyChannelId !== queueChannelId ? queueReplyChannelId : undefined,
       authorId: authorId || undefined,
       authorEmail: (prompt.author_email as string) || undefined,
       authorName: (prompt.author_name as string) || undefined,
@@ -9112,33 +9155,41 @@ export class SessionAgentDO {
       const userId = this.getStateValue('userId');
       if (!sessionId || !userId) return;
 
-      // Collect channel targets to dispatch the prompt to.
-      // Start with D1 bindings (user-level first, then session-scoped fallback).
-      let bindings = await listUserChannelBindings(this.appDb, userId);
-      if (bindings.length === 0) {
-        bindings = await getSessionChannelBindings(this.appDb, sessionId);
-      }
-
-      // Build deduplicated set of non-web channel targets
-      const seen = new Set<string>();
       const targets: Array<{ channelType: string; channelId: string }> = [];
-      for (const b of bindings) {
-        if (b.channelType === 'web') continue;
-        const key = `${b.channelType}:${b.channelId}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        targets.push({ channelType: b.channelType, channelId: b.channelId });
-      }
 
-      // Also include the active channel (the channel that triggered this prompt).
-      // Orchestrator sessions often lack D1 bindings for Slack because messages are
-      // dispatched directly to the DO — the active channel fills that gap.
-      const active = this.activeChannel;
-      if (active && active.channelType !== 'web') {
-        const key = `${active.channelType}:${active.channelId}`;
-        if (!seen.has(key)) {
+      if (prompt.type === 'question') {
+        const originTarget = this.getPromptOriginTarget(prompt.context);
+        if (originTarget && originTarget.channelType !== 'web') {
+          targets.push(originTarget);
+        }
+      } else {
+        // Collect channel targets to dispatch the prompt to.
+        // Start with D1 bindings (user-level first, then session-scoped fallback).
+        let bindings = await listUserChannelBindings(this.appDb, userId);
+        if (bindings.length === 0) {
+          bindings = await getSessionChannelBindings(this.appDb, sessionId);
+        }
+
+        // Build deduplicated set of non-web channel targets
+        const seen = new Set<string>();
+        for (const b of bindings) {
+          if (b.channelType === 'web') continue;
+          const key = `${b.channelType}:${b.channelId}`;
+          if (seen.has(key)) continue;
           seen.add(key);
-          targets.push({ channelType: active.channelType, channelId: active.channelId });
+          targets.push({ channelType: b.channelType, channelId: b.channelId });
+        }
+
+        // Also include the active channel (the channel that triggered this prompt).
+        // Orchestrator sessions often lack D1 bindings for Slack because messages are
+        // dispatched directly to the DO — the active channel fills that gap.
+        const active = this.activeChannel;
+        if (active && active.channelType !== 'web') {
+          const key = `${active.channelType}:${active.channelId}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            targets.push({ channelType: active.channelType, channelId: active.channelId });
+          }
         }
       }
 
