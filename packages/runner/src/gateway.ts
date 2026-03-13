@@ -702,6 +702,8 @@ export interface GatewayCallbacks {
   onSkillApi?: (action: string, payload?: Record<string, unknown>) => Promise<{ data?: unknown; error?: string; statusCode?: number }>;
   // Persona API
   onPersonaApi?: (action: string, payload?: Record<string, unknown>) => Promise<{ data?: unknown; error?: string; statusCode?: number }>;
+  // Identity API (orchestrator self-edit)
+  onIdentityApi?: (action: string, payload?: Record<string, unknown>) => Promise<{ data?: unknown; error?: string; statusCode?: number }>;
 }
 
 export function startGateway(port: number, callbacks: GatewayCallbacks): void {
@@ -1277,6 +1279,37 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json(result.data ?? { detached: true });
     } catch (err) {
       console.error("[Gateway] Detach skill from persona error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // ─── Identity API (orchestrator self-edit) ──────────────────────────
+
+  app.get("/api/identity", async (c) => {
+    if (!callbacks.onIdentityApi) {
+      return c.json({ error: "Identity API handler not configured" }, 500);
+    }
+    try {
+      const result = await callbacks.onIdentityApi("get");
+      if (result.error) return c.json({ error: result.error }, (result.statusCode ?? 500) as ContentfulStatusCode);
+      return c.json(result.data ?? {});
+    } catch (err) {
+      console.error("[Gateway] Identity get error:", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.put("/api/identity/instructions", async (c) => {
+    if (!callbacks.onIdentityApi) {
+      return c.json({ error: "Identity API handler not configured" }, 500);
+    }
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      const result = await callbacks.onIdentityApi("update-instructions", body);
+      if (result.error) return c.json({ error: result.error }, (result.statusCode ?? 500) as ContentfulStatusCode);
+      return c.json(result.data ?? { ok: true });
+    } catch (err) {
+      console.error("[Gateway] Identity update instructions error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });

@@ -7,6 +7,7 @@ import { getSlackBotToken } from '../services/slack.js';
 import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
 import { listTriggers, getTrigger, deleteTrigger, createTrigger, getTriggerForRun, updateTriggerLastRun, findScheduleTriggerByNameAndWorkflow, findScheduleTriggersByWorkflow, findScheduleTriggersByName, updateTriggerFull } from '../lib/db/triggers.js';
 import { getExecution, getExecutionWithWorkflowName, getExecutionForAuth, getExecutionSteps, getExecutionOwnerAndStatus, checkIdempotencyKey, createExecution, completeExecutionFull, upsertExecutionStep, listExecutions } from '../lib/db/executions.js';
+import { updateOrchestratorIdentity } from '../lib/db/orchestrator.js';
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 import { assembleCustomProviders, assembleBuiltInProviderModelConfigs, assembleRepoEnv } from '../lib/env-assembly.js';
 import { resolveAvailableModels } from '../services/model-catalog.js';
@@ -3320,6 +3321,10 @@ export class SessionAgentDO {
         await this.handlePersonaApi(msg.requestId!, msg.action || '', msg.payload);
         break;
 
+      case 'identity-api':
+        await this.handleIdentityApi(msg.requestId!, msg.action || '', msg.payload);
+        break;
+
       case 'execution-api':
         await this.handleExecutionApi(msg.requestId!, msg.action || '', msg.payload);
         break;
@@ -5117,6 +5122,51 @@ export class SessionAgentDO {
     } catch (err) {
       console.error('[SessionAgentDO] Persona API error:', err);
       this.sendToRunner({ type: 'persona-api-result', requestId, error: err instanceof Error ? err.message : String(err), statusCode: 500 });
+    }
+  }
+
+  // ─── Identity API (orchestrator self-edit) ─────────────────────────────────
+
+  private async handleIdentityApi(requestId: string, action: string, payload?: Record<string, unknown>) {
+    try {
+      const userId = this.getStateValue('userId')!;
+
+      if (action === 'get') {
+        const identity = await getOrchestratorIdentity(this.appDb, userId);
+        if (!identity) {
+          this.sendToRunner({ type: 'identity-api-result', requestId, error: 'Identity not found', statusCode: 404 } as any);
+          return;
+        }
+        this.sendToRunner({ type: 'identity-api-result', requestId, data: { identity } } as any);
+        return;
+      }
+
+      if (action === 'update-instructions') {
+        const instructions = (payload?.instructions ?? payload?.customInstructions) as string | undefined;
+        const identity = await getOrchestratorIdentity(this.appDb, userId);
+        if (!identity) {
+          this.sendToRunner({ type: 'identity-api-result', requestId, error: 'Identity not found', statusCode: 404 } as any);
+          return;
+        }
+        await updateOrchestratorIdentity(this.appDb, identity.id, { customInstructions: instructions || undefined });
+        // Also update the linked persona file if a personaId exists
+        if (identity.personaId) {
+          await upsertPersonaFile(this.appDb, {
+            id: crypto.randomUUID(),
+            personaId: identity.personaId,
+            filename: 'custom-instructions.md',
+            content: instructions || '',
+            sortOrder: 10,
+          });
+        }
+        this.sendToRunner({ type: 'identity-api-result', requestId, data: { ok: true } } as any);
+        return;
+      }
+
+      this.sendToRunner({ type: 'identity-api-result', requestId, error: `Unsupported identity action: ${action}`, statusCode: 400 } as any);
+    } catch (err) {
+      console.error('[SessionAgentDO] Identity API error:', err);
+      this.sendToRunner({ type: 'identity-api-result', requestId, error: err instanceof Error ? err.message : String(err), statusCode: 500 } as any);
     }
   }
 

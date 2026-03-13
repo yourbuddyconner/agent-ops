@@ -337,6 +337,10 @@ async function main() {
     onPersonaApi: async (action, payload) => {
       return await agentClient.requestPersonaApi(action, payload);
     },
+    // Identity API (orchestrator self-edit)
+    onIdentityApi: async (action, payload) => {
+      return await agentClient.requestIdentityApi(action, payload);
+    },
   });
   const promptHandler = new PromptHandler(opencodeUrl!, agentClient, sessionId!);
 

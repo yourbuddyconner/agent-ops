@@ -788,6 +788,15 @@ export class AgentClient {
     });
   }
 
+  // ─── Identity API ──────────────────────────────────────────────────
+
+  requestIdentityApi(action: string, payload?: Record<string, unknown>): Promise<{ data?: unknown; error?: string; statusCode?: number }> {
+    const requestId = crypto.randomUUID();
+    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
+      this.send({ type: "identity-api", requestId, action, payload });
+    });
+  }
+
   requestSelfTerminate(): void {
     this.send({ type: "self-terminate" });
     // Disconnect and exit — the DO will handle sandbox termination
@@ -1210,6 +1219,7 @@ export class AgentClient {
           break;
         case "skill-api-result":
         case "persona-api-result":
+        case "identity-api-result":
           if (msg.error) {
             this.resolvePendingRequest(msg.requestId, { error: msg.error, statusCode: msg.statusCode });
           } else {
