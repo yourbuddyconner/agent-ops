@@ -78,9 +78,14 @@ function CredentialsForm({ workerUrl }: { workerUrl: string }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      const data = await res.json() as { sessionToken?: string; error?: string };
+      const data = await res.json() as { sessionToken?: string; error?: string; retryAfterSeconds?: number };
       if (!res.ok) {
-        setError(data.error || 'Authentication failed');
+        if (data.error === 'too_many_attempts') {
+          const mins = Math.ceil((data.retryAfterSeconds || 900) / 60);
+          setError(`Too many login attempts. Try again in ${mins} minute${mins === 1 ? '' : 's'}.`);
+        } else {
+          setError(data.error || 'Authentication failed');
+        }
         return;
       }
       if (data.sessionToken) {

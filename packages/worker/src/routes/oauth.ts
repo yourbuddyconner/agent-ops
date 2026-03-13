@@ -8,6 +8,44 @@ import type { ProviderConfig } from '@valet/sdk/identity';
 
 export const oauthRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
+// ─── Login Attempt Tracking ──────────────────────────────────────────────────
+
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+
+const loginAttempts = new Map<string, { count: number; firstAttempt: number }>();
+
+function checkLoginAttempts(email: string): { allowed: boolean; retryAfterSeconds?: number } {
+  const key = email.toLowerCase();
+  const entry = loginAttempts.get(key);
+  if (!entry) return { allowed: true };
+
+  const elapsed = Date.now() - entry.firstAttempt;
+  if (elapsed > LOCKOUT_WINDOW_MS) {
+    loginAttempts.delete(key);
+    return { allowed: true };
+  }
+
+  if (entry.count >= MAX_LOGIN_ATTEMPTS) {
+    return { allowed: false, retryAfterSeconds: Math.ceil((LOCKOUT_WINDOW_MS - elapsed) / 1000) };
+  }
+  return { allowed: true };
+}
+
+function recordFailedLogin(email: string): void {
+  const key = email.toLowerCase();
+  const entry = loginAttempts.get(key);
+  if (!entry || Date.now() - entry.firstAttempt > LOCKOUT_WINDOW_MS) {
+    loginAttempts.set(key, { count: 1, firstAttempt: Date.now() });
+  } else {
+    entry.count++;
+  }
+}
+
+function clearLoginAttempts(email: string): void {
+  loginAttempts.delete(email.toLowerCase());
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function createStateJWT(env: Env, provider: string, inviteCode?: string): Promise<string> {
@@ -74,12 +112,22 @@ oauthRouter.post('/email/login', async (c) => {
     return c.json({ error: 'Email and password are required' }, 400);
   }
 
+  const attemptCheck = checkLoginAttempts(email);
+  if (!attemptCheck.allowed) {
+    return c.json({ error: 'too_many_attempts', retryAfterSeconds: attemptCheck.retryAfterSeconds }, 429);
+  }
+
   try {
     const result = await oauthService.handleEmailLogin(c.env, { email, password });
-    if (!result.ok) return c.json({ error: result.error }, 401);
+    if (!result.ok) {
+      recordFailedLogin(email);
+      return c.json({ error: result.error }, 401);
+    }
+    clearLoginAttempts(email);
     return c.json({ sessionToken: result.sessionToken });
   } catch (err) {
     console.error('Email login error:', err);
+    recordFailedLogin(email);
     return c.json({ error: 'login_failed' }, 500);
   }
 });
