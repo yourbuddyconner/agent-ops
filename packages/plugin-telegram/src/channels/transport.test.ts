@@ -470,4 +470,122 @@ describe('TelegramTransport', () => {
       expect(url).toBe('https://api.telegram.org/botbot-token-123/deleteWebhook');
     });
   });
+
+  // ─── Interactive Prompts ──────────────────────────────────────────────
+
+  describe('sendInteractivePrompt', () => {
+    const target: ChannelTarget = { channelType: 'telegram', channelId: '123' };
+    const ctx: ChannelContext = { token: 'bot-token', userId: 'user1' };
+
+    it('sends text-only prompt when no actions', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true, result: { message_id: 42 } }));
+
+      const result = await transport.sendInteractivePrompt!(target, {
+        id: 'prompt1',
+        sessionId: 'session1',
+        type: 'question',
+        title: 'What should I name the file?',
+        body: 'Please provide a filename.',
+        actions: [],
+      }, ctx);
+
+      expect(result).not.toBeNull();
+      expect(result!.messageId).toBe('42');
+      const [url, opts] = mockFetch.mock.calls[0];
+      expect(url).toContain('/sendMessage');
+      const body = JSON.parse(opts.body);
+      expect(body.text).toContain('Reply with your answer');
+      expect(body.reply_markup).toBeUndefined();
+    });
+
+    it('sends inline keyboard when actions present', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true, result: { message_id: 43 } }));
+
+      const result = await transport.sendInteractivePrompt!(target, {
+        id: 'prompt2',
+        sessionId: 'session1',
+        type: 'approval',
+        title: 'Approve this action?',
+        actions: [
+          { id: 'approve', label: 'Approve', style: 'primary' },
+          { id: 'deny', label: 'Deny', style: 'danger' },
+        ],
+      }, ctx);
+
+      expect(result).not.toBeNull();
+      expect(result!.messageId).toBe('43');
+      const [url, opts] = mockFetch.mock.calls[0];
+      expect(url).toContain('/sendMessage');
+      const body = JSON.parse(opts.body);
+      expect(body.reply_markup.inline_keyboard).toHaveLength(1);
+      expect(body.reply_markup.inline_keyboard[0]).toHaveLength(2);
+      expect(body.reply_markup.inline_keyboard[0][0].text).toBe('✅ Approve');
+      expect(body.reply_markup.inline_keyboard[0][1].text).toBe('❌ Deny');
+      expect(body.reply_markup.inline_keyboard[0][0].callback_data).toBe('approve|session1:prompt2');
+    });
+
+    it('returns null on API error', async () => {
+      mockFetch.mockResolvedValueOnce(new Response('error', { status: 400 }));
+
+      const result = await transport.sendInteractivePrompt!(target, {
+        id: 'prompt3',
+        sessionId: 'session1',
+        type: 'approval',
+        title: 'Test',
+        actions: [{ id: 'ok', label: 'OK' }],
+      }, ctx);
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('updateInteractivePrompt', () => {
+    const target: ChannelTarget = { channelType: 'telegram', channelId: '123' };
+    const ctx: ChannelContext = { token: 'bot-token', userId: 'user1' };
+    const ref = { messageId: '42', channelId: '123' };
+
+    it('updates message with approval status', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+      await transport.updateInteractivePrompt!(target, ref, {
+        actionId: 'approve',
+        resolvedBy: 'Alice',
+      }, ctx);
+
+      const [url, opts] = mockFetch.mock.calls[0];
+      expect(url).toContain('/editMessageText');
+      const body = JSON.parse(opts.body);
+      expect(body.message_id).toBe(42);
+      expect(body.text).toContain('Approved by Alice');
+      expect(body.reply_markup.inline_keyboard).toEqual([]);
+    });
+
+    it('updates message with denial and reason', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+      await transport.updateInteractivePrompt!(target, ref, {
+        actionId: 'deny',
+        resolvedBy: 'Bob',
+        value: 'Too risky',
+      }, ctx);
+
+      const [, opts] = mockFetch.mock.calls[0];
+      const body = JSON.parse(opts.body);
+      expect(body.text).toContain('Denied by Bob');
+      expect(body.text).toContain('Too risky');
+    });
+
+    it('updates message with expiry status', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+      await transport.updateInteractivePrompt!(target, ref, {
+        actionId: '__expired__',
+        resolvedBy: 'system',
+      }, ctx);
+
+      const [, opts] = mockFetch.mock.calls[0];
+      const body = JSON.parse(opts.body);
+      expect(body.text).toContain('Expired');
+    });
+  });
 });
