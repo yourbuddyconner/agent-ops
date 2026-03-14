@@ -107,6 +107,7 @@ export type DOToRunnerMessage =
   | { type: "call-tool-result"; requestId: string; result?: unknown; error?: string }
   | { type: "skill-api-result"; requestId: string; data?: unknown; error?: string; statusCode?: number }
   | { type: "persona-api-result"; requestId: string; data?: unknown; error?: string; statusCode?: number }
+  | { type: "identity-api-result"; requestId: string; data?: unknown; error?: string; statusCode?: number }
   | { type: "call-tool-pending"; requestId: string; invocationId: string; message: string }
   | { type: "tunnel-delete"; name: string; actorId?: string; actorName?: string; actorEmail?: string }
   | { type: "opencode-command"; command: string; args?: string; requestId: string }
@@ -218,6 +219,7 @@ export type RunnerToDOMessage =
   | { type: "call-tool"; requestId: string; toolId: string; params: Record<string, unknown> }
   | { type: "skill-api"; requestId: string; action: string; payload?: Record<string, unknown> }
   | { type: "persona-api"; requestId: string; action: string; payload?: Record<string, unknown> }
+  | { type: "identity-api"; requestId: string; action: string; payload?: Record<string, unknown> }
   | { type: "audio-transcript"; messageId: string; transcript: string }
   | { type: "command-result"; requestId: string; command: string; result?: unknown; error?: string }
   | { type: "channel-session-created"; channelKey: string; opencodeSessionId: string }
