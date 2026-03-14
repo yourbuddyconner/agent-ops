@@ -219,6 +219,13 @@ function TelegramCard({ config }: { config: { botUsername: string; webhookActive
   const [editingOwner, setEditingOwner] = React.useState(false);
   const [ownerValue, setOwnerValue] = React.useState(config.ownerTelegramUserId || '');
 
+  // Sync local state when config updates (e.g. after mutation or refetch)
+  React.useEffect(() => {
+    if (!editingOwner) {
+      setOwnerValue(config.ownerTelegramUserId || '');
+    }
+  }, [config.ownerTelegramUserId, editingOwner]);
+
   return (
     <Card>
       <CardHeader className="pb-2">

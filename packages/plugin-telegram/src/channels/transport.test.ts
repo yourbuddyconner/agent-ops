@@ -521,7 +521,7 @@ describe('TelegramTransport', () => {
       expect(body.reply_markup.inline_keyboard[0]).toHaveLength(2);
       expect(body.reply_markup.inline_keyboard[0][0].text).toBe('✅ Approve');
       expect(body.reply_markup.inline_keyboard[0][1].text).toBe('❌ Deny');
-      expect(body.reply_markup.inline_keyboard[0][0].callback_data).toBe('approve|session1:prompt2');
+      expect(body.reply_markup.inline_keyboard[0][0].callback_data).toBe('approve|prompt2');
     });
 
     it('returns null on API error', async () => {

@@ -54,6 +54,9 @@ telegramApiRouter.patch('/', async (c) => {
   const body = await c.req.json<{ ownerTelegramUserId?: string }>();
 
   if (body.ownerTelegramUserId !== undefined) {
+    if (typeof body.ownerTelegramUserId !== 'string' || body.ownerTelegramUserId.length > 64) {
+      return c.json({ error: 'Invalid ownerTelegramUserId' }, 400);
+    }
     await db.updateTelegramOwner(c.get('db'), user.id, body.ownerTelegramUserId);
   }
 

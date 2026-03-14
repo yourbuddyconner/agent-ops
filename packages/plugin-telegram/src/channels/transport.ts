@@ -391,14 +391,15 @@ export class TelegramTransport implements ChannelTransport {
     }
 
     // Build inline keyboard with emoji-prefixed labels
-    const buttonValue = prompt.sessionId ? `${prompt.sessionId}:${prompt.id}` : prompt.id;
+    // Use actionId|promptId format (no sessionId) to stay within Telegram's 64-byte callback_data limit.
+    // The webhook handler resolves the session from the invocation record in D1.
     const inlineKeyboard = prompt.actions.map((action) => {
       let emoji = '';
       if (action.id === 'approve') emoji = '✅ ';
       else if (action.id === 'deny') emoji = '❌ ';
       return {
         text: `${emoji}${action.label}`,
-        callback_data: `${action.id}|${buttonValue}`,
+        callback_data: `${action.id}|${prompt.id}`,
       };
     });
 

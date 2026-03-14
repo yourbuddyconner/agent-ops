@@ -40,16 +40,16 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
     rawHeaders[key] = value;
   });
 
-  // ─── Telegram: Handle callback_query (inline keyboard button clicks) ──
+  // ─── Telegram: Parse update once, handle callback_query ────────────
+  let telegramUpdate: Record<string, unknown> | undefined;
   if (channelType === 'telegram') {
-    let update: Record<string, unknown>;
     try {
-      update = JSON.parse(rawBody) as Record<string, unknown>;
+      telegramUpdate = JSON.parse(rawBody) as Record<string, unknown>;
     } catch {
       return c.json({ ok: true });
     }
 
-    const callbackQuery = update.callback_query as Record<string, unknown> | undefined;
+    const callbackQuery = telegramUpdate.callback_query as Record<string, unknown> | undefined;
     if (callbackQuery) {
       const callbackId = callbackQuery.id as string;
       const callbackData = callbackQuery.data as string | undefined;
@@ -58,7 +58,6 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
 
       // Verify owner
       if (config?.ownerTelegramUserId && fromId !== config.ownerTelegramUserId) {
-        // Answer the callback to dismiss spinner, but don't process
         await fetch(`https://api.telegram.org/bot${botToken}/answerCallbackQuery`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -74,27 +73,27 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
         body: JSON.stringify({ callback_query_id: callbackId }),
       });
 
-      // Parse callback_data: "actionId|sessionId:promptId"
+      // Parse callback_data: "actionId|promptId"
       if (callbackData) {
         const pipeIdx = callbackData.indexOf('|');
         if (pipeIdx > 0) {
           const actionId = callbackData.slice(0, pipeIdx);
-          const rest = callbackData.slice(pipeIdx + 1);
-          const colonIdx = rest.lastIndexOf(':');
-          let sessionId: string | undefined;
-          let promptId: string;
-          if (colonIdx > 0) {
-            sessionId = rest.slice(0, colonIdx);
-            promptId = rest.slice(colonIdx + 1);
-          } else {
-            promptId = rest;
-          }
+          const promptId = callbackData.slice(pipeIdx + 1);
 
-          if (sessionId && promptId) {
-            // Fire-and-forget: resolve prompt on session DO
+          if (promptId) {
+            // Look up session from invocation record, then resolve prompt
             c.executionCtx.waitUntil((async () => {
               try {
-                const doId = c.env.SESSIONS.idFromName(sessionId!);
+                const inv = await db.getInvocation(c.get('db'), promptId);
+                if (!inv || inv.status !== 'pending') {
+                  console.log(`[Telegram callback_query] Invocation ${promptId} not pending`);
+                  return;
+                }
+                if (inv.userId !== userId) {
+                  console.log(`[Telegram callback_query] User ${userId} not authorized for invocation ${promptId}`);
+                  return;
+                }
+                const doId = c.env.SESSIONS.idFromName(inv.sessionId);
                 const stub = c.env.SESSIONS.get(doId);
                 await stub.fetch(new Request('https://session/prompt-resolved', {
                   method: 'POST',
@@ -138,23 +137,24 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
       return c.json({ ok: true });
     }
 
-    // Parse raw body again for chat.type (not available on InboundMessage)
-    let chatType: string | undefined;
-    try {
-      const update = JSON.parse(rawBody) as Record<string, unknown>;
-      const msg = (update.message ?? update.edited_message) as Record<string, unknown> | undefined;
-      const chat = msg?.chat as Record<string, unknown> | undefined;
-      chatType = chat?.type as string | undefined;
-    } catch { /* ignore */ }
-
+    // Use already-parsed update for chat.type (not available on InboundMessage)
+    const tgMsg = (telegramUpdate?.message ?? telegramUpdate?.edited_message) as Record<string, unknown> | undefined;
+    const chat = tgMsg?.chat as Record<string, unknown> | undefined;
+    const chatType = chat?.type as string | undefined;
     const isGroup = chatType === 'group' || chatType === 'supergroup';
 
     if (isGroup && !message.command) {
       // In groups without privacy mode bypass (bot is admin), we only get
       // commands and replies anyway. If privacy mode is off (bot is admin),
-      // we also get regular messages — check for @bot mention.
+      // we also get regular messages — check for @bot mention via entities.
       const botUsername = config.botUsername;
-      const isMention = botUsername && message.text?.includes(`@${botUsername}`);
+      let isMention = false;
+      if (botUsername) {
+        const entities = (tgMsg?.entities ?? []) as Array<{ type: string; offset: number; length: number }>;
+        isMention = entities.some((e) =>
+          e.type === 'mention' && message.text?.substring(e.offset, e.offset + e.length) === `@${botUsername}`,
+        );
+      }
       if (!isMention) {
         console.log(`[Channel:${channelType}] Ignoring non-mention group message`);
         return c.json({ ok: true });
