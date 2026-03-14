@@ -455,12 +455,13 @@ async function main() {
     const { mkdirSync } = await import('node:fs');
     const baseDir = '/root/.opencode';
 
-    // Write persona files
+    // Write persona files to .valet/persona/ — OpenCode watches this glob
+    // via opencode.json instructions, so changes are picked up automatically.
     if (content.personas.length > 0) {
-      const dir = `${baseDir}/personas`;
-      mkdirSync(dir, { recursive: true });
+      const personaDir = '/workspace/.valet/persona';
+      mkdirSync(personaDir, { recursive: true });
       for (const persona of content.personas) {
-        await Bun.write(`${dir}/${persona.filename}`, persona.content);
+        await Bun.write(`${personaDir}/${persona.filename}`, persona.content);
       }
     }
 

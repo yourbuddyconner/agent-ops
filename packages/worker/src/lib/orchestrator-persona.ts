@@ -24,9 +24,7 @@ export function buildOrchestratorPersonaFiles(
     `You are **${identity.name}** (@${identity.handle}), a personal orchestrator agent.`,
     ``,
   ];
-  // Only inline custom instructions if there's no linked persona
-  // (persona-linked instructions are delivered via sendPluginContent as persona files)
-  if (!identity.personaId && identity.customInstructions) {
+  if (identity.customInstructions) {
     identityLines.push(`## Custom Instructions`, ``, identity.customInstructions, ``);
   }
   files.push({
@@ -115,7 +113,7 @@ You have a real persona in the persona system, just like child session personas.
 - \`get_my_persona\` — returns your identity (name, handle, custom instructions) and your persona ID
 
 **Editing your custom instructions:**
-- \`update_my_instructions\` — replaces your custom instructions. Use this when the user asks you to change your personality, communication style, or behavior.
+- \`update_my_instructions\` — replaces your custom instructions. Changes take effect immediately. Use this when the user asks you to change your personality, communication style, or behavior.
 
 **Managing your skills:**
 Your persona ID (from \`get_my_persona\`) works with the standard persona-skill tools:

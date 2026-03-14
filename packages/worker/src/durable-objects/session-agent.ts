@@ -8,6 +8,7 @@ import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerC
 import { listTriggers, getTrigger, deleteTrigger, createTrigger, getTriggerForRun, updateTriggerLastRun, findScheduleTriggerByNameAndWorkflow, findScheduleTriggersByWorkflow, findScheduleTriggersByName, updateTriggerFull } from '../lib/db/triggers.js';
 import { getExecution, getExecutionWithWorkflowName, getExecutionForAuth, getExecutionSteps, getExecutionOwnerAndStatus, checkIdempotencyKey, createExecution, completeExecutionFull, upsertExecutionStep, listExecutions } from '../lib/db/executions.js';
 import { updateOrchestratorIdentity } from '../lib/db/orchestrator.js';
+import { buildOrchestratorPersonaFiles } from '../lib/orchestrator-persona.js';
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 import { assembleCustomProviders, assembleBuiltInProviderModelConfigs, assembleRepoEnv } from '../lib/env-assembly.js';
 import { resolveAvailableModels } from '../services/model-catalog.js';
@@ -5165,6 +5166,25 @@ export class SessionAgentDO {
           });
         }
         this.sendToRunner({ type: 'identity-api-result', requestId, data: { ok: true } } as any);
+
+        // Hot-reload: rebuild persona files and re-send to runner so OpenCode
+        // picks up the change immediately (it watches .valet/persona/*.md).
+        try {
+          const updatedIdentity = await getOrchestratorIdentity(this.appDb, userId);
+          if (updatedIdentity) {
+            const personaFiles = buildOrchestratorPersonaFiles(updatedIdentity as any);
+            // Update stored spawnRequest so future sendPluginContent calls use fresh files
+            const spawnRequestStr = this.getStateValue('spawnRequest');
+            if (spawnRequestStr) {
+              const spawnRequest = JSON.parse(spawnRequestStr);
+              spawnRequest.personaFiles = personaFiles;
+              this.setStateValue('spawnRequest', JSON.stringify(spawnRequest));
+            }
+            await this.sendPluginContent();
+          }
+        } catch (err) {
+          console.warn('[SessionAgentDO] Failed to hot-reload persona files:', err);
+        }
         return;
       }
 
