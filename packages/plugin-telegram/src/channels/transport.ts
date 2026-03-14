@@ -7,6 +7,9 @@ import type {
   OutboundMessage,
   RoutingMetadata,
   SendResult,
+  InteractivePrompt,
+  InteractivePromptRef,
+  InteractiveResolution,
 } from '@valet/sdk';
 import { markdownToTelegramHtml } from './format.js';
 
@@ -365,6 +368,112 @@ export class TelegramTransport implements ChannelTransport {
         action: 'typing',
       }),
     });
+  }
+
+  async sendInteractivePrompt(
+    target: ChannelTarget,
+    prompt: InteractivePrompt,
+    ctx: ChannelContext,
+  ): Promise<InteractivePromptRef | null> {
+    // No actions → text-only prompt, ask user to reply
+    if (!prompt.actions || prompt.actions.length === 0) {
+      const text = `*${prompt.title}*${prompt.body ? '\n' + prompt.body : ''}\n\n_Reply with your answer._`;
+      const result = await this.sendMessage(target, { markdown: text }, ctx);
+      if (!result.success || !result.messageId) return null;
+      return { messageId: result.messageId, channelId: target.channelId };
+    }
+
+    // Build message text
+    let text = `*${prompt.title}*${prompt.body ? '\n' + prompt.body : ''}`;
+    if (prompt.expiresAt) {
+      const expiryDate = new Date(prompt.expiresAt);
+      text += `\n\n_Expires ${expiryDate.toLocaleString()}_`;
+    }
+
+    // Build inline keyboard with emoji-prefixed labels
+    const buttonValue = prompt.sessionId ? `${prompt.sessionId}:${prompt.id}` : prompt.id;
+    const inlineKeyboard = prompt.actions.map((action) => {
+      let emoji = '';
+      if (action.id === 'approve') emoji = '✅ ';
+      else if (action.id === 'deny') emoji = '❌ ';
+      return {
+        text: `${emoji}${action.label}`,
+        callback_data: `${action.id}|${buttonValue}`,
+      };
+    });
+
+    const html = this.formatMarkdown(text);
+    const resp = await fetch(botUrl(ctx.token, 'sendMessage'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: target.channelId,
+        text: html,
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [inlineKeyboard],
+        },
+      }),
+    });
+
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '');
+      console.error(`[TelegramTransport] sendInteractivePrompt error: ${resp.status}: ${body.slice(0, 200)}`);
+      return null;
+    }
+
+    const result = (await resp.json()) as { ok: boolean; result?: { message_id?: number } };
+    if (!result.ok || !result.result?.message_id) return null;
+    return { messageId: String(result.result.message_id), channelId: target.channelId };
+  }
+
+  async updateInteractivePrompt(
+    _target: ChannelTarget,
+    ref: InteractivePromptRef,
+    resolution: InteractiveResolution,
+    ctx: ChannelContext,
+  ): Promise<void> {
+    let statusText: string;
+    if (resolution.actionId === '__expired__') {
+      statusText = '⏰ Expired';
+    } else if (resolution.actionId === 'approve') {
+      statusText = `✅ Approved by ${resolution.resolvedBy}`;
+    } else if (resolution.actionId === 'deny') {
+      statusText = `❌ Denied by ${resolution.resolvedBy}`;
+      if (resolution.value) statusText += `: ${resolution.value}`;
+    } else if (resolution.actionLabel || resolution.actionId) {
+      const label = resolution.actionLabel || resolution.actionId;
+      statusText = `*${label}* — selected by ${resolution.resolvedBy}`;
+    } else if (resolution.value) {
+      const preview = resolution.value.length > 100
+        ? resolution.value.slice(0, 97) + '...'
+        : resolution.value;
+      statusText = `Answered by ${resolution.resolvedBy}: ${preview}`;
+    } else {
+      statusText = `Resolved by ${resolution.resolvedBy}`;
+    }
+
+    if (resolution.promptTitle) {
+      statusText = `${resolution.promptTitle}\n\n${statusText}`;
+    }
+
+    const html = this.formatMarkdown(statusText);
+    const resp = await fetch(botUrl(ctx.token, 'editMessageText'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: ref.channelId,
+        message_id: Number(ref.messageId),
+        text: html,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: [] },
+      }),
+    });
+
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '');
+      console.error(`[TelegramTransport] updateInteractivePrompt error: ${resp.status}: ${body.slice(0, 200)}`);
+    }
   }
 
   async registerWebhook(webhookUrl: string, ctx: ChannelContext): Promise<boolean> {
