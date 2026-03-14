@@ -14,6 +14,7 @@ export async function getUserTelegramConfig(
       botUsername: userTelegramConfig.botUsername,
       botInfo: userTelegramConfig.botInfo,
       webhookActive: userTelegramConfig.webhookActive,
+      ownerTelegramUserId: userTelegramConfig.ownerTelegramUserId,
       createdAt: userTelegramConfig.createdAt,
       updatedAt: userTelegramConfig.updatedAt,
     })
@@ -24,6 +25,7 @@ export async function getUserTelegramConfig(
   return {
     ...row,
     webhookActive: !!row.webhookActive,
+    ownerTelegramUserId: row.ownerTelegramUserId ?? undefined,
     createdAt: row.createdAt!,
     updatedAt: row.updatedAt!,
   };
@@ -80,6 +82,17 @@ export async function updateTelegramWebhookStatus(
       webhookActive: active,
       updatedAt: sql`datetime('now')`,
     })
+    .where(eq(userTelegramConfig.userId, userId));
+}
+
+export async function updateTelegramOwner(
+  db: AppDb,
+  userId: string,
+  ownerTelegramUserId: string,
+): Promise<void> {
+  await db
+    .update(userTelegramConfig)
+    .set({ ownerTelegramUserId, updatedAt: new Date().toISOString() })
     .where(eq(userTelegramConfig.userId, userId));
 }
 
