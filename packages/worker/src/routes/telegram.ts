@@ -44,3 +44,19 @@ telegramApiRouter.delete('/', async (c) => {
   await telegramService.disconnectTelegramBot(c.env, user.id);
   return c.json({ success: true });
 });
+
+/**
+ * PATCH /api/me/telegram — Update Telegram config
+ * Body: { ownerTelegramUserId?: string }
+ */
+telegramApiRouter.patch('/', async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json<{ ownerTelegramUserId?: string }>();
+
+  if (body.ownerTelegramUserId !== undefined) {
+    await db.updateTelegramOwner(c.get('db'), user.id, body.ownerTelegramUserId);
+  }
+
+  const config = await db.getUserTelegramConfig(c.get('db'), user.id);
+  return c.json({ config });
+});

@@ -4,6 +4,7 @@ import { channelScopeKey, SLASH_COMMANDS } from '@valet/shared';
 import type { ChannelTransport, ChannelTarget, ChannelContext, InboundMessage } from '@valet/sdk';
 import { channelRegistry } from '../channels/registry.js';
 import * as db from '../lib/db.js';
+import { getDb } from '../lib/drizzle.js';
 import { getCredential } from '../services/credentials.js';
 import { dispatchOrchestratorPrompt } from '../lib/workflow-runtime.js';
 
@@ -146,6 +147,14 @@ export async function handleChannelCommand(
 
   switch (command) {
     case 'start': {
+      // Capture owner's Telegram user ID on first /start
+      if (message.senderId && target.channelType === 'telegram') {
+        try {
+          await db.updateTelegramOwner(getDb(env.DB), userId, message.senderId);
+        } catch (err) {
+          console.error(`[Channel:${target.channelType}] Failed to capture owner:`, err);
+        }
+      }
       await transport.sendMessage(target, {
         markdown: 'Connected to Valet! Send me a message and it will be routed to your orchestrator.',
       }, ctx);
