@@ -9,6 +9,7 @@ export const userTelegramConfig = sqliteTable('user_telegram_config', {
   botInfo: text().notNull(),
   webhookUrl: text(),
   webhookActive: integer({ mode: 'boolean' }).notNull().default(false),
+  ownerTelegramUserId: text(),
   createdAt: text().notNull().default(sql`(datetime('now'))`),
   updatedAt: text().notNull().default(sql`(datetime('now'))`),
 }, (table) => [

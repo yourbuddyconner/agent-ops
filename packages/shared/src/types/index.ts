@@ -873,6 +873,7 @@ export interface UserTelegramConfig {
   botUsername: string;
   botInfo: string;
   webhookActive: boolean;
+  ownerTelegramUserId?: string;
   createdAt: string;
   updatedAt: string;
 }
