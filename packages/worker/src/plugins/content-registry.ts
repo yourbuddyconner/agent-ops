@@ -296,32 +296,599 @@ timeout 10 agent-browser --headed wait --text "Welcome"     # Wait for specific 
     version: "0.0.1",
     description: "Google Calendar integration for events and scheduling",
     icon: "📅",
-    capabilities: ["actions"],
-    artifacts: [],
+    capabilities: ["actions","skills"],
+    artifacts: [
+      { type: "skill", filename: "google-calendar.md", content: `---
+name: google-calendar
+description: How to use Google Calendar tools effectively — managing events, checking availability, scheduling, and working with multiple calendars.
+---
+
+# Google Calendar
+
+You have full access to Google Calendar through the \`google-calendar\` plugin.
+
+## Available Tools
+
+### Reading
+
+- **\`calendar.list_calendars\`** — List all calendars the user has access to (with IDs, names, and access roles).
+- **\`calendar.get_calendar\`** — Get details for a specific calendar.
+- **\`calendar.list_events\`** — List events in a time range. Supports filtering by calendar, time bounds, search text, and single events expansion.
+- **\`calendar.get_event\`** — Get full details of a specific event.
+
+### Scheduling
+
+- **\`calendar.create_event\`** — Create an event with title, times, attendees, location, description, and recurrence.
+- **\`calendar.update_event\`** — Update any field of an existing event.
+- **\`calendar.delete_event\`** — Delete an event.
+- **\`calendar.quick_add\`** — Create an event from natural language (e.g., "Lunch with Alice tomorrow at noon").
+
+### Availability
+
+- **\`calendar.respond_to_event\`** — Accept, decline, or tentatively accept an event invitation.
+- **\`calendar.query_free_busy\`** — Check busy/free status for one or more people over a time range.
+- **\`calendar.find_available_slots\`** — Find open time slots when all specified attendees are available.
+
+## Common Patterns
+
+### Checking Today's Schedule
+
+\`\`\`
+calendar.list_events({
+  calendarId: "primary",
+  timeMin: "2026-03-15T00:00:00Z",
+  timeMax: "2026-03-16T00:00:00Z",
+  singleEvents: true,
+  orderBy: "startTime"
+})
+\`\`\`
+
+Always use \`singleEvents: true\` and \`orderBy: "startTime"\` when listing a day's events — this expands recurring events and sorts chronologically.
+
+### Scheduling a Meeting
+
+\`\`\`
+calendar.create_event({
+  calendarId: "primary",
+  summary: "Architecture Review",
+  start: "2026-03-20T14:00:00-07:00",
+  end: "2026-03-20T15:00:00-07:00",
+  attendees: ["alice@example.com", "bob@example.com"],
+  description: "Review the new API design",
+  location: "Conference Room B"
+})
+\`\`\`
+
+### Finding a Time That Works
+
+Use \`find_available_slots\` to find open times for a group:
+
+\`\`\`
+calendar.find_available_slots({
+  attendees: ["alice@example.com", "bob@example.com"],
+  timeMin: "2026-03-17T09:00:00-07:00",
+  timeMax: "2026-03-21T17:00:00-07:00",
+  durationMinutes: 30,
+  maxResults: 5
+})
+\`\`\`
+
+### Quick Event Creation
+
+For simple events, \`quick_add\` parses natural language:
+
+\`\`\`
+calendar.quick_add({
+  calendarId: "primary",
+  text: "Team standup every weekday at 9:30am"
+})
+\`\`\`
+
+### Recurring Events
+
+Use RFC 5545 RRULE format for recurrence:
+
+\`\`\`
+calendar.create_event({
+  calendarId: "primary",
+  summary: "Weekly Sync",
+  start: "2026-03-16T10:00:00-07:00",
+  end: "2026-03-16T10:30:00-07:00",
+  recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=12"]
+})
+\`\`\`
+
+Common RRULE patterns:
+- \`RRULE:FREQ=DAILY\` — every day
+- \`RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR\` — Mon/Wed/Fri
+- \`RRULE:FREQ=MONTHLY;BYMONTHDAY=1\` — first of each month
+- \`RRULE:FREQ=WEEKLY;COUNT=10\` — weekly for 10 occurrences
+- \`RRULE:FREQ=WEEKLY;UNTIL=20261231T000000Z\` — weekly until end of year
+
+### All-Day Events
+
+Use date strings (no time component) for all-day events:
+
+\`\`\`
+calendar.create_event({
+  calendarId: "primary",
+  summary: "Company Holiday",
+  start: "2026-03-20",
+  end: "2026-03-21"
+})
+\`\`\`
+
+Note: the end date is exclusive — a single all-day event on March 20 uses \`end: "2026-03-21"\`.
+
+## Tips
+
+- **Calendar ID**: Use \`"primary"\` for the user's main calendar. Use \`list_calendars\` to discover other calendar IDs.
+- **Timezones**: Always include timezone offsets in datetime strings (e.g., \`-07:00\`). The user's local timezone is preferred.
+- **Single events**: When listing, set \`singleEvents: true\` to expand recurring events into individual instances. Without this, you get the recurring event template, not the individual occurrences.
+- **Attendees**: Pass email addresses as strings. The API handles sending invitations.
+- **Updates**: Only pass the fields you want to change to \`update_event\`. Omitted fields are preserved.
+`, sortOrder: 0 },
+    ],
   },
   {
     name: "google-docs",
     version: "0.0.1",
     description: "Google Docs integration with markdown-native read/write",
     icon: "📝",
-    capabilities: ["actions"],
-    artifacts: [],
+    capabilities: ["actions","skills"],
+    artifacts: [
+      { type: "skill", filename: "google-docs.md", content: `---
+name: google-docs
+description: How to use Google Docs tools effectively — markdown formatting, section-based editing, read-before-write patterns, and rich text best practices.
+---
+
+# Google Docs
+
+You have full read/write access to Google Docs through the \`google-docs\` plugin. The key advantage is **rich text formatting** — content you write in markdown is automatically converted to properly formatted Google Docs (headings, bold, italic, links, lists, tables, code blocks, etc).
+
+## Critical Rule: Always Use Markdown
+
+**Every piece of content you write to a Google Doc MUST be formatted in markdown.** The system converts markdown to native Google Docs formatting. If you write plain text without markdown, the document will look unformatted and unprofessional.
+
+\`\`\`markdown
+# Meeting Notes — March 15, 2026
+
+## Action Items
+
+- **@alice**: Finalize the API spec by Friday
+- **@bob**: Review the [design doc](https://docs.google.com/...)
+- ~~Cancelled: vendor demo~~ — rescheduled to next week
+
+## Technical Summary
+
+The migration uses a \`three-phase approach\`:
+
+1. **Phase 1** — Schema migration with backwards compatibility
+2. **Phase 2** — Dual-write to old and new tables
+3. **Phase 3** — Cut over and deprecate old schema
+\`\`\`
+
+This produces a document with proper headings, bold names, a clickable link, strikethrough, inline code, and a numbered list — not just raw text.
+
+## Supported Markdown Formatting
+
+| Markdown | Result in Google Docs |
+|---|---|
+| \`# Heading\` through \`###### Heading\` | Heading 1 through Heading 6 |
+| \`**bold**\` | Bold text |
+| \`*italic*\` | Italic text |
+| \`~~strikethrough~~\` | Strikethrough text |
+| \`[text](url)\` | Clickable hyperlink |
+| \`\` \`inline code\` \`\` | Monospace font (Roboto Mono, green) |
+| Triple-backtick code blocks | Gray-background table cell with monospace font |
+| \`- item\` or \`* item\` | Bullet list |
+| \`1. item\` | Numbered list |
+| \`- [ ] task\` / \`- [x] task\` | Checkbox list items |
+| \`---\` | Horizontal rule |
+| Markdown tables | Native Google Docs tables |
+
+## Available Tools
+
+### Reading
+
+- **\`docs.search_documents\`** — Find documents by title keyword. Use this to locate documents before reading/editing.
+- **\`docs.get_document\`** — Get full document metadata (title, sections, revision info). Good for understanding document structure.
+- **\`docs.read_document\`** — Read entire document content as plain text. Use for short documents.
+- **\`docs.read_section\`** — Read a specific section by heading name. Use for long documents where you only need part of the content.
+
+### Writing
+
+- **\`docs.create_document\`** — Create a new document. Content MUST be markdown.
+- **\`docs.replace_document\`** — Replace the entire document body. Content MUST be markdown.
+- **\`docs.append_content\`** — Append content to the end of the document. Content MUST be markdown.
+- **\`docs.replace_section\`** — Replace the content under a specific heading. Content MUST be markdown.
+- **\`docs.insert_section\`** — Insert a new section before or after an existing heading.
+- **\`docs.delete_section\`** — Delete a section and all its content.
+
+## Common Patterns
+
+### Read Before Write
+
+Always read a document before modifying it to understand its structure:
+
+\`\`\`
+1. docs.search_documents({ query: "Q1 Planning" })
+2. docs.get_document({ documentId: "..." })      // see section headings
+3. docs.read_section({ documentId: "...", sectionHeading: "Budget" })
+4. docs.replace_section({ documentId: "...", sectionHeading: "Budget", content: "..." })
+\`\`\`
+
+### Section-Based Editing
+
+Documents are organized by headings. Use section tools to surgically edit specific parts without touching the rest:
+
+- **Replace a section**: \`docs.replace_section\` replaces everything under a heading (up to the next heading of equal or higher level)
+- **Insert a section**: \`docs.insert_section\` adds a new section before or after an existing one
+- **Delete a section**: \`docs.delete_section\` removes a heading and everything under it
+
+When targeting a section, use the exact heading text (case-sensitive).
+
+### Creating Well-Structured Documents
+
+When creating new documents, use heading hierarchy to establish clear structure:
+
+\`\`\`markdown
+# Project Title
+
+Brief overview paragraph.
+
+## Background
+
+Context and motivation.
+
+## Requirements
+
+### Functional Requirements
+
+- Requirement 1
+- Requirement 2
+
+### Non-Functional Requirements
+
+- Performance: < 200ms p99
+- Availability: 99.9%
+
+## Timeline
+
+| Phase | Date | Milestone |
+|---|---|---|
+| Design | Mar 20 | Design doc approved |
+| Build | Apr 10 | MVP complete |
+| Launch | Apr 30 | GA release |
+\`\`\`
+
+### Appending to Existing Documents
+
+Use \`docs.append_content\` to add new content at the end. This is useful for running logs, meeting notes, or adding new sections to an existing document.
+
+### Code in Documents
+
+Code blocks render as gray-background table cells with monospace font, making them visually distinct:
+
+\`\`\`\`markdown
+\`\`\`python
+def hello():
+    print("Hello, world!")
+\`\`\`
+\`\`\`\`
+
+Inline code like \`variable_name\` renders in green monospace font.
+
+## Tips
+
+- **Search first**: Use \`docs.search_documents\` to find documents by title before working with them. You need the document ID for all other operations.
+- **Use sections**: For large documents, prefer \`read_section\` and \`replace_section\` over reading/replacing the entire document.
+- **Markdown everywhere**: Every content string — in create, replace, append, insert — is parsed as markdown. Take advantage of this for professional-looking documents.
+- **Heading levels matter**: Section operations use heading hierarchy. A \`## Subheading\` under \`# Heading\` is part of the \`# Heading\` section. Replacing \`# Heading\` replaces everything including sub-sections.
+`, sortOrder: 0 },
+    ],
   },
   {
     name: "google-drive",
     version: "0.0.1",
     description: "Google Drive integration for files and documents",
     icon: "📁",
-    capabilities: ["actions"],
-    artifacts: [],
+    capabilities: ["actions","skills"],
+    artifacts: [
+      { type: "skill", filename: "google-drive.md", content: `---
+name: google-drive
+description: How to use Google Drive tools effectively — file search, reading, creating, organizing, sharing, and working with Google Workspace file types.
+---
+
+# Google Drive
+
+You have full access to Google Drive through the \`google-drive\` plugin. Drive is the file system — use it to find, read, create, organize, and share files. For editing Google Docs or Sheets content, use the dedicated \`google-docs\` or \`google-sheets\` tools instead.
+
+## Available Tools
+
+### Finding Files
+
+- **\`drive.list_files\`** — List files in a folder (or root). Supports query filters, MIME type filtering, sorting, and pagination.
+- **\`drive.search_files\`** — Full-text search across file names and content. The fastest way to find a file.
+- **\`drive.get_file\`** — Get full metadata for a file by ID (name, type, size, owners, sharing status, links).
+
+### Reading Content
+
+- **\`drive.read_file\`** — Read text content of a file. Automatically exports Google Workspace files (Docs → plain text, Sheets → CSV). Extracts text from PDFs. Rejects binary files.
+- **\`drive.export_file\`** — Export a Google Workspace file to a specific text format (plain text, CSV, HTML, JSON, XML).
+
+### Creating & Updating
+
+- **\`drive.create_file\`** — Create a new file with text content. Set \`mimeType\` to a Google Apps type to create native Workspace files.
+- **\`drive.create_folder\`** — Create a new folder.
+- **\`drive.update_content\`** — Replace the content of an existing file.
+- **\`drive.update_metadata\`** — Rename, move, star, or update description of a file.
+- **\`drive.copy_file\`** — Copy a file, optionally to a different folder with a new name.
+
+### Sharing
+
+- **\`drive.share_file\`** — Share with a user, group, domain, or anyone. Set role (reader/commenter/writer/organizer).
+- **\`drive.list_permissions\`** — List all permissions on a file.
+- **\`drive.remove_permission\`** — Remove a specific permission.
+
+### Cleanup
+
+- **\`drive.trash_file\`** — Move to trash (recoverable).
+- **\`drive.untrash_file\`** — Restore from trash.
+- **\`drive.delete_file\`** — Permanently delete (cannot be undone).
+
+## Common Patterns
+
+### Finding a File
+
+Search is the fastest way to find files:
+
+\`\`\`
+drive.search_files({ query: "Q1 budget report" })
+\`\`\`
+
+To browse a specific folder:
+
+\`\`\`
+drive.list_files({ folderId: "folder-id-here", orderBy: "modifiedTime desc" })
+\`\`\`
+
+To find files by type:
+
+\`\`\`
+drive.list_files({ mimeType: "application/vnd.google-apps.spreadsheet" })
+\`\`\`
+
+### Reading Google Workspace Files
+
+\`read_file\` auto-exports Workspace files to readable text:
+
+- Google Docs → plain text
+- Google Sheets → CSV
+- Google Slides → plain text
+
+For more control over the export format, use \`export_file\`:
+
+\`\`\`
+drive.export_file({ fileId: "...", mimeType: "text/html" })        // Docs as HTML
+drive.export_file({ fileId: "...", mimeType: "text/csv" })          // Sheets as CSV
+drive.export_file({ fileId: "...", mimeType: "text/plain" })        // Slides as text
+\`\`\`
+
+### Creating a Google Doc via Drive
+
+To create a native Google Doc (not a plain text file), set the Google Apps MIME type:
+
+\`\`\`
+drive.create_file({
+  name: "Meeting Notes",
+  content: "# Meeting Notes\\n\\nAgenda items...",
+  mimeType: "application/vnd.google-apps.document",
+  folderId: "folder-id-here"
+})
+\`\`\`
+
+The content is uploaded as plain text and converted to a native Google Doc. For rich formatting, use \`google-docs\` tools instead — they support full markdown-to-Docs conversion.
+
+### Organizing Files
+
+Move a file to a different folder:
+
+\`\`\`
+drive.update_metadata({
+  fileId: "...",
+  addParents: "target-folder-id",
+  removeParents: "current-folder-id"
+})
+\`\`\`
+
+Rename a file:
+
+\`\`\`
+drive.update_metadata({ fileId: "...", name: "New Name" })
+\`\`\`
+
+### Sharing Files
+
+Share with a specific person:
+
+\`\`\`
+drive.share_file({
+  fileId: "...",
+  role: "writer",
+  type: "user",
+  emailAddress: "alice@example.com"
+})
+\`\`\`
+
+Share with anyone who has the link:
+
+\`\`\`
+drive.share_file({
+  fileId: "...",
+  role: "reader",
+  type: "anyone"
+})
+\`\`\`
+
+## Google Workspace MIME Types
+
+| Type | MIME Type |
+|---|---|
+| Google Docs | \`application/vnd.google-apps.document\` |
+| Google Sheets | \`application/vnd.google-apps.spreadsheet\` |
+| Google Slides | \`application/vnd.google-apps.presentation\` |
+| Google Forms | \`application/vnd.google-apps.form\` |
+| Google Drawings | \`application/vnd.google-apps.drawing\` |
+| Folder | \`application/vnd.google-apps.folder\` |
+
+## Tips
+
+- **Drive vs Docs/Sheets**: Use Drive for file management (find, create, move, share). Use \`google-docs\` or \`google-sheets\` for editing content with rich formatting.
+- **Search broadly**: \`search_files\` searches both file names and content. It's the best starting point when looking for something.
+- **Read file handles PDFs**: \`read_file\` automatically extracts text from PDF files.
+- **Binary files are rejected**: \`read_file\` only works with text-based files, Google Workspace files, and PDFs. Use \`get_file\` for metadata of binary files.
+- **Trash before delete**: Prefer \`trash_file\` over \`delete_file\` — trashed files can be recovered.
+`, sortOrder: 0 },
+    ],
   },
   {
     name: "google-sheets",
     version: "0.0.1",
     description: "Google Sheets integration for spreadsheet operations",
     icon: "📊",
-    capabilities: ["actions"],
-    artifacts: [],
+    capabilities: ["actions","skills"],
+    artifacts: [
+      { type: "skill", filename: "google-sheets.md", content: `---
+name: google-sheets
+description: How to use Google Sheets tools effectively — reading/writing ranges, A1 notation, multi-range reads, spreadsheet structure, and common data patterns.
+---
+
+# Google Sheets
+
+You have full read/write access to Google Sheets through the \`google-sheets\` plugin.
+
+## Available Tools
+
+### Reading
+
+- **\`sheets.get_spreadsheet\`** — Get spreadsheet metadata: title, sheet names, grid dimensions. Always start here to understand the spreadsheet structure.
+- **\`sheets.read_range\`** — Read a single range of cells (returns 2D array of values).
+- **\`sheets.read_multiple_ranges\`** — Read multiple ranges in one call (more efficient than multiple single reads).
+
+### Writing
+
+- **\`sheets.write_range\`** — Write values to a specific range (overwrites existing data).
+- **\`sheets.append_rows\`** — Append rows after the last row with data. Use for adding entries to tables/logs.
+- **\`sheets.clear_range\`** — Clear values from a range without deleting cells.
+
+### Spreadsheet Management
+
+- **\`sheets.create_spreadsheet\`** — Create a new spreadsheet with a title and optional sheet names.
+- **\`sheets.add_sheet\`** — Add a new sheet (tab) to an existing spreadsheet.
+- **\`sheets.delete_sheet\`** — Delete a sheet by its numeric ID (use \`get_spreadsheet\` to find sheet IDs).
+
+## A1 Notation
+
+All range parameters use A1 notation:
+
+| Notation | Meaning |
+|---|---|
+| \`Sheet1!A1:C10\` | Cells A1 through C10 on Sheet1 |
+| \`Sheet1!A:C\` | Entire columns A through C |
+| \`Sheet1!1:5\` | Entire rows 1 through 5 |
+| \`A1:C10\` | Range on the first sheet (omitting sheet name) |
+| \`Sheet1!A1\` | Single cell |
+| \`'Sheet Name With Spaces'!A1:B2\` | Quote sheet names with spaces |
+
+## Common Patterns
+
+### Understand Before Modifying
+
+Always check the spreadsheet structure first:
+
+\`\`\`
+1. sheets.get_spreadsheet({ spreadsheetId: "..." })     // see sheet names, dimensions
+2. sheets.read_range({ spreadsheetId: "...", range: "Sheet1!A1:Z1" })  // read headers
+3. sheets.read_range({ spreadsheetId: "...", range: "Sheet1!A1:Z10" }) // read sample data
+4. sheets.write_range({ ... })  // now write with confidence
+\`\`\`
+
+### Reading a Full Table
+
+Read the header row first to understand columns, then read the data:
+
+\`\`\`
+1. sheets.read_range({ range: "Sheet1!1:1" })           // headers
+2. sheets.read_range({ range: "Sheet1!A2:Z" })          // all data rows
+\`\`\`
+
+Or read everything at once:
+
+\`\`\`
+sheets.read_range({ range: "Sheet1!A1:Z" })
+\`\`\`
+
+### Multi-Range Reads
+
+When you need data from different parts of a spreadsheet, use a single \`read_multiple_ranges\` call:
+
+\`\`\`
+sheets.read_multiple_ranges({
+  spreadsheetId: "...",
+  ranges: ["Sheet1!A1:D10", "Summary!A1:B5", "Sheet1!F1:F10"]
+})
+\`\`\`
+
+### Appending Data
+
+Use \`append_rows\` to add new rows to the end of a table. The range should cover the table area — Sheets finds the last row automatically:
+
+\`\`\`
+sheets.append_rows({
+  spreadsheetId: "...",
+  range: "Sheet1!A:D",
+  values: [
+    ["2026-03-15", "New item", 42, "active"],
+    ["2026-03-15", "Another item", 17, "pending"]
+  ]
+})
+\`\`\`
+
+### Writing Data
+
+Values are always a 2D array (rows of cells):
+
+\`\`\`
+sheets.write_range({
+  spreadsheetId: "...",
+  range: "Sheet1!A1:C3",
+  values: [
+    ["Name", "Score", "Status"],
+    ["Alice", 95, "Pass"],
+    ["Bob", 82, "Pass"]
+  ]
+})
+\`\`\`
+
+### Creating a New Spreadsheet
+
+\`\`\`
+sheets.create_spreadsheet({
+  title: "Q1 2026 Budget",
+  sheetNames: ["Overview", "Monthly", "Categories"]
+})
+\`\`\`
+
+## Tips
+
+- **Check structure first**: Always call \`get_spreadsheet\` before writing to understand the sheet names and dimensions.
+- **Use \`read_multiple_ranges\`** when you need data from several places — it's one API call instead of many.
+- **Append vs Write**: Use \`append_rows\` to add to the end of a table. Use \`write_range\` to overwrite a specific location.
+- **Empty cells**: Empty cells appear as empty strings \`""\` in read results. When writing, use \`""\` or \`null\` for empty cells.
+- **Sheet IDs vs Names**: Most tools use sheet names in A1 notation. \`delete_sheet\` uses numeric sheet IDs (found in \`get_spreadsheet\` metadata).
+`, sortOrder: 0 },
+    ],
   },
   {
     name: "linear",
