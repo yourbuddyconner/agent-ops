@@ -2,9 +2,7 @@ import type { D1Database } from '@cloudflare/workers-types';
 import type { OrchestratorIdentity, AgentSession } from '@valet/shared';
 import { eq, and, sql } from 'drizzle-orm';
 import type { AppDb } from '../drizzle.js';
-import { getDb } from '../drizzle.js';
 import { orchestratorIdentities } from '../schema/index.js';
-import { getSession } from './sessions.js';
 
 function mapSessionRow(row: any): AgentSession {
   return {
@@ -121,17 +119,16 @@ export async function updateOrchestratorIdentity(
 
 // ─── Orchestrator Session Helpers ───────────────────────────────────────────
 
-// Raw SQL: uses mapSession for snake_case row mapping + fallback to getSession
+// Raw SQL: uses mapSession for snake_case row mapping
 export async function getOrchestratorSession(db: D1Database, userId: string): Promise<AgentSession | null> {
-  // Look up the active orchestrator session by flag, not by fixed ID.
+  // Look up the most recent orchestrator session by flag, not by fixed ID.
   // This supports session ID rotation on refresh (new DO instance = fresh code).
+  // Returns the most recent session regardless of status so callers can inspect it.
   const row = await db.prepare(
-    `SELECT * FROM sessions WHERE user_id = ? AND is_orchestrator = 1 AND status NOT IN ('terminated', 'archived', 'error') ORDER BY created_at DESC LIMIT 1`
+    `SELECT * FROM sessions WHERE user_id = ? AND is_orchestrator = 1 ORDER BY created_at DESC LIMIT 1`
   ).bind(userId).first();
   if (row) return mapSessionRow(row);
-  // Fallback: check for legacy fixed-ID session (may be in terminal state for restart detection)
-  const legacyId = `orchestrator:${userId}`;
-  return getSession(getDb(db), legacyId);
+  return null;
 }
 
 // Raw SQL: NOT EXISTS subquery + JOIN

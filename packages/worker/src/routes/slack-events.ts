@@ -594,6 +594,9 @@ slackEventsRouter.post('/slack/interactive', async (c) => {
   if (!session) {
     return slackError('This session could not be found.');
   }
+  if (['terminated', 'archived', 'error'].includes(session.status)) {
+    return slackError('This session is no longer active. The prompt may have expired.');
+  }
   if (session.userId !== userId) {
     console.log(`[Slack Interactive] User ${userId} not authorized for session ${targetSessionId}`);
     return slackError('Only the session owner can respond to this prompt.');

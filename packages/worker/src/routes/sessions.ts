@@ -328,44 +328,6 @@ sessionsRouter.get('/:id/ws', async (c) => {
 });
 
 /**
- * GET /api/sessions/:id/events
- * Server-Sent Events endpoint for real-time updates
- */
-sessionsRouter.get('/:id/events', async (c) => {
-  const user = c.get('user');
-  const { id } = c.req.param();
-
-  await db.assertSessionAccess(c.get('db'), id, user.id, 'viewer');
-
-  const { readable, writable } = new TransformStream();
-  const writer = writable.getWriter();
-  const encoder = new TextEncoder();
-
-  writer.write(encoder.encode(`event: connected\ndata: {"sessionId":"${id}"}\n\n`));
-
-  const heartbeat = setInterval(async () => {
-    try {
-      await writer.write(encoder.encode(`: heartbeat\n\n`));
-    } catch {
-      clearInterval(heartbeat);
-    }
-  }, 30000);
-
-  c.req.raw.signal.addEventListener('abort', () => {
-    clearInterval(heartbeat);
-    writer.close();
-  });
-
-  return new Response(readable, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    },
-  });
-});
-
-/**
  * POST /api/sessions/:id/hibernate
  * Hibernate a running session.
  */

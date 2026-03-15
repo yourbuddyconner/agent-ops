@@ -119,6 +119,13 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
                   return;
                 }
 
+                // Verify session is still active before dispatching to the DO
+                const targetSession = await db.getSession(c.get('db'), targetSessionId);
+                if (!targetSession || ['terminated', 'archived', 'error'].includes(targetSession.status)) {
+                  console.log(`[Telegram callback_query] Session ${targetSessionId} is not active (status=${targetSession?.status})`);
+                  return;
+                }
+
                 const doId = c.env.SESSIONS.idFromName(targetSessionId);
                 const stub = c.env.SESSIONS.get(doId);
                 await stub.fetch(new Request('https://session/prompt-resolved', {
@@ -336,7 +343,6 @@ export async function handleChannelCommand(
 
   // Resolve orchestrator session ID
   const orchSession = await db.getOrchestratorSession(env.DB, userId);
-  const orchestratorSessionId = orchSession?.id ?? `orchestrator:${userId}`;
 
   switch (command) {
     case 'start': {
@@ -362,8 +368,12 @@ export async function handleChannelCommand(
     }
 
     case 'status': {
+      if (!orchSession || ['terminated', 'archived', 'error'].includes(orchSession.status)) {
+        await transport.sendMessage(target, { markdown: 'Your orchestrator is not running. Start it from the Valet dashboard.' }, ctx);
+        return;
+      }
       try {
-        const doId = env.SESSIONS.idFromName(orchestratorSessionId);
+        const doId = env.SESSIONS.idFromName(orchSession.id);
         const sessionDO = env.SESSIONS.get(doId);
         const resp = await sessionDO.fetch(new Request('http://do/status'));
         if (!resp.ok) {
@@ -382,8 +392,12 @@ export async function handleChannelCommand(
     }
 
     case 'stop': {
+      if (!orchSession || ['terminated', 'archived', 'error'].includes(orchSession.status)) {
+        await transport.sendMessage(target, { markdown: 'Your orchestrator is not running.' }, ctx);
+        return;
+      }
       try {
-        const doId = env.SESSIONS.idFromName(orchestratorSessionId);
+        const doId = env.SESSIONS.idFromName(orchSession.id);
         const sessionDO = env.SESSIONS.get(doId);
         await sessionDO.fetch(new Request('http://do/prompt', {
           method: 'POST',
@@ -399,8 +413,12 @@ export async function handleChannelCommand(
     }
 
     case 'clear': {
+      if (!orchSession || ['terminated', 'archived', 'error'].includes(orchSession.status)) {
+        await transport.sendMessage(target, { markdown: 'Your orchestrator is not running.' }, ctx);
+        return;
+      }
       try {
-        const doId = env.SESSIONS.idFromName(orchestratorSessionId);
+        const doId = env.SESSIONS.idFromName(orchSession.id);
         const sessionDO = env.SESSIONS.get(doId);
         await sessionDO.fetch(new Request('http://do/clear-queue', { method: 'POST' }));
         await transport.sendMessage(target, { markdown: 'Prompt queue cleared.' }, ctx);
@@ -411,8 +429,12 @@ export async function handleChannelCommand(
     }
 
     case 'refresh': {
+      if (!orchSession || ['terminated', 'archived', 'error'].includes(orchSession.status)) {
+        await transport.sendMessage(target, { markdown: 'Your orchestrator is not running.' }, ctx);
+        return;
+      }
       try {
-        const doId = env.SESSIONS.idFromName(orchestratorSessionId);
+        const doId = env.SESSIONS.idFromName(orchSession.id);
         const sessionDO = env.SESSIONS.get(doId);
         await sessionDO.fetch(new Request('http://do/stop', { method: 'POST' }));
         await sessionDO.fetch(new Request('http://do/start', { method: 'POST' }));
@@ -424,8 +446,12 @@ export async function handleChannelCommand(
     }
 
     case 'sessions': {
+      if (!orchSession || ['terminated', 'archived', 'error'].includes(orchSession.status)) {
+        await transport.sendMessage(target, { markdown: 'Your orchestrator is not running.' }, ctx);
+        return;
+      }
       try {
-        const doId = env.SESSIONS.idFromName(orchestratorSessionId);
+        const doId = env.SESSIONS.idFromName(orchSession.id);
         const sessionDO = env.SESSIONS.get(doId);
         const resp = await sessionDO.fetch(new Request('http://do/children'));
         if (!resp.ok) {

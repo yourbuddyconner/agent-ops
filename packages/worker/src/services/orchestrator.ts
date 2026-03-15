@@ -80,16 +80,17 @@ export async function restartOrchestratorSession(
     personaId: identity.personaId ?? undefined,
   });
 
-  // Migrate channel bindings from any previous orchestrator sessions to the new one.
-  // Without this, stale bindings point to terminated DOs that accept but never process prompts.
-  // Must run AFTER createSession so the FK constraint on session_id is satisfied.
+  // Migrate channel bindings from ALL previous orchestrator sessions to the new one.
+  // This covers both terminal sessions and sessions whose D1 status hasn't caught up
+  // with the DO's actual state (status flush lag). Must run AFTER createSession so
+  // the FK constraint on session_id is satisfied.
   try {
     await env.DB.prepare(
       `UPDATE channel_bindings SET session_id = ?
-       WHERE user_id = ? AND session_id IN (
-         SELECT id FROM sessions WHERE user_id = ? AND is_orchestrator = 1 AND status IN ('terminated', 'archived', 'error')
+       WHERE user_id = ? AND session_id != ? AND session_id IN (
+         SELECT id FROM sessions WHERE user_id = ? AND is_orchestrator = 1
        )`
-    ).bind(sessionId, userId, userId).run();
+    ).bind(sessionId, userId, sessionId, userId).run();
   } catch (err) {
     console.warn('[restartOrchestrator] Failed to migrate bindings:', err);
   }
@@ -388,20 +389,6 @@ export async function dispatchOrchestratorPrompt(
   const normalizedChannelType = params.threadId ? 'thread' : params.channelType;
   const normalizedChannelId = params.threadId ? params.threadId : params.channelId;
 
-  const messageId = crypto.randomUUID();
-  await db.saveMessage(env.DB, {
-    id: messageId,
-    sessionId,
-    role: 'user',
-    content,
-    authorId: params.userId,
-    authorName: params.authorName,
-    authorEmail: params.authorEmail,
-    channelType: normalizedChannelType,
-    channelId: normalizedChannelId,
-    threadId: params.threadId,
-  });
-
   const doId = env.SESSIONS.idFromName(sessionId);
   const sessionDO = env.SESSIONS.get(doId);
   const doRes = await sessionDO.fetch(new Request('http://do/prompt', {
@@ -429,6 +416,22 @@ export async function dispatchOrchestratorPrompt(
       reason: `orchestrator_dispatch_failed:${doRes.status}${errText ? `:${errText}` : ''}`,
     };
   }
+
+  // Save message to D1 only after the DO has accepted it.
+  // This prevents orphaned messages in history that were never processed.
+  const messageId = crypto.randomUUID();
+  await db.saveMessage(env.DB, {
+    id: messageId,
+    sessionId,
+    role: 'user',
+    content,
+    authorId: params.userId,
+    authorName: params.authorName,
+    authorEmail: params.authorEmail,
+    channelType: normalizedChannelType,
+    channelId: normalizedChannelId,
+    threadId: params.threadId,
+  });
 
   console.log(`[OrchestratorDispatch] Success: session=${sessionId} messageId=${messageId}`);
   return { dispatched: true, sessionId };

@@ -1,6 +1,6 @@
 import type { AppDb } from '../drizzle.js';
 import type { UserIdentityLink, ChannelBinding, ChannelType, QueueMode } from '@valet/shared';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { userIdentityLinks, channelBindings } from '../schema/index.js';
 
 function rowToIdentityLink(row: typeof userIdentityLinks.$inferSelect): UserIdentityLink {
@@ -148,9 +148,9 @@ export async function createChannelBinding(
 
 /**
  * Ensure a channel binding exists for the given channel. Inserts a new row if no binding
- * exists for the (channelType, channelId) pair; silently does nothing on conflict.
- * Used by orchestrator dispatch to guarantee that Slack/Telegram bindings exist in D1
- * so that downstream code (interactive prompts, list-channels) can discover them.
+ * exists for the (channelType, channelId) pair. On conflict, updates the session_id and
+ * scope_key so stale bindings from terminated sessions are overwritten rather than
+ * silently preserved.
  */
 export async function ensureChannelBinding(
   db: AppDb,
@@ -173,8 +173,13 @@ export async function ensureChannelBinding(
     orgId: data.orgId,
     queueMode: 'followup',
     collectDebounceMs: 3000,
-  }).onConflictDoNothing({
+  }).onConflictDoUpdate({
     target: [channelBindings.channelType, channelBindings.channelId],
+    set: {
+      sessionId: sql`excluded.session_id`,
+      scopeKey: sql`excluded.scope_key`,
+      userId: sql`excluded.user_id`,
+    },
   });
 }
 

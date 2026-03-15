@@ -835,6 +835,13 @@ export class SessionAgentDO {
         return Response.json({ success: true });
       }
       case '/prompt': {
+        // Reject prompts if the session is in a terminal state — no runner will ever
+        // connect to process queued prompts, so accepting them would silently drop messages.
+        const promptStatus = this.getStateValue('status');
+        if (promptStatus === 'terminated' || promptStatus === 'archived' || promptStatus === 'error') {
+          return new Response(JSON.stringify({ error: `Session is ${promptStatus}` }), { status: 409 });
+        }
+
         // HTTP-based prompt submission (alternative to WebSocket)
         const body = await request.json() as { content?: string; contextPrefix?: string; model?: string; attachments?: PromptAttachment[]; interrupt?: boolean; queueMode?: string; channelType?: string; channelId?: string; threadId?: string; authorName?: string; authorEmail?: string; authorId?: string };
         const content = body.content ?? '';

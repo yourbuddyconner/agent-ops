@@ -563,19 +563,9 @@ export async function sendSessionMessage(
   const appDb = getDb(env.DB);
   const session = await db.assertSessionAccess(appDb, sessionId, userId, 'collaborator');
 
-  if (session.status === 'terminated') {
-    throw new ValidationError('Session has been terminated');
+  if (['terminated', 'archived', 'error'].includes(session.status)) {
+    throw new ValidationError('Session is not active');
   }
-
-  const messageId = crypto.randomUUID();
-  await db.saveMessage(env.DB, {
-    id: messageId,
-    sessionId,
-    role: 'user',
-    content,
-    authorId: userId,
-    authorEmail: userEmail,
-  });
 
   const doId = env.SESSIONS.idFromName(sessionId);
   const sessionDO = env.SESSIONS.get(doId);
@@ -590,6 +580,17 @@ export async function sendSessionMessage(
     const err = await doRes.text();
     throw new Error(`Failed to deliver prompt: ${err}`);
   }
+
+  // Save message to D1 only after the DO has accepted it.
+  const messageId = crypto.randomUUID();
+  await db.saveMessage(env.DB, {
+    id: messageId,
+    sessionId,
+    role: 'user',
+    content,
+    authorId: userId,
+    authorEmail: userEmail,
+  });
 
   return { messageId };
 }
