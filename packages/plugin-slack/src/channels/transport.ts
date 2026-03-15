@@ -506,7 +506,8 @@ export class SlackTransport implements ChannelTransport {
         console.error(`[SlackTransport] sendInteractivePrompt (text) error: ${result.error}`);
         return null;
       }
-      return { messageId: result.ts!, channelId: target.channelId };
+      if (!result.ts) return null;
+      return { messageId: result.ts, channelId: target.channelId };
     }
 
     // Build Block Kit message with buttons
@@ -561,7 +562,8 @@ export class SlackTransport implements ChannelTransport {
       console.error(`[SlackTransport] sendInteractivePrompt error: ${result.error}`);
       return null;
     }
-    return { messageId: result.ts!, channelId: target.channelId };
+    if (!result.ts) return null;
+    return { messageId: result.ts, channelId: target.channelId };
   }
 
   async updateInteractivePrompt(

@@ -262,6 +262,36 @@ export class TelegramTransport implements ChannelTransport {
       };
     }
 
+    // Check for document (file attachments: PDFs, ZIPs, etc.)
+    const document = message.document as Record<string, unknown> | undefined;
+    if (document) {
+      const fileId = document.file_id as string;
+      const mime = (document.mime_type as string) || 'application/octet-stream';
+      const docFileName = (document.file_name as string) || undefined;
+      const caption = (message.caption as string) || '';
+      const attachments: InboundAttachment[] = [];
+
+      const downloaded = await downloadFileAsBase64(token, fileId);
+      if (downloaded) {
+        attachments.push({
+          type: 'file',
+          url: `data:${mime};base64,${downloaded.base64}`,
+          mimeType: mime,
+          fileName: docFileName || downloaded.filePath.split('/').pop() || `document-${Date.now()}`,
+        });
+      }
+
+      return {
+        channelType: 'telegram',
+        channelId: chatId,
+        senderId,
+        senderName: name,
+        text: caption || `[Document: ${docFileName || 'untitled'}]`,
+        attachments,
+        messageId: message.message_id ? String(message.message_id) : undefined,
+      };
+    }
+
     // Unsupported message type (sticker, callback_query, etc.)
     return null;
   }

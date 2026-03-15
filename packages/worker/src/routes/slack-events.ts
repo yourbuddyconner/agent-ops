@@ -33,10 +33,12 @@ export const slackEventsRouter = new Hono<{ Bindings: Env; Variables: Variables 
 slackEventsRouter.post('/slack/events', async (c) => {
   // Slack retries events when it doesn't receive a 200 within ~3 seconds.
   // Our handler is slow (Slack API calls, DB lookups), so retries are common.
-  // Skip retries to prevent duplicate message processing.
+  // Skip retries to prevent duplicate message processing — EXCEPT http_timeout,
+  // where the original request never reached our handler.
   const retryNum = c.req.header('x-slack-retry-num');
-  if (retryNum) {
-    console.log(`[Slack] Skipping retry #${retryNum} (reason: ${c.req.header('x-slack-retry-reason') || 'unknown'})`);
+  const retryReason = c.req.header('x-slack-retry-reason') || 'unknown';
+  if (retryNum && retryReason !== 'http_timeout') {
+    console.log(`[Slack] Skipping retry #${retryNum} (reason: ${retryReason})`);
     return c.json({ ok: true });
   }
 
@@ -173,15 +175,7 @@ slackEventsRouter.post('/slack/events', async (c) => {
   const isDm = slackChannelType === 'im';
   const isMention = slackEventType === 'app_mention';
 
-  let shouldRoute = false;
-
-  if (isDm) {
-    // DMs → always route
-    shouldRoute = true;
-  } else if (isMention) {
-    // @mention in any channel → route to mentioning user's orchestrator
-    shouldRoute = true;
-  } else {
+  if (!isDm && !isMention) {
     // Regular channel message (no mention) → ignore
     // FUTURE: push-model hook — broadcast to subscribed orchestrators for ambient awareness
     console.log(`[Slack] Ignoring non-mention channel message: channel=${message.channelId}`);
@@ -285,17 +279,18 @@ slackEventsRouter.post('/slack/events', async (c) => {
   // With "Agents & AI Apps" enabled, DMs are also threaded (each message starts a thread).
   const dispatchChannelId = threadId ? `${message.channelId}:${threadId}` : message.channelId;
 
+  const attachments = message.attachments.map((a) => ({
+    type: 'file' as const,
+    mime: a.mimeType,
+    url: a.url,
+    filename: a.fileName,
+  }));
+
   if (binding) {
     console.log(`[Slack] Bound session dispatch: session=${binding.sessionId} channelId=${dispatchChannelId}`);
     const doId = c.env.SESSIONS.idFromName(binding.sessionId);
     const sessionDO = c.env.SESSIONS.get(doId);
     try {
-      const attachments = message.attachments.map((a) => ({
-        type: 'file' as const,
-        mime: a.mimeType,
-        url: a.url,
-        filename: a.fileName,
-      }));
 
       const resp = await sessionDO.fetch(
         new Request('http://do/prompt', {
@@ -424,13 +419,6 @@ slackEventsRouter.post('/slack/events', async (c) => {
   }
 
   // Dispatch to orchestrator
-  const attachments = message.attachments.map((a) => ({
-    type: 'file' as const,
-    mime: a.mimeType,
-    url: a.url,
-    filename: a.fileName,
-  }));
-
   console.log(`[Slack] Orchestrator dispatch: userId=${userId} channelId=${dispatchChannelId}`);
   const result = await dispatchOrchestratorPrompt(c.env, {
     userId,

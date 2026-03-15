@@ -114,7 +114,13 @@ export async function getOrCreateChannelThread(
     await db.prepare('DELETE FROM session_threads WHERE id = ?').bind(threadId).run();
   }
 
-  return winner!.threadId;
+  // Defensive: if winner is null (concurrent delete between INSERT and SELECT), return our threadId
+  if (!winner) {
+    console.error('[getOrCreateChannelThread] Winner lookup returned null after INSERT — returning optimistic threadId');
+    return threadId;
+  }
+
+  return winner.threadId;
 }
 
 /**

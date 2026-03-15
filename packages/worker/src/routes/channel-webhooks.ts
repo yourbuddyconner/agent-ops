@@ -10,6 +10,16 @@ import { dispatchOrchestratorPrompt } from '../lib/workflow-runtime.js';
 
 export const channelWebhooksRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
+/** Map InboundAttachments to the DO prompt attachment format. */
+function mapAttachments(message: InboundMessage) {
+  return message.attachments.map((a) => ({
+    type: 'file' as const,
+    mime: a.mimeType,
+    url: a.url,
+    filename: a.fileName,
+  }));
+}
+
 // ─── Universal Webhook Route ─────────────────────────────────────────────────
 
 /**
@@ -81,19 +91,35 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
           const promptId = callbackData.slice(pipeIdx + 1);
 
           if (promptId) {
-            // Look up session from invocation record, then resolve prompt
+            // Resolve session: try D1 invocation record (approvals), then orchestrator session (questions)
             c.executionCtx.waitUntil((async () => {
               try {
+                let targetSessionId: string | undefined;
+
+                // Approval prompts have a D1 action_invocations record
                 const inv = await db.getInvocation(c.get('db'), promptId);
-                if (!inv || inv.status !== 'pending') {
-                  console.log(`[Telegram callback_query] Invocation ${promptId} not pending`);
+                if (inv) {
+                  if (inv.status !== 'pending') {
+                    console.log(`[Telegram callback_query] Invocation ${promptId} not pending (${inv.status})`);
+                    return;
+                  }
+                  if (inv.userId !== userId) {
+                    console.log(`[Telegram callback_query] User ${userId} not authorized for invocation ${promptId}`);
+                    return;
+                  }
+                  targetSessionId = inv.sessionId;
+                } else {
+                  // Question prompts don't have D1 records — fall back to orchestrator session
+                  const orchSession = await db.getOrchestratorSession(c.env.DB, userId);
+                  targetSessionId = orchSession?.id;
+                }
+
+                if (!targetSessionId) {
+                  console.log(`[Telegram callback_query] No session found for prompt ${promptId}`);
                   return;
                 }
-                if (inv.userId !== userId) {
-                  console.log(`[Telegram callback_query] User ${userId} not authorized for invocation ${promptId}`);
-                  return;
-                }
-                const doId = c.env.SESSIONS.idFromName(inv.sessionId);
+
+                const doId = c.env.SESSIONS.idFromName(targetSessionId);
                 const stub = c.env.SESSIONS.get(doId);
                 await stub.fetch(new Request('https://session/prompt-resolved', {
                   method: 'POST',
@@ -150,9 +176,12 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
       const botUsername = config.botUsername;
       let isMention = false;
       if (botUsername) {
+        // Use raw text from Telegram update — entity offsets reference the original text,
+        // not the formatted text from parseInbound (which may add blockquote/attribution).
+        const rawText = (tgMsg?.text as string) || '';
         const entities = (tgMsg?.entities ?? []) as Array<{ type: string; offset: number; length: number }>;
         isMention = entities.some((e) =>
-          e.type === 'mention' && message.text?.substring(e.offset, e.offset + e.length) === `@${botUsername}`,
+          e.type === 'mention' && rawText.substring(e.offset, e.offset + e.length) === `@${botUsername}`,
         );
       }
       if (!isMention) {
@@ -210,19 +239,13 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
     }
   }
 
+  const attachments = mapAttachments(message);
+
   if (binding) {
     console.log(`[Channel:${channelType}] Bound session dispatch: session=${binding.sessionId} channelId=${message.channelId}`);
     const doId = c.env.SESSIONS.idFromName(binding.sessionId);
     const sessionDO = c.env.SESSIONS.get(doId);
     try {
-      // Convert InboundAttachments to the DO prompt format
-      const attachments = message.attachments.map((a) => ({
-        type: 'file' as const,
-        mime: a.mimeType,
-        url: a.url,
-        filename: a.fileName,
-      }));
-
       const resp = await sessionDO.fetch(
         new Request('http://do/prompt', {
           method: 'POST',
@@ -243,17 +266,29 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
     } catch (err) {
       console.error(`[Channel:${channelType}] Failed to route to session ${binding.sessionId}:`, err);
     }
+
+    // Bound session failed — re-resolve thread for the orchestrator session before fallthrough
+    if (channelType === 'telegram' && orchestratorThreadId) {
+      const orchSession = await db.getOrchestratorSession(c.env.DB, userId);
+      if (orchSession && orchSession.id !== binding.sessionId) {
+        try {
+          orchestratorThreadId = await db.getOrCreateChannelThread(c.env.DB, {
+            channelType: 'telegram',
+            channelId: message.channelId,
+            externalThreadId: message.channelId,
+            sessionId: orchSession.id,
+            userId,
+          });
+        } catch (err) {
+          console.error(`[Channel:${channelType}] Thread re-resolution for orchestrator failed:`, err);
+        }
+      }
+    }
   } else {
     console.log(`[Channel:${channelType}] No binding for scopeKey=${scopeKey}, falling through to orchestrator`);
   }
 
   // Dispatch to orchestrator
-  const attachments = message.attachments.map((a) => ({
-    type: 'file' as const,
-    mime: a.mimeType,
-    url: a.url,
-    filename: a.fileName,
-  }));
 
   console.log(`[Channel:${channelType}] Orchestrator dispatch: userId=${userId} channelId=${message.channelId}`);
   const result = await dispatchOrchestratorPrompt(c.env, {
