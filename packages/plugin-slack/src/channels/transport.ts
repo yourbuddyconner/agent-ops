@@ -362,9 +362,10 @@ export class SlackTransport implements ChannelTransport {
     const fileId = uploadUrlResult.file_id as string;
 
     // Step 2: Upload file content
+    const fileBlob = new Blob([fileBytes.buffer as ArrayBuffer], { type: attachment.mimeType || 'application/octet-stream' });
     const uploadResp = await fetch(uploadUrl, {
       method: 'POST',
-      body: fileBytes as unknown as BodyInit,
+      body: fileBlob,
     });
 
     if (!uploadResp.ok) {
