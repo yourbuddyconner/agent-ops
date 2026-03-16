@@ -69,7 +69,7 @@ const listChannels: ActionDefinition = {
 const readHistory: ActionDefinition = {
   id: 'slack.read_history',
   name: 'Read History',
-  description: 'Read recent messages from any public Slack channel (membership not required) or a private channel the bot has joined. Use list_channels to get channel IDs. Each message ts can be used as thread_ts for replies.',
+  description: 'Read recent messages from a Slack channel the bot has joined. Use list_channels to get channel IDs. Each message ts can be used as thread_ts for replies.',
   riskLevel: 'low',
   params: z.object({
     channel: z.string().describe('Channel ID (C...)'),
@@ -80,7 +80,7 @@ const readHistory: ActionDefinition = {
 const readThread: ActionDefinition = {
   id: 'slack.read_thread',
   name: 'Read Thread',
-  description: 'Read all replies in a Slack thread. Works on any public channel (membership not required).',
+  description: 'Read all replies in a Slack thread. Bot must be a member of the channel.',
   riskLevel: 'low',
   params: z.object({
     channel: z.string().describe('Channel ID (C...)'),
