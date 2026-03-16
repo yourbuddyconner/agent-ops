@@ -404,15 +404,9 @@ export class SlackTransport implements ChannelTransport {
           return { success: false, error: uploadResult.error };
         }
       }
-
-      // If no text content, we're done after uploading files
-      const text = message.markdown || message.text || '';
-      if (!text) {
-        return { success: true };
-      }
     }
 
-    // Send text message
+    // Send text message (or return early if attachment-only)
     const text = message.markdown || message.text || '';
     if (!text) return { success: true };
 
