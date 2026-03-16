@@ -763,10 +763,10 @@ export class AgentClient {
     });
   }
 
-  requestCallTool(toolId: string, params: Record<string, unknown>): Promise<{ result: unknown }> {
+  requestCallTool(toolId: string, params: Record<string, unknown>, summary?: string): Promise<{ result: unknown }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, TOOL_OP_TIMEOUT_MS, () => {
-      this.send({ type: "call-tool", requestId, toolId, params });
+      this.send({ type: "call-tool", requestId, toolId, params, summary });
     });
   }
 

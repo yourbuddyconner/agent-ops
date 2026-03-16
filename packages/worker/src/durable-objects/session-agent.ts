@@ -354,6 +354,7 @@ interface RunnerMessage {
   // Tool Discovery & Invocation fields
   toolId?: string;
   params?: Record<string, unknown>;
+  summary?: string;
   service?: string;
   // Per-channel session tracking
   channelKey?: string;

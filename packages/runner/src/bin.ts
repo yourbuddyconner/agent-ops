@@ -319,7 +319,7 @@ async function main() {
       }
       return result;
     },
-    onCallTool: async (toolId, params) => {
+    onCallTool: async (toolId, params, summary) => {
       // Enforce whitelist on tool invocation
       if (activeToolWhitelist) {
         const { service, actionId } = parseToolId(toolId);
@@ -327,7 +327,7 @@ async function main() {
           throw new Error(`Tool "${toolId}" is not available for this persona`);
         }
       }
-      return await agentClient.requestCallTool(toolId, params);
+      return await agentClient.requestCallTool(toolId, params, summary);
     },
     // Skill API
     onSkillApi: async (action, payload) => {

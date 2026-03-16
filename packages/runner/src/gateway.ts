@@ -697,7 +697,7 @@ export interface GatewayCallbacks {
   onChannelReply?: (channelType: string, channelId: string, message: string, imageBase64?: string, imageMimeType?: string, followUp?: boolean) => Promise<{ success: boolean }>;
   // Tool Discovery & Invocation
   onListTools?: (service?: string, query?: string) => Promise<{ tools: unknown[]; warnings?: Array<{ service: string; displayName: string; reason: string; message: string }> }>;
-  onCallTool?: (toolId: string, params: Record<string, unknown>) => Promise<{ result: unknown }>;
+  onCallTool?: (toolId: string, params: Record<string, unknown>, summary?: string) => Promise<{ result: unknown }>;
   // Skill API
   onSkillApi?: (action: string, payload?: Record<string, unknown>) => Promise<{ data?: unknown; error?: string; statusCode?: number }>;
   // Persona API
@@ -1844,11 +1844,11 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json({ error: "Call tool handler not configured" }, 500);
     }
     try {
-      const body = await c.req.json() as { toolId?: string; params?: Record<string, unknown> };
+      const body = await c.req.json() as { toolId?: string; params?: Record<string, unknown>; summary?: string };
       if (!body.toolId) {
         return c.json({ error: "Missing required field: toolId" }, 400);
       }
-      const result = await callbacks.onCallTool(body.toolId, body.params || {});
+      const result = await callbacks.onCallTool(body.toolId, body.params || {}, body.summary);
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] Call tool error:", err);
