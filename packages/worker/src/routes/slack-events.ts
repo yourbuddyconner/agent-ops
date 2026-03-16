@@ -33,12 +33,13 @@ export const slackEventsRouter = new Hono<{ Bindings: Env; Variables: Variables 
 slackEventsRouter.post('/slack/events', async (c) => {
   // Slack retries events when it doesn't receive a 200 within ~3 seconds.
   // Our handler is slow (Slack API calls, DB lookups), so retries are common.
-  // Skip retries to prevent duplicate message processing — EXCEPT http_timeout,
-  // where the original request never reached our handler.
+  // Skip ALL retries to prevent duplicate message processing.
+  // Note: http_timeout does NOT mean the request never reached us — it means
+  // Slack didn't get a response fast enough. The original request is still
+  // processing, so allowing http_timeout retries causes duplicate delivery.
   const retryNum = c.req.header('x-slack-retry-num');
-  const retryReason = c.req.header('x-slack-retry-reason') || 'unknown';
-  if (retryNum && retryReason !== 'http_timeout') {
-    console.log(`[Slack] Skipping retry #${retryNum} (reason: ${retryReason})`);
+  if (retryNum) {
+    console.log(`[Slack] Skipping retry #${retryNum} (reason: ${c.req.header('x-slack-retry-reason') || 'unknown'})`);
     return c.json({ ok: true });
   }
 
