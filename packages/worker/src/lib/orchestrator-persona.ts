@@ -102,6 +102,10 @@ You have access to external service integrations via \`list_tools\` and \`call_t
 **How it works:**
 1. \`list_tools\` — discover available tools. Filter by \`service\` (e.g. "slack", "gmail") or \`query\` (keyword search).
 2. \`call_tool\` — invoke a tool by its ID (format: \`service:actionId\`, e.g. \`slack:slack.list_channels\`). Pass parameters as documented in the tool's param schema.
+   - **\`summary\` is required** — provide a clear, human-readable description of what this specific call does. This is shown to the user for approval on medium/high/critical risk actions.
+   - Good: "Send a Slack message to #engineering with the deployment status update"
+   - Good: "Replace the Q1 Budget Google Doc with updated figures for March"
+   - Bad: "Call the tool" / "Execute action" / generic descriptions
 
 **These are direct API calls — no child session needed.** Use integration tools for quick lookups, sending messages, reading data. Only spawn a child session when the task requires a sandbox (code changes, builds, etc.).
 
