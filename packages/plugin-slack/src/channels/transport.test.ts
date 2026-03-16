@@ -779,6 +779,65 @@ describe('SlackTransport', () => {
     expect((transport as any).unregisterWebhook).toBeUndefined();
   });
 
+  // ─── Round-trip file handling ───────────────────────────────────────
+
+  describe('round-trip file handling', () => {
+    it('inbound file can be sent back outbound', async () => {
+      const fakeFileBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // PDF magic bytes
+
+      // Mock inbound download
+      mockFetch.mockResolvedValueOnce(new Response(fakeFileBytes, { status: 200 }));
+
+      const inboundBody = JSON.stringify({
+        type: 'event_callback',
+        team_id: 'T123',
+        event: {
+          type: 'message',
+          subtype: 'file_share',
+          channel: 'C456',
+          user: 'U789',
+          text: '',
+          ts: '1234567890.123456',
+          files: [{
+            url_private: 'https://files.slack.com/files-pri/T123-F456/report.pdf',
+            mimetype: 'application/pdf',
+            name: 'report.pdf',
+            size: 4,
+            filetype: 'pdf',
+          }],
+        },
+      });
+
+      const inbound = await transport.parseInbound({}, inboundBody, { userId: 'u1', botToken: 'xoxb-test' });
+      expect(inbound).not.toBeNull();
+      expect(inbound!.attachments).toHaveLength(1);
+      expect(inbound!.attachments[0].url).toMatch(/^data:application\/pdf;base64,/);
+
+      // Now send it back outbound
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ ok: true, upload_url: 'https://upload.example.com', file_id: 'F1' }),
+      );
+      mockFetch.mockResolvedValueOnce(new Response('OK', { status: 200 }));
+      mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+      const target: ChannelTarget = { channelType: 'slack', channelId: 'C456', threadId: '1234567890.123456' };
+      const ctx: ChannelContext = { token: 'xoxb-test', userId: 'u1' };
+
+      const result = await transport.sendMessage(target, {
+        attachments: [{
+          type: inbound!.attachments[0].type,
+          url: inbound!.attachments[0].url,
+          mimeType: inbound!.attachments[0].mimeType,
+          fileName: inbound!.attachments[0].fileName,
+        }],
+      }, ctx);
+
+      expect(result.success).toBe(true);
+      // 1 for inbound download + 3 for outbound upload = 4 total
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+    });
+  });
+
   // ─── sendInteractivePrompt ────────────────────────────────────────
 
   describe('sendInteractivePrompt', () => {
