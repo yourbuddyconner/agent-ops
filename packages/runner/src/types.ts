@@ -214,7 +214,7 @@ export type RunnerToDOMessage =
   | { type: "task-list"; requestId: string; status?: string; limit?: number }
   | { type: "task-update"; requestId: string; taskId: string; status?: string; result?: string; description?: string; sessionId?: string; title?: string }
   | { type: "task-my"; requestId: string; status?: string }
-  | { type: "channel-reply"; requestId: string; channelType: string; channelId: string; message: string; imageBase64?: string; imageMimeType?: string; followUp?: boolean }
+  | { type: "channel-reply"; requestId: string; channelType: string; channelId: string; message: string; imageBase64?: string; imageMimeType?: string; followUp?: boolean; fileBase64?: string; fileMimeType?: string; fileName?: string }
   | { type: "list-tools"; requestId: string; service?: string; query?: string }
   | { type: "call-tool"; requestId: string; toolId: string; params: Record<string, unknown>; summary?: string }
   | { type: "skill-api"; requestId: string; action: string; payload?: Record<string, unknown> }

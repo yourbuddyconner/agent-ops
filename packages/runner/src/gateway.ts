@@ -694,7 +694,7 @@ export interface GatewayCallbacks {
   }) => Promise<{ task: unknown }>;
   onMyTasks?: (status?: string) => Promise<{ tasks: unknown[] }>;
   // Phase D: Channel Reply
-  onChannelReply?: (channelType: string, channelId: string, message: string, imageBase64?: string, imageMimeType?: string, followUp?: boolean) => Promise<{ success: boolean }>;
+  onChannelReply?: (channelType: string, channelId: string, message: string, imageBase64?: string, imageMimeType?: string, followUp?: boolean, fileBase64?: string, fileMimeType?: string, fileName?: string) => Promise<{ success: boolean }>;
   // Tool Discovery & Invocation
   onListTools?: (service?: string, query?: string) => Promise<{ tools: unknown[]; warnings?: Array<{ service: string; displayName: string; reason: string; message: string }> }>;
   onCallTool?: (toolId: string, params: Record<string, unknown>, summary?: string) => Promise<{ result: unknown }>;
@@ -1810,11 +1810,11 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json({ error: "Channel reply handler not configured" }, 501);
     }
     try {
-      const body = await c.req.json() as { channelType?: string; channelId?: string; message?: string; imageBase64?: string; imageMimeType?: string; followUp?: boolean };
-      if (!body.channelType || !body.channelId || (!body.message && !body.imageBase64)) {
-        return c.json({ error: "channelType, channelId, and message or image are required" }, 400);
+      const body = await c.req.json() as { channelType?: string; channelId?: string; message?: string; imageBase64?: string; imageMimeType?: string; followUp?: boolean; fileBase64?: string; fileMimeType?: string; fileName?: string };
+      if (!body.channelType || !body.channelId || (!body.message && !body.imageBase64 && !body.fileBase64)) {
+        return c.json({ error: "channelType, channelId, and message, image, or file are required" }, 400);
       }
-      const result = await callbacks.onChannelReply(body.channelType, body.channelId, body.message || '', body.imageBase64, body.imageMimeType, body.followUp);
+      const result = await callbacks.onChannelReply(body.channelType, body.channelId, body.message || '', body.imageBase64, body.imageMimeType, body.followUp, body.fileBase64, body.fileMimeType, body.fileName);
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] Channel reply error:", err);

@@ -351,6 +351,9 @@ interface RunnerMessage {
   imageBase64?: string;
   imageMimeType?: string;
   followUp?: boolean;
+  fileBase64?: string;
+  fileMimeType?: string;
+  fileName?: string;
   // Tool Discovery & Invocation fields
   toolId?: string;
   params?: Record<string, unknown>;

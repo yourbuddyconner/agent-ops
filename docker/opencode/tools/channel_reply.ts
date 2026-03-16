@@ -5,7 +5,7 @@ export default tool({
     "Send a reply to a specific channel (e.g. Telegram, Slack). Use this when a user's message came " +
     "from an external channel (indicated by [via <channelType> | chatId: <id>] prefix) and you want " +
     "to respond on that same channel. The response will be delivered directly to the user on the " +
-    "originating platform. You can optionally attach an image file.",
+    "originating platform. You can optionally attach an image or file.",
   args: {
     channel_type: tool.schema
       .enum(["telegram", "slack"])
@@ -20,6 +20,14 @@ export default tool({
       .string()
       .optional()
       .describe("Absolute path to an image file to send (PNG, JPEG, GIF, WebP)"),
+    file_path: tool.schema
+      .string()
+      .optional()
+      .describe("Absolute path to a file to attach (any type: PDF, CSV, ZIP, etc.)"),
+    file_name: tool.schema
+      .string()
+      .optional()
+      .describe("Override the filename shown to the recipient (defaults to the basename of file_path)"),
     follow_up: tool.schema
       .boolean()
       .optional()
@@ -33,8 +41,8 @@ export default tool({
       ),
   },
   async execute(args) {
-    if (!args.channel_type || !args.channel_id || (!args.message?.trim() && !args.image_path)) {
-      return "Error: channel_type, channel_id, and either message or image_path are required"
+    if (!args.channel_type || !args.channel_id || (!args.message?.trim() && !args.image_path && !args.file_path)) {
+      return "Error: channel_type, channel_id, and either message, image_path, or file_path are required"
     }
 
     try {
@@ -64,6 +72,32 @@ export default tool({
         payload.imageMimeType = mimeMap[ext || ""] || "image/jpeg"
       }
 
+      if (args.file_path) {
+        const fs = await import("fs")
+        const path = await import("path")
+        if (!fs.existsSync(args.file_path)) {
+          return `Error: file not found: ${args.file_path}`
+        }
+        const data = fs.readFileSync(args.file_path)
+        payload.fileBase64 = Buffer.from(data).toString("base64")
+
+        const ext = args.file_path.split(".").pop()?.toLowerCase()
+        const fileMimeMap: Record<string, string> = {
+          pdf: "application/pdf",
+          csv: "text/csv",
+          zip: "application/zip",
+          json: "application/json",
+          txt: "text/plain",
+          png: "image/png",
+          jpg: "image/jpeg",
+          jpeg: "image/jpeg",
+          gif: "image/gif",
+          webp: "image/webp",
+        }
+        payload.fileMimeType = fileMimeMap[ext || ""] || "application/octet-stream"
+        payload.fileName = args.file_name || path.basename(args.file_path)
+      }
+
       const res = await fetch("http://localhost:9000/api/channel-reply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -76,7 +110,7 @@ export default tool({
       }
 
       const resData = (await res.json()) as { success: boolean }
-      const what = args.image_path ? "Image reply" : "Reply"
+      const what = args.file_path ? "File reply" : args.image_path ? "Image reply" : "Reply"
       return resData.success
         ? `${what} sent to ${args.channel_type} (${args.channel_id})`
         : `Channel reply failed`

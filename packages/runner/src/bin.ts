@@ -302,8 +302,8 @@ async function main() {
       return await agentClient.requestMyTasks(status);
     },
     // Phase D: Channel Reply
-    onChannelReply: async (channelType, channelId, message, imageBase64, imageMimeType, followUp) => {
-      return await agentClient.requestChannelReply(channelType, channelId, message, imageBase64, imageMimeType, followUp);
+    onChannelReply: async (channelType, channelId, message, imageBase64, imageMimeType, followUp, fileBase64, fileMimeType, fileName) => {
+      return await agentClient.requestChannelReply(channelType, channelId, message, imageBase64, imageMimeType, followUp, fileBase64, fileMimeType, fileName);
     },
     // Tool Discovery & Invocation (with whitelist filtering)
     onListTools: async (service, query) => {

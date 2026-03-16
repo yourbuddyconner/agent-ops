@@ -752,10 +752,10 @@ export class AgentClient {
 
   // ─── Phase D: Channel Reply ──────────────────────────────────────
 
-  requestChannelReply(channelType: string, channelId: string, message: string, imageBase64?: string, imageMimeType?: string, followUp?: boolean): Promise<{ success: boolean }> {
+  requestChannelReply(channelType: string, channelId: string, message: string, imageBase64?: string, imageMimeType?: string, followUp?: boolean, fileBase64?: string, fileMimeType?: string, fileName?: string): Promise<{ success: boolean }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
-      this.send({ type: "channel-reply", requestId, channelType, channelId, message, imageBase64, imageMimeType, followUp });
+      this.send({ type: "channel-reply", requestId, channelType, channelId, message, imageBase64, imageMimeType, followUp, fileBase64, fileMimeType, fileName });
     });
   }
 
