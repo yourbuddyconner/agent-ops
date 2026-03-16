@@ -325,12 +325,97 @@ export class SlackTransport implements ChannelTransport {
     return markdownToSlackMrkdwn(markdown);
   }
 
+  /** Upload a file to Slack via the v2 upload API. */
+  private async uploadFile(
+    target: ChannelTarget,
+    attachment: import('@valet/sdk').OutboundAttachment,
+    token: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    // Decode the file content
+    let fileBytes: Uint8Array;
+    if (attachment.url.startsWith('data:')) {
+      const base64Data = attachment.url.split(',')[1];
+      const binaryString = atob(base64Data);
+      fileBytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        fileBytes[i] = binaryString.charCodeAt(i);
+      }
+    } else {
+      const resp = await fetch(attachment.url);
+      if (!resp.ok) return { success: false, error: `Failed to fetch file: ${resp.status}` };
+      fileBytes = new Uint8Array(await resp.arrayBuffer());
+    }
+
+    const filename = attachment.fileName || `file-${Date.now()}`;
+
+    // Step 1: Get upload URL
+    const uploadUrlResult = await slackApiCall('files.getUploadURLExternal', {
+      filename,
+      length: fileBytes.length,
+    }, token);
+
+    if (!uploadUrlResult.ok) {
+      return { success: false, error: `Slack files.getUploadURLExternal error: ${uploadUrlResult.error}` };
+    }
+
+    const uploadUrl = uploadUrlResult.upload_url as string;
+    const fileId = uploadUrlResult.file_id as string;
+
+    // Step 2: Upload file content
+    const uploadResp = await fetch(uploadUrl, {
+      method: 'POST',
+      body: fileBytes,
+    });
+
+    if (!uploadResp.ok) {
+      return { success: false, error: `File upload failed: ${uploadResp.status}` };
+    }
+
+    // Step 3: Complete the upload and share to channel
+    const completeBody: Record<string, unknown> = {
+      files: [{ id: fileId }],
+      channel_id: target.channelId,
+    };
+    if (target.threadId) {
+      completeBody.thread_ts = target.threadId;
+    }
+    if (attachment.caption) {
+      completeBody.initial_comment = attachment.caption;
+    }
+
+    const completeResult = await slackApiCall('files.completeUploadExternal', completeBody, token);
+    if (!completeResult.ok) {
+      return { success: false, error: `Slack files.completeUploadExternal error: ${completeResult.error}` };
+    }
+
+    return { success: true };
+  }
+
   async sendMessage(
     target: ChannelTarget,
     message: OutboundMessage,
     ctx: ChannelContext,
   ): Promise<SendResult> {
+    // Upload file attachments first
+    if (message.attachments && message.attachments.length > 0) {
+      for (const attachment of message.attachments) {
+        const uploadResult = await this.uploadFile(target, attachment, ctx.token);
+        if (!uploadResult.success) {
+          return { success: false, error: uploadResult.error };
+        }
+      }
+
+      // If no text content, we're done after uploading files
+      const text = message.markdown || message.text || '';
+      if (!text) {
+        return { success: true };
+      }
+    }
+
+    // Send text message
     const text = message.markdown || message.text || '';
+    if (!text) return { success: true };
+
     const formatted = this.formatMarkdown(text);
 
     const body: Record<string, unknown> = {

@@ -593,6 +593,111 @@ describe('SlackTransport', () => {
       const opts = mockFetch.mock.calls[0][1];
       expect(opts.headers.Authorization).toBe('Bearer xoxb-test-token');
     });
+
+    it('uploads image attachment via files.getUploadURLExternal + completeUploadExternal', async () => {
+      // 1. files.getUploadURLExternal response
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({
+          ok: true,
+          upload_url: 'https://files.slack.com/upload/v1/ABC123',
+          file_id: 'F_UPLOAD_1',
+        }),
+      );
+      // 2. POST to upload URL
+      mockFetch.mockResolvedValueOnce(new Response('OK', { status: 200 }));
+      // 3. files.completeUploadExternal response
+      mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+      const target: ChannelTarget = { channelType: 'slack', channelId: 'C456', threadId: '111.222' };
+
+      const result = await transport.sendMessage(
+        target,
+        {
+          attachments: [{
+            type: 'image' as const,
+            url: 'data:image/png;base64,iVBORw0KGgo=',
+            mimeType: 'image/png',
+            fileName: 'chart.png',
+          }],
+        },
+        ctx,
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+
+      // Verify getUploadURLExternal call
+      const [url1, opts1] = mockFetch.mock.calls[0];
+      expect(url1).toBe('https://slack.com/api/files.getUploadURLExternal');
+      const body1 = JSON.parse(opts1.body);
+      expect(body1.filename).toBe('chart.png');
+      expect(body1.length).toBeGreaterThan(0);
+
+      // Verify upload to pre-signed URL
+      const [url2, opts2] = mockFetch.mock.calls[1];
+      expect(url2).toBe('https://files.slack.com/upload/v1/ABC123');
+      expect(opts2.method).toBe('POST');
+
+      // Verify completeUploadExternal call
+      const [url3, opts3] = mockFetch.mock.calls[2];
+      expect(url3).toBe('https://slack.com/api/files.completeUploadExternal');
+      const body3 = JSON.parse(opts3.body);
+      expect(body3.files).toEqual([{ id: 'F_UPLOAD_1' }]);
+      expect(body3.channel_id).toBe('C456');
+      expect(body3.thread_ts).toBe('111.222');
+    });
+
+    it('sends text alongside file attachment as separate message', async () => {
+      // File upload flow (3 calls)
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ ok: true, upload_url: 'https://upload.example.com', file_id: 'F1' }),
+      );
+      mockFetch.mockResolvedValueOnce(new Response('OK', { status: 200 }));
+      mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
+      // chat.postMessage for text
+      mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true, ts: '111.333' }));
+
+      const result = await transport.sendMessage(
+        { channelType: 'slack', channelId: 'C456', threadId: '111.222' },
+        {
+          markdown: 'Here is the file',
+          attachments: [{
+            type: 'file' as const,
+            url: 'data:application/pdf;base64,JVBERi0=',
+            mimeType: 'application/pdf',
+            fileName: 'report.pdf',
+          }],
+        },
+        ctx,
+      );
+
+      expect(result.success).toBe(true);
+      // 3 for upload + 1 for text
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+      const [textUrl] = mockFetch.mock.calls[3];
+      expect(textUrl).toBe('https://slack.com/api/chat.postMessage');
+    });
+
+    it('returns error when file upload fails at getUploadURLExternal', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ ok: false, error: 'not_allowed' }),
+      );
+
+      const result = await transport.sendMessage(
+        { channelType: 'slack', channelId: 'C456' },
+        {
+          attachments: [{
+            type: 'image' as const,
+            url: 'data:image/png;base64,iVBORw0KGgo=',
+            mimeType: 'image/png',
+          }],
+        },
+        ctx,
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('not_allowed');
+    });
   });
 
   // ─── editMessage ──────────────────────────────────────────────────
