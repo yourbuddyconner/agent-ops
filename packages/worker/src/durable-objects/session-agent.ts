@@ -3435,7 +3435,11 @@ export class SessionAgentDO {
 
       // ─── Phase D: Channel Reply ──────────────────────────────────────
       case 'channel-reply':
-        await this.handleChannelReply(msg.requestId!, msg.channelType!, msg.channelId!, msg.message || '', msg.imageBase64, msg.imageMimeType, msg.followUp);
+        await this.handleChannelReply(
+          msg.requestId!, msg.channelType!, msg.channelId!, msg.message || '',
+          msg.imageBase64, msg.imageMimeType, msg.followUp,
+          msg.fileBase64, msg.fileMimeType, msg.fileName,
+        );
         break;
 
       // ─── Tool Discovery & Invocation ──────────────────────────────────
@@ -8693,7 +8697,18 @@ export class SessionAgentDO {
     return { channelId };
   }
 
-  private async handleChannelReply(requestId: string, channelType: string, channelId: string, message: string, imageBase64?: string, imageMimeType?: string, followUp?: boolean) {
+  private async handleChannelReply(
+    requestId: string,
+    channelType: string,
+    channelId: string,
+    message: string,
+    imageBase64?: string,       // kept for backward compat
+    imageMimeType?: string,     // kept for backward compat
+    followUp?: boolean,
+    fileBase64?: string,        // new generic param
+    fileMimeType?: string,      // new generic param
+    fileName?: string,          // new generic param
+  ) {
     try {
       const userId = this.getStateValue('userId');
       if (!userId) {
@@ -8725,14 +8740,19 @@ export class SessionAgentDO {
       const target: ChannelTarget = { channelType, channelId: parsed.channelId, threadId: parsed.threadId };
       const ctx: ChannelContext = { token, userId };
 
-      // Build outbound message
-      const outbound: import('@valet/sdk').OutboundMessage = imageBase64
+      // Build outbound message — prefer new file params, fall back to legacy image params
+      const attachBase64 = fileBase64 || imageBase64;
+      const attachMime = fileMimeType || imageMimeType || 'application/octet-stream';
+      const attachName = fileName;
+
+      const outbound: import('@valet/sdk').OutboundMessage = attachBase64
         ? {
             markdown: message || undefined,
             attachments: [{
-              type: 'image' as const,
-              url: `data:${imageMimeType || 'image/jpeg'};base64,${imageBase64}`,
-              mimeType: imageMimeType || 'image/jpeg',
+              type: (attachMime.startsWith('image/') ? 'image' : 'file') as 'image' | 'file',
+              url: `data:${attachMime};base64,${attachBase64}`,
+              mimeType: attachMime,
+              fileName: attachName,
               caption: message || undefined,
             }],
           }
