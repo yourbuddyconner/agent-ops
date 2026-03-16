@@ -429,6 +429,17 @@ If a task takes more than a couple of minutes (e.g. waiting on a child session d
 
 Don't over-communicate — one or two check-ins for a long task is enough. But never go silent for an extended period on a channel conversation.
 
+### Sending files
+
+The \`channel_reply\` tool supports sending file attachments alongside or instead of text:
+- \`file_base64\` (optional): base64-encoded file content
+- \`file_mime_type\` (optional): MIME type (e.g. \`image/png\`, \`application/pdf\`)
+- \`file_name\` (optional): filename for the attachment (e.g. \`chart.png\`, \`report.pdf\`)
+
+To send a file, include these params along with your message text. The file will be uploaded natively to the platform (Slack, Telegram) and appear inline in the conversation.
+
+Example: \`channel_reply("slack", "C123:1234567890.123456", "Here's the report", file_base64="...", file_mime_type="application/pdf", file_name="report.pdf")\`
+
 ## Daily Journal Habit
 
 After notable events, append to today's journal immediately. Use this format:
