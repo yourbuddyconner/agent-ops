@@ -406,15 +406,20 @@ export class TelegramTransport implements ChannelTransport {
     ctx: ChannelContext,
   ): Promise<InteractivePromptRef | null> {
     // No actions → text-only prompt, ask user to reply
+    const summary = (prompt.context?.summary as string) || prompt.body || '';
     if (!prompt.actions || prompt.actions.length === 0) {
-      const text = `*${prompt.title}*${prompt.body ? '\n' + prompt.body : ''}\n\n_Reply with your answer._`;
+      const text = `*${prompt.title}*\n${summary}\n\n_Reply with your answer._`;
       const result = await this.sendMessage(target, { markdown: text }, ctx);
       if (!result.success || !result.messageId) return null;
       return { messageId: result.messageId, channelId: target.channelId };
     }
 
-    // Build message text
-    let text = `*${prompt.title}*${prompt.body ? '\n' + prompt.body : ''}`;
+    // Build message text with tool info
+    const toolId = (prompt.context?.toolId as string) || '';
+    const riskLevel = (prompt.context?.riskLevel as string) || '';
+    let text = riskLevel
+      ? `*${prompt.title}* • \`${toolId}\` [${riskLevel.toUpperCase()}]\n${summary}`
+      : `*${prompt.title}*\n${summary}`;
     if (prompt.expiresAt) {
       const expiryDate = new Date(prompt.expiresAt);
       text += `\n\n_Expires ${expiryDate.toLocaleString()}_`;

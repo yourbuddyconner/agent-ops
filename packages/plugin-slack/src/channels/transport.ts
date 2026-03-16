@@ -492,8 +492,9 @@ export class SlackTransport implements ChannelTransport {
     ctx: ChannelContext,
   ): Promise<InteractivePromptRef | null> {
     // If no actions, send plain text prompt for thread-reply input
+    const summary = (prompt.context?.summary as string) || prompt.body || '';
     if (!prompt.actions || prompt.actions.length === 0) {
-      const text = `*${prompt.title}*${prompt.body ? '\n' + prompt.body : ''}\n_Reply to this thread with your answer._`;
+      const text = `*${prompt.title}*\n${summary}\n_Reply to this thread with your answer._`;
       const body: Record<string, unknown> = {
         channel: target.channelId,
         text: this.formatMarkdown(text),
@@ -511,12 +512,18 @@ export class SlackTransport implements ChannelTransport {
     }
 
     // Build Block Kit message with buttons
+    const toolId = (prompt.context?.toolId as string) || '';
+    const riskLevel = (prompt.context?.riskLevel as string) || '';
+    const headerText = riskLevel
+      ? `*${prompt.title}* • \`${toolId}\` [${riskLevel.toUpperCase()}]`
+      : `*${prompt.title}*`;
+
     const blocks: Record<string, unknown>[] = [
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*${prompt.title}*${prompt.body ? '\n' + prompt.body : ''}`,
+          text: `${headerText}\n${summary}`,
         },
       },
     ];
