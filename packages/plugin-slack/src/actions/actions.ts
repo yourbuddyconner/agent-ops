@@ -58,15 +58,18 @@ const addReaction: ActionDefinition = {
 const listChannels: ActionDefinition = {
   id: 'slack.list_channels',
   name: 'List Channels',
-  description: 'List Slack channels the bot is a member of. Returns channel IDs needed for read_history, read_thread, and add_reaction.',
+  description: 'List Slack channels. By default lists only channels the bot has joined. Set scope to "all" to discover all public channels in the workspace. Use prefix to filter by channel name prefix (e.g. "eng-" or "team-").',
   riskLevel: 'low',
-  params: z.object({}),
+  params: z.object({
+    scope: z.enum(['joined', 'all']).optional().describe('Which channels to list: "joined" (default) = bot member channels, "all" = all public channels'),
+    prefix: z.string().optional().describe('Filter channels whose name starts with this prefix'),
+  }),
 };
 
 const readHistory: ActionDefinition = {
   id: 'slack.read_history',
   name: 'Read History',
-  description: 'Read recent messages from a Slack channel. Use list_channels to get the channel ID. Each message ts can be used as thread_ts for replies.',
+  description: 'Read recent messages from any public Slack channel (membership not required) or a private channel the bot has joined. Use list_channels to get channel IDs. Each message ts can be used as thread_ts for replies.',
   riskLevel: 'low',
   params: z.object({
     channel: z.string().describe('Channel ID (C...)'),
@@ -77,7 +80,7 @@ const readHistory: ActionDefinition = {
 const readThread: ActionDefinition = {
   id: 'slack.read_thread',
   name: 'Read Thread',
-  description: 'Read all replies in a Slack thread.',
+  description: 'Read all replies in a Slack thread. Works on any public channel (membership not required).',
   riskLevel: 'low',
   params: z.object({
     channel: z.string().describe('Channel ID (C...)'),
@@ -221,20 +224,40 @@ async function executeAction(
       }
 
       case 'slack.list_channels': {
-        // users.conversations returns only channels the bot is a member of
-        const res = await slackGet('users.conversations', token, {
-          types: 'public_channel,private_channel',
-          limit: 200,
-          exclude_archived: true,
-        });
-        if (!res.ok) return slackError(res);
-        const data = (await res.json()) as { ok: boolean; error?: string; channels?: unknown[] };
-        if (!data.ok) return slackError(res, data);
+        const p = listChannels.params.parse(params);
+        const wantAll = p.scope === 'all';
 
-        const channels = (data.channels || [])
-          .map((ch) => slimChannel(ch as Record<string, unknown>));
+        // users.conversations = only joined channels (public + private)
+        // conversations.list = all visible channels (public only when scope=all)
+        const method = wantAll ? 'conversations.list' : 'users.conversations';
+        const types = wantAll ? 'public_channel' : 'public_channel,private_channel';
 
-        return { success: true, data: { channels } };
+        // Paginate to collect all results (Slack caps at 200 per page)
+        const allChannels: Record<string, unknown>[] = [];
+        let cursor: string | undefined;
+        do {
+          const q: Record<string, unknown> = { types, limit: 200, exclude_archived: true };
+          if (cursor) q.cursor = cursor;
+          const res = await slackGet(method, token, q);
+          if (!res.ok) return slackError(res);
+          const data = (await res.json()) as {
+            ok: boolean; error?: string; channels?: unknown[];
+            response_metadata?: { next_cursor?: string };
+          };
+          if (!data.ok) return slackError(res, data);
+          allChannels.push(...(data.channels || []).map((ch) => ch as Record<string, unknown>));
+          cursor = data.response_metadata?.next_cursor || undefined;
+        } while (cursor);
+
+        let channels = allChannels.map(slimChannel);
+
+        // Client-side prefix filter
+        if (p.prefix) {
+          const pfx = p.prefix.toLowerCase();
+          channels = channels.filter((ch) => typeof ch.name === 'string' && ch.name.toLowerCase().startsWith(pfx));
+        }
+
+        return { success: true, data: { channels, total: channels.length } };
       }
 
       case 'slack.read_history': {
