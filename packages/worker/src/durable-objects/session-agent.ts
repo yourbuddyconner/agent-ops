@@ -20,7 +20,7 @@ import { invokeAction, markExecuted, markFailed, approveInvocation, denyInvocati
 import { updateInvocationStatus } from '../lib/db/actions.js';
 import { getDisabledActionsIndex, isActionDisabled } from '../lib/db/disabled-actions.js';
 import { upsertMcpToolCache } from '../lib/db/mcp-tool-cache.js';
-import { getActivePluginArtifacts, getPluginSettings, getAutoEnabledServices } from '../lib/db/plugins.js';
+import { getActivePluginArtifacts, getPluginSettings, getAutoEnabledServices, getDisabledPluginServices } from '../lib/db/plugins.js';
 import { getPersonaSkills, getOrgDefaultSkills, searchSkills, listSkills, getSkill, getSkillBySlug, createSkill, updateSkill, deleteSkill, getPersonaToolWhitelist, createPersona, updatePersona, deletePersona, getPersonaWithFiles, upsertPersonaFile, attachSkillToPersona, detachSkillFromPersona, getPersonaSkillsForApi } from '../lib/db.js';
 import type { ChannelTarget, ChannelContext, InteractivePrompt, InteractiveAction, InteractivePromptRef, InteractiveResolution } from '@valet/sdk';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
@@ -603,6 +603,10 @@ export class SessionAgentDO {
    *  Keyed by "ownerType:ownerId:service:credentialType", entries expire after CREDENTIAL_CACHE_TTL_MS. */
   private credentialCache = new Map<string, { result: CredentialResult; expiresAt: number }>();
   private static readonly CREDENTIAL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+  /** In-memory cache of disabled plugin services to avoid D1 query on every tool invocation. */
+  private disabledPluginServicesCache: { services: Set<string>; expiresAt: number } | null = null;
+  private static readonly DISABLED_PLUGINS_CACHE_TTL_MS = 60 * 1000; // 1 minute
 
   private getCachedCredential(ownerType: string, ownerId: string, service: string, credentialType?: string): CredentialResult | null {
     const key = `${ownerType}:${ownerId}:${service}:${credentialType || '*'}`;
@@ -8649,14 +8653,21 @@ export class SessionAgentDO {
         return;
       }
 
-      // Fetch integrations, auto-enabled services, and disabled-actions index in parallel
-      const [userIntegrations, orgIntegrations, autoServices, { disabledActions: disabledActionSet, disabledServices: disabledServiceSet }] =
+      // Fetch integrations, auto-enabled services, disabled-actions index, and disabled plugins in parallel
+      const [userIntegrations, orgIntegrations, autoServices, { disabledActions: disabledActionSet, disabledServices: disabledServiceSet }, disabledPluginServices] =
         await Promise.all([
           getUserIntegrations(this.appDb, userId),
           getOrgIntegrations(this.appDb),
           getAutoEnabledServices(this.env.DB),
           getDisabledActionsIndex(this.appDb),
+          getDisabledPluginServices(this.env.DB),
         ]);
+
+      // Populate cache so handleCallTool doesn't need a separate query
+      this.disabledPluginServicesCache = {
+        services: disabledPluginServices,
+        expiresAt: Date.now() + SessionAgentDO.DISABLED_PLUGINS_CACHE_TTL_MS,
+      };
 
       const allIntegrations = [
         ...userIntegrations.filter((i) => i.status === 'active'),
@@ -8689,8 +8700,9 @@ export class SessionAgentDO {
         // If filtering by service, skip non-matching integrations
         if (service && integration.service !== service) continue;
 
-        // Skip entirely disabled services
+        // Skip entirely disabled services (via disabled_actions table or plugin status)
         if (disabledServiceSet.has(integration.service)) continue;
+        if (disabledPluginServices.has(integration.service)) continue;
 
         const actionSource = integrationRegistry.getActions(integration.service);
         if (!actionSource) {
@@ -8877,6 +8889,18 @@ export class SessionAgentDO {
 
       // Safety net: reject disabled actions even if the tool ID was guessed
       if (await isActionDisabled(this.appDb, service, actionId)) {
+        this.sendToRunner({ type: 'call-tool-result', requestId, error: `Action "${toolId}" is disabled by your organization.` } as any);
+        return;
+      }
+
+      // Safety net: reject actions from disabled plugins (cached to avoid per-invocation D1 query)
+      if (!this.disabledPluginServicesCache || Date.now() > this.disabledPluginServicesCache.expiresAt) {
+        this.disabledPluginServicesCache = {
+          services: await getDisabledPluginServices(this.env.DB),
+          expiresAt: Date.now() + SessionAgentDO.DISABLED_PLUGINS_CACHE_TTL_MS,
+        };
+      }
+      if (this.disabledPluginServicesCache.services.has(service)) {
         this.sendToRunner({ type: 'call-tool-result', requestId, error: `Action "${toolId}" is disabled by your organization.` } as any);
         return;
       }

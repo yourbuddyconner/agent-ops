@@ -442,6 +442,18 @@ export function ChatInput({
     void appendImageAttachments(files);
   }, [appendImageAttachments, disabled, resetDragState, sendDisabled]);
 
+  const handlePaste = useCallback((event: React.ClipboardEvent) => {
+    if (disabled || sendDisabled) return;
+    const items = Array.from(event.clipboardData?.items ?? []);
+    const imageFiles = items
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((f): f is File => f !== null);
+    if (imageFiles.length === 0) return;
+    event.preventDefault();
+    void appendImageAttachments(imageFiles);
+  }, [appendImageAttachments, disabled, sendDisabled]);
+
   const removeAttachment = useCallback((index: number) => {
     setAttachments((prev) => prev.filter((_, i) => i !== index));
     originalFilesRef.current = originalFilesRef.current.filter((_, i) => i !== index);
@@ -888,6 +900,7 @@ export function ChatInput({
               updateCursorPos();
             }}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             onFocus={handleFocus}
             onBlur={() => onFocusChange?.(false)}
             onSelect={updateCursorPos}

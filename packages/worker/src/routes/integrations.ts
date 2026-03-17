@@ -18,6 +18,7 @@ import { integrationRegistry } from '../integrations/registry.js';
 import { revokeCredential } from '../services/credentials.js';
 import { getDb } from '../lib/drizzle.js';
 import { listMcpToolCache } from '../lib/db/mcp-tool-cache.js';
+import { getDisabledPluginServices } from '../lib/db/plugins.js';
 
 export const integrationsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -145,9 +146,12 @@ integrationsRouter.get('/', async (c) => {
  */
 integrationsRouter.get('/available', async (c) => {
   const packages = integrationRegistry.listPackages();
+  const disabledPlugins = await getDisabledPluginServices(c.env.DB);
 
   const available = packages
     .filter((pkg) => {
+      // Skip plugins disabled by admin
+      if (disabledPlugins.has(pkg.service)) return false;
       // MCP OAuth services — always available (dynamic client registration)
       if (pkg.provider.mcpServerUrl) return true;
       // Traditional OAuth services — need env vars configured
@@ -319,6 +323,12 @@ integrationsRouter.get('/:service/oauth', async (c) => {
 
   if (!redirect_uri) {
     throw new ValidationError('redirect_uri is required');
+  }
+
+  // Block OAuth flows for disabled plugins
+  const disabledPlugins = await getDisabledPluginServices(c.env.DB);
+  if (disabledPlugins.has(service)) {
+    throw new ValidationError(`Integration "${service}" is disabled by your organization.`);
   }
 
   const provider = integrationRegistry.getProvider(service);

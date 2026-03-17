@@ -128,6 +128,24 @@ export async function getAutoEnabledServices(
   return (result.results || []).map((row: any) => row.name as string);
 }
 
+/**
+ * Returns service names for plugins that have been disabled by an admin.
+ * Used by SessionAgentDO to block tool discovery and invocation.
+ */
+export async function getDisabledPluginServices(
+  db: D1Database,
+  orgId: string = 'default',
+): Promise<Set<string>> {
+  const result = await db
+    .prepare(
+      `SELECT name FROM org_plugins
+       WHERE org_id = ? AND status = 'disabled'`
+    )
+    .bind(orgId)
+    .all();
+  return new Set((result.results || []).map((row: any) => row.name as string));
+}
+
 // ─── Artifacts ──────────────────────────────────────────────────────────────
 
 export async function upsertPluginArtifact(
