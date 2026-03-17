@@ -4,6 +4,7 @@ import { channelScopeKey } from '@valet/shared';
 import type { ChannelTarget, ChannelContext } from '@valet/sdk';
 import { verifySlackSignature } from '@valet/plugin-slack/channels';
 import type { SlackTransport } from '@valet/plugin-slack/channels';
+import { checkPrivateChannelAccess } from '@valet/plugin-slack/actions';
 import { channelRegistry } from '../channels/registry.js';
 import * as db from '../lib/db.js';
 import { decryptString } from '../lib/crypto.js';
@@ -202,6 +203,18 @@ slackEventsRouter.post('/slack/events', async (c) => {
       }, ctx);
     }
     return c.json({ ok: true });
+  }
+
+  // ─── Private channel access check (defense in depth) ─────────────────
+  // Slack prevents non-members from posting in private channels, but we
+  // verify membership explicitly to guard against edge cases (e.g., user
+  // removed between posting and our processing).
+  if (isMention && !isDm) {
+    const access = await checkPrivateChannelAccess(botToken, message.channelId, slackUserId!);
+    if (!access.allowed && access.isPrivate) {
+      console.log(`[Slack] Private channel access denied: channel=${message.channelId} user=${slackUserId} error=${access.error}`);
+      return c.json({ ok: true });
+    }
   }
 
   // Build scope key and look up channel binding (DMs only — public channels use multi-orchestrator routing)

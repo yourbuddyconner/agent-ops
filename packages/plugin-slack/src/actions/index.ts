@@ -5,6 +5,7 @@ import { slackActions } from './actions.js';
 export { slackProvider } from './provider.js';
 export { slackActions } from './actions.js';
 export { slackFetch } from './api.js';
+export { checkPrivateChannelAccess } from './channel-access.js';
 
 const slackPackage: IntegrationPackage = {
   name: '@valet/actions-slack',
