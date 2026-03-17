@@ -41,18 +41,6 @@ const dmUser: ActionDefinition = {
   }),
 };
 
-const postMessage: ActionDefinition = {
-  id: 'slack.post_message',
-  name: 'Post Message',
-  description: 'Post a message to a Slack channel. Accepts #channel-name or channel ID. Include thread_ts to reply in a thread.',
-  riskLevel: 'low',
-  params: z.object({
-    channel: z.string().describe('Channel name (e.g. "#general" or "general") or channel ID (C...)'),
-    text: z.string().describe('Message text'),
-    thread_ts: z.string().optional().describe('Thread timestamp to reply to'),
-  }),
-};
-
 const addReaction: ActionDefinition = {
   id: 'slack.add_reaction',
   name: 'Add Reaction',
@@ -109,7 +97,6 @@ const listUsers: ActionDefinition = {
 const allActions: ActionDefinition[] = [
   dmOwner,
   dmUser,
-  postMessage,
   addReaction,
   listChannels,
   readHistory,
@@ -199,30 +186,6 @@ async function executeAction(
       case 'slack.dm_user': {
         const p = dmUser.params.parse(params);
         return openAndSendDM(token, p.user, p.text, ctx.callerIdentity);
-      }
-
-      case 'slack.post_message': {
-        const p = postMessage.params.parse(params);
-        // Slack's chat.postMessage natively accepts #channel-name, so just pass it through.
-        // Strip leading # if present — Slack wants bare name or ID.
-        const channel = p.channel.replace(/^#/, '');
-        // Only check channels identified by ID (C.../G...) — names resolve to public channels only
-        const isChannelId = /^[CG]/.test(channel);
-        if (isChannelId) {
-          const denied = await guardPrivateChannel(token, channel, ctx);
-          if (denied) return denied;
-        }
-        const body: Record<string, unknown> = { channel, text: p.text };
-        if (p.thread_ts) body.thread_ts = p.thread_ts;
-        if (ctx.callerIdentity?.name) body.username = ctx.callerIdentity.name;
-        if (ctx.callerIdentity?.avatar) body.icon_url = ctx.callerIdentity.avatar;
-
-        const res = await slackFetch('chat.postMessage', token, body);
-        if (!res.ok) return slackError(res);
-        const data = (await res.json()) as { ok: boolean; error?: string; ts?: string; channel?: string };
-        if (!data.ok) return slackError(res, data);
-
-        return { success: true, data: { ts: data.ts, channel: data.channel } };
       }
 
       case 'slack.add_reaction': {
