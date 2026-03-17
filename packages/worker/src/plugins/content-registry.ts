@@ -742,9 +742,36 @@ drive.share_file({
 | Google Drawings | \`application/vnd.google-apps.drawing\` |
 | Folder | \`application/vnd.google-apps.folder\` |
 
+## When to Use Drive vs Dedicated Plugins
+
+Drive is the file system layer — use it for finding, organizing, and sharing files. For reading or editing the **content** of Google Workspace files, always use the dedicated plugin:
+
+| Task | Use This | NOT This |
+|------|----------|----------|
+| Create a Google Sheet | \`sheets.create_spreadsheet\` | \`drive.create_file\` with spreadsheet MIME type |
+| Read spreadsheet data | \`sheets.read_range\` | \`drive.read_file\` (exports as CSV, loses structure) |
+| Write/format cells | \`sheets.write_range\`, \`sheets.format_cells\` | \`drive.update_content\` (replaces whole file) |
+| Create a Google Doc | \`docs.create_document\` | \`drive.create_file\` with document MIME type |
+| Edit document sections | \`docs.replace_section\` | \`drive.update_content\` (replaces whole file) |
+| Read a document | \`docs.read_document\` | \`drive.read_file\` (exports as plain text, loses formatting) |
+| Send an email | \`gmail.send_message\` | N/A |
+| Create a calendar event | \`calendar.create_event\` | N/A |
+
+**Drive is the right tool for:**
+- Searching for files across the user's Drive (\`drive.search_files\`)
+- Getting file metadata, URLs, and sharing status (\`drive.get_file\`)
+- Moving, renaming, copying, or organizing files (\`drive.update_metadata\`, \`drive.copy_file\`)
+- Sharing and permissions (\`drive.share_file\`)
+- Creating plain text files or uploading non-Workspace files
+- Trashing/deleting files
+
+**Drive is NOT the right tool for:**
+- Creating or editing Google Sheets — use \`google-sheets\` tools (they support cell-level reads, writes, formatting, and formulas)
+- Creating or editing Google Docs — use \`google-docs\` tools (they support markdown conversion and section-level editing)
+- Anything that requires understanding the internal structure of a Workspace file
+
 ## Tips
 
-- **Drive vs Docs/Sheets**: Use Drive for file management (find, create, move, share). Use \`google-docs\` or \`google-sheets\` for editing content with rich formatting.
 - **Search broadly**: \`search_files\` searches both file names and content. It's the best starting point when looking for something.
 - **Read file handles PDFs**: \`read_file\` automatically extracts text from PDF files.
 - **Binary files are rejected**: \`read_file\` only works with text-based files, Google Workspace files, and PDFs. Use \`get_file\` for metadata of binary files.
@@ -794,6 +821,8 @@ You have full read/write access to Google Sheets through the \`google-sheets\` p
 - **\`sheets.format_cells\`** — Apply formatting to a range. Use \`format\` for uniform styling across all cells, or \`formats\` for per-cell control. Can also merge/unmerge cells.
 
 **\`sheets.write_range\`** and **\`sheets.append_rows\`** also accept optional \`format\` or \`formats\` parameters to write values and styling in a single call.
+
+**Important:** When using \`format_cells\` or \`write_range\` with formatting, the range must include explicit row numbers (e.g., \`"Sheet1!A1:D10"\`, not \`"Sheet1!A:D"\`). Column-only ranges work for value-only operations and \`append_rows\`, but formatting actions need exact cell boundaries.
 
 ## A1 Notation
 
@@ -883,7 +912,7 @@ sheets.write_range({
 \`\`\`
 sheets.create_spreadsheet({
   title: "Q1 2026 Budget",
-  sheetNames: ["Overview", "Monthly", "Categories"]
+  sheetTitles: ["Overview", "Monthly", "Categories"]
 })
 \`\`\`
 
@@ -926,7 +955,14 @@ When editing a spreadsheet that already has styling, always match the existing f
    })
    \`\`\`
 
-The \`read_formatting\` response returns normalized CellFormat objects that can be passed directly to write/append/format actions.
+**Working with \`read_formatting\` results:**
+
+The response has shape \`{ range, formats: CellFormat[][], merges: Merge[] }\`. The \`formats\` field is a 2D grid (rows × columns). To use it:
+
+- **Uniform style** (all columns same): pass \`result.data.formats[0][0]\` to the \`format\` parameter
+- **Per-column style** (different columns have different formatting): pass \`[result.data.formats[0]]\` to the \`formats\` parameter — note the wrapping array, since \`formats\` expects \`CellFormat[][]\`
+
+Do NOT pass the full response object to \`format\` or \`formats\` — you must index into the \`formats\` grid first.
 
 **Key rule:** When appending to a table, copy the format from the last data row — not the header or a section divider.
 

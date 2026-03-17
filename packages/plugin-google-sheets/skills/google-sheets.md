@@ -34,6 +34,8 @@ You have full read/write access to Google Sheets through the `google-sheets` plu
 
 **`sheets.write_range`** and **`sheets.append_rows`** also accept optional `format` or `formats` parameters to write values and styling in a single call.
 
+**Important:** When using `format_cells` or `write_range` with formatting, the range must include explicit row numbers (e.g., `"Sheet1!A1:D10"`, not `"Sheet1!A:D"`). Column-only ranges work for value-only operations and `append_rows`, but formatting actions need exact cell boundaries.
+
 ## A1 Notation
 
 All range parameters use A1 notation:
@@ -122,7 +124,7 @@ sheets.write_range({
 ```
 sheets.create_spreadsheet({
   title: "Q1 2026 Budget",
-  sheetNames: ["Overview", "Monthly", "Categories"]
+  sheetTitles: ["Overview", "Monthly", "Categories"]
 })
 ```
 
@@ -165,7 +167,14 @@ When editing a spreadsheet that already has styling, always match the existing f
    })
    ```
 
-The `read_formatting` response returns normalized CellFormat objects that can be passed directly to write/append/format actions.
+**Working with `read_formatting` results:**
+
+The response has shape `{ range, formats: CellFormat[][], merges: Merge[] }`. The `formats` field is a 2D grid (rows × columns). To use it:
+
+- **Uniform style** (all columns same): pass `result.data.formats[0][0]` to the `format` parameter
+- **Per-column style** (different columns have different formatting): pass `[result.data.formats[0]]` to the `formats` parameter — note the wrapping array, since `formats` expects `CellFormat[][]`
+
+Do NOT pass the full response object to `format` or `formats` — you must index into the `formats` grid first.
 
 **Key rule:** When appending to a table, copy the format from the last data row — not the header or a section divider.
 

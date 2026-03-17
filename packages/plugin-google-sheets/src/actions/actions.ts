@@ -53,7 +53,7 @@ const writeRange: ActionDefinition = {
     range: z.string().describe('A1 notation range (e.g. "Sheet1!A1:D3")'),
     values: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).describe('2D array of values (rows × columns)'),
     valueInputOption: z.enum(['RAW', 'USER_ENTERED']).optional()
-      .describe('How input should be interpreted (default: USER_ENTERED). Ignored when formatting is provided.'),
+      .describe('How input should be interpreted (default: USER_ENTERED). Ignored when format/formats is provided (strings starting with = are always treated as formulas in the formatting path).'),
     format: cellFormatSchema.optional().describe('Single format applied to all written cells'),
     formats: z.array(z.array(cellFormatSchema)).optional().describe('Per-cell formatting (must match values dimensions)'),
   }),
@@ -69,7 +69,7 @@ const appendRows: ActionDefinition = {
     range: z.string().describe('A1 notation range to search for data (e.g. "Sheet1!A:D")'),
     values: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).describe('2D array of rows to append'),
     valueInputOption: z.enum(['RAW', 'USER_ENTERED']).optional()
-      .describe('How input should be interpreted (default: USER_ENTERED). Ignored when formatting is provided.'),
+      .describe('How input should be interpreted (default: USER_ENTERED). Ignored when format/formats is provided (strings starting with = are always treated as formulas in the formatting path).'),
     format: cellFormatSchema.optional().describe('Single format applied to all appended cells'),
     formats: z.array(z.array(cellFormatSchema)).optional().describe('Per-cell formatting (must match values dimensions)'),
   }),
