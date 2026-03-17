@@ -134,3 +134,7 @@ export async function deleteOrgIntegrationByService(db: AppDb, service: string):
     and(eq(integrations.service, service), eq(integrations.scope, 'org')),
   );
 }
+
+export async function deleteIntegrationsByService(db: AppDb, service: string): Promise<void> {
+  await db.delete(integrations).where(eq(integrations.service, service));
+}

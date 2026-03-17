@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { ForbiddenError } from '@valet/shared';
+import { ForbiddenError, NotFoundError } from '@valet/shared';
 import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
+import { deleteCredentialsByProvider } from '../lib/db/credentials.js';
+import { getDb } from '../lib/drizzle.js';
 import { syncPluginsOnce } from '../services/plugin-sync.js';
 
 export const pluginsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -55,6 +57,18 @@ pluginsRouter.put('/:id', zValidator('json', z.object({
   if (user.role !== 'admin') throw new ForbiddenError('Admin only');
   const { id } = c.req.param();
   const { status } = c.req.valid('json');
+
+  const plugin = await db.getPlugin(c.env.DB, id);
+  if (!plugin) throw new NotFoundError('Plugin', id);
+
   await db.updatePluginStatus(c.get('db'), id, status);
+
+  // When disabling, delete all integration rows and credentials for this service
+  if (status === 'disabled') {
+    const drizzleDb = getDb(c.env.DB);
+    await db.deleteIntegrationsByService(drizzleDb, plugin.name);
+    await deleteCredentialsByProvider(drizzleDb, plugin.name);
+  }
+
   return c.json({ ok: true });
 });

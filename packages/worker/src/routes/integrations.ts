@@ -105,6 +105,7 @@ const configureIntegrationSchema = z.object({
  */
 integrationsRouter.get('/', async (c) => {
   const user = c.get('user');
+  const disabledPlugins = await getDisabledPluginServices(c.env.DB);
 
   // Get user's own integrations
   const userIntegrations = await db.getUserIntegrations(c.get('db'), user.id);
@@ -112,7 +113,7 @@ integrationsRouter.get('/', async (c) => {
   // Get org-scope integrations (visible to all members)
   const orgIntegrations = await db.getOrgIntegrations(c.get('db'));
 
-  // Don't expose sensitive data
+  // Don't expose sensitive data; filter out disabled plugins
   const sanitized = [
     ...userIntegrations.map((i) => ({
       id: i.id,
@@ -134,7 +135,7 @@ integrationsRouter.get('/', async (c) => {
       },
       createdAt: i.createdAt,
     })),
-  ];
+  ].filter((i) => !disabledPlugins.has(i.service));
 
   return c.json({ integrations: sanitized });
 });

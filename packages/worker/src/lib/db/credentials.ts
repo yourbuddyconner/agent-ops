@@ -89,6 +89,13 @@ export async function deleteCredential(
     .where(and(eq(credentials.ownerType, ownerType), eq(credentials.ownerId, ownerId), eq(credentials.provider, provider)));
 }
 
+export async function deleteCredentialsByProvider(
+  db: AppDb,
+  provider: string,
+): Promise<void> {
+  await db.delete(credentials).where(eq(credentials.provider, provider));
+}
+
 export async function listCredentialsByOwner(
   db: AppDb,
   ownerType: string,
