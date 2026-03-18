@@ -1040,7 +1040,10 @@ export interface AnalyticsEventsResponse {
     id: string;
     eventType: string;
     sessionId: string;
+    sessionTitle: string | null;
     userId: string | null;
+    userEmail: string | null;
+    userName: string | null;
     turnId: string | null;
     durationMs: number | null;
     channel: string | null;

@@ -529,7 +529,10 @@ export interface EventFeedRow {
   id: string;
   eventType: string;
   sessionId: string;
+  sessionTitle: string | null;
   userId: string | null;
+  userEmail: string | null;
+  userName: string | null;
   turnId: string | null;
   durationMs: number | null;
   createdAt: string;
@@ -555,27 +558,34 @@ export async function getEventFeed(
   const limit = options.limit ?? 50;
   const offset = options.offset ?? 0;
 
-  let whereClause = 'WHERE created_at >= ?';
+  let whereClause = 'WHERE ae.created_at >= ?';
   const binds: unknown[] = [periodStart];
 
   if (options.typePrefix) {
     const escaped = options.typePrefix.replace(/%/g, '\\%').replace(/_/g, '\\_');
-    whereClause += " AND event_type LIKE ? ESCAPE '\\'";
+    whereClause += " AND ae.event_type LIKE ? ESCAPE '\\'";
     binds.push(`${escaped}%`);
   }
 
+  // Count query uses plain table (no alias)
+  const countWhere = whereClause.replace(/ae\./g, '');
   const countRow = await db
-    .prepare(`SELECT COUNT(*) as cnt FROM analytics_events ${whereClause}`)
+    .prepare(`SELECT COUNT(*) as cnt FROM analytics_events ${countWhere}`)
     .bind(...binds)
     .first<{ cnt: number }>();
 
   const result = await db
     .prepare(`
-      SELECT id, event_type, session_id, user_id, turn_id, duration_ms, created_at,
-             channel, model, tool_name, error_code, summary, properties
-      FROM analytics_events
+      SELECT ae.id, ae.event_type, ae.session_id, ae.user_id, ae.turn_id,
+             ae.duration_ms, ae.created_at, ae.channel, ae.model,
+             ae.tool_name, ae.error_code, ae.summary, ae.properties,
+             s.title as session_title,
+             u.email as user_email, u.name as user_name
+      FROM analytics_events ae
+      LEFT JOIN sessions s ON s.id = ae.session_id
+      LEFT JOIN users u ON u.id = ae.user_id
       ${whereClause}
-      ORDER BY created_at DESC
+      ORDER BY ae.created_at DESC
       LIMIT ? OFFSET ?
     `)
     .bind(...binds, limit, offset)
@@ -585,7 +595,10 @@ export async function getEventFeed(
     id: String(r.id),
     eventType: String(r.event_type),
     sessionId: String(r.session_id),
+    sessionTitle: r.session_title != null ? String(r.session_title) : null,
     userId: r.user_id != null ? String(r.user_id) : null,
+    userEmail: r.user_email != null ? String(r.user_email) : null,
+    userName: r.user_name != null ? String(r.user_name) : null,
     turnId: r.turn_id != null ? String(r.turn_id) : null,
     durationMs: r.duration_ms != null ? Number(r.duration_ms) : null,
     createdAt: String(r.created_at),
