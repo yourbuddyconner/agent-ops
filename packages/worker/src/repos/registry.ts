@@ -22,6 +22,17 @@ class RepoProviderRegistry {
     return undefined;
   }
 
+  /** Return ALL providers whose URL patterns match. */
+  resolveAllByUrl(repoUrl: string): RepoProvider[] {
+    const matches: RepoProvider[] = [];
+    for (const provider of this.providers.values()) {
+      if (provider.urlPatterns.some((p) => p.test(repoUrl))) {
+        matches.push(provider);
+      }
+    }
+    return matches;
+  }
+
   list(): RepoProvider[] {
     return Array.from(this.providers.values());
   }
