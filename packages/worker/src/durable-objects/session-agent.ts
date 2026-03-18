@@ -8958,13 +8958,12 @@ export class SessionAgentDO {
         }
 
         for (const action of actions) {
-          // If query provided, filter by case-insensitive substring match on name/description/service
+          // If query provided, filter by case-insensitive word match — every word in the
+          // query must appear in at least one of name, description, or service.
           if (query) {
-            const lowerQuery = query.toLowerCase();
-            const matchesName = action.name.toLowerCase().includes(lowerQuery);
-            const matchesDesc = action.description.toLowerCase().includes(lowerQuery);
-            const matchesService = integration.service.toLowerCase().includes(lowerQuery);
-            if (!matchesName && !matchesDesc && !matchesService) continue;
+            const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+            const haystack = `${action.name} ${action.description} ${integration.service}`.toLowerCase();
+            if (!words.every((w) => haystack.includes(w))) continue;
           }
 
           const compositeId = `${integration.service}:${action.id}`;
