@@ -7037,6 +7037,7 @@ export class SessionAgentDO {
     // (e.g., slack:C123:thread_ts), not the normalized thread routing key.
     const queueChannelType = (prompt.channel_type as string) || undefined;
     const queueChannelId = (prompt.channel_id as string) || undefined;
+    const queueThreadId = (prompt.thread_id as string) || undefined;
     // Only use reply_channel columns if they exist — do NOT fall back to the
     // normalized channel_type ('thread') which always fails requiresExplicitChannelReply.
     const queueReplyChannelType = (prompt.reply_channel_type as string) || undefined;
@@ -7046,6 +7047,15 @@ export class SessionAgentDO {
 
       // Record a follow-up reminder so the agent gets nudged if it doesn't send a substantive reply
       this.insertChannelFollowup(queueReplyChannelType, queueReplyChannelId, prompt.content as string);
+    } else if (queueThreadId) {
+      // Web UI steering of a thread — recover origin channel (same as direct dispatch path)
+      const origin = await getThreadOriginChannel(this.env.DB, queueThreadId);
+      if (origin && this.requiresExplicitChannelReply(origin.channelType)) {
+        this.pendingChannelReply = { channelType: origin.channelType, channelId: origin.channelId, resultContent: null, resultMessageId: null, handled: false };
+        this.insertChannelFollowup(origin.channelType, origin.channelId, prompt.content as string);
+      } else {
+        this.pendingChannelReply = null;
+      }
     } else {
       this.pendingChannelReply = null;
     }
@@ -7056,7 +7066,6 @@ export class SessionAgentDO {
     const queueModelPrefs = await this.resolveModelPreferences(queueOwnerDetails);
     const queueChannelKey = this.channelKeyFrom(queueChannelType, queueChannelId);
     const queueOcSessionId = this.getChannelOcSessionId(queueChannelKey);
-    const queueThreadId = (prompt.thread_id as string) || undefined;
     const queueContinuationContext = (prompt.continuation_context as string) || undefined;
     const queueContextPrefix = (prompt.context_prefix as string) || undefined;
 
