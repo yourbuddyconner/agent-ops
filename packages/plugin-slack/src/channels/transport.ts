@@ -305,6 +305,15 @@ export class SlackTransport implements ChannelTransport {
       body.icon_url = message.platformOptions.icon_url;
     }
 
+    // Add user attribution context block for non-DM channels
+    const attribution = message.platformOptions?.attribution as { slackUserId: string } | undefined;
+    if (attribution?.slackUserId && !target.channelId.startsWith('D')) {
+      body.blocks = [
+        { type: 'section', text: { type: 'mrkdwn', text: formatted } },
+        { type: 'context', elements: [{ type: 'mrkdwn', text: `↳ <@${attribution.slackUserId}>` }] },
+      ];
+    }
+
     const result = await slackApiCall('chat.postMessage', body, ctx.token);
 
     if (!result.ok) {
@@ -555,6 +564,14 @@ export class SlackTransport implements ChannelTransport {
         value: buttonValue,
       })),
     });
+
+    // Hint: users can reply in the thread instead of clicking a button
+    if (prompt.type === 'question') {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: '_Or reply to this thread with your own answer._' }],
+      });
+    }
 
     const body: Record<string, unknown> = {
       channel: target.channelId,

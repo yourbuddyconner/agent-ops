@@ -1,7 +1,7 @@
 import type { Env } from '../env.js';
 import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, readMemoryFile, listMemoryFiles, writeMemoryFile, patchMemoryFile, deleteMemoryFile, deleteMemoryFilesUnderPath, searchMemoryFiles, boostMemoryFileRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentity, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getUserIdentityLinks, getThreadOriginChannel } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, readMemoryFile, listMemoryFiles, writeMemoryFile, patchMemoryFile, deleteMemoryFile, deleteMemoryFilesUnderPath, searchMemoryFiles, boostMemoryFileRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentity, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getUserIdentityLinks, getUserSlackIdentityLink, getThreadOriginChannel } from '../lib/db.js';
 import { getCredential, type CredentialResult } from '../services/credentials.js';
 import { getSlackBotToken } from '../services/slack.js';
 import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
@@ -1768,6 +1768,51 @@ export class SessionAgentDO {
     }
   }
 
+  /**
+   * Check if an inbound channel message should resolve a pending question
+   * instead of being treated as a new prompt. Matches pending questions by
+   * channel origin so only replies in the same channel/thread resolve the
+   * question. Returns true if a question was resolved (caller should return
+   * early and NOT process the message as a regular prompt).
+   */
+  private async tryResolveChannelQuestion(
+    content: string,
+    author: { id: string; email: string; name?: string; avatarUrl?: string; gitName?: string; gitEmail?: string } | undefined,
+    channelType: string | undefined,
+    channelId: string | undefined,
+  ): Promise<boolean> {
+    const sessionOwnerId = this.getStateValue('userId');
+    if (!channelType || channelType === 'web' || !author?.id || author.id !== sessionOwnerId) {
+      return false;
+    }
+
+    const pendingQuestions = this.ctx.storage.sql
+      .exec("SELECT id, context FROM interactive_prompts WHERE type = 'question' AND status = 'pending'")
+      .toArray();
+
+    const matchingPrompt = pendingQuestions.find((row) => {
+      let context: Record<string, unknown> | null = null;
+      if (typeof row.context === 'string' && row.context) {
+        try {
+          context = JSON.parse(row.context as string) as Record<string, unknown>;
+        } catch {
+          context = null;
+        }
+      }
+      const originTarget = this.getPromptOriginTarget(context);
+      return this.sameChannelTarget(originTarget, { channelType, channelId });
+    });
+
+    if (!matchingPrompt) return false;
+
+    const promptId = matchingPrompt.id as string;
+    await this.handlePromptResolved(promptId, {
+      value: content || '',
+      resolvedBy: author.id,
+    });
+    return true;
+  }
+
   private async handlePrompt(
     content: string,
     model?: string,
@@ -1779,37 +1824,11 @@ export class SessionAgentDO {
     continuationContext?: string,
     contextPrefix?: string,
   ) {
-    // ─── Thread-reply capture for free-text questions ──────────────────
-    // If there's a pending question with no actions (free-text) and this message
-    // came from a channel (not web UI) by the session owner, treat it as the answer.
-    const sessionOwnerId = this.getStateValue('userId');
-    if (channelType && channelType !== 'web' && author?.id && author.id === sessionOwnerId) {
-      const freeTextPrompts = this.ctx.storage.sql
-        .exec("SELECT id, context FROM interactive_prompts WHERE type = 'question' AND status = 'pending' AND (actions IS NULL OR actions = '[]')")
-        .toArray();
-
-      const matchingPrompt = freeTextPrompts.find((row) => {
-        let context: Record<string, unknown> | null = null;
-        if (typeof row.context === 'string' && row.context) {
-          try {
-            context = JSON.parse(row.context as string) as Record<string, unknown>;
-          } catch {
-            context = null;
-          }
-        }
-        const originTarget = this.getPromptOriginTarget(context);
-        return this.sameChannelTarget(originTarget, { channelType, channelId });
-      });
-
-      if (matchingPrompt) {
-        const promptId = matchingPrompt.id as string;
-        const answerText = content || '';
-        await this.handlePromptResolved(promptId, {
-          value: answerText,
-          resolvedBy: author.id,
-        });
-        return;
-      }
+    // ─── Thread-reply capture for pending questions ─────────────────────
+    // If there's a pending question and this message came from a channel
+    // (not web UI) by the session owner, treat it as the answer.
+    if (await this.tryResolveChannelQuestion(content, author, channelType, channelId)) {
+      return;
     }
 
     // Preserve original channel info for reply tracking (e.g., slack:C123:thread_ts)
@@ -2081,6 +2100,14 @@ export class SessionAgentDO {
     threadId?: string,
     contextPrefix?: string,
   ) {
+    // ─── Pending question check (before abort) ─────────────────────────
+    // If the agent is waiting on a question and the user replies in the same
+    // channel, resolve the question instead of aborting. Without this, the
+    // abort kills the OpenCode session before the answer can reach it.
+    if (await this.tryResolveChannelQuestion(content, author, channelType, channelId)) {
+      return;
+    }
+
     // Normalize threadId to channel routing for abort targeting
     const abortChannelType = threadId ? 'thread' : channelType;
     const abortChannelId = threadId ? threadId : channelId;
@@ -2107,6 +2134,14 @@ export class SessionAgentDO {
     threadId?: string,
     contextPrefix?: string,
   ) {
+    // ─── Pending question check (before buffering) ─────────────────────
+    // If the agent is waiting on a question and the user replies in the same
+    // channel, resolve the question instead of buffering. Without this, the
+    // reply gets collected and the question times out after 5 minutes.
+    if (await this.tryResolveChannelQuestion(content, author, channelType, channelId)) {
+      return;
+    }
+
     // Update idle tracking
     this.setStateValue('lastUserActivityAt', String(Date.now()));
     this.rescheduleIdleAlarm();
@@ -9848,21 +9883,30 @@ export class SessionAgentDO {
 
   /**
    * Look up orchestrator persona identity for Slack message customization.
-   * Returns platformOptions with username/icon_url, or empty object on failure.
+   * Requires the user to have linked their Slack account — throws if not linked.
+   * Returns platformOptions with username/icon_url and attribution slackUserId.
    */
   private async getSlackPersonaOptions(userId: string): Promise<Record<string, unknown>> {
+    const slackLink = await getUserSlackIdentityLink(this.appDb, userId);
+    if (!slackLink) {
+      throw new Error(`User ${userId} has not linked their Slack account — orchestrator cannot post to Slack without a linked identity`);
+    }
+
+    const opts: Record<string, unknown> = {
+      attribution: { slackUserId: slackLink.externalId },
+    };
+
     try {
       const identity = await getOrchestratorIdentity(this.appDb, userId);
       if (identity) {
-        return {
-          ...(identity.name ? { username: identity.name } : {}),
-          ...(identity.avatar ? { icon_url: identity.avatar } : {}),
-        };
+        if (identity.name) opts.username = identity.name;
+        if (identity.avatar) opts.icon_url = identity.avatar;
       }
     } catch (err) {
       console.warn('[SessionAgentDO] Failed to resolve Slack persona identity:', err);
     }
-    return {};
+
+    return opts;
   }
 
   // ─── Channel Follow-up Helpers ─────────────────────────────────────

@@ -89,6 +89,18 @@ export async function resolveUserByExternalId(
   return row?.userId || null;
 }
 
+export async function getUserSlackIdentityLink(
+  db: AppDb,
+  userId: string,
+): Promise<UserIdentityLink | null> {
+  const row = await db
+    .select()
+    .from(userIdentityLinks)
+    .where(and(eq(userIdentityLinks.userId, userId), eq(userIdentityLinks.provider, 'slack')))
+    .get();
+  return row ? rowToIdentityLink(row) : null;
+}
+
 // Channel Bindings
 
 export async function createChannelBinding(
