@@ -232,6 +232,17 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (event, env, ctx) 
     } catch (error) {
       console.error('Journal prune error:', error);
     }
+
+    // Delete analytics events older than 90 days
+    try {
+      const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+      const result = await env.DB.prepare('DELETE FROM analytics_events WHERE created_at < ?').bind(cutoff).run();
+      if (result.meta.changes > 0) {
+        console.log(`Analytics retention: deleted ${result.meta.changes} events older than 90 days`);
+      }
+    } catch (error) {
+      console.error('Analytics retention error:', error);
+    }
   }
 
   // Auto-restart dead orchestrators (runs every tick, only acts on sessions dead >2 min)

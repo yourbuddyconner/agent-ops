@@ -914,33 +914,6 @@ export interface ProviderModelEntry { id: string; name: string }
 export interface ProviderModels { provider: string; models: ProviderModelEntry[] }
 export type AvailableModels = ProviderModels[];
 
-// Audit log types
-export type AuditLogEventType =
-  | 'session.started'
-  | 'session.terminated'
-  | 'session.hibernated'
-  | 'session.restored'
-  | 'user.prompt'
-  | 'user.abort'
-  | 'user.answer'
-  | 'user.joined'
-  | 'user.left'
-  | 'agent.tool_call'
-  | 'agent.tool_completed'
-  | 'agent.error'
-  | 'agent.turn_complete'
-  | 'git.pr_created';
-
-export interface AuditLogEntry {
-  id: string;
-  sessionId: string;
-  eventType: AuditLogEventType;
-  summary: string;
-  actorId?: string;
-  metadata?: Record<string, unknown>;
-  createdAt: string;
-}
-
 // ─── Action Policy Types ────────────────────────────────────────────────────
 
 export type ActionMode = 'allow' | 'require_approval' | 'deny';

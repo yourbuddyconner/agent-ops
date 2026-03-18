@@ -12,7 +12,6 @@ import type {
   SessionParticipantRole,
   SessionParticipantSummary,
   SessionShareLink,
-  AuditLogEntry,
   SessionPurpose,
 } from '@valet/shared';
 import { eq, and, or, ne, lt, gt, desc, asc, sql, inArray, isNull, isNotNull, not } from 'drizzle-orm';
@@ -24,7 +23,6 @@ import {
   sessionFilesChanged,
   sessionParticipants,
   sessionShareLinks,
-  sessionAuditLog,
   messages,
 } from '../schema/index.js';
 import { users } from '../schema/users.js';
@@ -959,41 +957,6 @@ export async function bulkDeleteSessionMessages(
   await db
     .delete(messages)
     .where(inArray(messages.sessionId, sessionIds));
-}
-
-export async function getSessionAuditLog(
-  db: AppDb,
-  sessionId: string,
-  options: { limit?: number; after?: string; eventType?: string } = {}
-): Promise<AuditLogEntry[]> {
-  const queryLimit = options.limit || 200;
-
-  const conditions = [eq(sessionAuditLog.sessionId, sessionId)];
-
-  if (options.after) {
-    conditions.push(gt(sessionAuditLog.createdAt, options.after));
-  }
-
-  if (options.eventType) {
-    conditions.push(eq(sessionAuditLog.eventType, options.eventType));
-  }
-
-  const rows = await db
-    .select()
-    .from(sessionAuditLog)
-    .where(and(...conditions))
-    .orderBy(asc(sessionAuditLog.createdAt))
-    .limit(queryLimit);
-
-  return rows.map((row) => ({
-    id: row.id,
-    sessionId: row.sessionId,
-    eventType: row.eventType as AuditLogEntry['eventType'],
-    summary: row.summary,
-    actorId: row.actorId || undefined,
-    metadata: row.metadata || undefined,
-    createdAt: row.createdAt,
-  }));
 }
 
 // ─── Cron Archive Helpers ────────────────────────────────────────────────────
