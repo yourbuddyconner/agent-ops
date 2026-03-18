@@ -925,40 +925,6 @@ export async function assertSessionAccess(
   throw new NotFoundError('Session', sessionId);
 }
 
-// ─── Session Audit Log ──────────────────────────────────────────────────────
-
-export async function batchInsertAuditLog(
-  db: D1Database,
-  sessionId: string,
-  entries: Array<{
-    localId: number;
-    eventType: string;
-    summary: string;
-    actorId: string | null;
-    metadata: string | null;
-    createdAt: string;
-  }>,
-): Promise<void> {
-  if (entries.length === 0) return;
-
-  // INSERT OR IGNORE — keep as raw d1.batch() per migration rules
-  const stmts = entries.map((entry) =>
-    db.prepare(
-      'INSERT OR IGNORE INTO session_audit_log (id, session_id, event_type, summary, actor_id, metadata, created_at, flushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))'
-    ).bind(
-      `${sessionId}:${entry.localId}`,
-      sessionId,
-      entry.eventType,
-      entry.summary,
-      entry.actorId,
-      entry.metadata,
-      entry.createdAt,
-    )
-  );
-
-  await db.batch(stmts);
-}
-
 // ─── Bulk Operations ─────────────────────────────────────────────────────
 
 export async function filterOwnedSessionIds(

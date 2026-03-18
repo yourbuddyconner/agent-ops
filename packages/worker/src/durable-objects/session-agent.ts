@@ -1,7 +1,7 @@
 import type { Env } from '../env.js';
 import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, readMemoryFile, listMemoryFiles, writeMemoryFile, patchMemoryFile, deleteMemoryFile, deleteMemoryFilesUnderPath, searchMemoryFiles, boostMemoryFileRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentity, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAuditLog, batchUpsertMessages, updateUserDiscoveredModels, batchInsertUsageEvents, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getUserIdentityLinks } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, readMemoryFile, listMemoryFiles, writeMemoryFile, patchMemoryFile, deleteMemoryFile, deleteMemoryFilesUnderPath, searchMemoryFiles, boostMemoryFileRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentity, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getUserIdentityLinks } from '../lib/db.js';
 import { getCredential, type CredentialResult } from '../services/credentials.js';
 import { getSlackBotToken } from '../services/slack.js';
 import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
@@ -538,13 +538,22 @@ const SCHEMA_SQL = `
     connected_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
 
-  CREATE TABLE IF NOT EXISTS audit_log (
+  CREATE TABLE IF NOT EXISTS analytics_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_type TEXT NOT NULL,
-    summary TEXT NOT NULL,
+    turn_id TEXT,
+    duration_ms INTEGER,
+    channel TEXT,
+    model TEXT,
+    queue_mode TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    tool_name TEXT,
+    error_code TEXT,
+    summary TEXT,
     actor_id TEXT,
-    metadata TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    properties TEXT,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     flushed INTEGER NOT NULL DEFAULT 0
   );
 
@@ -565,16 +574,6 @@ const SCHEMA_SQL = `
     opencode_session_id TEXT
   );
 
-  CREATE TABLE IF NOT EXISTS usage_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    turn_id TEXT NOT NULL,
-    oc_message_id TEXT NOT NULL UNIQUE,
-    model TEXT NOT NULL,
-    input_tokens INTEGER NOT NULL DEFAULT 0,
-    output_tokens INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-    flushed INTEGER NOT NULL DEFAULT 0
-  );
 `;
 
 // ─── SessionAgentDO ────────────────────────────────────────────────────────
@@ -1030,7 +1029,7 @@ export class SessionAgentDO {
 
     // Load audit log for late joiners
     const auditLogRows = this.ctx.storage.sql
-      .exec('SELECT event_type, summary, actor_id, metadata, created_at FROM audit_log ORDER BY id ASC')
+      .exec("SELECT event_type, summary, actor_id, properties as metadata, created_at FROM analytics_events WHERE summary IS NOT NULL ORDER BY id ASC")
       .toArray();
 
     // Build init payload — messages included for clients that haven't loaded from D1 yet
@@ -1138,7 +1137,7 @@ export class SessionAgentDO {
       connectedUsers,
     });
 
-    this.appendAuditLog('user.joined', `${userDetails?.name || userDetails?.email || userId} joined`, userId);
+    this.emitAuditEvent('user.joined', `${userDetails?.name || userDetails?.email || userId} joined`, userId);
 
     // Notify EventBus
     this.notifyEventBus({
@@ -1286,7 +1285,7 @@ export class SessionAgentDO {
             connectedUsers,
           });
 
-          this.appendAuditLog('user.left', `${departingUserDetails?.name || departingUserDetails?.email || userId} left`, userId);
+          this.emitAuditEvent('user.left', `${departingUserDetails?.name || departingUserDetails?.email || userId} left`, userId);
 
           // Clean up user details cache if no longer connected
           this.userDetailsCache.delete(userId);
@@ -1368,7 +1367,7 @@ export class SessionAgentDO {
             type: 'status',
             data: { runnerBusy: false, watchdogRecovery: true },
           });
-          this.appendAuditLog('watchdog.recovery', `Reverted stuck processing prompt after ${Math.round((now - lastDispatch) / 1000)}s`);
+          this.emitAuditEvent('watchdog.recovery', `Reverted stuck processing prompt after ${Math.round((now - lastDispatch) / 1000)}s`);
         }
       }
     }
@@ -1395,7 +1394,7 @@ export class SessionAgentDO {
             type: 'status',
             data: { runnerBusy: this.getStateValue('runnerBusy') === 'true', watchdogRecovery: true },
           });
-          this.appendAuditLog('watchdog.queue_recovery', `Recovered ${queuedCount} stuck queued items (0 processing)`);
+          this.emitAuditEvent('watchdog.queue_recovery', `Recovered ${queuedCount} stuck queued items (0 processing)`);
         }
       }
     }
@@ -1411,7 +1410,7 @@ export class SessionAgentDO {
           this.setStateValue('errorSafetyNetAt', '');
           await this.flushPendingChannelReply();
           await this.handlePromptComplete();
-          this.appendAuditLog('error.safety_net', 'Forced prompt complete after error safety-net timeout');
+          this.emitAuditEvent('error.safety_net', 'Forced prompt complete after error safety-net timeout');
         } else {
           this.setStateValue('errorSafetyNetAt', '');
         }
@@ -1475,7 +1474,7 @@ export class SessionAgentDO {
           console.warn(`[SessionAgentDO] Approval prompt ${epId} expired with no request_id — runner may be stuck`);
         }
 
-        this.appendAuditLog('agent.tool_call', `Action ${toolId} approval expired`, undefined, { invocationId: epId });
+        this.emitAuditEvent('agent.tool_call', `Action ${toolId} approval expired`, undefined, { invocationId: epId });
       } else if (epType === 'question') {
         this.sendToRunner({
           type: 'answer',
@@ -1483,7 +1482,7 @@ export class SessionAgentDO {
           answer: '__expired__',
         });
 
-        this.appendAuditLog('agent.question', `Question ${epId} expired`, undefined, { questionId: epId });
+        this.emitAuditEvent('agent.question', `Question ${epId} expired`, undefined, { questionId: epId });
       }
 
       // Broadcast expiry to clients
@@ -1546,7 +1545,7 @@ export class SessionAgentDO {
           "UPDATE channel_followups SET status = 'resolved' WHERE id = ?",
           fu.id as string
         );
-        this.appendAuditLog(
+        this.emitAuditEvent(
           'channel.followup_resolved',
           `Stopped follow-up reminders for ${channelType}:${channelId} after ${MAX_CHANNEL_FOLLOWUP_REMINDERS} attempts`
         );
@@ -1881,7 +1880,7 @@ export class SessionAgentDO {
       },
     });
 
-    this.appendAuditLog(
+    this.emitAuditEvent(
       'user.prompt',
       content
         ? content.slice(0, 120)
@@ -1914,7 +1913,7 @@ export class SessionAgentDO {
         channelType || null, channelId || null, channelKey, threadId || null, continuationContext || null,
         contextPrefix || null, replyChannelType || null, replyChannelId || null
       );
-      this.appendAuditLog(
+      this.emitAuditEvent(
         'prompt.queued',
         `Queued: ${reason} (status=${status || 'unknown'}, sandbox=${sandboxId ? 'yes' : 'no'}, queued=${this.getQueueLength()})`,
         author?.id
@@ -1936,7 +1935,7 @@ export class SessionAgentDO {
         channelType || null, channelId || null, channelKey, threadId || null, continuationContext || null,
         contextPrefix || null, replyChannelType || null, replyChannelId || null
       );
-      this.appendAuditLog(
+      this.emitAuditEvent(
         'prompt.queued',
         `Queued: runner busy (status=${status || 'unknown'}, sandbox=${sandboxId ? 'yes' : 'no'}, queued=${this.getQueueLength()})`,
         author?.id
@@ -2015,7 +2014,7 @@ export class SessionAgentDO {
       this.ctx.storage.sql.exec("UPDATE prompt_queue SET status = 'queued' WHERE id = ?", messageId);
       this.setStateValue('runnerBusy', 'false');
       this.pendingChannelReply = null;
-      this.appendAuditLog('prompt.dispatch_failed', `Dispatch failed, reverted to queue: ${messageId}`);
+      this.emitAuditEvent('prompt.dispatch_failed', `Dispatch failed, reverted to queue: ${messageId}`);
     }
   }
 
@@ -2047,7 +2046,7 @@ export class SessionAgentDO {
       status: 'idle',
     });
 
-    this.appendAuditLog('user.abort', `User aborted agent${channelType ? ` (channel: ${channelType}:${channelId})` : ''}`);
+    this.emitAuditEvent('user.abort', `User aborted agent${channelType ? ` (channel: ${channelType}:${channelId})` : ''}`);
   }
 
   private async handleInterruptPrompt(
@@ -2318,18 +2317,13 @@ export class SessionAgentDO {
         const entries = msg.entries;
         if (Array.isArray(entries)) {
           for (const entry of entries) {
-            try {
-              this.ctx.storage.sql.exec(
-                'INSERT OR IGNORE INTO usage_events (turn_id, oc_message_id, model, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?)',
-                msg.turnId ?? '',
-                entry.ocMessageId ?? '',
-                entry.model ?? 'unknown',
-                entry.inputTokens ?? 0,
-                entry.outputTokens ?? 0,
-              );
-            } catch (err) {
-              console.error('[SessionAgentDO] Failed to insert usage event:', err);
-            }
+            this.emitEvent('llm_call', {
+              turnId: msg.turnId,
+              model: entry.model ?? 'unknown',
+              inputTokens: entry.inputTokens ?? 0,
+              outputTokens: entry.outputTokens ?? 0,
+              properties: { oc_message_id: entry.ocMessageId },
+            });
           }
         }
         break;
@@ -2541,7 +2535,7 @@ export class SessionAgentDO {
           error: msg.error || msg.content,
           ...(errCh ? { channelType: errCh.channelType, channelId: errCh.channelId } : {}),
         });
-        this.appendAuditLog('agent.error', errorText.slice(0, 120));
+        this.emitAuditEvent('agent.error', errorText.slice(0, 120));
 
         // Safety-net: if runner doesn't send 'complete' within 60s, force flush
         const ERROR_SAFETY_NET_MS = 60_000;
@@ -2928,7 +2922,7 @@ export class SessionAgentDO {
           toModel: msg.toModel,
           reason: msg.reason,
         });
-        this.appendAuditLog('agent.error', switchText.slice(0, 120));
+        this.emitAuditEvent('agent.error', switchText.slice(0, 120));
         break;
       }
 
@@ -3035,7 +3029,7 @@ export class SessionAgentDO {
             state: msg.status || 'open',
           },
         } as any);
-        this.appendAuditLog('git.pr_created', `PR #${msg.number}: ${msg.title || ''}`, undefined, { prNumber: msg.number, prUrl: msg.url });
+        this.emitAuditEvent('git.pr_created', `PR #${msg.number}: ${msg.title || ''}`, undefined, { prNumber: msg.number, prUrl: msg.url });
         break;
       }
 
@@ -3205,11 +3199,11 @@ export class SessionAgentDO {
       case 'opencode-config-applied': {
         if (msg.error) {
           console.error(`[SessionAgentDO] OpenCode config apply failed: ${msg.error}`);
-          this.appendAuditLog('opencode.config_error', `Config apply failed: ${msg.error}`);
+          this.emitAuditEvent('opencode.config_error', `Config apply failed: ${msg.error}`);
         } else {
           console.log(`[SessionAgentDO] OpenCode config applied (restarted=${msg.restarted ?? false})`);
           if (msg.restarted) {
-            this.appendAuditLog('opencode.config_applied', 'OpenCode restarted with new config');
+            this.emitAuditEvent('opencode.config_applied', 'OpenCode restarted with new config');
           }
         }
         break;
@@ -6235,7 +6229,7 @@ export class SessionAgentDO {
   private async handlePromptComplete() {
     this.setStateValue('lastPromptDispatchedAt', '');
     this.setStateValue('errorSafetyNetAt', '');
-    this.appendAuditLog('agent.turn_complete', 'Agent turn completed');
+    this.emitAuditEvent('agent.turn_complete', 'Agent turn completed');
 
     // Mark any processing prompt_queue entries as completed
     const processingCount = this.ctx.storage.sql
@@ -6305,7 +6299,7 @@ export class SessionAgentDO {
     // This is important for well-known DOs (orchestrators) that get reused.
     this.ctx.storage.sql.exec('DELETE FROM messages');
     this.ctx.storage.sql.exec('DELETE FROM prompt_queue');
-    this.ctx.storage.sql.exec('DELETE FROM audit_log');
+    this.ctx.storage.sql.exec('DELETE FROM analytics_events');
     this.ctx.storage.sql.exec('DELETE FROM channel_followups');
 
     // Store session state in durable SQLite
@@ -6406,7 +6400,7 @@ export class SessionAgentDO {
       timestamp: new Date().toISOString(),
     });
 
-    this.appendAuditLog('session.started', `Session started for ${body.workspace}`, body.userId);
+    this.emitAuditEvent('session.started', `Session started for ${body.workspace}`, body.userId);
     // Skip lifecycle notifications for orchestrator sessions — they restart
     // frequently and the noise isn't useful since the user explicitly triggers refreshes.
     if (!body.sessionId?.startsWith('orchestrator:')) {
@@ -6616,7 +6610,7 @@ export class SessionAgentDO {
       data: { status: 'terminated', sandboxRunning: false },
     });
 
-    this.appendAuditLog('session.terminated', 'Session terminated');
+    this.emitAuditEvent('session.terminated', 'Session terminated');
 
     // Publish session.completed to EventBus
     this.notifyEventBus({
@@ -6842,7 +6836,7 @@ export class SessionAgentDO {
             this.ctx.storage.sql.exec("UPDATE prompt_queue SET status = 'queued' WHERE id = ?", messageId);
             this.setStateValue('runnerBusy', 'false');
             this.setStateValue('lastPromptDispatchedAt', '');
-            this.appendAuditLog('prompt.dispatch_failed', `System prompt dispatch failed, reverted: ${messageId.slice(0, 8)}`);
+            this.emitAuditEvent('prompt.dispatch_failed', `System prompt dispatch failed, reverted: ${messageId.slice(0, 8)}`);
           }
           this.rescheduleIdleAlarm();
         } else {
@@ -6886,7 +6880,7 @@ export class SessionAgentDO {
         executionId,
         JSON.stringify(payload),
       );
-      this.appendAuditLog(
+      this.emitAuditEvent(
         'workflow.dispatch_queued',
         `Workflow execution queued (${executionId.slice(0, 8)}): ${reason}`,
         undefined,
@@ -6934,7 +6928,7 @@ export class SessionAgentDO {
       return queueWorkflowDispatch('runner_send_failed');
     }
 
-    this.appendAuditLog(
+    this.emitAuditEvent(
       'workflow.dispatch',
       `Workflow execution dispatched (${executionId.slice(0, 8)})`,
       undefined,
@@ -6997,14 +6991,14 @@ export class SessionAgentDO {
       if (!wfDispatched) {
         this.ctx.storage.sql.exec("UPDATE prompt_queue SET status = 'queued' WHERE id = ?", prompt.id as string);
         this.setStateValue('runnerBusy', 'false');
-        this.appendAuditLog('workflow.dispatch_failed', `Workflow dispatch failed, reverted to queue: ${queuedExecutionId.slice(0, 8)}`);
+        this.emitAuditEvent('workflow.dispatch_failed', `Workflow dispatch failed, reverted to queue: ${queuedExecutionId.slice(0, 8)}`);
         return false;
       }
       this.broadcastToClients({
         type: 'status',
         data: { promptDequeued: true, remaining: this.getQueueLength() },
       });
-      this.appendAuditLog(
+      this.emitAuditEvent(
         'workflow.dispatch',
         `Workflow execution dispatched (${queuedExecutionId.slice(0, 8)})`,
         undefined,
@@ -7079,7 +7073,7 @@ export class SessionAgentDO {
     if (!queueDispatched) {
       this.ctx.storage.sql.exec("UPDATE prompt_queue SET status = 'queued' WHERE id = ?", prompt.id as string);
       this.pendingChannelReply = null;
-      this.appendAuditLog('prompt.dispatch_failed', `Queue dispatch failed, reverted: ${(prompt.id as string).slice(0, 8)}`);
+      this.emitAuditEvent('prompt.dispatch_failed', `Queue dispatch failed, reverted: ${(prompt.id as string).slice(0, 8)}`);
       return false;
     }
     this.setStateValue('runnerBusy', 'true');
@@ -7672,7 +7666,7 @@ export class SessionAgentDO {
         );
       }
 
-      this.appendAuditLog('session.hibernated', 'Session hibernated');
+      this.emitAuditEvent('session.hibernated', 'Session hibernated');
       console.log(`[SessionAgentDO] Session ${sessionId} hibernated, snapshot: ${result.snapshotImageId}`);
 
       // Revert any in-flight prompts (don't rely on webSocketClose timing)
@@ -7801,7 +7795,7 @@ export class SessionAgentDO {
         },
       });
 
-      this.appendAuditLog('session.restored', 'Session restored from hibernation');
+      this.emitAuditEvent('session.restored', 'Session restored from hibernation');
       console.log(`[SessionAgentDO] Session ${sessionId} restored, new sandbox: ${result.sandboxId}`);
     } catch (err) {
       console.error(`[SessionAgentDO] Failed to restore session ${sessionId}:`, err);
@@ -8255,89 +8249,120 @@ export class SessionAgentDO {
 
       await updateSessionMetrics(this.appDb, sessionId, { messageCount, toolCallCount });
 
-      // Also flush active seconds if currently running
+      // Flush active seconds if currently running
       const status = this.getStateValue('status');
       if (status === 'running') {
         await this.flushActiveSeconds();
       }
 
-      // Flush unflushed audit log entries to D1
+      // Flush unflushed analytics events to D1 (single path replacing audit_log + usage_events)
       const unflushed = this.ctx.storage.sql
-        .exec('SELECT id, event_type, summary, actor_id, metadata, created_at FROM audit_log WHERE flushed = 0 ORDER BY id ASC LIMIT 50')
+        .exec('SELECT id, event_type, turn_id, duration_ms, channel, model, queue_mode, input_tokens, output_tokens, tool_name, error_code, summary, actor_id, properties, created_at FROM analytics_events WHERE flushed = 0 ORDER BY id ASC LIMIT 100')
         .toArray();
 
       if (unflushed.length > 0) {
+        const userId = this.getStateValue('userId') || null;
         try {
-          await batchInsertAuditLog(this.env.DB, sessionId, unflushed.map((row) => ({
-            localId: row.id as number,
+          await batchInsertAnalyticsEvents(this.env.DB, sessionId, userId, unflushed.map((row) => ({
+            id: `${sessionId}:${row.id as number}`,
             eventType: row.event_type as string,
-            summary: row.summary as string,
-            actorId: (row.actor_id as string) || null,
-            metadata: (row.metadata as string) || null,
-            createdAt: row.created_at as string,
+            turnId: (row.turn_id as string) || undefined,
+            durationMs: (row.duration_ms as number) || undefined,
+            channel: (row.channel as string) || undefined,
+            model: (row.model as string) || undefined,
+            queueMode: (row.queue_mode as string) || undefined,
+            inputTokens: (row.input_tokens as number) || undefined,
+            outputTokens: (row.output_tokens as number) || undefined,
+            toolName: (row.tool_name as string) || undefined,
+            errorCode: (row.error_code as string) || undefined,
+            summary: (row.summary as string) || undefined,
+            actorId: (row.actor_id as string) || undefined,
+            properties: (row.properties as string) || undefined,
+            createdAt: new Date((row.created_at as number) * 1000).toISOString(),
           })));
-          // Mark as flushed
           const flushedIds = unflushed.map((r) => r.id as number);
           const placeholders = flushedIds.map(() => '?').join(',');
           this.ctx.storage.sql.exec(
-            `UPDATE audit_log SET flushed = 1 WHERE id IN (${placeholders})`,
+            `UPDATE analytics_events SET flushed = 1 WHERE id IN (${placeholders})`,
             ...flushedIds,
           );
         } catch (flushErr) {
-          console.error('[SessionAgentDO] Failed to flush audit log to D1:', flushErr);
-        }
-      }
-
-      // Flush unflushed usage events to D1
-      const unflushedUsage = this.ctx.storage.sql
-        .exec('SELECT id, turn_id, oc_message_id, model, input_tokens, output_tokens, created_at FROM usage_events WHERE flushed = 0 ORDER BY id ASC LIMIT 100')
-        .toArray();
-
-      if (unflushedUsage.length > 0) {
-        try {
-          await batchInsertUsageEvents(this.env.DB, sessionId, unflushedUsage.map((row) => ({
-            localId: row.id as number,
-            turnId: row.turn_id as string,
-            ocMessageId: row.oc_message_id as string,
-            model: row.model as string,
-            inputTokens: row.input_tokens as number,
-            outputTokens: row.output_tokens as number,
-            createdAt: row.created_at as number,
-          })));
-          const flushedUsageIds = unflushedUsage.map((r) => r.id as number);
-          const usagePlaceholders = flushedUsageIds.map(() => '?').join(',');
-          this.ctx.storage.sql.exec(
-            `UPDATE usage_events SET flushed = 1 WHERE id IN (${usagePlaceholders})`,
-            ...flushedUsageIds,
-          );
-        } catch (flushErr) {
-          console.error('[SessionAgentDO] Failed to flush usage events to D1:', flushErr);
+          console.error('[SessionAgentDO] Failed to flush analytics events to D1:', flushErr);
         }
       }
     } catch (err) {
-      console.error('[SessionAgentDO] Failed to flush metrics:', err);
+      console.error('[SessionAgentDO] flushMetrics failed:', err);
     }
   }
 
-  private appendAuditLog(
+  /**
+   * Emit a core analytics event to local SQLite. Fire-and-forget, never throws.
+   */
+  private emitEvent(
+    eventType: string,
+    fields?: {
+      turnId?: string;
+      durationMs?: number;
+      channel?: string;
+      model?: string;
+      queueMode?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      toolName?: string;
+      errorCode?: string;
+      summary?: string;
+      actorId?: string;
+      properties?: Record<string, unknown>;
+    },
+  ): void {
+    try {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO analytics_events
+          (event_type, turn_id, duration_ms, channel, model, queue_mode,
+           input_tokens, output_tokens, tool_name, error_code, summary, actor_id, properties)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        eventType,
+        fields?.turnId ?? null,
+        fields?.durationMs ?? null,
+        fields?.channel ?? null,
+        fields?.model ?? null,
+        fields?.queueMode ?? null,
+        fields?.inputTokens ?? null,
+        fields?.outputTokens ?? null,
+        fields?.toolName ?? null,
+        fields?.errorCode ?? null,
+        fields?.summary ?? null,
+        fields?.actorId ?? null,
+        fields?.properties ? JSON.stringify(fields.properties) : null,
+      );
+    } catch (err) {
+      console.error('[SessionAgentDO] Failed to emit analytics event:', err);
+    }
+  }
+
+  /**
+   * Emit an audit event — writes to local SQLite AND broadcasts to connected clients.
+   * Drop-in replacement for the old appendAuditLog method.
+   */
+  private emitAuditEvent(
     eventType: string,
     summary: string,
     actorId?: string,
     metadata?: Record<string, unknown>,
   ): void {
-    const metadataJson = metadata ? JSON.stringify(metadata) : null;
-    this.ctx.storage.sql.exec(
-      'INSERT INTO audit_log (event_type, summary, actor_id, metadata) VALUES (?, ?, ?, ?)',
-      eventType, summary, actorId || null, metadataJson,
-    );
+    this.emitEvent(eventType, {
+      summary,
+      actorId,
+      properties: metadata,
+    });
     // Broadcast to connected clients in real-time
     this.broadcastToClients({
       type: 'audit_log',
       entry: {
         eventType,
         summary,
-        actorId: actorId || undefined,
-        metadata: metadata || undefined,
+        actorId: actorId || null,
+        metadata: metadata || null,
         createdAt: new Date().toISOString(),
       },
     });
@@ -8359,7 +8384,7 @@ export class SessionAgentDO {
 
     const who = actor?.actorName || actor?.actorEmail || actor?.actorId || 'User';
     const summary = `${who} disabled tunnel "${name}"`;
-    this.appendAuditLog('tunnel.disabled', summary, actor?.actorId, { name });
+    this.emitAuditEvent('tunnel.disabled', summary, actor?.actorId, { name });
     await this.handleSystemMessage(summary, { type: 'tunnel.disabled', name });
   }
 
@@ -8982,7 +9007,7 @@ export class SessionAgentDO {
       // ─── Deny ──────────────────────────────────────────────────────────
       if (invocationResult.outcome === 'denied') {
         this.sendToRunner({ type: 'call-tool-result', requestId, error: `Action "${toolId}" denied by policy (risk level: ${riskLevel})` } as any);
-        this.appendAuditLog('agent.tool_call', `Action ${toolId} denied by policy`, undefined, { invocationId: invocationResult.invocationId, riskLevel });
+        this.emitAuditEvent('agent.tool_call', `Action ${toolId} denied by policy`, undefined, { invocationId: invocationResult.invocationId, riskLevel });
         return;
       }
 
@@ -9078,7 +9103,7 @@ export class SessionAgentDO {
           timestamp: new Date().toISOString(),
         });
 
-        this.appendAuditLog('agent.tool_call', `Action ${toolId} requires approval (${riskLevel})`, undefined, { invocationId: invocationResult.invocationId, riskLevel });
+        this.emitAuditEvent('agent.tool_call', `Action ${toolId} requires approval (${riskLevel})`, undefined, { invocationId: invocationResult.invocationId, riskLevel });
 
         // Fire-and-forget: send interactive prompts to all bound channels
         this.ctx.waitUntil(
@@ -9294,7 +9319,7 @@ export class SessionAgentDO {
           timestamp: new Date().toISOString(),
         });
 
-        this.appendAuditLog('agent.tool_call', `Action ${toolId} approved and executed`, undefined, { invocationId: promptId });
+        this.emitAuditEvent('agent.tool_call', `Action ${toolId} approved and executed`, undefined, { invocationId: promptId });
       } else {
         // Deny
         const reason = resolution.value;
@@ -9326,7 +9351,7 @@ export class SessionAgentDO {
           timestamp: new Date().toISOString(),
         });
 
-        this.appendAuditLog('agent.tool_call', `Action ${toolId} denied${reason ? `: ${reason}` : ''}`, undefined, { invocationId: promptId });
+        this.emitAuditEvent('agent.tool_call', `Action ${toolId} denied${reason ? `: ${reason}` : ''}`, undefined, { invocationId: promptId });
       }
     } else if (promptType === 'question') {
       // Send answer to runner — use the human-readable label when available
@@ -9345,7 +9370,7 @@ export class SessionAgentDO {
         resolution,
       });
 
-      this.appendAuditLog('user.answer', `Answered question: ${String(answer).slice(0, 80)}`, undefined, { questionId: promptId });
+      this.emitAuditEvent('user.answer', `Answered question: ${String(answer).slice(0, 80)}`, undefined, { questionId: promptId });
 
       // Notify EventBus
       this.notifyEventBus({
