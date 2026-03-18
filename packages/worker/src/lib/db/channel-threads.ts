@@ -168,7 +168,11 @@ export async function getThreadOriginChannel(
   const externalThreadId = row.external_thread_id as string | null;
   return {
     channelType: row.channel_type as string,
-    // Reconstruct composite channelId (e.g., C123:thread_ts) for Slack threading
-    channelId: externalThreadId ? `${channelId}:${externalThreadId}` : channelId,
+    // Reconstruct composite channelId (e.g., C123:thread_ts) for Slack threading.
+    // Only Slack uses this composite format — other channels (Telegram, etc.) store
+    // externalThreadId but don't use it as part of the channelId.
+    channelId: (row.channel_type === 'slack' && externalThreadId)
+      ? `${channelId}:${externalThreadId}`
+      : channelId,
   };
 }
