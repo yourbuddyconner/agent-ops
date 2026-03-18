@@ -59,15 +59,54 @@ async function resolveRepoCredentialForProvider(
 }
 
 /**
- * Get the user's decrypted GitHub access token. Throws if not connected.
- * Used by GitHub-specific routes (pulls, issues, PR creation).
+ * Get a GitHub access token for API operations (PRs, issues, etc.).
+ * Uses the same credential priority as repo access: user OAuth first,
+ * then org App installation, then user App installation.
  */
 async function getGitHubToken(env: Env, userId: string): Promise<string> {
-  const result = await getCredential(env, 'user', userId, 'github', { credentialType: 'oauth2' });
-  if (!result.ok) {
-    throw new ValidationError('GitHub account not connected');
+  // Try user OAuth first
+  const oauthResult = await getCredential(env, 'user', userId, 'github', { credentialType: 'oauth2' });
+  if (oauthResult.ok) {
+    return oauthResult.credential.accessToken;
   }
-  return result.credential.accessToken;
+
+  // Fall back to App installation token via credential resolver
+  const appDb = getDb(env.DB);
+  const orgSettings = await db.getOrgSettings(appDb);
+  const resolved = await credentialDb.resolveRepoCredential(appDb, 'github', orgSettings?.id, userId);
+  if (!resolved || resolved.credentialType !== 'app_install') {
+    throw new ValidationError('GitHub account not connected. Link your GitHub account or ask an org admin to install the GitHub App.');
+  }
+
+  // Mint a fresh token from the App installation
+  const credRow = resolved.credential;
+  let credData: Record<string, unknown>;
+  try {
+    const json = await decryptStringPBKDF2(credRow.encryptedData, env.ENCRYPTION_KEY);
+    credData = JSON.parse(json);
+  } catch {
+    throw new ValidationError('Failed to decrypt GitHub credentials');
+  }
+
+  const metadata: Record<string, string> = credRow.metadata ? JSON.parse(credRow.metadata) : {};
+  for (const [k, v] of Object.entries(credData)) {
+    if (typeof v === 'string') metadata[k] = v;
+  }
+
+  const provider = repoProviderRegistry.get('github-app');
+  if (!provider) {
+    throw new ValidationError('GitHub App provider not registered');
+  }
+
+  const repoCredential: RepoCredential = {
+    type: 'installation',
+    installationId: metadata.installationId || metadata.installation_id,
+    accessToken: (credData.access_token || credData.token) as string | undefined,
+    metadata,
+  };
+
+  const freshToken = await provider.mintToken(repoCredential);
+  return freshToken.accessToken;
 }
 
 /**

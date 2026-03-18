@@ -3,6 +3,7 @@ import { eq, and } from 'drizzle-orm';
 import { createTestDb } from '../../test-utils/db.js';
 import { credentials } from '../schema/credentials.js';
 import { sql } from 'drizzle-orm';
+import { resolveRepoCredential } from './credentials.js';
 
 const TEST_OWNER_TYPE = 'user';
 const TEST_OWNER_ID = 'user-test-001';
@@ -224,5 +225,135 @@ describe('credentials DB layer', () => {
 
     const rows = db.select().from(credentials).all();
     expect(rows).toHaveLength(2);
+  });
+});
+
+describe('resolveRepoCredential', () => {
+  let db: ReturnType<typeof createTestDb>['db'];
+
+  beforeEach(() => {
+    const testDb = createTestDb();
+    db = testDb.db;
+  });
+
+  it('returns user OAuth when available (highest priority)', async () => {
+    db.insert(credentials).values({
+      id: 'cred-oauth',
+      ownerType: 'user',
+      ownerId: 'user-1',
+      provider: 'github',
+      credentialType: 'oauth2',
+      encryptedData: 'oauth-data',
+    }).run();
+    db.insert(credentials).values({
+      id: 'cred-app',
+      ownerType: 'org',
+      ownerId: 'org-1',
+      provider: 'github',
+      credentialType: 'app_install',
+      encryptedData: 'app-data',
+    }).run();
+
+    const result = await resolveRepoCredential(db as any, 'github', 'org-1', 'user-1');
+
+    expect(result).not.toBeNull();
+    expect(result!.credentialType).toBe('oauth2');
+    expect(result!.credential.id).toBe('cred-oauth');
+  });
+
+  it('returns org App install when no user OAuth exists', async () => {
+    db.insert(credentials).values({
+      id: 'cred-app',
+      ownerType: 'org',
+      ownerId: 'org-1',
+      provider: 'github',
+      credentialType: 'app_install',
+      encryptedData: 'app-data',
+    }).run();
+
+    const result = await resolveRepoCredential(db as any, 'github', 'org-1', 'user-1');
+
+    expect(result).not.toBeNull();
+    expect(result!.credentialType).toBe('app_install');
+    expect(result!.credential.id).toBe('cred-app');
+  });
+
+  it('returns user App install (legacy) when no OAuth or org App exists', async () => {
+    db.insert(credentials).values({
+      id: 'cred-user-app',
+      ownerType: 'user',
+      ownerId: 'user-1',
+      provider: 'github',
+      credentialType: 'app_install',
+      encryptedData: 'user-app-data',
+    }).run();
+
+    const result = await resolveRepoCredential(db as any, 'github', 'org-1', 'user-1');
+
+    expect(result).not.toBeNull();
+    expect(result!.credentialType).toBe('app_install');
+    expect(result!.credential.id).toBe('cred-user-app');
+  });
+
+  it('returns null when no credentials exist', async () => {
+    const result = await resolveRepoCredential(db as any, 'github', 'org-1', 'user-1');
+    expect(result).toBeNull();
+  });
+
+  it('skips org lookup when no orgId provided', async () => {
+    db.insert(credentials).values({
+      id: 'cred-org-app',
+      ownerType: 'org',
+      ownerId: 'org-1',
+      provider: 'github',
+      credentialType: 'app_install',
+      encryptedData: 'org-data',
+    }).run();
+    db.insert(credentials).values({
+      id: 'cred-user-app',
+      ownerType: 'user',
+      ownerId: 'user-1',
+      provider: 'github',
+      credentialType: 'app_install',
+      encryptedData: 'user-data',
+    }).run();
+
+    // No orgId → should skip org lookup, find user app_install
+    const result = await resolveRepoCredential(db as any, 'github', undefined, 'user-1');
+
+    expect(result).not.toBeNull();
+    expect(result!.credential.id).toBe('cred-user-app');
+  });
+
+  it('prefers user OAuth over org App install even when both exist', async () => {
+    db.insert(credentials).values({
+      id: 'cred-oauth',
+      ownerType: 'user',
+      ownerId: 'user-1',
+      provider: 'github',
+      credentialType: 'oauth2',
+      encryptedData: 'oauth-data',
+    }).run();
+    db.insert(credentials).values({
+      id: 'cred-org-app',
+      ownerType: 'org',
+      ownerId: 'org-1',
+      provider: 'github',
+      credentialType: 'app_install',
+      encryptedData: 'app-data',
+    }).run();
+    db.insert(credentials).values({
+      id: 'cred-user-app',
+      ownerType: 'user',
+      ownerId: 'user-1',
+      provider: 'github',
+      credentialType: 'app_install',
+      encryptedData: 'user-app-data',
+    }).run();
+
+    const result = await resolveRepoCredential(db as any, 'github', 'org-1', 'user-1');
+
+    expect(result!.credentialType).toBe('oauth2');
+    expect(result!.credential.id).toBe('cred-oauth');
   });
 });
