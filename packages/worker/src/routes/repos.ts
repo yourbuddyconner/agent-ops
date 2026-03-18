@@ -25,10 +25,12 @@ async function resolveRepoCredentialForProvider(
 
   // Try org-level first, then user-level
   const orgSettings = await db.getOrgSettings(appDb);
-  const credRow = await credentialDb.resolveRepoCredential(appDb, providerId, orgSettings?.id, userId);
-  if (!credRow) {
+  const resolved = await credentialDb.resolveRepoCredential(appDb, providerId, orgSettings?.id, userId);
+  if (!resolved) {
     throw new ValidationError(`No ${providerId} credentials found. Connect ${providerId} first.`);
   }
+
+  const credRow = resolved.credential;
 
   let credData: Record<string, unknown>;
   try {

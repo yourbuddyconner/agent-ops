@@ -162,22 +162,26 @@ export async function hasCredential(
 
 /**
  * Resolve a repo-level credential, preferring:
- * 1. org-level app_install
- * 2. user-level app_install
- * 3. user-level oauth2 (fallback for users without app install)
+ * 1. user-level oauth2 (personal GitHub OAuth — commits as user)
+ * 2. org-level app_install (GitHub App — commits as bot)
+ * 3. user-level app_install (legacy fallback)
  */
 export async function resolveRepoCredential(
   db: AppDb,
   provider: string,
   orgId: string | undefined,
   userId: string,
-): Promise<CredentialRow | null> {
+): Promise<{ credential: CredentialRow; credentialType: 'oauth2' | 'app_install' } | null> {
+  // 1. User's personal OAuth token (highest priority)
+  const userOAuth = await getCredentialRow(db, 'user', userId, provider, 'oauth2');
+  if (userOAuth) return { credential: userOAuth, credentialType: 'oauth2' };
+  // 2. Org-level app installation
   if (orgId) {
-    const orgCred = await getCredentialRow(db, 'org', orgId, provider, 'app_install');
-    if (orgCred) return orgCred;
+    const orgInstall = await getCredentialRow(db, 'org', orgId, provider, 'app_install');
+    if (orgInstall) return { credential: orgInstall, credentialType: 'app_install' };
   }
+  // 3. User-level app installation (legacy)
   const userInstall = await getCredentialRow(db, 'user', userId, provider, 'app_install');
-  if (userInstall) return userInstall;
-  // Fall back to OAuth token for users who haven't set up app install yet
-  return getCredentialRow(db, 'user', userId, provider, 'oauth2');
+  if (userInstall) return { credential: userInstall, credentialType: 'app_install' };
+  return null;
 }
