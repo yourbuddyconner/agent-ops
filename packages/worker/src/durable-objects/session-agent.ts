@@ -9256,8 +9256,16 @@ export class SessionAgentDO {
       // Non-critical — proceed without identity
     }
 
+    // Create analytics collector for this action execution
+    const collectedEvents: Array<{ eventType: string; durationMs?: number; properties?: Record<string, unknown> }> = [];
+    const actionAnalytics = {
+      emit: (eventType: string, data?: { durationMs?: number; properties?: Record<string, unknown> }) => {
+        collectedEvents.push({ eventType, ...data });
+      },
+    };
+
     // Execute the action
-    let actionResult = await actionSource.execute(actionId, params, { credentials, userId, callerIdentity });
+    let actionResult = await actionSource.execute(actionId, params, { credentials, userId, callerIdentity, analytics: actionAnalytics });
 
     // If auth error, retry once with force-refreshed credentials (skip no-auth and bot_token services which have nothing to refresh)
     if (provider?.authType !== 'none' && provider?.authType !== 'bot_token' && !actionResult.success && actionResult.error && /\b(401|403|unauthorized|invalid.credentials|token.*expired|token.*revoked)\b/i.test(actionResult.error)) {
@@ -9279,8 +9287,17 @@ export class SessionAgentDO {
           credentials: refreshedCredentials,
           userId,
           callerIdentity,
+          analytics: actionAnalytics,
         });
       }
+    }
+
+    // Flush plugin analytics events
+    for (const event of collectedEvents) {
+      this.emitEvent(event.eventType, {
+        durationMs: event.durationMs,
+        properties: event.properties,
+      });
     }
 
     // Record result and send to runner
