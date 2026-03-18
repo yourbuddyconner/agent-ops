@@ -3415,9 +3415,17 @@ export class SessionAgentDO {
           const capped = events.slice(0, 100);
           for (const event of capped) {
             if (event.eventType && typeof event.eventType === 'string') {
+              let properties: Record<string, unknown> | undefined;
+              const propsRaw = event.properties;
+              if (propsRaw && typeof propsRaw === 'object' && !Array.isArray(propsRaw)) {
+                const serialized = JSON.stringify(propsRaw);
+                if (serialized.length <= 4096) {
+                  properties = propsRaw;
+                }
+              }
               this.emitEvent(event.eventType, {
                 durationMs: typeof event.durationMs === 'number' ? event.durationMs : undefined,
-                properties: event.properties && typeof event.properties === 'object' ? event.properties : undefined,
+                properties,
               });
             }
           }
@@ -9275,7 +9283,8 @@ export class SessionAgentDO {
       },
     };
 
-    // Execute the action
+    // Execute the action with timing for tool_exec event
+    const toolExecStart = Date.now();
     let actionResult = await actionSource.execute(actionId, params, { credentials, userId, callerIdentity, analytics: actionAnalytics });
 
     // If auth error, retry once with force-refreshed credentials (skip no-auth and bot_token services which have nothing to refresh)
@@ -9302,6 +9311,13 @@ export class SessionAgentDO {
         });
       }
     }
+
+    // Emit tool_exec timing event
+    this.emitEvent('tool_exec', {
+      toolName: toolId,
+      durationMs: Date.now() - toolExecStart,
+      errorCode: actionResult.success ? undefined : 'action_failed',
+    });
 
     // Flush plugin analytics events
     for (const event of collectedEvents) {

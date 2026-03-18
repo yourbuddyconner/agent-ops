@@ -452,18 +452,23 @@ export interface StageBreakdownRow {
   count: number;
 }
 
+const STAGE_EVENT_TYPES = ['queue_wait', 'sandbox_wake', 'sandbox_restore', 'llm_response', 'tool_exec', 'runner_connect'];
+
 export async function getStageBreakdown(
   db: D1Database,
   periodStart: string,
 ): Promise<StageBreakdownRow[]> {
+  const placeholders = STAGE_EVENT_TYPES.map(() => '?').join(', ');
   const result = await db
     .prepare(`
       SELECT event_type, duration_ms
       FROM analytics_events
-      WHERE created_at >= ? AND duration_ms IS NOT NULL
+      WHERE created_at >= ?
+        AND duration_ms IS NOT NULL
+        AND event_type IN (${placeholders})
       ORDER BY event_type, duration_ms
     `)
-    .bind(periodStart)
+    .bind(periodStart, ...STAGE_EVENT_TYPES)
     .all();
 
   const rows = result.results ?? [];

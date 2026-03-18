@@ -71,8 +71,8 @@ analyticsRouter.get('/events', async (c) => {
   const periodHours = Number.isFinite(rawPeriod) ? Math.min(Math.max(rawPeriod, 1), 8760) : 720;
   const periodStart = new Date(Date.now() - periodHours * 60 * 60 * 1000).toISOString();
   const typePrefix = c.req.query('type') || undefined;
-  const limit = parseInt(c.req.query('limit') || '50', 10);
-  const offset = parseInt(c.req.query('offset') || '0', 10);
+  const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '50', 10), 1), 200);
+  const offset = Math.max(parseInt(c.req.query('offset') || '0', 10), 0);
 
   const db = c.env.DB;
   const { events, total } = await getEventFeed(db, periodStart, { typePrefix, limit, offset });
