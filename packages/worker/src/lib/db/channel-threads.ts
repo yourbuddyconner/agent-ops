@@ -147,6 +147,10 @@ export async function updateThreadCursor(
 /**
  * Reverse lookup: given an internal threadId, return the origin channel
  * (the channel that first created this thread). Returns the earliest mapping.
+ *
+ * The returned `channelId` is in the composite format expected by SessionAgentDO
+ * (e.g., `C123:thread_ts` for Slack) so it can be used directly as
+ * `pendingChannelReply.channelId` and parsed by `parseSlackChannelId`.
  */
 export async function getThreadOriginChannel(
   db: D1Database,
@@ -154,14 +158,17 @@ export async function getThreadOriginChannel(
 ): Promise<{ channelType: string; channelId: string } | null> {
   const row = await db
     .prepare(
-      'SELECT channel_type, channel_id FROM channel_thread_mappings WHERE thread_id = ? ORDER BY created_at ASC LIMIT 1'
+      'SELECT channel_type, channel_id, external_thread_id FROM channel_thread_mappings WHERE thread_id = ? ORDER BY created_at ASC LIMIT 1'
     )
     .bind(threadId)
     .first();
 
   if (!row) return null;
+  const channelId = row.channel_id as string;
+  const externalThreadId = row.external_thread_id as string | null;
   return {
     channelType: row.channel_type as string,
-    channelId: row.channel_id as string,
+    // Reconstruct composite channelId (e.g., C123:thread_ts) for Slack threading
+    channelId: externalThreadId ? `${channelId}:${externalThreadId}` : channelId,
   };
 }
