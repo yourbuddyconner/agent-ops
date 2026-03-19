@@ -6,7 +6,7 @@ export const githubProvider: IntegrationProvider = {
   displayName: 'GitHub',
   authType: 'oauth2',
   supportedEntities: ['repositories', 'issues', 'pull_requests', 'commits'],
-  oauthScopes: ['repo', 'read:user', 'read:org'],
+  oauthScopes: ['repo', 'read:user', 'read:org', 'user:email'],
   oauthEnvKeys: { clientId: 'GITHUB_CLIENT_ID', clientSecret: 'GITHUB_CLIENT_SECRET' },
 
   validateCredentials(credentials: IntegrationCredentials): boolean {
@@ -27,7 +27,7 @@ export const githubProvider: IntegrationProvider = {
     const params = new URLSearchParams({
       client_id: oauth.clientId,
       redirect_uri: redirectUri,
-      scope: 'repo read:user read:org',
+      scope: 'repo read:user read:org user:email',
       state,
     });
     return `https://github.com/login/oauth/authorize?${params}`;
