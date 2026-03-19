@@ -35,6 +35,7 @@ import { notificationQueueRouter } from './routes/mailbox.js';
 import { channelsRouter } from './routes/channels.js';
 import { telegramApiRouter } from './routes/telegram.js';
 import { slackAdminRouter, slackUserRouter } from './routes/slack.js';
+import { adminGitHubRouter } from './routes/admin-github.js';
 import { slackEventsRouter } from './routes/slack-events.js';
 import { channelWebhooksRouter } from './routes/channel-webhooks.js';
 import { actionPoliciesRouter } from './routes/action-policies.js';
@@ -47,6 +48,7 @@ import { skillsRouter } from './routes/skills.js';
 import { orgDefaultSkillsRouter } from './routes/org-default-skills.js';
 import { avatarsRouter } from './routes/avatars.js';
 import { repoProviderRouter, repoProviderCallbackRouter } from './routes/repo-providers.js';
+import { githubMeRouter, githubMeCallbackRouter } from './routes/github-me.js';
 import {
   enqueueWorkflowApprovalNotificationIfMissing,
   getTerminatedOrchestratorSessions,
@@ -149,6 +151,9 @@ app.route('/channels', slackEventsRouter);
 // Repo provider callbacks (unauthenticated — GitHub redirects here after app install)
 app.route('/repo-providers', repoProviderCallbackRouter);
 
+// GitHub identity linking callback (unauthenticated — GitHub redirects here after OAuth)
+app.route('/auth/github/link', githubMeCallbackRouter);
+
 // Protected API routes
 app.use('/api/*', authMiddleware);
 app.route('/api/auth', authRouter);
@@ -173,11 +178,13 @@ app.route('/api', notificationQueueRouter);
 app.route('/api', channelsRouter);
 app.route('/api/me/telegram', telegramApiRouter);
 app.route('/api/admin/slack', slackAdminRouter);
+app.route('/api/admin/github', adminGitHubRouter);
 app.route('/api/admin/action-policies', actionPoliciesRouter);
 app.route('/api/admin/disabled-actions', disabledActionsRouter);
 app.route('/api/admin/default-skills', orgDefaultSkillsRouter);
 app.route('/api/action-invocations', actionInvocationsRouter);
 app.route('/api/me/slack', slackUserRouter);
+app.route('/api/me/github', githubMeRouter);
 app.route('/api/invites', invitesApiRouter);
 app.route('/api/usage', usageRouter);
 app.route('/api/analytics', analyticsRouter);
