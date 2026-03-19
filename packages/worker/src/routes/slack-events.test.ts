@@ -43,6 +43,7 @@ vi.mock('../lib/db.js', () => ({
 
 vi.mock('../lib/crypto.js', () => ({
   decryptString: decryptStringMock,
+  encryptString: vi.fn().mockResolvedValue('encrypted'),
 }));
 
 vi.mock('@valet/plugin-slack/channels', async (importOriginal) => {
@@ -156,10 +157,14 @@ describe('slackEventsRouter /slack/interactive', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getOrgSlackInstallMock.mockResolvedValue({
-      encryptedSigningSecret: 'enc-signing',
-      encryptedBotToken: 'enc-bot',
+      signingSecret: 'decrypted-secret',
+      botToken: 'decrypted-bot',
+      teamId: 'T123',
+      botUserId: 'B123',
+      teamName: null,
+      appId: null,
+      configuredBy: 'user-1',
     });
-    decryptStringMock.mockResolvedValue('decrypted-secret');
     verifySlackSignatureMock.mockReturnValue(true);
   });
 
@@ -242,10 +247,14 @@ describe('private channel access control on inbound mentions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getOrgSlackInstallMock.mockResolvedValue({
-      encryptedSigningSecret: 'enc-signing',
-      encryptedBotToken: 'enc-bot',
+      signingSecret: 'decrypted-secret',
+      botToken: 'decrypted-token',
+      teamId: 'T123',
+      botUserId: 'B123',
+      teamName: null,
+      appId: null,
+      configuredBy: 'user-1',
     });
-    decryptStringMock.mockResolvedValue('decrypted-token');
     verifySlackSignatureMock.mockReturnValue(true);
     resolveUserByExternalIdMock.mockResolvedValue('user-1');
   });

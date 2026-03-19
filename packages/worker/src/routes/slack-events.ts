@@ -7,7 +7,6 @@ import type { SlackTransport } from '@valet/plugin-slack/channels';
 import { checkPrivateChannelAccess } from '@valet/plugin-slack/actions';
 import { channelRegistry } from '../channels/registry.js';
 import * as db from '../lib/db.js';
-import { decryptString } from '../lib/crypto.js';
 import { dispatchOrchestratorPrompt } from '../lib/workflow-runtime.js';
 import { handleChannelCommand } from './channel-webhooks.js';
 import { getSlackUserInfo, getSlackBotInfo } from '../services/slack.js';
@@ -66,7 +65,7 @@ slackEventsRouter.post('/slack/events', async (c) => {
   }
 
   // Look up org-level Slack install (needed for signing secret + bot token)
-  const install = await db.getOrgSlackInstall(c.get('db'), teamId);
+  const install = await db.getOrgSlackInstall(c.get('db'), c.env.ENCRYPTION_KEY, teamId);
   if (!install) {
     console.log(`[Slack] No org install found for team_id=${teamId}`);
     return c.json({ ok: true });
@@ -78,9 +77,7 @@ slackEventsRouter.post('/slack/events', async (c) => {
     rawHeaders[key] = value;
   });
 
-  const signingSecret = install.encryptedSigningSecret
-    ? await decryptString(install.encryptedSigningSecret, c.env.ENCRYPTION_KEY)
-    : c.env.SLACK_SIGNING_SECRET;
+  const signingSecret = install.signingSecret || c.env.SLACK_SIGNING_SECRET;
 
   if (signingSecret) {
     const valid = await verifySlackSignature(rawHeaders, rawBody, signingSecret);
@@ -89,8 +86,8 @@ slackEventsRouter.post('/slack/events', async (c) => {
     }
   }
 
-  // Decrypt bot token
-  const botToken = await decryptString(install.encryptedBotToken, c.env.ENCRYPTION_KEY);
+  // Bot token is already decrypted
+  const botToken = install.botToken;
 
   // Get transport and parse inbound (before identity resolution so we have event metadata)
   const transport = channelRegistry.getTransport('slack');
@@ -525,7 +522,7 @@ slackEventsRouter.post('/slack/interactive', async (c) => {
   }
 
   // Look up org-level Slack install for signing secret
-  const install = await db.getOrgSlackInstall(c.get('db'), teamId);
+  const install = await db.getOrgSlackInstall(c.get('db'), c.env.ENCRYPTION_KEY, teamId);
   if (!install) {
     return c.json({ ok: true });
   }
@@ -536,9 +533,7 @@ slackEventsRouter.post('/slack/interactive', async (c) => {
     rawHeaders[key] = value;
   });
 
-  const signingSecret = install.encryptedSigningSecret
-    ? await decryptString(install.encryptedSigningSecret, c.env.ENCRYPTION_KEY)
-    : c.env.SLACK_SIGNING_SECRET;
+  const signingSecret = install.signingSecret || c.env.SLACK_SIGNING_SECRET;
 
   if (signingSecret) {
     const valid = await verifySlackSignature(rawHeaders, rawBody, signingSecret);

@@ -1,9 +1,12 @@
 import type { AppDb } from '../drizzle.js';
 import { eq, and, sql, lt } from 'drizzle-orm';
 import { orgSlackInstalls, slackLinkVerifications } from '../schema/index.js';
+import { decryptString } from '../crypto.js';
+import { getServiceConfig, setServiceConfig, deleteServiceConfig } from './service-configs.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
+/** @deprecated Use SlackInstallInfo for getter return types */
 export interface OrgSlackInstall {
   id: string;
   teamId: string;
@@ -15,6 +18,31 @@ export interface OrgSlackInstall {
   installedBy: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SlackServiceConfig {
+  botToken: string;
+  signingSecret?: string;
+}
+
+export interface SlackServiceMetadata {
+  teamId: string;
+  teamName?: string;
+  botUserId: string;
+  appId?: string;
+}
+
+/** Decrypted return type — replaces OrgSlackInstall in getter returns */
+export interface SlackInstallInfo {
+  teamId: string;
+  teamName: string | null;
+  botUserId: string;
+  appId: string | null;
+  botToken: string;
+  signingSecret: string | null;
+  configuredBy: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface SlackLinkVerification {
@@ -31,88 +59,153 @@ export interface SlackLinkVerification {
 
 export async function getOrgSlackInstall(
   db: AppDb,
+  encryptionKey: string,
   teamId: string,
-): Promise<OrgSlackInstall | null> {
+): Promise<SlackInstallInfo | null> {
+  const result = await getServiceConfig<SlackServiceConfig, SlackServiceMetadata>(db, encryptionKey, 'slack');
+  if (result) {
+    if (result.metadata.teamId !== teamId) return null;
+    return {
+      teamId: result.metadata.teamId,
+      teamName: result.metadata.teamName || null,
+      botUserId: result.metadata.botUserId,
+      appId: result.metadata.appId || null,
+      botToken: result.config.botToken,
+      signingSecret: result.config.signingSecret || null,
+      configuredBy: result.configuredBy,
+      updatedAt: result.updatedAt,
+    };
+  }
+
+  // Legacy fallback: read from org_slack_installs, migrate to new table
   const row = await db
     .select()
     .from(orgSlackInstalls)
     .where(eq(orgSlackInstalls.teamId, teamId))
     .get();
-  return row ? { ...row, createdAt: row.createdAt!, updatedAt: row.updatedAt! } : null;
+  if (!row) return null;
+
+  const botToken = await decryptString(row.encryptedBotToken, encryptionKey);
+  const signingSecret = row.encryptedSigningSecret
+    ? await decryptString(row.encryptedSigningSecret, encryptionKey)
+    : null;
+
+  // Migrate to new table
+  await setServiceConfig<SlackServiceConfig, SlackServiceMetadata>(
+    db,
+    encryptionKey,
+    'slack',
+    { botToken, signingSecret: signingSecret || undefined },
+    { teamId: row.teamId, teamName: row.teamName || undefined, botUserId: row.botUserId, appId: row.appId || undefined },
+    row.installedBy,
+  );
+
+  return {
+    teamId: row.teamId,
+    teamName: row.teamName,
+    botUserId: row.botUserId,
+    appId: row.appId,
+    botToken,
+    signingSecret,
+    configuredBy: row.installedBy,
+    createdAt: row.createdAt!,
+    updatedAt: row.updatedAt!,
+  };
 }
 
 export async function getOrgSlackInstallAny(
   db: AppDb,
-): Promise<OrgSlackInstall | null> {
+  encryptionKey: string,
+): Promise<SlackInstallInfo | null> {
+  const result = await getServiceConfig<SlackServiceConfig, SlackServiceMetadata>(db, encryptionKey, 'slack');
+  if (result) {
+    return {
+      teamId: result.metadata.teamId,
+      teamName: result.metadata.teamName || null,
+      botUserId: result.metadata.botUserId,
+      appId: result.metadata.appId || null,
+      botToken: result.config.botToken,
+      signingSecret: result.config.signingSecret || null,
+      configuredBy: result.configuredBy,
+      updatedAt: result.updatedAt,
+    };
+  }
+
+  // Legacy fallback: read from org_slack_installs, migrate to new table
   const row = await db
     .select()
     .from(orgSlackInstalls)
     .limit(1)
     .get();
-  return row ? { ...row, createdAt: row.createdAt!, updatedAt: row.updatedAt! } : null;
+  if (!row) return null;
+
+  const botToken = await decryptString(row.encryptedBotToken, encryptionKey);
+  const signingSecret = row.encryptedSigningSecret
+    ? await decryptString(row.encryptedSigningSecret, encryptionKey)
+    : null;
+
+  // Migrate to new table
+  await setServiceConfig<SlackServiceConfig, SlackServiceMetadata>(
+    db,
+    encryptionKey,
+    'slack',
+    { botToken, signingSecret: signingSecret || undefined },
+    { teamId: row.teamId, teamName: row.teamName || undefined, botUserId: row.botUserId, appId: row.appId || undefined },
+    row.installedBy,
+  );
+
+  return {
+    teamId: row.teamId,
+    teamName: row.teamName,
+    botUserId: row.botUserId,
+    appId: row.appId,
+    botToken,
+    signingSecret,
+    configuredBy: row.installedBy,
+    createdAt: row.createdAt!,
+    updatedAt: row.updatedAt!,
+  };
 }
 
 export async function saveOrgSlackInstall(
   db: AppDb,
+  encryptionKey: string,
   data: {
-    id: string;
     teamId: string;
     teamName?: string;
     botUserId: string;
     appId?: string;
-    encryptedBotToken: string;
-    encryptedSigningSecret?: string;
+    botToken: string;
+    signingSecret?: string;
     installedBy: string;
   },
-): Promise<OrgSlackInstall> {
-  const now = new Date().toISOString();
-
-  await db.insert(orgSlackInstalls).values({
-    id: data.id,
-    teamId: data.teamId,
-    teamName: data.teamName || null,
-    botUserId: data.botUserId,
-    appId: data.appId || null,
-    encryptedBotToken: data.encryptedBotToken,
-    encryptedSigningSecret: data.encryptedSigningSecret || null,
-    installedBy: data.installedBy,
-    createdAt: now,
-    updatedAt: now,
-  }).onConflictDoUpdate({
-    target: orgSlackInstalls.teamId,
-    set: {
-      teamName: sql`excluded.team_name`,
-      botUserId: sql`excluded.bot_user_id`,
-      appId: sql`excluded.app_id`,
-      encryptedBotToken: sql`excluded.encrypted_bot_token`,
-      encryptedSigningSecret: sql`excluded.encrypted_signing_secret`,
-      installedBy: sql`excluded.installed_by`,
-      updatedAt: sql`excluded.updated_at`,
-    },
-  });
+): Promise<SlackInstallInfo> {
+  await setServiceConfig<SlackServiceConfig, SlackServiceMetadata>(
+    db,
+    encryptionKey,
+    'slack',
+    { botToken: data.botToken, signingSecret: data.signingSecret },
+    { teamId: data.teamId, teamName: data.teamName, botUserId: data.botUserId, appId: data.appId },
+    data.installedBy,
+  );
 
   return {
-    id: data.id,
     teamId: data.teamId,
     teamName: data.teamName || null,
     botUserId: data.botUserId,
     appId: data.appId || null,
-    encryptedBotToken: data.encryptedBotToken,
-    encryptedSigningSecret: data.encryptedSigningSecret || null,
-    installedBy: data.installedBy,
-    createdAt: now,
-    updatedAt: now,
+    botToken: data.botToken,
+    signingSecret: data.signingSecret || null,
+    configuredBy: data.installedBy,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   };
 }
 
 export async function deleteOrgSlackInstall(
   db: AppDb,
-  teamId: string,
 ): Promise<boolean> {
-  const result = await db
-    .delete(orgSlackInstalls)
-    .where(eq(orgSlackInstalls.teamId, teamId));
-  return (result.meta?.changes ?? 0) > 0;
+  return deleteServiceConfig(db, 'slack');
 }
 
 // ─── Verification Helpers ───────────────────────────────────────────────────

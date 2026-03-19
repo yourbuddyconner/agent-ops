@@ -2,14 +2,13 @@ import type { UserIdentityLink } from '@valet/shared';
 import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
 import { getDb } from '../lib/drizzle.js';
-import { encryptString, decryptString } from '../lib/crypto.js';
 
 const SLACK_API = 'https://slack.com/api';
 
 // ─── Install Slack App (org-level) ─────────────────────────────────────────
 
 export type InstallSlackResult =
-  | { ok: true; install: db.OrgSlackInstall }
+  | { ok: true; install: db.SlackInstallInfo }
   | { ok: false; error: string };
 
 export async function installSlackApp(
@@ -63,25 +62,16 @@ export async function installSlackApp(
     return { ok: false, error: 'Could not determine team_id from token' };
   }
 
-  // Encrypt bot token
-  const encryptedBotToken = await encryptString(trimmedToken, env.ENCRYPTION_KEY);
-
-  // Encrypt signing secret if provided
-  const encryptedSigningSecret = signingSecret?.trim()
-    ? await encryptString(signingSecret.trim(), env.ENCRYPTION_KEY)
-    : undefined;
-
   const appDb = getDb(env.DB);
 
-  // Upsert into org_slack_installs
-  const install = await db.saveOrgSlackInstall(appDb, {
-    id: crypto.randomUUID(),
+  // Upsert into org_service_configs (encryption handled internally)
+  const install = await db.saveOrgSlackInstall(appDb, env.ENCRYPTION_KEY, {
     teamId: resolvedTeamId,
     teamName: resolvedTeamName,
     botUserId,
     appId: authResult.app_id,
-    encryptedBotToken,
-    encryptedSigningSecret,
+    botToken: trimmedToken,
+    signingSecret: signingSecret?.trim() || undefined,
     installedBy,
   });
 
@@ -173,7 +163,7 @@ export async function uninstallSlackApp(
   teamId: string,
 ): Promise<void> {
   const appDb = getDb(env.DB);
-  await db.deleteOrgSlackInstall(appDb, teamId);
+  await db.deleteOrgSlackInstall(appDb);
   await db.deleteOrgIntegrationByService(appDb, 'slack');
 }
 
@@ -190,12 +180,12 @@ export async function listSlackWorkspaceUsers(
   env: Env,
 ): Promise<SlackWorkspaceUser[]> {
   const appDb = getDb(env.DB);
-  const install = await db.getOrgSlackInstallAny(appDb);
+  const install = await db.getOrgSlackInstallAny(appDb, env.ENCRYPTION_KEY);
   if (!install) {
     return [];
   }
 
-  const botToken = await decryptString(install.encryptedBotToken, env.ENCRYPTION_KEY);
+  const botToken = install.botToken;
 
   let result: {
     ok: boolean;
@@ -372,9 +362,9 @@ export async function getSlackBotInfo(
 
 export async function getSlackBotToken(env: Env): Promise<string | null> {
   const appDb = getDb(env.DB);
-  const install = await db.getOrgSlackInstallAny(appDb);
+  const install = await db.getOrgSlackInstallAny(appDb, env.ENCRYPTION_KEY);
   if (!install) return null;
-  return decryptString(install.encryptedBotToken, env.ENCRYPTION_KEY);
+  return install.botToken;
 }
 
 // ─── Initiate Slack Link ────────────────────────────────────────────────────
@@ -391,12 +381,12 @@ export async function initiateSlackLink(
   slackDisplayName?: string,
 ): Promise<InitiateSlackLinkResult> {
   const appDb = getDb(env.DB);
-  const install = await db.getOrgSlackInstallAny(appDb);
+  const install = await db.getOrgSlackInstallAny(appDb, env.ENCRYPTION_KEY);
   if (!install) {
     throw new Error('Slack is not installed for this organization');
   }
 
-  const botToken = await decryptString(install.encryptedBotToken, env.ENCRYPTION_KEY);
+  const botToken = install.botToken;
 
   // Generate 6-character alphanumeric code (uppercase + digits)
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no I/O/0/1 to avoid confusion

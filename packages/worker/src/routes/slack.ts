@@ -47,7 +47,7 @@ slackAdminRouter.post('/', async (c) => {
       teamName: result.install.teamName,
       botUserId: result.install.botUserId,
       appId: result.install.appId,
-      installedBy: result.install.installedBy,
+      installedBy: result.install.configuredBy,
       createdAt: result.install.createdAt,
     },
   });
@@ -57,7 +57,7 @@ slackAdminRouter.post('/', async (c) => {
  * GET /api/admin/slack — Get install status
  */
 slackAdminRouter.get('/', async (c) => {
-  const install = await db.getOrgSlackInstallAny(c.get('db'));
+  const install = await db.getOrgSlackInstallAny(c.get('db'), c.env.ENCRYPTION_KEY);
   if (!install) {
     return c.json({ installed: false });
   }
@@ -68,8 +68,8 @@ slackAdminRouter.get('/', async (c) => {
     teamName: install.teamName,
     botUserId: install.botUserId,
     appId: install.appId,
-    hasSigningSecret: !!install.encryptedSigningSecret,
-    installedBy: install.installedBy,
+    hasSigningSecret: !!install.signingSecret,
+    installedBy: install.configuredBy,
     createdAt: install.createdAt,
   });
 });
@@ -78,7 +78,7 @@ slackAdminRouter.get('/', async (c) => {
  * DELETE /api/admin/slack — Uninstall Slack app
  */
 slackAdminRouter.delete('/', async (c) => {
-  const install = await db.getOrgSlackInstallAny(c.get('db'));
+  const install = await db.getOrgSlackInstallAny(c.get('db'), c.env.ENCRYPTION_KEY);
   if (!install) {
     return c.json({ error: 'Slack is not installed' }, 404);
   }
@@ -98,7 +98,7 @@ slackUserRouter.get('/', async (c) => {
   const user = c.get('user');
   const appDb = c.get('db');
 
-  const install = await db.getOrgSlackInstallAny(appDb);
+  const install = await db.getOrgSlackInstallAny(appDb, c.env.ENCRYPTION_KEY);
   const identityLinks = await db.getUserIdentityLinks(appDb, user.id);
   const slackLink = identityLinks.find((l) => l.provider === 'slack');
 
@@ -115,7 +115,7 @@ slackUserRouter.get('/', async (c) => {
  * GET /api/me/slack/users — List Slack workspace members for typeahead
  */
 slackUserRouter.get('/users', async (c) => {
-  const install = await db.getOrgSlackInstallAny(c.get('db'));
+  const install = await db.getOrgSlackInstallAny(c.get('db'), c.env.ENCRYPTION_KEY);
   if (!install) {
     return c.json({ error: 'Slack is not installed for this organization' }, 400);
   }
