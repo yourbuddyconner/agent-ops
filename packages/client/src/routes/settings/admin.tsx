@@ -21,6 +21,7 @@ import {
   useRemoveUser,
   useAdminOrchestrators,
   useAdminActionLog,
+  useRefreshOrchestrator,
 } from '@/api/admin';
 import { useOrgRepos, useCreateOrgRepo, useDeleteOrgRepo, useSetRepoPersonaDefault } from '@/api/org-repos';
 import { usePersonas } from '@/api/personas';
@@ -41,6 +42,16 @@ import type { DisabledAction } from '@valet/shared';
 import { useOrgDefaultSkills, useUpdateOrgDefaultSkills } from '@/api/org-default-skills';
 import { SkillPicker } from '@/components/skills/skill-picker';
 import { LoadMoreButton } from '@/components/ui/load-more-button';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 export const Route = createFileRoute('/settings/admin')({
   component: AdminSettingsPage,
@@ -710,7 +721,9 @@ function SlackIcon({ className }: { className?: string }) {
 
 function OrchestratorsSection() {
   const { data: orchestrators, isLoading, fetchNextPage, isFetchingNextPage, hasNextPage } = useAdminOrchestrators();
+  const refreshOrchestrator = useRefreshOrchestrator();
   const navigate = useNavigate();
+  const [refreshTarget, setRefreshTarget] = React.useState<{ sessionId: string; name: string } | null>(null);
 
   const statusVariant = (status: string): 'success' | 'warning' | 'error' | 'secondary' => {
     if (status === 'running' || status === 'idle') return 'success';
@@ -724,6 +737,15 @@ function OrchestratorsSection() {
     if (ch.channelType === 'slack') return `slack:${ch.channelId.slice(0, 12)}`;
     if (ch.channelType === 'telegram') return `telegram:${ch.channelId.slice(0, 12)}`;
     return `${ch.channelType}:${ch.channelId.slice(0, 12)}`;
+  };
+
+  const handleRefresh = async () => {
+    if (!refreshTarget) return;
+    try {
+      await refreshOrchestrator.mutateAsync(refreshTarget.sessionId);
+    } finally {
+      setRefreshTarget(null);
+    }
   };
 
   return (
@@ -745,6 +767,7 @@ function OrchestratorsSection() {
                 <th className="pb-2 pr-4">Status</th>
                 <th className="pb-2 pr-4">Channels</th>
                 <th className="pb-2 pr-4">Last Active</th>
+                <th className="pb-2 pr-4">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100 dark:divide-neutral-700/50">
@@ -787,6 +810,15 @@ function OrchestratorsSection() {
                   <td className="py-2 pr-4 text-neutral-500 dark:text-neutral-400">
                     {formatDate(orch.lastActiveAt)}
                   </td>
+                  <td className="py-2 pr-4">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setRefreshTarget({ sessionId: orch.sessionId, name: orch.identityName || 'Unnamed' })}
+                    >
+                      Refresh Sandbox
+                    </Button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -798,6 +830,27 @@ function OrchestratorsSection() {
           />
         </div>
       )}
+
+      <AlertDialog open={!!refreshTarget} onOpenChange={(open) => { if (!open) setRefreshTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Refresh Orchestrator Sandbox</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will terminate {refreshTarget?.name}'s current sandbox and start a fresh one.
+              Identity and memories are preserved, but the current session history will be cleared.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleRefresh}
+              disabled={refreshOrchestrator.isPending}
+            >
+              {refreshOrchestrator.isPending ? 'Refreshing...' : 'Refresh'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Section>
   );
 }

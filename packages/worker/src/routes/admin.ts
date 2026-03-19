@@ -13,8 +13,11 @@ import {
   listUsers,
   listCustomProviders,
   deleteCustomProvider,
+  getOrchestratorIdentity,
 } from '../lib/db.js';
+import { getDb } from '../lib/drizzle.js';
 import * as adminService from '../services/admin.js';
+import { restartOrchestratorSession } from '../services/orchestrator.js';
 
 function safeJsonParse(value: unknown): unknown {
   if (typeof value !== 'string') return undefined;
@@ -382,6 +385,57 @@ adminRouter.get('/orchestrators', async (c) => {
   const nextCursor = hasMore ? page[page.length - 1].lastActiveAt : undefined;
 
   return c.json({ orchestrators: page, hasMore, nextCursor });
+});
+
+adminRouter.post('/orchestrators/:sessionId/refresh', async (c) => {
+  const { sessionId } = c.req.param();
+  const appDb = getDb(c.env.DB);
+
+  // Look up the session to get the user ID
+  const session = await c.env.DB.prepare(
+    `SELECT user_id, is_orchestrator FROM sessions WHERE id = ?`
+  ).bind(sessionId).first<{ user_id: string; is_orchestrator: number }>();
+
+  if (!session || !session.is_orchestrator) {
+    return c.json({ error: 'Orchestrator session not found' }, 404);
+  }
+
+  // Look up identity for this user
+  const identity = await getOrchestratorIdentity(appDb, session.user_id);
+  if (!identity) {
+    return c.json({ error: 'Orchestrator identity not found' }, 404);
+  }
+
+  // Look up user email
+  const user = await c.env.DB.prepare(
+    `SELECT email FROM users WHERE id = ?`
+  ).bind(session.user_id).first<{ email: string }>();
+
+  // Stop the current session DO
+  const doId = c.env.SESSIONS.idFromName(sessionId);
+  const sessionDO = c.env.SESSIONS.get(doId);
+  await sessionDO.fetch(new Request('http://do/stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: 'admin_refresh' }),
+  }));
+
+  // Restart with a new session ID (rotates DO, migrates channels, fresh sandbox)
+  const result = await restartOrchestratorSession(
+    c.env,
+    session.user_id,
+    user?.email ?? '',
+    {
+      id: identity.id,
+      name: identity.name,
+      handle: identity.handle,
+      customInstructions: identity.customInstructions ?? null,
+      personaId: identity.personaId ?? null,
+    },
+    c.req.url,
+  );
+
+  return c.json({ ok: true, newSessionId: result.sessionId });
 });
 
 // --- Action Invocation Log ---

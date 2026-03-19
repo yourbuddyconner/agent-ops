@@ -176,6 +176,18 @@ export function useAdminOrchestrators() {
   });
 }
 
+export function useRefreshOrchestrator() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (sessionId: string) =>
+      api.post<{ ok: boolean; newSessionId: string }>(`/admin/orchestrators/${sessionId}/refresh`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: adminKeys.orchestrators() });
+    },
+  });
+}
+
 // --- Action Log ---
 
 export interface ActionLogEntry {
