@@ -709,7 +709,7 @@ function SlackIcon({ className }: { className?: string }) {
 // --- Orchestrators ---
 
 function OrchestratorsSection() {
-  const { data: orchestrators, isLoading } = useAdminOrchestrators();
+  const { data: orchestrators, isLoading, fetchNextPage, isFetchingNextPage, hasNextPage } = useAdminOrchestrators();
   const navigate = useNavigate();
 
   const statusVariant = (status: string): 'success' | 'warning' | 'error' | 'secondary' => {
@@ -791,6 +791,11 @@ function OrchestratorsSection() {
               ))}
             </tbody>
           </table>
+          <LoadMoreButton
+            onClick={() => fetchNextPage()}
+            isLoading={isFetchingNextPage}
+            hasMore={hasNextPage ?? false}
+          />
         </div>
       )}
     </Section>

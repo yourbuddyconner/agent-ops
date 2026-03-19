@@ -296,7 +296,12 @@ adminRouter.delete('/custom-providers/:providerId', async (c) => {
 // --- Orchestrators ---
 
 adminRouter.get('/orchestrators', async (c) => {
-  const rows = await c.env.DB.prepare(`
+  const limitStr = c.req.query('limit');
+  const cursor = c.req.query('cursor');
+  const limit = limitStr ? Math.min(parseInt(limitStr, 10) || 25, 100) : 25;
+
+  // Paginate sessions in a subquery, then join extras — avoids D1 bind-parameter limits
+  let query = `
     SELECT
       s.id AS session_id,
       s.user_id,
@@ -307,47 +312,76 @@ adminRouter.get('/orchestrators', async (c) => {
       u.name AS user_name,
       oi.name AS identity_name,
       oi.handle AS identity_handle,
-      oi.avatar AS identity_avatar
-    FROM sessions s
+      oi.avatar AS identity_avatar,
+      cb.channel_type,
+      cb.channel_id,
+      cb.slack_channel_id
+    FROM (
+      SELECT * FROM sessions
+      WHERE is_orchestrator = 1
+        AND status IN ('running', 'idle', 'hibernating', 'hibernated', 'initializing', 'restoring')
+  `;
+  const params: (string | number)[] = [];
+
+  if (cursor) {
+    query += `    AND last_active_at < ?\n`;
+    params.push(cursor);
+  }
+
+  query += `      ORDER BY last_active_at DESC
+      LIMIT ?
+    ) s
     JOIN users u ON u.id = s.user_id
     LEFT JOIN orchestrator_identities oi ON oi.user_id = s.user_id
-    WHERE s.is_orchestrator = 1
-      AND s.status NOT IN ('archived')
+    LEFT JOIN channel_bindings cb ON cb.session_id = s.id
     ORDER BY s.last_active_at DESC
-  `).all();
+  `;
+  params.push(limit + 1); // fetch one extra to detect hasMore
 
-  const sessionIds = (rows.results ?? []).map((r: any) => r.session_id as string);
+  const rows = await c.env.DB.prepare(query).bind(...params).all();
 
-  // Batch-fetch channel bindings for all orchestrator sessions
-  let channelMap = new Map<string, Array<{ channelType: string; channelId: string; slackChannelId?: string }>>();
-  if (sessionIds.length > 0) {
-    const placeholders = sessionIds.map(() => '?').join(',');
-    const bindings = await c.env.DB.prepare(
-      `SELECT session_id, channel_type, channel_id, slack_channel_id FROM channel_bindings WHERE session_id IN (${placeholders})`
-    ).bind(...sessionIds).all();
+  // Group rows by session (LEFT JOIN may produce multiple rows per session)
+  const sessionMap = new Map<string, {
+    sessionId: string; userId: string; status: string;
+    userEmail: string; userName?: string;
+    identityName?: string; identityHandle?: string; identityAvatar?: string;
+    channels: Array<{ channelType: string; channelId: string; slackChannelId?: string }>;
+    createdAt: string; lastActiveAt: string;
+  }>();
 
-    for (const b of (bindings.results ?? []) as any[]) {
-      const list = channelMap.get(b.session_id) ?? [];
-      list.push({ channelType: b.channel_type, channelId: b.channel_id, slackChannelId: b.slack_channel_id || undefined });
-      channelMap.set(b.session_id, list);
+  for (const r of (rows.results ?? []) as any[]) {
+    let entry = sessionMap.get(r.session_id);
+    if (!entry) {
+      entry = {
+        sessionId: r.session_id,
+        userId: r.user_id,
+        status: r.status,
+        userEmail: r.user_email,
+        userName: r.user_name || undefined,
+        identityName: r.identity_name || undefined,
+        identityHandle: r.identity_handle || undefined,
+        identityAvatar: r.identity_avatar || undefined,
+        channels: [],
+        createdAt: r.created_at,
+        lastActiveAt: r.last_active_at,
+      };
+      sessionMap.set(r.session_id, entry);
+    }
+    if (r.channel_type) {
+      entry.channels.push({
+        channelType: r.channel_type,
+        channelId: r.channel_id,
+        slackChannelId: r.slack_channel_id || undefined,
+      });
     }
   }
 
-  const orchestrators = (rows.results ?? []).map((r: any) => ({
-    sessionId: r.session_id,
-    userId: r.user_id,
-    status: r.status,
-    userEmail: r.user_email,
-    userName: r.user_name || undefined,
-    identityName: r.identity_name || undefined,
-    identityHandle: r.identity_handle || undefined,
-    identityAvatar: r.identity_avatar || undefined,
-    channels: channelMap.get(r.session_id) ?? [],
-    createdAt: r.created_at,
-    lastActiveAt: r.last_active_at,
-  }));
+  const all = [...sessionMap.values()];
+  const hasMore = all.length > limit;
+  const page = all.slice(0, limit);
+  const nextCursor = hasMore ? page[page.length - 1].lastActiveAt : undefined;
 
-  return c.json(orchestrators);
+  return c.json({ orchestrators: page, hasMore, nextCursor });
 });
 
 // --- Action Invocation Log ---

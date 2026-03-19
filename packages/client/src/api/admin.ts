@@ -155,10 +155,24 @@ export interface AdminOrchestrator {
   lastActiveAt: string;
 }
 
+interface OrchestratorPage {
+  orchestrators: AdminOrchestrator[];
+  hasMore: boolean;
+  nextCursor?: string;
+}
+
 export function useAdminOrchestrators() {
-  return useQuery({
+  return useInfiniteQuery<OrchestratorPage, Error, AdminOrchestrator[], readonly string[], string | undefined>({
     queryKey: adminKeys.orchestrators(),
-    queryFn: () => api.get<AdminOrchestrator[]>('/admin/orchestrators'),
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams();
+      params.set('limit', '25');
+      if (pageParam) params.set('cursor', pageParam);
+      return api.get<OrchestratorPage>(`/admin/orchestrators?${params.toString()}`);
+    },
+    initialPageParam: undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    select: (data) => data.pages.flatMap((page) => page.orchestrators),
   });
 }
 

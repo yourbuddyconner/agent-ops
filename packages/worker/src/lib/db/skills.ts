@@ -30,12 +30,16 @@ async function syncSkillFts(db: AppDb, skillId: string): Promise<void> {
 
     const { rowid, name, description, content } = row[0];
 
+    // Truncate content for FTS — D1 has a bind-parameter size limit
+    // and full content isn't needed for search relevance
+    const truncatedContent = content.length > 8000 ? content.slice(0, 8000) : content;
+
     // Delete existing FTS entry
     await db.run(sql`DELETE FROM skills_fts WHERE rowid = ${rowid}`);
     // Re-insert with explicit values
     await db.run(sql`
       INSERT INTO skills_fts(rowid, name, description, content)
-      VALUES (${rowid}, ${name}, ${description}, ${content})
+      VALUES (${rowid}, ${name}, ${description}, ${truncatedContent})
     `);
   } catch (err) {
     // FTS sync is best-effort — don't block skill upserts if FTS fails
