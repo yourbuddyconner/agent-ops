@@ -29,6 +29,7 @@ export interface AvailableService {
 
 interface AvailableServicesResponse {
   services: AvailableService[];
+  disabledServices: string[];
 }
 
 export function useIntegrations() {

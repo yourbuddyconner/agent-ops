@@ -149,24 +149,34 @@ function resolveService(svc: AvailableService): ResolvedService {
 
 // ─── Token-based services (not from the integration registry) ──────────────
 // 1Password and Telegram use different APIs and aren't registered as
-// IntegrationPackages. They're always shown if their meta is defined.
+// IntegrationPackages. Built as ResolvedService entries and filtered by
+// admin-disabled state at render time.
 
-const TOKEN_SERVICES: ResolvedService[] = (['1password', 'telegram'] as const)
-  .filter((id) => SERVICE_META[id])
-  .map((id) => {
-    const meta = SERVICE_META[id]!;
-    return {
-      id,
-      name: id === '1password' ? '1Password' : 'Telegram',
-      description: meta.description,
-      icon: meta.icon,
-      connectionType: 'token' as const,
-      tokenLabel: meta.tokenLabel,
-      tokenPlaceholder: meta.tokenPlaceholder,
-      tokenHelpText: meta.tokenHelpText,
-      credentialProvider: meta.credentialProvider,
-    };
-  });
+const TOKEN_SERVICE_IDS = ['1password', 'telegram'] as const;
+const TOKEN_SERVICE_NAMES: Record<string, string> = { '1password': '1Password', telegram: 'Telegram' };
+
+function buildTokenServices(disabledServices: Set<string>): ResolvedService[] {
+  return TOKEN_SERVICE_IDS
+    .filter((id) => SERVICE_META[id] && !disabledServices.has(id))
+    .map((id) => {
+      const meta = SERVICE_META[id]!;
+      return {
+        id,
+        name: TOKEN_SERVICE_NAMES[id] ?? id,
+        description: meta.description,
+        icon: meta.icon,
+        connectionType: 'token' as const,
+        tokenLabel: meta.tokenLabel,
+        tokenPlaceholder: meta.tokenPlaceholder,
+        tokenHelpText: meta.tokenHelpText,
+        credentialProvider: meta.credentialProvider,
+      };
+    });
+}
+
+// Services that are pre-configured at the org level and should not appear
+// in the user-facing "Connect Integration" dialog.
+const PRE_CONFIGURED_SERVICES = new Set(['deepwiki', 'github', 'slack']);
 
 // ─── Component ─────────────────────────────────────────────────────────────
 
@@ -183,10 +193,15 @@ export function ConnectIntegrationDialog({
   const [connecting, setConnecting] = React.useState<string | null>(null);
   const { data, isLoading } = useAvailableIntegrations();
 
-  // Merge token-based services + API-sourced OAuth services
+  // Merge token-based services + API-sourced OAuth services, filtering out
+  // admin-disabled and pre-configured services.
   const services = React.useMemo(() => {
-    const oauthServices = (data?.services ?? []).map(resolveService);
-    return [...TOKEN_SERVICES, ...oauthServices];
+    const disabled = new Set(data?.disabledServices ?? []);
+    const tokenServices = buildTokenServices(disabled);
+    const oauthServices = (data?.services ?? [])
+      .filter((svc) => !PRE_CONFIGURED_SERVICES.has(svc.service))
+      .map(resolveService);
+    return [...tokenServices, ...oauthServices];
   }, [data]);
 
   function handleClose(isOpen: boolean) {

@@ -13,6 +13,14 @@ export interface PluginContentEntry {
 
 export const pluginContentRegistry: PluginContentEntry[] = [
   {
+    name: "1password",
+    version: "0.0.1",
+    description: "Secret management for agent sessions",
+    icon: "🔑",
+    capabilities: [],
+    artifacts: [],
+  },
+  {
     name: "browser",
     version: "0.0.1",
     description: "Browser control via agent-browser CLI",

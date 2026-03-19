@@ -172,7 +172,7 @@ integrationsRouter.get('/available', async (c) => {
       hasTriggers: !!pkg.triggers,
     }));
 
-  return c.json({ services: available });
+  return c.json({ services: available, disabledServices: [...disabledPlugins] });
 });
 
 /**
