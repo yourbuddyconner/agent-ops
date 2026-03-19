@@ -132,6 +132,10 @@ app.get('/health', (c) => {
 // Webhook routes (authenticated via webhook signatures)
 app.route('/webhooks', webhooksRouter);
 
+// GitHub identity linking callback (unauthenticated — GitHub redirects here after OAuth)
+// Must be mounted before the generic /auth router so it takes priority over /:provider/callback
+app.route('/auth/github', githubMeCallbackRouter);
+
 // OAuth routes (no auth required — handles login flow)
 app.route('/auth', oauthRouter);
 
@@ -150,9 +154,6 @@ app.route('/channels', slackEventsRouter);
 
 // Repo provider callbacks (unauthenticated — GitHub redirects here after app install)
 app.route('/repo-providers', repoProviderCallbackRouter);
-
-// GitHub identity linking callback (unauthenticated — GitHub redirects here after OAuth)
-app.route('/auth/github/link', githubMeCallbackRouter);
 
 // Protected API routes
 app.use('/api/*', authMiddleware);

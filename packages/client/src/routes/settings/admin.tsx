@@ -96,6 +96,7 @@ function AdminSettingsPage() {
         <ActionLogSection />
         <CustomProvidersSection />
         <AccessControlSection />
+        <LoginProvidersSection />
         <InvitesSection />
         <UsersSection currentUserId={user.id} />
         <DefaultSkillsSection />
@@ -2544,6 +2545,66 @@ function PluginExpandedDetail({
         </div>
       )}
     </div>
+  );
+}
+
+// --- Login Providers ---
+
+const ALL_LOGIN_PROVIDERS = [
+  { id: 'google', label: 'Google' },
+  { id: 'github', label: 'GitHub' },
+  { id: 'email', label: 'Email / Password' },
+];
+
+function LoginProvidersSection() {
+  const { data: settings } = useOrgSettings();
+  const updateSettings = useUpdateOrgSettings();
+
+  // null/undefined = all enabled
+  const enabled = settings?.enabledLoginProviders ?? ALL_LOGIN_PROVIDERS.map(p => p.id);
+
+  const toggle = (providerId: string) => {
+    const isDisabling = enabled.includes(providerId);
+    const next = isDisabling
+      ? enabled.filter(id => id !== providerId)
+      : [...enabled, providerId];
+
+    // Prevent disabling all providers
+    if (next.length === 0) return;
+
+    // Send empty array when all are enabled (clears the setting = default all)
+    updateSettings.mutate({
+      enabledLoginProviders: next.length === ALL_LOGIN_PROVIDERS.length ? [] : next,
+    });
+  };
+
+  return (
+    <Section title="Login Providers">
+      <p className="text-sm text-neutral-500 dark:text-neutral-400">
+        Choose which identity providers appear on the login page. Disabling a provider prevents new logins but does not affect existing users. At least one provider must remain enabled.
+      </p>
+      <div className="mt-3 space-y-2">
+        {ALL_LOGIN_PROVIDERS.map(provider => {
+          const isEnabled = enabled.includes(provider.id);
+          const isLastEnabled = isEnabled && enabled.length === 1;
+          return (
+            <label key={provider.id} className="flex items-center gap-3 text-sm">
+              <input
+                type="checkbox"
+                checked={isEnabled}
+                onChange={() => toggle(provider.id)}
+                disabled={updateSettings.isPending || isLastEnabled}
+                className="h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-800"
+              />
+              <span className="text-neutral-700 dark:text-neutral-300">{provider.label}</span>
+              {isLastEnabled && (
+                <span className="text-xs text-neutral-400">(at least one required)</span>
+              )}
+            </label>
+          );
+        })}
+      </div>
+    </Section>
   );
 }
 

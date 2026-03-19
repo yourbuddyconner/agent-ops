@@ -36,7 +36,7 @@ githubMeRouter.get('/', async (c) => {
   let scopes: string[] | undefined;
   if (githubLink) {
     const credRow = await getCredentialRow(appDb, 'user', user.id, 'github', 'oauth2');
-    scopes = credRow?.scopes?.split(' ') ?? undefined;
+    scopes = credRow?.scopes?.split(/[\s,]+/).filter(Boolean) ?? undefined;
   }
 
   return c.json({
@@ -84,7 +84,7 @@ githubMeRouter.post('/link', async (c) => {
 
   // The callback should go to the WORKER, not the frontend
   const workerOrigin = c.env.API_PUBLIC_URL || new URL(c.req.url).origin;
-  const redirectUri = `${workerOrigin}/auth/github/link/callback`;
+  const redirectUri = `${workerOrigin}/auth/github/callback`;
 
   const params = new URLSearchParams({
     client_id: ghConfig.oauthClientId,
@@ -122,7 +122,7 @@ githubMeRouter.delete('/link', async (c) => {
   return c.json({ success: true });
 });
 
-// ─── Public Callback Router (mounted at /auth/github/link) ──────────────────
+// ─── Public Callback Router (mounted at /auth/github) ───────────────────────
 
 export const githubMeCallbackRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 

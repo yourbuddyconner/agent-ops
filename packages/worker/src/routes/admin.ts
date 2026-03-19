@@ -44,6 +44,7 @@ adminRouter.put('/', async (c) => {
     domainGatingEnabled?: boolean;
     emailAllowlistEnabled?: boolean;
     modelPreferences?: string[];
+    enabledLoginProviders?: string[];
   }>();
 
   if (body.modelPreferences !== undefined) {
@@ -55,6 +56,15 @@ adminRouter.put('/', async (c) => {
     }
     if (!body.modelPreferences.every((m) => typeof m === 'string' && m.length <= 255)) {
       throw new ValidationError('Each model preference must be a string (max 255 chars)');
+    }
+  }
+
+  if (body.enabledLoginProviders !== undefined) {
+    if (!Array.isArray(body.enabledLoginProviders)) {
+      throw new ValidationError('enabledLoginProviders must be an array of strings');
+    }
+    if (!body.enabledLoginProviders.every((p) => typeof p === 'string' && p.length <= 50)) {
+      throw new ValidationError('Each login provider must be a string (max 50 chars)');
     }
   }
 
@@ -411,20 +421,28 @@ adminRouter.post('/orchestrators/:sessionId/refresh', async (c) => {
     `SELECT email FROM users WHERE id = ?`
   ).bind(session.user_id).first<{ email: string }>();
 
-  // Stop the current session DO
-  const doId = c.env.SESSIONS.idFromName(sessionId);
-  const sessionDO = c.env.SESSIONS.get(doId);
-  await sessionDO.fetch(new Request('http://do/stop', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason: 'admin_refresh' }),
-  }));
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+
+  // Stop the current session DO (best-effort — may already be stopped/errored)
+  try {
+    const doId = c.env.SESSIONS.idFromName(sessionId);
+    const sessionDO = c.env.SESSIONS.get(doId);
+    await sessionDO.fetch(new Request('http://do/stop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'admin_refresh' }),
+    }));
+  } catch (err) {
+    console.warn(`[admin] Failed to stop orchestrator ${sessionId}, proceeding with restart:`, err);
+  }
 
   // Restart with a new session ID (rotates DO, migrates channels, fresh sandbox)
   const result = await restartOrchestratorSession(
     c.env,
     session.user_id,
-    user?.email ?? '',
+    user.email,
     {
       id: identity.id,
       name: identity.name,

@@ -11,6 +11,7 @@ export const orgSettings = sqliteTable('org_settings', {
   emailAllowlistEnabled: integer({ mode: 'boolean' }).default(false),
   defaultSessionVisibility: text().notNull().default('private'),
   modelPreferences: text({ mode: 'json' }).$type<string[]>(),
+  enabledLoginProviders: text({ mode: 'json' }).$type<string[]>(),
   createdAt: text().default(sql`(datetime('now'))`),
   updatedAt: text().default(sql`(datetime('now'))`),
 });

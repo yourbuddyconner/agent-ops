@@ -137,14 +137,22 @@ export function GitHubCard() {
           <p className="text-xs text-neutral-500 dark:text-neutral-400">
             The org app covers {status.orgApp.accessibleOwners.join(', ')}. Link your personal account to enable commits under your name.
           </p>
-          <div className="flex justify-end">
+          <div className="flex gap-2 justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => linkGitHub.mutate({})}
+              disabled={linkGitHub.isPending}
+            >
+              {linkGitHub.isPending ? 'Redirecting...' : 'Link Identity'}
+            </Button>
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => linkGitHub.mutate({ scopes: ['repo', 'read:user', 'user:email'] })}
+              onClick={() => linkGitHub.mutate({ scopes: ['repo'] })}
               disabled={linkGitHub.isPending}
             >
-              {linkGitHub.isPending ? 'Redirecting...' : 'Connect GitHub'}
+              {linkGitHub.isPending ? 'Redirecting...' : 'Link with Repo Access'}
             </Button>
           </div>
         </CardContent>
@@ -164,18 +172,26 @@ export function GitHubCard() {
           </div>
         </div>
       </CardHeader>
-      <CardContent>
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-neutral-500 dark:text-neutral-400">
-            Connect your GitHub account for actions, notifications, and commit attribution
-          </p>
+      <CardContent className="space-y-3">
+        <p className="text-xs text-neutral-500 dark:text-neutral-400">
+          Connect your GitHub account for actions, notifications, and commit attribution.
+        </p>
+        <div className="flex gap-2 justify-end">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => linkGitHub.mutate({})}
+            disabled={linkGitHub.isPending}
+          >
+            {linkGitHub.isPending ? 'Redirecting...' : 'Link Identity'}
+          </Button>
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => linkGitHub.mutate({ scopes: ['repo', 'read:user', 'user:email'] })}
+            onClick={() => linkGitHub.mutate({ scopes: ['repo'] })}
             disabled={linkGitHub.isPending}
           >
-            {linkGitHub.isPending ? 'Redirecting...' : 'Connect'}
+            {linkGitHub.isPending ? 'Redirecting...' : 'Link with Repo Access'}
           </Button>
         </div>
       </CardContent>

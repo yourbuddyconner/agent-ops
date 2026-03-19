@@ -16,6 +16,7 @@ function rowToOrgSettings(row: typeof orgSettings.$inferSelect): OrgSettings {
     emailAllowlistEnabled: !!row.emailAllowlistEnabled,
     defaultSessionVisibility: (row.defaultSessionVisibility as OrgSettings['defaultSessionVisibility']) || 'private',
     modelPreferences: row.modelPreferences || undefined,
+    enabledLoginProviders: row.enabledLoginProviders || undefined,
     createdAt: toDate(row.createdAt),
     updatedAt: toDate(row.updatedAt),
   };
@@ -74,7 +75,7 @@ export async function getOrgSettings(db: AppDb): Promise<OrgSettings> {
 
 export async function updateOrgSettings(
   db: AppDb,
-  updates: Partial<Pick<OrgSettings, 'name' | 'allowedEmailDomain' | 'allowedEmails' | 'domainGatingEnabled' | 'emailAllowlistEnabled' | 'modelPreferences'>>
+  updates: Partial<Pick<OrgSettings, 'name' | 'allowedEmailDomain' | 'allowedEmails' | 'domainGatingEnabled' | 'emailAllowlistEnabled' | 'modelPreferences' | 'enabledLoginProviders'>>
 ): Promise<OrgSettings> {
   const setValues: Record<string, unknown> = {};
 
@@ -84,6 +85,7 @@ export async function updateOrgSettings(
   if (updates.domainGatingEnabled !== undefined) setValues.domainGatingEnabled = updates.domainGatingEnabled;
   if (updates.emailAllowlistEnabled !== undefined) setValues.emailAllowlistEnabled = updates.emailAllowlistEnabled;
   if (updates.modelPreferences !== undefined) setValues.modelPreferences = updates.modelPreferences && updates.modelPreferences.length > 0 ? updates.modelPreferences : null;
+  if (updates.enabledLoginProviders !== undefined) setValues.enabledLoginProviders = updates.enabledLoginProviders && updates.enabledLoginProviders.length > 0 ? updates.enabledLoginProviders : null;
 
   if (Object.keys(setValues).length > 0) {
     setValues.updatedAt = sql`datetime('now')`;

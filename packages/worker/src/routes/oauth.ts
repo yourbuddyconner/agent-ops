@@ -5,6 +5,8 @@ import { identityRegistry } from '../identity/registry.js';
 import { getEnvString } from '../env.js';
 import * as oauthService from '../services/oauth.js';
 import type { ProviderConfig } from '@valet/sdk/identity';
+import { getOrgSettings } from '../lib/db.js';
+import { getDb } from '../lib/drizzle.js';
 
 export const oauthRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -111,7 +113,20 @@ function resolveProviderConfig(env: Env, provider: { configKeys: string[] }): Pr
 
 // GET /auth/providers — list enabled identity providers (no auth required)
 oauthRouter.get('/providers', async (c) => {
-  const providers = identityRegistry.listEnabled();
+  let providers = identityRegistry.listEnabled();
+
+  // Filter by org-level enabled login providers if configured
+  try {
+    const appDb = getDb(c.env.DB);
+    const settings = await getOrgSettings(appDb);
+    if (settings.enabledLoginProviders && settings.enabledLoginProviders.length > 0) {
+      const allowed = new Set(settings.enabledLoginProviders);
+      providers = providers.filter(p => allowed.has(p.id));
+    }
+  } catch (err) {
+    console.warn('[auth/providers] Failed to load org login provider config, showing all:', err);
+  }
+
   return c.json(providers.map(p => ({
     id: p.id,
     displayName: p.displayName,
@@ -180,6 +195,20 @@ oauthRouter.post('/email/register', async (c) => {
   }
 });
 
+// Check if a login provider is enabled at the org level
+async function isLoginProviderEnabled(env: Env, providerId: string): Promise<boolean> {
+  try {
+    const appDb = getDb(env.DB);
+    const settings = await getOrgSettings(appDb);
+    if (settings.enabledLoginProviders && settings.enabledLoginProviders.length > 0) {
+      return settings.enabledLoginProviders.includes(providerId);
+    }
+  } catch {
+    // Fall through — if we can't check, allow it
+  }
+  return true; // null/empty = all enabled
+}
+
 // GET /auth/:provider — redirect to identity provider (OAuth/OIDC/SAML)
 oauthRouter.get('/:provider', async (c) => {
   const providerId = c.req.param('provider');
@@ -187,6 +216,10 @@ oauthRouter.get('/:provider', async (c) => {
   if (!provider) return c.redirect(`${getFrontendUrl(c.env)}/login?error=unknown_provider`);
   if (provider.protocol === 'credentials') return c.redirect(`${getFrontendUrl(c.env)}/login?error=use_form`);
   if (!provider.getAuthUrl) return c.redirect(`${getFrontendUrl(c.env)}/login?error=no_redirect`);
+
+  if (!(await isLoginProviderEnabled(c.env, providerId))) {
+    return c.redirect(`${getFrontendUrl(c.env)}/login?error=provider_disabled`);
+  }
 
   const inviteCode = c.req.query('invite_code');
   const state = await createStateJWT(c.env, providerId, inviteCode);
@@ -217,6 +250,10 @@ oauthRouter.get('/:provider/callback', async (c) => {
 
   const provider = identityRegistry.get(providerId);
   if (!provider) return c.redirect(`${frontendUrl}/login?error=unknown_provider`);
+
+  if (!(await isLoginProviderEnabled(c.env, providerId))) {
+    return c.redirect(`${frontendUrl}/login?error=provider_disabled`);
+  }
 
   try {
     const workerUrl = getWorkerUrl(c.env, c.req.raw);

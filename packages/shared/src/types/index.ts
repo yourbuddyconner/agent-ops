@@ -301,6 +301,7 @@ export interface OrgSettings {
   emailAllowlistEnabled: boolean;
   defaultSessionVisibility: SessionVisibility;
   modelPreferences?: string[];
+  enabledLoginProviders?: string[];
   createdAt: Date;
   updatedAt: Date;
 }
