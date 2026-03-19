@@ -68,7 +68,7 @@ export async function findUserByEmail(db: AppDb, email: string): Promise<User | 
 export async function updateUserGitHub(
   db: AppDb,
   userId: string,
-  data: { githubId: string; githubUsername: string; name?: string; avatarUrl?: string }
+  data: { githubId: string | null; githubUsername: string | null; name?: string; avatarUrl?: string }
 ): Promise<void> {
   await db
     .update(users)

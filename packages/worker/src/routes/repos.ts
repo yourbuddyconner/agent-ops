@@ -79,10 +79,10 @@ async function resolveRepoCredentialForProvider(
  * Uses the same credential priority as repo access: user OAuth first,
  * then org App installation, then user App installation.
  */
-async function getGitHubToken(env: Env, userId: string): Promise<string> {
+async function getGitHubToken(env: Env, userId: string, repoOwner?: string): Promise<string> {
   const appDb = getDb(env.DB);
   const orgSettings = await db.getOrgSettings(appDb);
-  const resolved = await credentialDb.resolveRepoCredential(appDb, 'github', undefined, orgSettings?.id, userId);
+  const resolved = await credentialDb.resolveRepoCredential(appDb, 'github', repoOwner, orgSettings?.id, userId);
   if (!resolved) {
     throw new ValidationError('GitHub account not connected. Link your GitHub account or ask an org admin to install the GitHub App.');
   }
@@ -261,7 +261,7 @@ reposRouter.get('/:owner/:repo/pulls', async (c) => {
   const user = c.get('user');
   const { owner, repo } = c.req.param();
 
-  const token = await getGitHubToken(c.env, user.id);
+  const token = await getGitHubToken(c.env, user.id, owner);
 
   const res = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=30`,
@@ -320,7 +320,7 @@ reposRouter.get('/:owner/:repo/issues', async (c) => {
   const user = c.get('user');
   const { owner, repo } = c.req.param();
 
-  const token = await getGitHubToken(c.env, user.id);
+  const token = await getGitHubToken(c.env, user.id, owner);
 
   const res = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/issues?state=open&sort=updated&direction=desc&per_page=30`,
@@ -395,7 +395,7 @@ reposRouter.post('/pull-request', zValidator('json', createPRSchema), async (c) 
   }
 
   const [, owner, repo] = match;
-  const token = await getGitHubToken(c.env, user.id);
+  const token = await getGitHubToken(c.env, user.id, owner);
 
   // Determine base branch if not provided
   let baseBranch = body.base;

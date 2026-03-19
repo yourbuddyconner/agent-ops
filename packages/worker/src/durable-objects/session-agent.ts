@@ -3,6 +3,10 @@ import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
 import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, readMemoryFile, listMemoryFiles, writeMemoryFile, patchMemoryFile, deleteMemoryFile, deleteMemoryFilesUnderPath, searchMemoryFiles, boostMemoryFileRelevance, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentity, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getUserIdentityLinks, getUserSlackIdentityLink, getThreadOriginChannel } from '../lib/db.js';
 import { getCredential, type CredentialResult } from '../services/credentials.js';
+import { resolveRepoCredential, type CredentialRow } from '../lib/db/credentials.js';
+import { decryptStringPBKDF2 } from '../lib/crypto.js';
+import { repoProviderRegistry } from '../repos/registry.js';
+import type { RepoCredential } from '@valet/sdk/repos';
 import { getSlackBotToken } from '../services/slack.js';
 import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
 import { listTriggers, getTrigger, deleteTrigger, createTrigger, getTriggerForRun, updateTriggerLastRun, findScheduleTriggerByNameAndWorkflow, findScheduleTriggersByWorkflow, findScheduleTriggersByName, updateTriggerFull } from '../lib/db/triggers.js';
@@ -7374,29 +7378,89 @@ export class SessionAgentDO {
 
   /**
    * Get a decrypted GitHub access token for the session.
-   * Fallback chain:
-   *   1. Active prompt author's GitHub token (if they have one connected)
-   *   2. Session creator's GitHub token
-   *   3. null (no token available)
+   * Uses repo-aware credential resolution supporting both OAuth and App installation tokens.
+   * Priority chain per user:
+   *   1. Active prompt author's credentials (for multiplayer attribution)
+   *   2. Session creator's credentials
+   * Within each user, resolveRepoCredential picks: OAuth first, then App installation
+   * that covers the session's repo owner.
    */
   private async getGitHubToken(): Promise<string | null> {
+    const orgSettings = await getOrgSettings(this.appDb);
+    const orgId = orgSettings?.id;
+
+    // Extract repo owner from session's repo URL for repo-aware resolution
+    const sessionId = this.getStateValue('sessionId');
+    const gitState = sessionId ? await getSessionGitState(this.appDb, sessionId) : null;
+    const repoUrl = gitState?.sourceRepoUrl;
+    const urlMatch = repoUrl?.match(/github\.com[/:]([^/]+)\//);
+    const repoOwner = urlMatch?.[1];
+
     // Try the current prompt author first (for multiplayer attribution)
     const promptAuthorId = this.getStateValue('currentPromptAuthorId');
     if (promptAuthorId) {
-      const authorResult = await getCredential(this.env, 'user', promptAuthorId, 'github', { credentialType: 'oauth2' });
-      if (authorResult.ok) {
-        return authorResult.credential.accessToken;
-      }
+      const token = await this.resolveGitHubTokenForUser(promptAuthorId, repoOwner, orgId);
+      if (token) return token;
     }
 
     // Fall back to session creator
     const userId = this.getStateValue('userId');
     if (!userId) return null;
 
-    const result = await getCredential(this.env, 'user', userId, 'github', { credentialType: 'oauth2' });
-    if (!result.ok) return null;
+    return this.resolveGitHubTokenForUser(userId, repoOwner, orgId);
+  }
 
-    return result.credential.accessToken;
+  /**
+   * Resolve a GitHub token for a specific user using repo-aware credential resolution.
+   * For OAuth credentials, returns the token directly.
+   * For App installations, mints a fresh installation access token.
+   */
+  private async resolveGitHubTokenForUser(
+    userId: string,
+    repoOwner: string | undefined,
+    orgId: string | undefined,
+  ): Promise<string | null> {
+    const resolved = await resolveRepoCredential(this.appDb, 'github', repoOwner, orgId, userId);
+    if (!resolved) return null;
+
+    // Decrypt the credential data
+    let credData: Record<string, unknown>;
+    try {
+      const json = await decryptStringPBKDF2(resolved.credential.encryptedData, this.env.ENCRYPTION_KEY);
+      credData = JSON.parse(json);
+    } catch {
+      return null;
+    }
+
+    // For OAuth tokens, return directly
+    if (resolved.credentialType === 'oauth2') {
+      return (credData.access_token || credData.token) as string | null;
+    }
+
+    // For App installations, mint a fresh token
+    const metadata: Record<string, string> = resolved.credential.metadata
+      ? JSON.parse(resolved.credential.metadata)
+      : {};
+    for (const [k, v] of Object.entries(credData)) {
+      if (typeof v === 'string') metadata[k] = v;
+    }
+
+    const provider = repoProviderRegistry.get('github-app');
+    if (!provider) return null;
+
+    const repoCredential: RepoCredential = {
+      type: 'installation',
+      installationId: metadata.installationId || metadata.installation_id,
+      accessToken: (credData.access_token || credData.token) as string | undefined,
+      metadata,
+    };
+
+    try {
+      const freshToken = await provider.mintToken(repoCredential);
+      return freshToken.accessToken;
+    } catch {
+      return null;
+    }
   }
 
   /**

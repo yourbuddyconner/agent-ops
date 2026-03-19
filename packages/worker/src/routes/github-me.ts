@@ -72,7 +72,7 @@ githubMeRouter.post('/link', async (c) => {
   // Default scopes: read:user + user:email (identity only)
   // If scopes includes 'repo', add that too
   const requestedScopes = body.scopes || [];
-  const scopeSet = new Set(['read:user', 'user:email', ...requestedScopes]);
+  const scopeSet = new Set(['read:user', 'user:email', 'read:org', ...requestedScopes]);
   const scopeString = [...scopeSet].join(' ');
 
   // Create signed JWT state token (10 min expiry)
@@ -115,8 +115,8 @@ githubMeRouter.delete('/link', async (c) => {
 
   // Clear githubId and githubUsername on user record
   await db.updateUserGitHub(appDb, user.id, {
-    githubId: '',
-    githubUsername: '',
+    githubId: null,
+    githubUsername: null,
   });
 
   return c.json({ success: true });
