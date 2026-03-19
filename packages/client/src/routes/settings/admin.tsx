@@ -30,6 +30,7 @@ import { Input } from '@/components/ui/input';
 import { useAvailableModels } from '@/api/sessions';
 import type { ProviderModels } from '@/api/sessions';
 import { useSlackInstallStatus, useInstallSlack, useUninstallSlack } from '@/api/slack';
+import { GitHubConfigSection } from '@/components/settings/github-config';
 import { ActionPoliciesSection } from '@/components/settings/action-policies-section';
 import { usePlugins, usePluginDetail, usePluginSettings, useUpdatePluginStatus, useSyncPlugins, useUpdatePluginSettings } from '@/api/plugins';
 import { Badge } from '@/components/ui/badge';
@@ -79,6 +80,7 @@ function AdminSettingsPage() {
         <OrgReposSection />
         <LLMKeysSection />
         <SlackInstallSection />
+        <GitHubConfigSection />
         <OrchestratorsSection />
         <ActionLogSection />
         <CustomProvidersSection />
