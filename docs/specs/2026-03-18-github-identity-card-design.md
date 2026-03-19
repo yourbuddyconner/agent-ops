@@ -10,88 +10,140 @@ Three related gaps in the GitHub integration:
 
 1. **No user identity linking.** Users have no way to link their personal GitHub account through the integrations page. The dual repo provider infrastructure (OAuth + App) is built, but there's no UI to provision a personal OAuth credential or understand which credential mode sessions use.
 
-2. **No admin config UI.** GitHub OAuth App credentials (`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`) and GitHub App credentials (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`) are hardcoded as worker env vars. Admins can't configure them through the app. Slack already has a D1-backed pattern (`org_slack_installs`) that stores app config in the database — GitHub should follow suit.
+2. **No admin config UI.** GitHub OAuth App credentials (`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`) and GitHub App credentials (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`) are hardcoded as worker env vars. Admins can't configure them through the app. Slack has a separate D1 table (`org_slack_installs`) but there's no generic pattern — each new service would need its own table. We need a generic `org_service_configs` table that stores all service configurations, and migrate Slack into it.
 
 3. **Broken credential resolution.** `resolveRepoCredential()` uses a global priority chain that doesn't account for the fact that user App installations and org App installations cover different, non-overlapping repo sets (personal vs org-scoped repos). They're parallel access paths, not a fallback chain.
 
 ## Goals
 
-1. Admin UI for configuring GitHub OAuth App and GitHub App credentials (org settings)
-2. Dedicated GitHub card on the integrations page for personal identity linking
-3. Surface credential mode and commit attribution implications in the UI
-4. Repo-aware credential resolution using stored accessible owners
+1. Generic `org_service_configs` table for all service configurations, with Slack migration
+2. Admin UI for configuring GitHub OAuth App and GitHub App credentials (org settings)
+3. Dedicated GitHub card on the integrations page for personal identity linking
+4. Surface credential mode and commit attribution implications in the UI
+5. Repo-aware credential resolution using stored accessible owners
 
 ## Non-Goals
 
 - Abstracting a generic identity-link card component (future work when a third consumer exists)
 - Explicit per-session provider selection (`repoProviderId` on sessions table)
-- Moving other integration configs (Google, Slack) from env vars to D1 (follow-up)
 
 ---
 
 ## Design
 
-### 1. Admin GitHub Configuration
+### 1. Generic Org Service Config Table
+
+#### Motivation
+
+Integration configs are currently scattered: Slack uses `org_slack_installs` (D1), GitHub uses env vars (`GITHUB_CLIENT_ID`, etc.), Google uses env vars. Rather than creating another per-service table for GitHub, we introduce a single `org_service_configs` table that stores all service configurations. Slack is migrated into it, and GitHub is the first new consumer.
 
 #### Data model
 
-New table `org_github_config` (follows the `org_slack_installs` pattern):
-
 ```sql
-CREATE TABLE org_github_config (
-  id TEXT PRIMARY KEY DEFAULT 'default',
-
-  -- OAuth App (for user identity linking + actions)
-  oauth_client_id TEXT,
-  oauth_client_secret_encrypted TEXT,
-
-  -- GitHub App (for org-level repo access)
-  app_id TEXT,
-  app_private_key_encrypted TEXT,
-  app_slug TEXT,
-  app_webhook_secret_encrypted TEXT,
-  app_installation_id TEXT,
-  app_accessible_owners TEXT,           -- JSON array of owners this installation can access
-  app_accessible_owners_refreshed_at TEXT,  -- ISO timestamp of last refresh
-
+CREATE TABLE org_service_configs (
+  service TEXT PRIMARY KEY,       -- e.g. 'github', 'slack'
+  encrypted_config TEXT NOT NULL, -- encrypted JSON blob (secrets: tokens, keys, client secrets)
+  metadata TEXT,                  -- unencrypted JSON (non-sensitive: teamName, accessibleOwners, etc.)
   configured_by TEXT NOT NULL REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 ```
 
-This is a singleton table (`id = 'default'`), consistent with the existing `org_settings` pattern. This is a deliberate single-org design choice.
-
-`app_accessible_owners` is a JSON string array (e.g., `["my-org", "conner"]`) fetched from `GET /installation/repositories` at config time and refreshed periodically.
-
-Drizzle schema: `packages/worker/src/lib/schema/github.ts`.
-
-#### Config resolution (env var fallback)
-
-All code that currently reads `c.env.GITHUB_CLIENT_ID` etc. switches to a helper:
+**`encrypted_config`** holds secrets, encrypted with `ENCRYPTION_KEY` (same pattern as credentials table). Each service defines its own config shape in TypeScript:
 
 ```typescript
-async function getGitHubConfig(env: Env, db: AppDb): Promise<GitHubConfig | null>
-```
-
-This reads from D1 first. If no row exists, falls back to env vars for backward compatibility. Once an admin configures via UI, the D1 row takes precedence. This lets existing deployments keep working without migration.
-
-The `GitHubConfig` type:
-
-```typescript
-interface GitHubConfig {
+// GitHub config (encrypted_config blob)
+interface GitHubServiceConfig {
   oauthClientId: string;
   oauthClientSecret: string;
   appId?: string;
   appPrivateKey?: string;
   appSlug?: string;
   appWebhookSecret?: string;
+}
+
+// GitHub metadata (unencrypted, queryable)
+interface GitHubServiceMetadata {
   appInstallationId?: string;
-  appAccessibleOwners?: string[];
+  accessibleOwners?: string[];         // repo owners this App installation can access
+  accessibleOwnersRefreshedAt?: string; // ISO timestamp of last refresh
+}
+
+// Slack config (encrypted_config blob)
+interface SlackServiceConfig {
+  botToken: string;
+  signingSecret?: string;
+}
+
+// Slack metadata (unencrypted)
+interface SlackServiceMetadata {
+  teamId: string;
+  teamName?: string;
+  botUserId: string;
+  appId?: string;
 }
 ```
 
+**`metadata`** holds non-sensitive data needed for display or lookups without decryption (e.g., `accessibleOwners` for credential resolution, `teamName` for display).
+
+Drizzle schema: `packages/worker/src/lib/schema/service-configs.ts`.
+
+#### Generic DB helpers
+
+```typescript
+// Type-safe get/set with per-service config shapes
+async function getServiceConfig<TConfig, TMeta>(
+  db: AppDb, env: Env, service: string
+): Promise<{ config: TConfig; metadata: TMeta } | null>
+
+async function setServiceConfig<TConfig, TMeta>(
+  db: AppDb, env: Env, service: string,
+  config: TConfig, metadata: TMeta, configuredBy: string
+): Promise<void>
+
+async function deleteServiceConfig(
+  db: AppDb, service: string
+): Promise<boolean>
+
+async function getServiceMetadata<TMeta>(
+  db: AppDb, service: string
+): Promise<TMeta | null>
+
+async function updateServiceMetadata<TMeta>(
+  db: AppDb, service: string, metadata: TMeta
+): Promise<void>
+```
+
+`getServiceMetadata` reads only the unencrypted metadata column — useful for credential resolution where we just need `accessibleOwners` without decrypting the full config.
+
+#### GitHub config resolution (env var fallback)
+
+All code that currently reads `c.env.GITHUB_CLIENT_ID` etc. switches to a helper:
+
+```typescript
+async function getGitHubConfig(env: Env, db: AppDb): Promise<GitHubServiceConfig | null>
+```
+
+This calls `getServiceConfig<GitHubServiceConfig>('github')` first. If no row exists, falls back to env vars for backward compatibility. Once an admin configures via UI, the D1 row takes precedence. This lets existing deployments keep working without migration.
+
+**Important:** All direct reads of `c.env.GITHUB_*` must be migrated to use `getGitHubConfig()` to avoid split-brain credential resolution where D1 and env vars point to different apps. The files changed table reflects this — `repo-providers.ts`, `oauth.ts`, `integrations.ts`, and `env-assembly.ts` all switch to the helper.
+
+#### Slack migration
+
+The existing `org_slack_installs` table is migrated into `org_service_configs`:
+
+- `encryptedBotToken` + `encryptedSigningSecret` → `encrypted_config` (as `SlackServiceConfig`)
+- `teamId`, `teamName`, `botUserId`, `appId` → `metadata` (as `SlackServiceMetadata`)
+- `installedBy` → `configured_by`
+
+A D1 migration copies existing data. The old table is kept temporarily (read-only) for rollback safety but all code switches to read from `org_service_configs`. The `slackLinkVerifications` table is unaffected (it's verification-flow specific, not config).
+
+All callers of `getOrgSlackInstall()` / `getOrgSlackInstallAny()` / `saveOrgSlackInstall()` / `deleteOrgSlackInstall()` switch to the generic helpers. The Slack-specific DB helpers in `packages/worker/src/lib/db/slack.ts` are updated to wrap the generic helpers with Slack types.
+
 #### Admin endpoints
+
+**GitHub-specific:**
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
@@ -102,7 +154,7 @@ interface GitHubConfig {
 | `DELETE /api/admin/github/app` | DELETE | Remove GitHub App config |
 | `POST /api/admin/github/app/verify` | POST | Test App config by fetching installation info + accessible repos |
 
-The verify endpoint mints a JWT from the App credentials, lists installations, and stores the `installationId` and `accessibleOwners`. "Save & Verify" is atomic: if verification fails, the config is not saved. The admin can also re-verify an existing config to refresh `accessibleOwners`.
+The verify endpoint mints a JWT from the App credentials, lists installations, and stores the `installationId` and `accessibleOwners` in the metadata column. "Save & Verify" is atomic: if verification fails, the config is not saved. The admin can also re-verify an existing config to refresh `accessibleOwners`.
 
 #### Admin UI
 
@@ -117,8 +169,6 @@ New section in org settings (alongside existing LLM key config). Two collapsible
 The `githubIdentityProvider` in `plugin-github/src/identity.ts` currently declares `configKeys: ['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET']` and the identity provider contract (`ProviderConfig`) passes these from env vars. The `getAuthUrl` and `handleCallback` methods receive a `ProviderConfig` with `clientId` and `clientSecret`.
 
 Rather than changing the identity provider contract, the caller in `routes/oauth.ts` that builds the `ProviderConfig` will be updated to resolve config from D1 first (via `getGitHubConfig`), falling back to env vars. The identity provider itself doesn't need to change.
-
-**Important:** All direct reads of `c.env.GITHUB_*` must be migrated to use `getGitHubConfig()` to avoid split-brain credential resolution where D1 and env vars point to different apps. The files changed table reflects this — `repo-providers.ts`, `oauth.ts`, `integrations.ts`, and `env-assembly.ts` all switch to the helper.
 
 ---
 
@@ -143,7 +193,7 @@ All user-scoped under `/api/me/github`, mirroring the Slack pattern (`/api/me/sl
 ##### `GET /api/me/github`
 
 Returns the user's GitHub connection status. Response fields are assembled from multiple sources:
-- `orgApp.installed` and `orgApp.accessibleOwners` — from `org_github_config` table
+- `orgApp.installed` and `orgApp.accessibleOwners` — from `org_service_configs` table (service `'github'` metadata)
 - `personal.linked`, `personal.githubUsername`, `personal.githubId` — from `users` table (`githubId`, `githubUsername` columns)
 - `personal.avatarUrl` — from `users` table (`avatarUrl` column)
 - `personal.email` — from `users` table (`email` column, the login email)
@@ -264,7 +314,7 @@ This is wrong because org App and user App cover different repo sets. They're pa
 Resolution logic:
 1. **User OAuth token exists** → return it (covers all repos the user can see)
 2. **No OAuth** → find the App installation whose `accessibleOwners` includes `repoOwner`:
-   - Check `org_github_config.app_accessible_owners` for org-level App
+   - Check `org_service_configs` metadata for service `'github'` (org-level App)
    - Check user-level credential metadata for user-level App installations
 3. **No match** → return null
 
@@ -272,10 +322,10 @@ For operations that are not repo-scoped (e.g., listing all repos), the user OAut
 
 #### Storing and refreshing accessible owners
 
-The `accessibleOwners` list on `org_github_config` is populated:
+The `accessibleOwners` list in the `org_service_configs` metadata for `'github'` is populated:
 - When the admin saves and verifies GitHub App config (`POST /api/admin/github/app/verify`)
 - On `installation_repositories` webhook events (not currently handled — noted as day-one gap, manual re-verify via admin UI as interim)
-- Lazily: if `resolveRepoCredential` can't find a match, and the org App config hasn't been refreshed in the last hour (tracked via an `app_accessible_owners_refreshed_at` column), refresh the list inline and retry. Cap at one refresh attempt per resolution to avoid loops. Store the refresh timestamp to prevent thundering herd.
+- Lazily: if `resolveRepoCredential` can't find a match, and the metadata's `accessibleOwnersRefreshedAt` is older than 1 hour, refresh the list inline and retry. Cap at one refresh attempt per resolution to avoid loops. Store the refresh timestamp to prevent thundering herd.
 
 #### Callers that need updating
 
@@ -306,16 +356,19 @@ The identity provider (`identity.ts`) scopes are correct for login — minimal. 
 
 | File | Change |
 |------|--------|
-| `packages/worker/migrations/NNNN_github_config.sql` | **New** — `org_github_config` table |
-| `packages/worker/src/lib/schema/github.ts` | **New** — Drizzle schema for `org_github_config` |
-| `packages/worker/src/lib/db/github.ts` | **New** — DB helpers for GitHub config |
+| `packages/worker/migrations/NNNN_service_configs.sql` | **New** — `org_service_configs` table + Slack data migration |
+| `packages/worker/src/lib/schema/service-configs.ts` | **New** — Drizzle schema for `org_service_configs` |
+| `packages/worker/src/lib/db/service-configs.ts` | **New** — Generic typed DB helpers (`getServiceConfig`, `setServiceConfig`, etc.) |
 | `packages/worker/src/routes/admin-github.ts` | **New** — Admin GitHub config endpoints |
 | `packages/worker/src/routes/github-me.ts` | **New** — User-scoped GitHub identity endpoints |
 | `packages/client/src/components/integrations/github-card.tsx` | **New** — GitHub card component |
 | `packages/client/src/api/github.ts` | **New** — React Query hooks for `/me/github` |
 | `packages/client/src/components/settings/github-config.tsx` | **New** — Admin GitHub config UI in org settings |
-| `packages/worker/src/lib/schema/index.ts` | Re-export `github.ts` |
-| `packages/worker/src/lib/db.ts` | Re-export `github.ts` DB helpers |
+| `packages/worker/src/lib/schema/index.ts` | Re-export `service-configs.ts` |
+| `packages/worker/src/lib/db.ts` | Re-export `service-configs.ts` DB helpers |
+| `packages/worker/src/lib/db/slack.ts` | Rewrite to wrap generic `getServiceConfig<SlackServiceConfig>` helpers |
+| `packages/worker/src/services/slack.ts` | Update to use new Slack config accessors |
+| `packages/worker/src/integrations/resolvers/slack.ts` | Update to use new Slack config accessors |
 | `packages/worker/src/index.ts` | Mount new routes |
 | `packages/worker/src/lib/db/credentials.ts` | Repo-aware `resolveRepoCredential()` |
 | `packages/worker/src/lib/env-assembly.ts` | Pass repo owner to credential resolution |
@@ -332,7 +385,10 @@ The identity provider (`identity.ts`) scopes are correct for login — minimal. 
 
 ### Migration
 
-One new D1 migration for `org_github_config`. No changes to existing tables. The `accessibleOwners` for the org App lives directly on this table rather than in credential metadata (single source of truth for org-level GitHub config).
+One new D1 migration that:
+1. Creates `org_service_configs` table
+2. Copies existing `org_slack_installs` data into it (secrets stay encrypted, non-sensitive fields go to metadata)
+3. Keeps `org_slack_installs` as read-only for rollback safety (can be dropped in a follow-up migration)
 
 User-level App installation credentials (if any exist) continue using `metadata.accessibleOwners` on the credentials table.
 
