@@ -6,6 +6,7 @@ import type { AppDb } from './drizzle.js';
 import { decryptString, decryptStringPBKDF2 } from './crypto.js';
 import { getCredential } from '../services/credentials.js';
 import { repoProviderRegistry, stripProviderSuffix } from '../repos/registry.js';
+import { getGitHubConfig } from '../services/github-config.js';
 
 /**
  * Generate a 256-bit hex token for runner authentication.
@@ -207,6 +208,14 @@ export async function assembleRepoEnv(
   for (const [k, v] of Object.entries(credData)) {
     if (typeof v === 'string') metadata[k] = v;
   }
+
+  // For App installations, supplement appId/privateKey from service config
+  if (resolved.credentialType === 'app_install' && !metadata.appId && !metadata.app_id) {
+    const ghConfig = await getGitHubConfig(env, appDb);
+    if (ghConfig?.appId) metadata.appId = ghConfig.appId;
+    if (ghConfig?.appPrivateKey) metadata.privateKey = ghConfig.appPrivateKey;
+  }
+
   const repoCredential: RepoCredential = {
     type: credRow.credentialType === 'app_install' ? 'installation' : 'token',
     installationId: metadata.installationId || metadata.installation_id,

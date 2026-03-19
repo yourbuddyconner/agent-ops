@@ -66,6 +66,14 @@ async function resolveRepoCredentialForProvider(
     if (typeof v === 'string') metadata[k] = v;
   }
 
+  // For App installations, supplement appId/privateKey from service config
+  // (the credential row stores installationId, but App secrets live in org_service_configs)
+  if (isApp && !metadata.appId && !metadata.app_id) {
+    const ghConfig = await getGitHubConfig(env, appDb);
+    if (ghConfig?.appId) metadata.appId = ghConfig.appId;
+    if (ghConfig?.appPrivateKey) metadata.privateKey = ghConfig.appPrivateKey;
+  }
+
   return {
     type: credRow.credentialType === 'app_install' ? 'installation' : 'token',
     installationId: metadata.installationId || metadata.installation_id,

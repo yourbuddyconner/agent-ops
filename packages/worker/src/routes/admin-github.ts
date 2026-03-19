@@ -8,6 +8,8 @@ import {
   updateServiceMetadata,
 } from '../lib/db/service-configs.js';
 import type { GitHubServiceConfig, GitHubServiceMetadata } from '../services/github-config.js';
+import { storeCredential } from '../services/credentials.js';
+import * as db from '../lib/db.js';
 
 export const adminGitHubRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -269,6 +271,19 @@ adminGitHubRouter.post('/app/verify', async (c) => {
   };
 
   await updateServiceMetadata(c.get('db'), 'github', metadata);
+
+  // Store org-level app_install credential so resolveRepoCredential can find it
+  const orgSettings = await db.getOrgSettings(c.get('db'));
+  if (orgSettings?.id) {
+    await storeCredential(c.env, 'org', orgSettings.id, 'github', {
+      installation_id: installationId,
+      app_id: existing.config.appId!,
+      private_key: existing.config.appPrivateKey!,
+    }, {
+      credentialType: 'app_install',
+      metadata: { installationId },
+    });
+  }
 
   return c.json({
     success: true,
