@@ -439,8 +439,8 @@ export class MessageStore {
     return this.rowToMessageRow(rows[0]);
   }
 
-  /** Read messages, ordered by created_at ASC, seq ASC. Supports optional limit and after-id cursor. */
-  getMessages(opts?: { limit?: number; afterId?: string; threadId?: string }): MessageRow[] {
+  /** Read messages, ordered by created_at ASC, seq ASC. Supports optional limit and cursor. */
+  getMessages(opts?: { limit?: number; afterId?: string; afterCreatedAt?: number; threadId?: string }): MessageRow[] {
     let query = 'SELECT id, seq, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id, message_format, thread_id, created_at FROM messages';
     const params: unknown[] = [];
     const conditions: string[] = [];
@@ -448,6 +448,9 @@ export class MessageStore {
     if (opts?.afterId) {
       conditions.push('(created_at, seq) > (SELECT created_at, seq FROM messages WHERE id = ?)');
       params.push(opts.afterId);
+    } else if (opts?.afterCreatedAt !== undefined) {
+      conditions.push('created_at > ?');
+      params.push(opts.afterCreatedAt);
     }
 
     if (opts?.threadId) {
@@ -508,6 +511,7 @@ export class MessageStore {
       opencodeSessionId: string | null;
       messageFormat: string;
       threadId: string | null;
+      createdAt?: number;
     }>) => Promise<void>,
   ): Promise<number> {
     const rows = this.sql.exec(
@@ -531,6 +535,7 @@ export class MessageStore {
       opencodeSessionId: row.opencode_session_id as string | null,
       messageFormat: (row.message_format as string) || 'v2',
       threadId: row.thread_id as string | null,
+      createdAt: row.created_at as number,
     }));
 
     await batchUpsert(db, sessionId, msgs);

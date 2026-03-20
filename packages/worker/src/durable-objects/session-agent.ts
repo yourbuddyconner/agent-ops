@@ -7099,9 +7099,10 @@ export class SessionAgentDO {
     const after = url.searchParams.get('after');
     const sessionId = this.getStateValue('sessionId') || '';
 
+    const afterCreatedAt = after ? parseInt(after, 10) : undefined;
     const rows = this.messageStore.getMessages({
       limit,
-      ...(after ? { afterId: after } : {}),
+      ...(afterCreatedAt ? { afterCreatedAt } : {}),
     });
 
     const messages = rows.map((r) => ({
