@@ -491,10 +491,10 @@ export class MessageStore {
    * Flush messages with seq > lastReplicatedSeq to D1 via the provided callback.
    * Advances the watermark in replication_state on success.
    */
-  async flushToD1(
-    db: unknown,
+  async flushToD1<TDb = unknown>(
+    db: TDb,
     sessionId: string,
-    batchUpsert: (db: unknown, sessionId: string, msgs: Array<{
+    batchUpsert: (db: TDb, sessionId: string, msgs: Array<{
       id: string;
       role: string;
       content: string;

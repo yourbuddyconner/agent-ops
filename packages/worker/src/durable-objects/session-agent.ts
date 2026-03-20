@@ -1850,12 +1850,16 @@ export class SessionAgentDO {
 
     // Store user message with author info and channel metadata
     const messageId = crypto.randomUUID();
-    this.ctx.storage.sql.exec(
-      'INSERT INTO messages (id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, thread_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      messageId, 'user', content, serializedAttachmentParts,
-      author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null,
-      channelType || null, channelId || null, threadId || null
-    );
+    this.messageStore.writeMessage({
+      id: messageId,
+      role: 'user',
+      content,
+      parts: serializedAttachmentParts,
+      author: author ? { id: author.id, email: author.email, name: author.name, avatarUrl: author.avatarUrl } : undefined,
+      channelType,
+      channelId,
+      threadId,
+    });
 
     // Increment thread message count for user message and notify UI of new thread
     if (threadId) {
@@ -2131,12 +2135,16 @@ export class SessionAgentDO {
 
     // Store user message immediately for display (including channel metadata)
     const messageId = crypto.randomUUID();
-    this.ctx.storage.sql.exec(
-      'INSERT INTO messages (id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, thread_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      messageId, 'user', content, serializedAttachmentParts,
-      author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null,
-      channelType || null, channelId || null, threadId || null,
-    );
+    this.messageStore.writeMessage({
+      id: messageId,
+      role: 'user',
+      content,
+      parts: serializedAttachmentParts,
+      author: author ? { id: author.id, email: author.email, name: author.name, avatarUrl: author.avatarUrl } : undefined,
+      channelType,
+      channelId,
+      threadId,
+    });
 
     // Broadcast user message to clients (including channel metadata)
     this.broadcastToClients({
@@ -2391,16 +2399,15 @@ export class SessionAgentDO {
         const workflowOcSessionId = typeof msg.opencodeSessionId === 'string'
           ? msg.opencodeSessionId
           : (partsObj && typeof partsObj.opencodeSessionId === 'string' ? partsObj.opencodeSessionId : null);
-        this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content, parts, channel_type, channel_id, opencode_session_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          workflowMsgId,
-          role,
+        this.messageStore.writeMessage({
+          id: workflowMsgId,
+          role: role as 'user' | 'assistant' | 'system',
           content,
-          partsJson,
-          workflowChannelType,
-          workflowChannelId,
-          workflowOcSessionId,
-        );
+          parts: partsJson,
+          channelType: workflowChannelType,
+          channelId: workflowChannelId,
+          opencodeSessionId: workflowOcSessionId,
+        });
         this.broadcastToClients({
           type: 'message',
           data: {
@@ -2499,12 +2506,14 @@ export class SessionAgentDO {
         // Store screenshot reference and broadcast
         const ssId = crypto.randomUUID();
         const ssCh = this.activeChannel;
-        this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content, parts, channel_type, channel_id) VALUES (?, ?, ?, ?, ?, ?)',
-          ssId, 'system', msg.description || 'Screenshot',
-          JSON.stringify({ type: 'screenshot', data: msg.data }),
-          ssCh?.channelType ?? null, ssCh?.channelId ?? null
-        );
+        this.messageStore.writeMessage({
+          id: ssId,
+          role: 'system',
+          content: msg.description || 'Screenshot',
+          parts: JSON.stringify({ type: 'screenshot', data: msg.data }),
+          channelType: ssCh?.channelType,
+          channelId: ssCh?.channelId,
+        });
         this.broadcastToClients({
           type: 'message',
           data: {
@@ -2522,28 +2531,20 @@ export class SessionAgentDO {
       case 'audio-transcript': {
         // Runner transcribed audio attachments — update the original user message parts with transcript
         if (msg.messageId && msg.transcript) {
-          const existing = this.ctx.storage.sql.exec(
-            'SELECT parts FROM messages WHERE id = ?', msg.messageId,
-          ).toArray();
-          if (existing.length > 0) {
-            const rawParts = existing[0].parts as string | null;
+          const existing = this.messageStore.getMessage(msg.messageId);
+          if (existing && existing.parts) {
             let parts: Array<Record<string, unknown>> = [];
-            if (rawParts) {
-              try {
-                const parsed = JSON.parse(rawParts);
-                parts = Array.isArray(parsed) ? parsed : [parsed];
-              } catch { /* ignore */ }
-            }
+            try {
+              const parsed = JSON.parse(existing.parts);
+              parts = Array.isArray(parsed) ? parsed : [parsed];
+            } catch { /* ignore */ }
             // Add transcript to each audio part
             for (const part of parts) {
               if (part.type === 'audio') {
                 part.transcript = msg.transcript;
               }
             }
-            this.ctx.storage.sql.exec(
-              'UPDATE messages SET parts = ? WHERE id = ?',
-              JSON.stringify(parts), msg.messageId,
-            );
+            this.messageStore.updateMessageParts(msg.messageId, JSON.stringify(parts));
             // Broadcast updated message to all clients
             this.broadcastToClients({
               type: 'message.updated',
@@ -2561,10 +2562,13 @@ export class SessionAgentDO {
         const errId = crypto.randomUUID();
         const errCh = this.activeChannel;
         const errorText = msg.error || msg.content || 'Unknown error';
-        this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content, channel_type, channel_id) VALUES (?, ?, ?, ?, ?)',
-          errId, 'system', `Error: ${errorText}`, errCh?.channelType ?? null, errCh?.channelId ?? null
-        );
+        this.messageStore.writeMessage({
+          id: errId,
+          role: 'system',
+          content: `Error: ${errorText}`,
+          channelType: errCh?.channelType,
+          channelId: errCh?.channelId,
+        });
         this.broadcastToClients({
           type: 'error',
           messageId: errId,
@@ -2612,19 +2616,12 @@ export class SessionAgentDO {
           }
         }
         console.log(`[SessionAgentDO] V2 message.create: turnId=${turnId} threadId=${resolvedThreadId || 'none'}`);
-        this.activeTurns.set(turnId, {
-          text: '',
-          parts: [],
+        this.messageStore.createTurn(turnId, {
           channelType: msg.channelType || undefined,
           channelId: msg.channelId || undefined,
           opencodeSessionId: msg.opencodeSessionId || undefined,
           threadId: resolvedThreadId,
         });
-        // Insert a placeholder row in DO SQLite (will be UPSERTed on finalize)
-        this.ctx.storage.sql.exec(
-          "INSERT OR IGNORE INTO messages (id, role, content, parts, message_format, channel_type, channel_id, opencode_session_id, thread_id) VALUES (?, 'assistant', '', '[]', 'v2', ?, ?, ?, ?)",
-          turnId, msg.channelType || null, msg.channelId || null, msg.opencodeSessionId || null, resolvedThreadId || null
-        );
         // Broadcast message creation to clients
         this.broadcastToClients({
           type: 'message',
@@ -2643,89 +2640,44 @@ export class SessionAgentDO {
       }
 
       case 'message.part.text-delta': {
-        let turn = this.activeTurns.get(msg.turnId!);
-        if (!turn) {
-          // Hibernation recovery: reconstruct from SQLite placeholder
-          turn = this.recoverTurnFromSQLite(msg.turnId!);
-          if (!turn) {
+        if (!this.messageStore.getTurnSnapshot(msg.turnId!)) {
+          if (!this.messageStore.recoverTurn(msg.turnId!)) {
             console.warn(`[SessionAgentDO] text-delta for unknown turn ${msg.turnId}`);
             break;
           }
         }
-        const delta = msg.delta || '';
-        turn.text += delta;
-        // Update or create the current streaming text part.
-        // If the last part is a non-text part (e.g. tool-call), start a new text part
-        // with only the new delta — not the full accumulated turn.text.
-        const lastTextPart = turn.parts[turn.parts.length - 1];
-        if (lastTextPart && lastTextPart.type === 'text' && lastTextPart.streaming) {
-          lastTextPart.text += delta;
-        } else {
-          turn.parts.push({ type: 'text', text: delta, streaming: true });
-        }
+        this.messageStore.appendTextDelta(msg.turnId!, msg.delta || '');
+        const turn = this.messageStore.getTurnSnapshot(msg.turnId!)!;
         // Broadcast chunk with messageId so client knows which v2 message to update
         this.broadcastToClients({
           type: 'chunk',
           content: msg.delta || '',
           messageId: msg.turnId,
-          ...(turn.channelType ? { channelType: turn.channelType, channelId: turn.channelId } : {}),
+          ...(turn.metadata.channelType ? { channelType: turn.metadata.channelType, channelId: turn.metadata.channelId } : {}),
         });
         break;
       }
 
       case 'message.part.tool-update': {
-        let turn = this.activeTurns.get(msg.turnId!);
-        if (!turn) {
-          // Hibernation recovery: reconstruct from SQLite placeholder
-          turn = this.recoverTurnFromSQLite(msg.turnId!);
-          if (!turn) {
+        if (!this.messageStore.getTurnSnapshot(msg.turnId!)) {
+          if (!this.messageStore.recoverTurn(msg.turnId!)) {
             console.warn(`[SessionAgentDO] tool-update for unknown turn ${msg.turnId}`);
             break;
           }
         }
-        // Find existing tool part or create new one
-        let toolPart = turn.parts.find(
-          (p) => p.type === 'tool-call' && p.callId === msg.callId
-        );
-        if (toolPart) {
-          toolPart.status = msg.status;
-          if (msg.args !== undefined) toolPart.args = msg.args;
-          if (msg.result !== undefined) toolPart.result = msg.result;
-          if (msg.error !== undefined) toolPart.error = msg.error;
-        } else {
-          // Mark any streaming text part as not streaming before adding tool
-          const lastPart = turn.parts[turn.parts.length - 1];
-          if (lastPart && lastPart.type === 'text' && lastPart.streaming) {
-            lastPart.streaming = false;
-          }
-          toolPart = {
-            type: 'tool-call',
-            callId: msg.callId,
-            toolName: msg.toolName,
-            status: msg.status,
-            ...(msg.args !== undefined ? { args: msg.args } : {}),
-            ...(msg.result !== undefined ? { result: msg.result } : {}),
-            ...(msg.error !== undefined ? { error: msg.error } : {}),
-          };
-          turn.parts.push(toolPart);
-        }
-        // Persist parts to SQLite so they survive DO hibernation
-        this.ctx.storage.sql.exec(
-          "UPDATE messages SET parts = ?, content = ? WHERE id = ?",
-          JSON.stringify(turn.parts), turn.text, msg.turnId
-        );
-        // Schedule debounced D1 flush so tool updates survive page refresh
+        this.messageStore.updateToolCall(msg.turnId!, msg.callId!, msg.toolName!, msg.status!, msg.args, msg.result, msg.error);
         this.scheduleDebouncedFlush();
+        const snapshot = this.messageStore.getTurnSnapshot(msg.turnId!)!;
         // Broadcast the full updated message to clients
         this.broadcastToClients({
           type: 'message.updated',
           data: {
             id: msg.turnId,
             role: 'assistant',
-            content: turn.text,
-            parts: turn.parts,
-            ...(turn.channelType ? { channelType: turn.channelType, channelId: turn.channelId } : {}),
-            ...(turn.threadId ? { threadId: turn.threadId } : {}),
+            content: snapshot.content,
+            parts: snapshot.parts,
+            ...(snapshot.metadata.channelType ? { channelType: snapshot.metadata.channelType, channelId: snapshot.metadata.channelId } : {}),
+            ...(snapshot.metadata.threadId ? { threadId: snapshot.metadata.threadId } : {}),
           },
         });
         break;
@@ -2733,67 +2685,36 @@ export class SessionAgentDO {
 
       case 'message.finalize': {
         const turnId = msg.turnId!;
-        let turn = this.activeTurns.get(turnId);
-        if (!turn) {
-          // Hibernation recovery: reconstruct from SQLite placeholder
-          turn = this.recoverTurnFromSQLite(turnId);
-          if (!turn) {
+        if (!this.messageStore.getTurnSnapshot(turnId)) {
+          if (!this.messageStore.recoverTurn(turnId)) {
             console.warn(`[SessionAgentDO] finalize for unknown turn ${turnId}`);
             break;
           }
         }
-        // Use finalText if provided (may be more complete than streamed chunks)
-        const finalContent = msg.finalText || turn.text;
-        // If turn was recovered from hibernation with empty parts, populate from finalContent
-        if (turn.parts.length === 0 && finalContent) {
-          turn.parts.push({ type: 'text', text: finalContent });
-        }
-        // Mark all text parts as not streaming.
-        // If there's only one text part and finalText was provided, use it (more complete).
-        // Otherwise preserve the per-part text that was built up during streaming.
-        const textParts = turn.parts.filter(p => p.type === 'text');
-        if (textParts.length === 1 && msg.finalText) {
-          textParts[0].text = finalContent;
-        }
-        for (const part of textParts) {
-          part.streaming = false;
-        }
-        // Add finish part
-        turn.parts.push({ type: 'finish', reason: msg.reason || 'end_turn' });
-        // If there was an error, add error part with the last known error
-        if (msg.reason === 'error' && msg.error) {
-          turn.parts.push({ type: 'error', message: msg.error });
-        }
-        // UPSERT to DO SQLite
-        this.ctx.storage.sql.exec(
-          "INSERT OR REPLACE INTO messages (id, role, content, parts, message_format, channel_type, channel_id, opencode_session_id, thread_id) VALUES (?, 'assistant', ?, ?, 'v2', ?, ?, ?, ?)",
-          turnId, finalContent, JSON.stringify(turn.parts),
-          turn.channelType || null, turn.channelId || null, turn.opencodeSessionId || null, turn.threadId || null
-        );
+        const final = this.messageStore.finalizeTurn(turnId, msg.finalText, msg.reason, msg.error);
+        if (!final) break;
         // Broadcast final message state
         this.broadcastToClients({
           type: 'message.updated',
           data: {
             id: turnId,
             role: 'assistant',
-            content: finalContent,
-            parts: turn.parts,
-            ...(turn.channelType ? { channelType: turn.channelType, channelId: turn.channelId } : {}),
-            ...(turn.threadId ? { threadId: turn.threadId } : {}),
+            content: final.content,
+            parts: final.parts,
+            ...(final.metadata.channelType ? { channelType: final.metadata.channelType, channelId: final.metadata.channelId } : {}),
+            ...(final.metadata.threadId ? { threadId: final.metadata.threadId } : {}),
           },
         });
         // Track result content for auto channel reply
-        if (this.pendingChannelReply && !this.pendingChannelReply.handled && finalContent) {
-          this.pendingChannelReply.resultContent = finalContent;
+        if (this.pendingChannelReply && !this.pendingChannelReply.handled && final.content) {
+          this.pendingChannelReply.resultContent = final.content;
           this.pendingChannelReply.resultMessageId = turnId;
         }
         // Increment thread message count for assistant message
-        if (turn.threadId) {
-          this.ctx.waitUntil(this.incrementAndMaybeSummarize(turn.threadId));
+        if (final.metadata.threadId) {
+          this.ctx.waitUntil(this.incrementAndMaybeSummarize(final.metadata.threadId));
         }
-        // Clean up active turn
-        this.activeTurns.delete(turnId);
-        console.log(`[SessionAgentDO] V2 turn finalized: ${turnId} (${finalContent.length} chars, ${turn.parts.length} parts)`);
+        console.log(`[SessionAgentDO] V2 turn finalized: ${turnId} (${final.content.length} chars, ${final.parts.length} parts)`);
         break;
       }
 
@@ -2860,10 +2781,11 @@ export class SessionAgentDO {
             if (initialPrompt) {
               this.setStateValue('initialPrompt', '');
               const messageId = crypto.randomUUID();
-              this.ctx.storage.sql.exec(
-                'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
-                messageId, 'user', initialPrompt
-              );
+              this.messageStore.writeMessage({
+                id: messageId,
+                role: 'user',
+                content: initialPrompt,
+              });
               this.broadcastToClients({
                 type: 'message',
                 data: {
@@ -2958,10 +2880,11 @@ export class SessionAgentDO {
         // Runner switched models due to provider error — store notice and broadcast
         const switchId = crypto.randomUUID();
         const switchText = `Model switched from ${msg.fromModel} to ${msg.toModel}: ${msg.reason}`;
-        this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
-          switchId, 'system', switchText
-        );
+        this.messageStore.writeMessage({
+          id: switchId,
+          role: 'system',
+          content: switchText,
+        });
         this.broadcastToClients({
           type: 'model-switched',
           messageId: switchId,
@@ -3218,12 +3141,14 @@ export class SessionAgentDO {
         const breakId = crypto.randomUUID();
         const srChannelType = (msg as any).channelType as string | undefined;
         const srChannelId = (msg as any).channelId as string | undefined;
-        this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content, parts, channel_type, channel_id) VALUES (?, ?, ?, ?, ?, ?)',
-          breakId, 'system', 'New session started',
-          JSON.stringify({ type: 'session-break' }),
-          srChannelType ?? null, srChannelId ?? null
-        );
+        this.messageStore.writeMessage({
+          id: breakId,
+          role: 'system',
+          content: 'New session started',
+          parts: JSON.stringify({ type: 'session-break' }),
+          channelType: srChannelType,
+          channelId: srChannelId,
+        });
         this.broadcastToClients({
           type: 'message',
           data: {
@@ -3763,10 +3688,12 @@ export class SessionAgentDO {
         });
 
         // Store all forwarded messages as 'assistant' role for consistent left-aligned rendering
-        this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content, parts) VALUES (?, ?, ?, ?)',
-          newId, 'assistant', msg.content, parts
-        );
+        this.messageStore.writeMessage({
+          id: newId,
+          role: 'assistant',
+          content: msg.content,
+          parts,
+        });
 
         this.broadcastToClients({
           type: 'message',
@@ -6214,51 +6141,11 @@ export class SessionAgentDO {
   private async flushMessagesToD1(): Promise<void> {
     const sessionId = this.getStateValue('sessionId');
     if (!sessionId) return;
-
-    const lastFlushStr = this.getStateValue('lastD1FlushAt');
-    const lastFlushAt = lastFlushStr ? parseInt(lastFlushStr) : 0;
-
-    // Query DO's internal messages for rows created after last flush.
-    // Include active turns — INSERT OR REPLACE will update partial data in D1
-    // so clients loading from D1 on page refresh see the latest state.
-    const rows = this.ctx.storage.sql
-      .exec(
-        'SELECT id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id, message_format, thread_id, created_at FROM messages WHERE created_at > ? ORDER BY created_at ASC LIMIT 200',
-        lastFlushAt
-      )
-      .toArray();
-
-    if (rows.length === 0) return;
-
-    // Batch write to D1 — use INSERT OR REPLACE (content updates on finalize)
     try {
-      await batchUpsertMessages(this.env.DB, sessionId, rows.map((row) => ({
-        id: row.id as string,
-        role: row.role as string,
-        content: row.content as string,
-        parts: row.parts as string | null,
-        authorId: row.author_id as string | null,
-        authorEmail: row.author_email as string | null,
-        authorName: row.author_name as string | null,
-        authorAvatarUrl: row.author_avatar_url as string | null,
-        channelType: row.channel_type as string | null,
-        channelId: row.channel_id as string | null,
-        opencodeSessionId: row.opencode_session_id as string | null,
-        messageFormat: (row.message_format as string) || 'v2',
-        threadId: row.thread_id as string | null,
-      })));
-      // Advance watermark — active turns will be re-flushed with updated parts
-      // on subsequent flushes since INSERT OR REPLACE handles the upsert.
-      // Don't advance past active turns so they get picked up again.
-      const activeTurnIds = new Set(this.activeTurns.keys());
-      const activeTs = rows
-        .filter((row) => activeTurnIds.has(row.id as string))
-        .map((row) => row.created_at as number);
-      const minActiveTs = activeTs.length > 0 ? Math.min(...activeTs) : null;
-      const latestFlushed = rows[rows.length - 1].created_at as number;
-      const safeWatermark = minActiveTs !== null ? Math.min(latestFlushed, minActiveTs - 1) : latestFlushed;
-      this.setStateValue('lastD1FlushAt', String(safeWatermark));
-      console.log(`[SessionAgentDO] Flushed ${rows.length} messages to D1 (watermark=${safeWatermark}${minActiveTs !== null ? `, active turns will re-flush` : ''})`);
+      const count = await this.messageStore.flushToD1(this.env.DB, sessionId, batchUpsertMessages);
+      if (count > 0) {
+        console.log(`[SessionAgentDO] Flushed ${count} messages to D1`);
+      }
     } catch (err) {
       console.error('[SessionAgentDO] Failed to flush messages to D1:', err);
     }
@@ -6577,10 +6464,11 @@ export class SessionAgentDO {
       }
       // Persist error as a system message so it's visible on reconnect
       const errId = crypto.randomUUID();
-      this.ctx.storage.sql.exec(
-        'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
-        errId, 'system', `Error: ${errorText}`
-      );
+      this.messageStore.writeMessage({
+        id: errId,
+        role: 'system',
+        content: `Error: ${errorText}`,
+      });
       this.broadcastToClients({
         type: 'status',
         data: { status: 'error' },
@@ -6862,17 +6750,13 @@ export class SessionAgentDO {
     const messageId = crypto.randomUUID();
     const serializedParts = parts ? JSON.stringify(parts) : null;
 
-    if (serializedParts) {
-      this.ctx.storage.sql.exec(
-        'INSERT INTO messages (id, role, content, parts, thread_id) VALUES (?, ?, ?, ?, ?)',
-        messageId, 'system', content, serializedParts, threadId || null
-      );
-    } else {
-      this.ctx.storage.sql.exec(
-        'INSERT INTO messages (id, role, content, thread_id) VALUES (?, ?, ?, ?)',
-        messageId, 'system', content, threadId || null
-      );
-    }
+    this.messageStore.writeMessage({
+      id: messageId,
+      role: 'system',
+      content,
+      parts: serializedParts,
+      threadId,
+    });
 
     this.broadcastToClients({
       type: 'message',
@@ -7215,39 +7099,25 @@ export class SessionAgentDO {
     const after = url.searchParams.get('after');
     const sessionId = this.getStateValue('sessionId') || '';
 
-    const columns = 'id, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, thread_id, message_format, created_at';
-
-    let query: string;
-    const params: (string | number)[] = [];
-
-    if (after) {
-      // Pagination: get messages after a cursor, oldest-first
-      query = `SELECT ${columns} FROM messages WHERE created_at > ? ORDER BY created_at ASC LIMIT ?`;
-      params.push(after, limit);
-    } else {
-      // All messages in chronological order (default limit high enough for full history)
-      query = `SELECT ${columns} FROM messages ORDER BY created_at ASC LIMIT ?`;
-      params.push(limit);
-    }
-
-    const rows = this.ctx.storage.sql
-      .exec(query, ...params)
-      .toArray();
+    const rows = this.messageStore.getMessages({
+      limit,
+      ...(after ? { afterId: after } : {}),
+    });
 
     const messages = rows.map((r) => ({
-      id: r.id as string,
+      id: r.id,
       sessionId,
-      role: r.role as string,
-      content: r.content as string,
-      parts: r.parts ? JSON.parse(r.parts as string) : undefined,
-      authorId: r.author_id || undefined,
-      authorEmail: r.author_email || undefined,
-      authorName: r.author_name || undefined,
-      authorAvatarUrl: r.author_avatar_url || undefined,
-      channelType: r.channel_type || undefined,
-      channelId: r.channel_id || undefined,
-      threadId: r.thread_id || undefined,
-      createdAt: new Date((r.created_at as number) * 1000).toISOString(),
+      role: r.role,
+      content: r.content,
+      parts: r.parts ? JSON.parse(r.parts) : undefined,
+      authorId: r.authorId || undefined,
+      authorEmail: r.authorEmail || undefined,
+      authorName: r.authorName || undefined,
+      authorAvatarUrl: r.authorAvatarUrl || undefined,
+      channelType: r.channelType || undefined,
+      channelId: r.channelId || undefined,
+      threadId: r.threadId || undefined,
+      createdAt: new Date(r.createdAt * 1000).toISOString(),
     }));
 
     return Response.json({ messages });
@@ -7879,10 +7749,11 @@ export class SessionAgentDO {
       }
       // Persist error as a system message
       const errId = crypto.randomUUID();
-      this.ctx.storage.sql.exec(
-        'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
-        errId, 'system', `Error: ${errorText}`
-      );
+      this.messageStore.writeMessage({
+        id: errId,
+        role: 'system',
+        content: `Error: ${errorText}`,
+      });
       this.broadcastToClients({
         type: 'status',
         data: { status: 'error' },
@@ -8000,10 +7871,11 @@ export class SessionAgentDO {
       }
       // Persist error as a system message
       const errId = crypto.randomUUID();
-      this.ctx.storage.sql.exec(
-        'INSERT INTO messages (id, role, content) VALUES (?, ?, ?)',
-        errId, 'system', `Error: ${errorText}`
-      );
+      this.messageStore.writeMessage({
+        id: errId,
+        role: 'system',
+        content: `Error: ${errorText}`,
+      });
       this.broadcastToClients({
         type: 'status',
         data: { status: 'error' },
@@ -8093,38 +7965,6 @@ export class SessionAgentDO {
   }
 
   // ─── Hibernation Recovery Helpers ──────────────────────────────────────
-
-  /**
-   * Recover an active turn from the SQLite placeholder row inserted by message.create.
-   * Returns the recovered turn (also re-added to activeTurns), or undefined if not found.
-   */
-  private recoverTurnFromSQLite(turnId: string): { text: string; parts: Array<{ type: string; [key: string]: unknown }>; channelType?: string; channelId?: string; opencodeSessionId?: string } | undefined {
-    const rows = this.ctx.storage.sql
-      .exec(
-        "SELECT content, parts, channel_type, channel_id, opencode_session_id FROM messages WHERE id = ? AND role = 'assistant' AND message_format = 'v2'",
-        turnId
-      )
-      .toArray();
-    if (rows.length === 0) return undefined;
-
-    const row = rows[0];
-    let recoveredParts: Array<{ type: string; [key: string]: unknown }> = [];
-    try {
-      if (row.parts && typeof row.parts === 'string') {
-        recoveredParts = JSON.parse(row.parts);
-      }
-    } catch { /* corrupted parts — start fresh */ }
-    const turn = {
-      text: (row.content as string) || '',
-      parts: recoveredParts,
-      channelType: (row.channel_type as string) || undefined,
-      channelId: (row.channel_id as string) || undefined,
-      opencodeSessionId: (row.opencode_session_id as string) || undefined,
-    };
-    this.activeTurns.set(turnId, turn);
-    console.log(`[SessionAgentDO] Recovering turn ${turnId} from SQLite after hibernation (${recoveredParts.length} parts, ${turn.text.length} chars)`);
-    return turn;
-  }
 
   /**
    * Recover pendingChannelReply from the processing prompt_queue row.
@@ -8849,12 +8689,14 @@ export class SessionAgentDO {
       if (imageBase64) {
         const msgId = crypto.randomUUID();
         const channelLabel = `Sent image to ${channelType}`;
-        this.ctx.storage.sql.exec(
-          'INSERT INTO messages (id, role, content, parts, channel_type, channel_id) VALUES (?, ?, ?, ?, ?, ?)',
-          msgId, 'system', message || channelLabel,
-          JSON.stringify({ type: 'image', data: imageBase64, mimeType: imageMimeType || 'image/jpeg' }),
-          channelType, channelId,
-        );
+        this.messageStore.writeMessage({
+          id: msgId,
+          role: 'system',
+          content: message || channelLabel,
+          parts: JSON.stringify({ type: 'image', data: imageBase64, mimeType: imageMimeType || 'image/jpeg' }),
+          channelType,
+          channelId,
+        });
         this.broadcastToClients({
           type: 'message',
           data: {
@@ -9929,10 +9771,7 @@ export class SessionAgentDO {
 
     // Stamp the assistant message with channel metadata so the UI shows a badge
     if (sent && pending.resultMessageId) {
-      this.ctx.storage.sql.exec(
-        'UPDATE messages SET channel_type = ?, channel_id = ? WHERE id = ?',
-        pending.channelType, pending.channelId, pending.resultMessageId,
-      );
+      this.messageStore.stampChannelDelivery(pending.resultMessageId, pending.channelType, pending.channelId);
       this.broadcastToClients({
         type: 'message.updated',
         data: {
