@@ -581,18 +581,8 @@ export async function sendSessionMessage(
     throw new Error(`Failed to deliver prompt: ${err}`);
   }
 
-  // Save message to D1 only after the DO has accepted it.
-  const messageId = crypto.randomUUID();
-  await db.saveMessage(env.DB, {
-    id: messageId,
-    sessionId,
-    role: 'user',
-    content,
-    authorId: userId,
-    authorEmail: userEmail,
-  });
-
-  return { messageId };
+  // Message ID is managed by the DO's MessageStore; return a tracking ID for the API response.
+  return { messageId: crypto.randomUUID() };
 }
 
 // ─── Terminate Session ──────────────────────────────────────────────────────

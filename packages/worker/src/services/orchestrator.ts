@@ -446,22 +446,6 @@ export async function dispatchOrchestratorPrompt(
     };
   }
 
-  // Save message to D1 only after the DO has accepted it.
-  // This prevents orphaned messages in history that were never processed.
-  const messageId = crypto.randomUUID();
-  await db.saveMessage(env.DB, {
-    id: messageId,
-    sessionId,
-    role: 'user',
-    content,
-    authorId: params.userId,
-    authorName: params.authorName,
-    authorEmail: params.authorEmail,
-    channelType: normalizedChannelType,
-    channelId: normalizedChannelId,
-    threadId: params.threadId,
-  });
-
-  console.log(`[OrchestratorDispatch] Success: session=${sessionId} messageId=${messageId}`);
+  console.log(`[OrchestratorDispatch] Success: session=${sessionId}`);
   return { dispatched: true, sessionId };
 }
