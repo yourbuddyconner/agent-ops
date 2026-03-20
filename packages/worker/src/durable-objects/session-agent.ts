@@ -29,6 +29,7 @@ import { getActivePluginArtifacts, getPluginSettings, getAutoEnabledServices, ge
 import { getPersonaSkills, getOrgDefaultSkills, searchSkills, listSkills, getSkill, getSkillBySlug, createSkill, updateSkill, deleteSkill, getPersonaToolWhitelist, createPersona, updatePersona, deletePersona, getPersonaWithFiles, upsertPersonaFile, attachSkillToPersona, detachSkillFromPersona, getPersonaSkillsForApi } from '../lib/db.js';
 import type { ChannelTarget, ChannelContext, InteractivePrompt, InteractiveAction, InteractivePromptRef, InteractiveResolution } from '@valet/sdk';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
+import { MessageStore } from './message-store.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
 
@@ -488,21 +489,6 @@ interface RunnerOutbound {
 // ─── Durable SQLite Table Schemas ──────────────────────────────────────────
 
 const SCHEMA_SQL = `
-  CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
-    content TEXT NOT NULL,
-    parts TEXT, -- JSON array of structured parts (tool calls, etc.)
-    author_id TEXT,
-    author_email TEXT,
-    author_name TEXT,
-    author_avatar_url TEXT,
-    channel_type TEXT,
-    channel_id TEXT,
-    opencode_session_id TEXT,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch())
-  );
-
   CREATE TABLE IF NOT EXISTS interactive_prompts (
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,
@@ -642,15 +628,7 @@ export class SessionAgentDO {
   // the channel context so we can auto-send the agent's response back to it.
   // If the agent explicitly calls channel_reply for that channel, we mark it
   // handled so we don't double-send.
-  // V2 active turns being assembled — keyed by turnId (DO messageId)
-  private activeTurns = new Map<string, {
-    text: string;
-    parts: Array<{ type: string; [key: string]: unknown }>;
-    channelType?: string;
-    channelId?: string;
-    opencodeSessionId?: string;
-    threadId?: string;
-  }>();
+  private messageStore!: MessageStore;
 
   /** Debounce timer for flushing messages to D1 during active turns. */
   private d1FlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -709,20 +687,17 @@ export class SessionAgentDO {
     // Run schema migration on construction (blockConcurrencyWhile ensures it completes before any request)
     this.ctx.blockConcurrencyWhile(async () => {
       this.ctx.storage.sql.exec(SCHEMA_SQL);
+      this.messageStore = new MessageStore(this.ctx.storage.sql);
 
       // Migrate existing DOs: add author_avatar_url columns if missing
-      try { this.ctx.storage.sql.exec('ALTER TABLE messages ADD COLUMN author_avatar_url TEXT'); } catch { /* already exists */ }
       try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN author_avatar_url TEXT'); } catch { /* already exists */ }
       try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN attachments TEXT'); } catch { /* already exists */ }
 
       // Migrate existing DOs: add channel metadata columns
-      try { this.ctx.storage.sql.exec('ALTER TABLE messages ADD COLUMN channel_type TEXT'); } catch { /* already exists */ }
-      try { this.ctx.storage.sql.exec('ALTER TABLE messages ADD COLUMN channel_id TEXT'); } catch { /* already exists */ }
       try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN channel_type TEXT'); } catch { /* already exists */ }
       try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN channel_id TEXT'); } catch { /* already exists */ }
 
       // Migrate existing DOs: add per-channel session tracking columns
-      try { this.ctx.storage.sql.exec('ALTER TABLE messages ADD COLUMN opencode_session_id TEXT'); } catch { /* already exists */ }
       try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN channel_key TEXT'); } catch { /* already exists */ }
 
       // Migrate existing DOs: add model column to prompt_queue
@@ -732,11 +707,7 @@ export class SessionAgentDO {
       try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN workflow_payload TEXT'); } catch { /* already exists */ }
       this.ctx.storage.sql.exec("UPDATE prompt_queue SET queue_type = 'prompt' WHERE queue_type IS NULL OR queue_type = ''");
 
-      // Migrate: add message_format column for v2 parts-based messages
-      try { this.ctx.storage.sql.exec("ALTER TABLE messages ADD COLUMN message_format TEXT NOT NULL DEFAULT 'v2'"); } catch { /* already exists */ }
-
       // Migrate: add thread_id column for thread-aware messaging
-      try { this.ctx.storage.sql.exec('ALTER TABLE messages ADD COLUMN thread_id TEXT'); } catch { /* already exists */ }
       try { this.ctx.storage.sql.exec('ALTER TABLE prompt_queue ADD COLUMN thread_id TEXT'); } catch { /* already exists */ }
 
       // Migrate: add continuation_context column for queued thread continuations
