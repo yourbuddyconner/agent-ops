@@ -141,7 +141,7 @@ export class TelegramTransport implements ChannelTransport {
 
     // Check for slash command
     if (rawText) {
-      const commandMatch = rawText.match(/^\/(\w+)(?:\s+(.*))?$/s);
+      const commandMatch = rawText.match(/^\/(\w+)(?:@\w+)?(?:\s+(.*))?$/s);
       if (commandMatch) {
         return {
           channelType: 'telegram',
@@ -516,7 +516,10 @@ export class TelegramTransport implements ChannelTransport {
     const resp = await fetch(botUrl(ctx.token, 'setWebhook'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: webhookUrl }),
+      body: JSON.stringify({
+        url: webhookUrl,
+        allowed_updates: ['message', 'edited_message', 'callback_query'],
+      }),
     });
     if (!resp.ok) return false;
     const result = (await resp.json()) as { ok: boolean };
