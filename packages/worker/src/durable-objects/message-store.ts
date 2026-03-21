@@ -85,6 +85,10 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 `;
 
+const MESSAGES_INDEX_SQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_seq ON messages(seq);
+`;
+
 const REPLICATION_STATE_SQL = `
 CREATE TABLE IF NOT EXISTS replication_state (
   key TEXT PRIMARY KEY,
@@ -109,8 +113,9 @@ export class MessageStore {
   constructor(sql: SqlStorage) {
     this.sql = sql;
 
-    // Create tables (idempotent)
+    // Create tables and indexes (idempotent)
     this.sql.exec(MESSAGES_TABLE_SQL);
+    this.sql.exec(MESSAGES_INDEX_SQL);
     this.sql.exec(REPLICATION_STATE_SQL);
 
     // Run migrations for existing DOs that may lack newer columns
@@ -322,13 +327,13 @@ export class MessageStore {
       part.streaming = false;
     }
 
-    // Add finish part
-    turn.parts.push({ type: 'finish', reason: reason || 'end_turn' });
-
-    // If there was an error, add error part
+    // If there was an error, add error part before finish
     if (reason === 'error' && errorMsg) {
       turn.parts.push({ type: 'error', message: errorMsg });
     }
+
+    // Add finish part (always last)
+    turn.parts.push({ type: 'finish', reason: reason || 'end_turn' });
 
     // UPDATE existing row in SQLite — preserves created_at
     const seq = this.bumpSeq();
@@ -353,10 +358,10 @@ export class MessageStore {
     return snapshot;
   }
 
-  /** Get the in-memory snapshot of an active turn (returns undefined if not active). */
-  getTurnSnapshot(turnId: string): TurnSnapshot | undefined {
+  /** Get the in-memory snapshot of an active turn (returns null if not active). */
+  getTurnSnapshot(turnId: string): TurnSnapshot | null {
     const turn = this.activeTurns.get(turnId);
-    if (!turn) return undefined;
+    if (!turn) return null;
     return {
       turnId,
       content: turn.text,
@@ -374,12 +379,12 @@ export class MessageStore {
    * Recover a turn from SQLite after DO hibernation wipes in-memory state.
    * Re-adds to activeTurns. Returns the snapshot if found.
    */
-  recoverTurn(turnId: string): TurnSnapshot | undefined {
+  recoverTurn(turnId: string): TurnSnapshot | null {
     const rows = this.sql.exec(
       "SELECT content, parts, channel_type, channel_id, opencode_session_id, thread_id FROM messages WHERE id = ? AND role = 'assistant' AND message_format = 'v2'",
       turnId,
     ).toArray();
-    if (rows.length === 0) return undefined;
+    if (rows.length === 0) return null;
 
     const row = rows[0];
     let recoveredParts: Array<{ type: string; [key: string]: unknown }> = [];
@@ -430,12 +435,12 @@ export class MessageStore {
   }
 
   /** Read a single message by ID. */
-  getMessage(id: string): MessageRow | undefined {
+  getMessage(id: string): MessageRow | null {
     const rows = this.sql.exec(
       'SELECT id, seq, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id, message_format, thread_id, created_at FROM messages WHERE id = ?',
       id,
     ).toArray();
-    if (rows.length === 0) return undefined;
+    if (rows.length === 0) return null;
     return this.rowToMessageRow(rows[0]);
   }
 
@@ -547,9 +552,10 @@ export class MessageStore {
       .map((row) => row.seq as number);
     const minActiveSeq = activeSeqs.length > 0 ? Math.min(...activeSeqs) : null;
     const maxFlushedSeq = rows[rows.length - 1].seq as number;
-    const safeWatermark = minActiveSeq !== null
-      ? Math.min(maxFlushedSeq, minActiveSeq - 1)
-      : maxFlushedSeq;
+    const safeWatermark = Math.max(
+      0,
+      minActiveSeq !== null ? Math.min(maxFlushedSeq, minActiveSeq - 1) : maxFlushedSeq,
+    );
 
     this.lastReplicatedSeq = safeWatermark;
     this.sql.exec(

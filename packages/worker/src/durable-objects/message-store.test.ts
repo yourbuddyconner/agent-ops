@@ -609,7 +609,7 @@ describe('MessageStore', () => {
     it('getTurnSnapshot returns undefined for non-active turn', () => {
       const sql = createMockSql();
       const store = new MessageStore(sql);
-      expect(store.getTurnSnapshot('nonexistent')).toBeUndefined();
+      expect(store.getTurnSnapshot('nonexistent')).toBeNull();
     });
 
     it('recoverTurn reconstructs from SQLite', () => {
@@ -646,7 +646,7 @@ describe('MessageStore', () => {
     it('recoverTurn returns undefined for non-existent turn', () => {
       const sql = createMockSql();
       const store = new MessageStore(sql);
-      expect(store.recoverTurn('nonexistent')).toBeUndefined();
+      expect(store.recoverTurn('nonexistent')).toBeNull();
     });
 
     it('activeTurnIds returns all active turn IDs', () => {
@@ -706,7 +706,7 @@ describe('MessageStore', () => {
     it('getMessage returns undefined for non-existent message', () => {
       const sql = createStatefulMockSql();
       const store = new MessageStore(sql);
-      expect(store.getMessage('nonexistent')).toBeUndefined();
+      expect(store.getMessage('nonexistent')).toBeNull();
     });
 
     it('getMessages returns all messages ordered by seq', () => {
