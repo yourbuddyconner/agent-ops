@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import type { Env, Variables } from '../env.js';
 import { channelScopeKey, SLASH_COMMANDS } from '@valet/shared';
 import type { ChannelTransport, ChannelTarget, ChannelContext, InboundMessage } from '@valet/sdk';
@@ -30,9 +31,28 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
   const channelType = c.req.param('channelType');
   const userId = c.req.param('userId');
 
+  // Webhook handlers MUST always return 200 OK to the sending platform.
+  // Non-200 responses cause Telegram (and others) to retry the update and
+  // block delivery of ALL subsequent updates until the retry succeeds.
+  try {
+    return await handleWebhook(c, channelType, userId);
+  } catch (err) {
+    console.error(`[Channel:${channelType}] Webhook handler error for user=${userId}:`, err);
+    return c.json({ ok: true });
+  }
+});
+
+type WebhookContext = Context<{ Bindings: Env; Variables: Variables }>;
+
+async function handleWebhook(
+  c: WebhookContext,
+  channelType: string,
+  userId: string,
+) {
   const transport = channelRegistry.getTransport(channelType);
   if (!transport) {
-    return c.json({ error: `Unknown channel type: ${channelType}` }, 404);
+    console.warn(`[Channel:${channelType}] Unknown channel type`);
+    return c.json({ ok: true });
   }
 
   const [credResult, config] = await Promise.all([
@@ -40,7 +60,8 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
     channelType === 'telegram' ? db.getUserTelegramConfig(c.get('db'), userId) : Promise.resolve(null),
   ]);
   if (!credResult.ok) {
-    return c.json({ error: `No ${channelType} config` }, 404);
+    console.warn(`[Channel:${channelType}] No credentials for user=${userId}`);
+    return c.json({ ok: true });
   }
 
   const botToken = credResult.credential.accessToken;
@@ -327,7 +348,7 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
   }
 
   return c.json({ ok: true });
-});
+}
 
 // ─── Universal Slash Command Handler ─────────────────────────────────────────
 

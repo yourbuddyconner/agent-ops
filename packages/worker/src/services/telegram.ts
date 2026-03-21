@@ -64,7 +64,11 @@ export async function setupTelegramBot(
   const webhookResp = await fetch(botUrl(trimmedToken, 'setWebhook'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: webhookUrl }),
+    body: JSON.stringify({
+      url: webhookUrl,
+      allowed_updates: ['message', 'edited_message', 'callback_query'],
+      drop_pending_updates: true,
+    }),
   });
   if (!webhookResp.ok) {
     console.error('Failed to set Telegram webhook:', await webhookResp.text().catch(() => ''));

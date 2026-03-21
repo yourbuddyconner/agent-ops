@@ -126,6 +126,39 @@ describe('TelegramTransport', () => {
       expect(result!.text).toBe('');
     });
 
+    it('parses slash commands with @botname suffix', async () => {
+      const body = JSON.stringify({
+        update_id: 1,
+        message: {
+          message_id: 44,
+          from: { id: 100, first_name: 'Alice' },
+          chat: { id: 999 },
+          text: '/help@my_test_bot',
+        },
+      });
+
+      const result = await transport.parseInbound({}, body, { userId: 'u1', botToken: 'tok' });
+      expect(result!.command).toBe('help');
+      expect(result!.text).toBe('');
+    });
+
+    it('parses slash commands with @botname suffix and args', async () => {
+      const body = JSON.stringify({
+        update_id: 1,
+        message: {
+          message_id: 44,
+          from: { id: 100, first_name: 'Alice' },
+          chat: { id: 999 },
+          text: '/status@my_test_bot check now',
+        },
+      });
+
+      const result = await transport.parseInbound({}, body, { userId: 'u1', botToken: 'tok' });
+      expect(result!.command).toBe('status');
+      expect(result!.commandArgs).toBe('check now');
+      expect(result!.text).toBe('check now');
+    });
+
     it('parses forwarded messages with attribution', async () => {
       const body = JSON.stringify({
         update_id: 1,
