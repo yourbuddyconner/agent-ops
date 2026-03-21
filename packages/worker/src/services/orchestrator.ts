@@ -412,12 +412,6 @@ export async function dispatchOrchestratorPrompt(
     }
   }
 
-  // Normalize channel metadata to match what the DO stores: when a threadId is
-  // present, the DO routes via thread:threadId. D1 must store the same values
-  // so both stores are consistent for the same message.
-  const normalizedChannelType = params.threadId ? 'thread' : params.channelType;
-  const normalizedChannelId = params.threadId ? params.threadId : params.channelId;
-
   const doId = env.SESSIONS.idFromName(sessionId);
   const sessionDO = env.SESSIONS.get(doId);
   const doRes = await sessionDO.fetch(new Request('http://do/prompt', {
