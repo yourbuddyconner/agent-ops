@@ -100,6 +100,7 @@ const MIGRATION_COLUMNS: Array<{ sql: string }> = [
   { sql: 'ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0' },
   { sql: "ALTER TABLE messages ADD COLUMN message_format TEXT NOT NULL DEFAULT 'v2'" },
   { sql: 'ALTER TABLE messages ADD COLUMN thread_id TEXT' },
+  { sql: 'ALTER TABLE messages ADD COLUMN opencode_session_id TEXT' },
 ];
 
 // ─── MessageStore Class ──────────────────────────────────────────────────────
@@ -113,15 +114,22 @@ export class MessageStore {
   constructor(sql: SqlStorage) {
     this.sql = sql;
 
-    // Create tables and indexes (idempotent)
+    // Create tables (idempotent)
     this.sql.exec(MESSAGES_TABLE_SQL);
-    this.sql.exec(MESSAGES_INDEX_SQL);
     this.sql.exec(REPLICATION_STATE_SQL);
 
-    // Run migrations for existing DOs that may lack newer columns
+    // Run column migrations for existing DOs (must run BEFORE index creation)
     for (const migration of MIGRATION_COLUMNS) {
       try { this.sql.exec(migration.sql); } catch { /* column already exists */ }
     }
+
+    // Backfill seq from rowid for existing rows that have the default seq=0.
+    // This must run BEFORE the unique index is created, since multiple seq=0
+    // values would violate the uniqueness constraint.
+    this.sql.exec('UPDATE messages SET seq = rowid WHERE seq = 0');
+
+    // Now safe to create the unique index (all seq values are unique)
+    this.sql.exec(MESSAGES_INDEX_SQL);
 
     // Initialize seq counter from MAX(seq) in messages table
     const maxSeqRows = this.sql.exec('SELECT MAX(seq) as max_seq FROM messages').toArray();

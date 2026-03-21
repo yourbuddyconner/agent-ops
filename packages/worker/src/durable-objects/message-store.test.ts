@@ -259,8 +259,8 @@ describe('MessageStore', () => {
       const alterCalls = sql.calls.filter((c) =>
         c.query.includes('ALTER TABLE'),
       );
-      // 3 migrations: seq, message_format, thread_id
-      expect(alterCalls.length).toBe(3);
+      // 4 migrations: seq, message_format, thread_id, opencode_session_id
+      expect(alterCalls.length).toBe(4);
     });
 
     it('initializes nextSeq from empty DB (starts at 1)', () => {
