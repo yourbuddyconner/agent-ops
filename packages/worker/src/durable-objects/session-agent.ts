@@ -2305,30 +2305,8 @@ export class SessionAgentDO {
   }
 
   private async handleRevert(messageId: string) {
-    // Find the message and all messages created at or after it
-    const targetMsg = this.ctx.storage.sql
-      .exec('SELECT created_at FROM messages WHERE id = ?', messageId)
-      .toArray();
-
-    if (targetMsg.length === 0) {
-      return; // Message not found
-    }
-
-    const createdAt = targetMsg[0].created_at as number;
-    const affectedMessages = this.ctx.storage.sql
-      .exec('SELECT id FROM messages WHERE created_at >= ? ORDER BY created_at ASC', createdAt)
-      .toArray();
-
-    const removedIds = affectedMessages.map((m) => m.id as string);
-
-    // Delete the messages from SQLite
-    if (removedIds.length > 0) {
-      const placeholders = removedIds.map(() => '?').join(',');
-      this.ctx.storage.sql.exec(
-        `DELETE FROM messages WHERE id IN (${placeholders})`,
-        ...removedIds
-      );
-    }
+    const removedIds = this.messageStore.deleteMessagesFrom(messageId);
+    if (removedIds.length === 0) return;
 
     // Forward to runner so OpenCode can revert too
     this.sendToRunner({ type: 'revert', messageId });
@@ -6279,7 +6257,7 @@ export class SessionAgentDO {
 
     // Clear old session data (messages, queue, audit log, followups) for a fresh start.
     // This is important for well-known DOs (orchestrators) that get reused.
-    this.ctx.storage.sql.exec('DELETE FROM messages');
+    this.messageStore.reset();
     this.ctx.storage.sql.exec('DELETE FROM prompt_queue');
     this.ctx.storage.sql.exec('DELETE FROM analytics_events');
     this.ctx.storage.sql.exec('DELETE FROM channel_followups');

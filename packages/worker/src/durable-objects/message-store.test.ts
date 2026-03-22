@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { MessageStore, type SqlStorage } from './message-store.js';
+import { describe, it, expect, vi } from 'vitest';
+import { MessageStore, type TextPart, type ToolCallPart, type FinishPart, type ErrorPart } from './message-store.js';
 
 // ─── SqlStorage Mock ─────────────────────────────────────────────────────────
 //
@@ -9,6 +9,17 @@ import { MessageStore, type SqlStorage } from './message-store.js';
 interface ExecCall {
   query: string;
   params: unknown[];
+}
+
+/** Minimal cursor shape matching what MessageStore uses (toArray + one). */
+function cursor<T>(rows: T[]): { toArray(): T[]; one(): T } {
+  return {
+    toArray: () => rows,
+    one: () => {
+      if (rows.length === 0) throw new Error('Expected exactly one row');
+      return rows[0];
+    },
+  };
 }
 
 function createMockSql(opts?: {
@@ -26,28 +37,26 @@ function createMockSql(opts?: {
 
       // Handle SELECT MAX(seq)
       if (query.includes('MAX(seq)')) {
-        return {
-          toArray: () => [{ max_seq: maxSeq }],
-        };
+        return cursor([{ max_seq: maxSeq }]);
       }
 
       // Handle replication_state read
       if (query.includes('SELECT value FROM replication_state')) {
         if (lastReplicatedSeq !== null) {
-          return { toArray: () => [{ value: lastReplicatedSeq }] };
+          return cursor([{ value: lastReplicatedSeq }]);
         }
-        return { toArray: () => [] };
+        return cursor([]);
       }
 
       // Handle SELECT for getMessage / getMessages / recoverTurn
       if (query.startsWith('SELECT') && query.includes('FROM messages')) {
-        return { toArray: () => [] };
+        return cursor([]);
       }
 
-      // Default: return empty array (CREATE TABLE, ALTER TABLE, INSERT, UPDATE)
-      return { toArray: () => [] };
+      // Default: return empty (CREATE TABLE, ALTER TABLE, INSERT, UPDATE)
+      return cursor([]);
     },
-  };
+  } as unknown as SqlStorage & { calls: ExecCall[] };
 }
 
 /**
@@ -70,40 +79,39 @@ function createStatefulMockSql(opts?: {
     exec(query: string, ...params: unknown[]) {
       calls.push({ query, params });
 
-      // Handle CREATE TABLE / ALTER TABLE as no-ops
-      if (query.trimStart().startsWith('CREATE TABLE') || query.trimStart().startsWith('ALTER TABLE')) {
-        return { toArray: () => [] };
+      // Handle CREATE TABLE / ALTER TABLE / CREATE INDEX / UPDATE ... WHERE seq = 0 as no-ops
+      if (query.trimStart().startsWith('CREATE') || query.trimStart().startsWith('ALTER TABLE') || (query.startsWith('UPDATE') && query.includes('WHERE seq = 0'))) {
+        return cursor([]);
       }
 
       // Handle SELECT MAX(seq)
       if (query.includes('MAX(seq)')) {
         if (rows.size === 0 && maxSeq !== null) {
-          return { toArray: () => [{ max_seq: maxSeq }] };
+          return cursor([{ max_seq: maxSeq }]);
         }
         let max = maxSeq ?? 0;
         for (const row of rows.values()) {
           if (typeof row.seq === 'number' && row.seq > max) max = row.seq;
         }
-        return { toArray: () => [{ max_seq: max || null }] };
+        return cursor([{ max_seq: max || null }]);
       }
 
       // Handle replication_state read
       if (query.includes('SELECT value FROM replication_state')) {
         if (replicatedSeq !== null) {
-          return { toArray: () => [{ value: replicatedSeq }] };
+          return cursor([{ value: replicatedSeq }]);
         }
-        return { toArray: () => [] };
+        return cursor([]);
       }
 
       // Handle replication_state write
       if (query.includes('INSERT OR REPLACE INTO replication_state')) {
         replicatedSeq = params[0] as number;
-        return { toArray: () => [] };
+        return cursor([]);
       }
 
       // Handle INSERT INTO messages
       if (query.includes('INSERT') && query.includes('messages') && !query.includes('replication_state')) {
-        // Parse the values from the INSERT
         const id = params[0] as string;
         const isCreateTurn = query.includes("'assistant', '', '[]', 'v2'");
         if (isCreateTurn) {
@@ -144,7 +152,7 @@ function createStatefulMockSql(opts?: {
             created_at: Math.floor(Date.now() / 1000),
           });
         }
-        return { toArray: () => [] };
+        return cursor([]);
       }
 
       // Handle UPDATE messages
@@ -196,46 +204,116 @@ function createStatefulMockSql(opts?: {
             existing.seq = seq;
           }
         }
-        return { toArray: () => [] };
+        return cursor([]);
       }
 
-      // Handle SELECT for single message
-      if (query.startsWith('SELECT') && query.includes('FROM messages WHERE id = ?')) {
+      // Handle DELETE FROM messages
+      if (query.startsWith('DELETE FROM messages')) {
+        if (query.includes('WHERE id IN')) {
+          // deleteMessagesFrom — delete specific IDs
+          for (const p of params) {
+            rows.delete(p as string);
+          }
+        } else {
+          // reset — delete all messages
+          rows.clear();
+        }
+        return cursor([]);
+      }
+
+      // Handle SELECT created_at for deleteMessagesFrom
+      if (query.startsWith('SELECT created_at') && query.includes('WHERE id = ?')) {
         const id = params[0] as string;
         const row = rows.get(id);
-        if (row) return { toArray: () => [row] };
-        return { toArray: () => [] };
+        if (row) return cursor([{ created_at: row.created_at }]);
+        return cursor([]);
       }
 
-      // Handle SELECT for recoverTurn
+      // Handle SELECT id for deleteMessagesFrom (created_at >= ?)
+      if (query.startsWith('SELECT id') && query.includes('created_at >= ?')) {
+        const minCreatedAt = params[0] as number;
+        const matching = Array.from(rows.values())
+          .filter(r => (r.created_at as number) >= minCreatedAt)
+          .sort((a, b) => (a.created_at as number) - (b.created_at as number))
+          .map(r => ({ id: r.id }));
+        return cursor(matching);
+      }
+
+      // Handle SELECT for recoverTurn (most specific — has role + message_format constraints)
       if (query.startsWith('SELECT') && query.includes("role = 'assistant'") && query.includes("message_format = 'v2'")) {
         const id = params[0] as string;
         const row = rows.get(id);
         if (row && row.role === 'assistant' && row.message_format === 'v2') {
-          return { toArray: () => [row] };
+          return cursor([row]);
         }
-        return { toArray: () => [] };
+        return cursor([]);
       }
 
-      // Handle SELECT for getMessages (all messages)
-      if (query.startsWith('SELECT') && query.includes('FROM messages') && !query.includes('WHERE id')) {
-        const allRows = Array.from(rows.values());
-        // Simple ordering by seq
-        allRows.sort((a, b) => (a.seq as number) - (b.seq as number));
+      // Handle SELECT for getMessages (multi-row queries with ORDER BY)
+      if (query.startsWith('SELECT') && query.includes('FROM messages') && query.includes('ORDER BY')) {
+        let result = Array.from(rows.values());
+        // Simple ordering by created_at, seq
+        result.sort((a, b) => {
+          const caDiff = (a.created_at as number) - (b.created_at as number);
+          if (caDiff !== 0) return caDiff;
+          return (a.seq as number) - (b.seq as number);
+        });
 
         // Handle seq > ? filter for flushToD1
         if (query.includes('seq > ?')) {
           const minSeq = params[0] as number;
-          const filtered = allRows.filter(r => (r.seq as number) > minSeq);
-          return { toArray: () => filtered };
+          result = result.filter(r => (r.seq as number) > minSeq);
+          return cursor(result);
         }
 
-        return { toArray: () => allRows };
+        let paramIdx = 0;
+
+        // Handle (created_at, seq) > (SELECT ...) — afterId cursor
+        if (query.includes('(created_at, seq) > (SELECT created_at, seq FROM messages WHERE id = ?)')) {
+          const afterId = params[paramIdx++] as string;
+          const afterRow = rows.get(afterId);
+          if (afterRow) {
+            const ca = afterRow.created_at as number;
+            const sq = afterRow.seq as number;
+            result = result.filter(r =>
+              (r.created_at as number) > ca ||
+              ((r.created_at as number) === ca && (r.seq as number) > sq),
+            );
+          }
+        }
+
+        // Handle created_at > ? — afterCreatedAt
+        if (query.includes('created_at > ?') && !query.includes('(created_at, seq)')) {
+          const afterCreatedAt = params[paramIdx++] as number;
+          result = result.filter(r => (r.created_at as number) > afterCreatedAt);
+        }
+
+        // Handle thread_id = ?
+        if (query.includes('thread_id = ?')) {
+          const threadId = params[paramIdx++] as string;
+          result = result.filter(r => r.thread_id === threadId);
+        }
+
+        // Handle LIMIT
+        if (query.includes('LIMIT ?')) {
+          const limit = params[paramIdx++] as number;
+          result = result.slice(0, limit);
+        }
+
+        return cursor(result);
       }
 
-      return { toArray: () => [] };
+      // Handle SELECT for single message (full row) — after getMessages to avoid subquery collision
+      if (query.startsWith('SELECT') && query.includes('FROM messages') && query.includes('WHERE id = ?')) {
+        const id = params[0] as string;
+        const row = rows.get(id);
+        if (row) return cursor([row]);
+        return cursor([]);
+      }
+
+      return cursor([]);
     },
-  };
+  } as unknown as SqlStorage & { calls: ExecCall[]; rows: Map<string, Record<string, unknown>> };
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -395,8 +473,9 @@ describe('MessageStore', () => {
       expect(snapshot!.content).toBe('Hello world');
       expect(snapshot!.parts).toHaveLength(1);
       expect(snapshot!.parts[0].type).toBe('text');
-      expect(snapshot!.parts[0].text).toBe('Hello world');
-      expect(snapshot!.parts[0].streaming).toBe(true);
+      const textPart = snapshot!.parts[0] as TextPart;
+      expect(textPart.text).toBe('Hello world');
+      expect(textPart.streaming).toBe(true);
     });
 
     it('appendTextDelta returns false for unknown turn', () => {
@@ -417,12 +496,14 @@ describe('MessageStore', () => {
       const snapshot = store.getTurnSnapshot('turn-1');
       expect(snapshot!.parts).toHaveLength(3);
       expect(snapshot!.parts[0].type).toBe('text');
-      expect(snapshot!.parts[0].text).toBe('Before tool');
-      expect(snapshot!.parts[0].streaming).toBe(false); // marked not streaming by tool update
+      const firstText = snapshot!.parts[0] as TextPart;
+      expect(firstText.text).toBe('Before tool');
+      expect(firstText.streaming).toBe(false); // marked not streaming by tool update
       expect(snapshot!.parts[1].type).toBe('tool-call');
       expect(snapshot!.parts[2].type).toBe('text');
-      expect(snapshot!.parts[2].text).toBe('After tool');
-      expect(snapshot!.parts[2].streaming).toBe(true);
+      const lastText = snapshot!.parts[2] as TextPart;
+      expect(lastText.text).toBe('After tool');
+      expect(lastText.streaming).toBe(true);
     });
 
     it('updateToolCall persists to SQLite with seq bump', () => {
@@ -452,7 +533,7 @@ describe('MessageStore', () => {
       store.updateToolCall('turn-1', 'call-1', 'readFile', 'complete', undefined, 'file contents');
 
       const snapshot = store.getTurnSnapshot('turn-1');
-      const toolParts = snapshot!.parts.filter((p) => p.type === 'tool-call');
+      const toolParts = snapshot!.parts.filter((p): p is ToolCallPart => p.type === 'tool-call');
       expect(toolParts).toHaveLength(1);
       expect(toolParts[0].status).toBe('complete');
       expect(toolParts[0].result).toBe('file contents');
@@ -472,7 +553,7 @@ describe('MessageStore', () => {
       store.appendTextDelta('turn-1', 'Hello');
       const callCountBefore = sql.calls.length;
 
-      const snapshot = store.finalizeTurn('turn-1', 'Hello World', 'end_turn');
+      store.finalizeTurn('turn-1', 'Hello World', 'end_turn');
 
       // Should NOT have INSERT OR REPLACE
       const callsSinceFinalize = sql.calls.slice(callCountBefore);
@@ -497,7 +578,7 @@ describe('MessageStore', () => {
       store.appendTextDelta('turn-1', 'streaming text');
 
       const snapshot = store.finalizeTurn('turn-1')!;
-      const textParts = snapshot.parts.filter((p) => p.type === 'text');
+      const textParts = snapshot.parts.filter((p): p is TextPart => p.type === 'text');
       for (const part of textParts) {
         expect(part.streaming).toBe(false);
       }
@@ -511,7 +592,7 @@ describe('MessageStore', () => {
       store.appendTextDelta('turn-1', 'done');
 
       const snapshot = store.finalizeTurn('turn-1', undefined, 'end_turn')!;
-      const finishParts = snapshot.parts.filter((p) => p.type === 'finish');
+      const finishParts = snapshot.parts.filter((p): p is FinishPart => p.type === 'finish');
       expect(finishParts).toHaveLength(1);
       expect(finishParts[0].reason).toBe('end_turn');
     });
@@ -523,7 +604,7 @@ describe('MessageStore', () => {
       store.createTurn('turn-1', {});
       const snapshot = store.finalizeTurn('turn-1', 'partial', 'error', 'Something broke')!;
 
-      const errorParts = snapshot.parts.filter((p) => p.type === 'error');
+      const errorParts = snapshot.parts.filter((p): p is ErrorPart => p.type === 'error');
       expect(errorParts).toHaveLength(1);
       expect(errorParts[0].message).toBe('Something broke');
     });
@@ -536,7 +617,7 @@ describe('MessageStore', () => {
       store.appendTextDelta('turn-1', 'partial');
 
       const snapshot = store.finalizeTurn('turn-1', 'complete final text')!;
-      const textParts = snapshot.parts.filter((p) => p.type === 'text');
+      const textParts = snapshot.parts.filter((p): p is TextPart => p.type === 'text');
       expect(textParts).toHaveLength(1);
       expect(textParts[0].text).toBe('complete final text');
       expect(snapshot.content).toBe('complete final text');
@@ -552,7 +633,7 @@ describe('MessageStore', () => {
       store.appendTextDelta('turn-1', 'Part 2');
 
       const snapshot = store.finalizeTurn('turn-1', 'Part 1Part 2')!;
-      const textParts = snapshot.parts.filter((p) => p.type === 'text');
+      const textParts = snapshot.parts.filter((p): p is TextPart => p.type === 'text');
       expect(textParts).toHaveLength(2);
       expect(textParts[0].text).toBe('Part 1');
       expect(textParts[1].text).toBe('Part 2');
@@ -566,7 +647,7 @@ describe('MessageStore', () => {
       // No deltas — simulate hibernation recovery with empty parts
 
       const snapshot = store.finalizeTurn('turn-1', 'recovered text')!;
-      const textParts = snapshot.parts.filter((p) => p.type === 'text');
+      const textParts = snapshot.parts.filter((p): p is TextPart => p.type === 'text');
       expect(textParts).toHaveLength(1);
       expect(textParts[0].text).toBe('recovered text');
     });
@@ -842,7 +923,7 @@ describe('MessageStore', () => {
       const s1 = store.writeMessage({ id: 'm1', role: 'user', content: 'a' });
       const s2 = store.createTurn('t1', {});
       const s3 = store.updateToolCall('t1', 'c1', 'tool', 'running')!;
-      const s4 = store.finalizeTurn('t1', 'done')!;
+      store.finalizeTurn('t1', 'done');
       const s5 = store.writeMessage({ id: 'm2', role: 'system', content: 'b' });
       const s6 = store.stampChannelDelivery('m1', 'slack', 'C1');
 
@@ -852,6 +933,346 @@ describe('MessageStore', () => {
       // finalizeTurn returns snapshot, not seq directly — but it bumped seq
       expect(s5).toBe(5);
       expect(s6).toBe(6);
+    });
+  });
+
+  describe('Delete Operations', () => {
+    it('deleteMessagesFrom removes target message and all after it', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'First' });
+      store.writeMessage({ id: 'msg-2', role: 'assistant', content: 'Second' });
+      store.writeMessage({ id: 'msg-3', role: 'user', content: 'Third' });
+
+      // Give messages distinct timestamps so created_at filtering works
+      const rows = sql.rows;
+      rows.get('msg-1')!.created_at = 1000;
+      rows.get('msg-2')!.created_at = 2000;
+      rows.get('msg-3')!.created_at = 3000;
+
+      const removed = store.deleteMessagesFrom('msg-2');
+
+      expect(removed).toEqual(['msg-2', 'msg-3']);
+      expect(store.getMessage('msg-1')).not.toBeNull();
+      expect(store.getMessage('msg-2')).toBeNull();
+      expect(store.getMessage('msg-3')).toBeNull();
+    });
+
+    it('deleteMessagesFrom returns empty array for non-existent message', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'First' });
+
+      const removed = store.deleteMessagesFrom('nonexistent');
+      expect(removed).toEqual([]);
+      expect(store.getMessage('msg-1')).not.toBeNull();
+    });
+
+    it('deleteMessagesFrom cleans up active turns that get deleted', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'First' });
+      store.createTurn('turn-1', {});
+      store.appendTextDelta('turn-1', 'streaming...');
+
+      expect(store.activeTurnIds.has('turn-1')).toBe(true);
+
+      const removed = store.deleteMessagesFrom('turn-1');
+
+      expect(removed).toContain('turn-1');
+      expect(store.activeTurnIds.has('turn-1')).toBe(false);
+    });
+
+    it('deleteMessagesFrom bumps seq', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'First' }); // seq 1
+      const seqBefore = store.currentSeq; // 2
+
+      store.deleteMessagesFrom('msg-1');
+
+      expect(store.currentSeq).toBe(seqBefore + 1);
+    });
+
+    it('reset clears all messages and resets state', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'First' });
+      store.writeMessage({ id: 'msg-2', role: 'assistant', content: 'Second' });
+
+      expect(store.getMessages()).toHaveLength(2);
+      expect(store.currentSeq).toBe(3);
+
+      store.reset();
+
+      expect(store.getMessages()).toHaveLength(0);
+      expect(store.currentSeq).toBe(1);
+      expect(store.replicatedSeq).toBe(0);
+    });
+
+    it('reset clears active turns', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.createTurn('turn-1', {});
+      store.createTurn('turn-2', {});
+      store.appendTextDelta('turn-1', 'hello');
+
+      expect(store.activeTurnIds.size).toBe(2);
+
+      store.reset();
+
+      expect(store.activeTurnIds.size).toBe(0);
+    });
+
+    it('reset resets replication watermark', async () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'First' });
+      // Simulate a flush that advanced the watermark
+      await store.flushToD1({}, 'session-1', vi.fn(async () => {}));
+      expect(store.replicatedSeq).toBeGreaterThan(0);
+
+      store.reset();
+
+      expect(store.replicatedSeq).toBe(0);
+    });
+
+    it('deleteMessagesFrom targeting the first message deletes everything', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'First' });
+      store.writeMessage({ id: 'msg-2', role: 'assistant', content: 'Second' });
+      store.writeMessage({ id: 'msg-3', role: 'user', content: 'Third' });
+
+      // All same created_at is fine here — targeting the first means all match
+      const removed = store.deleteMessagesFrom('msg-1');
+
+      expect(removed).toHaveLength(3);
+      expect(store.getMessages()).toHaveLength(0);
+    });
+
+    it('reset then writeMessage restarts seq at 1', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'First' }); // seq 1
+      store.writeMessage({ id: 'msg-2', role: 'user', content: 'Second' }); // seq 2
+      expect(store.currentSeq).toBe(3);
+
+      store.reset();
+
+      const seq = store.writeMessage({ id: 'msg-3', role: 'user', content: 'After reset' });
+      expect(seq).toBe(1);
+      expect(store.currentSeq).toBe(2);
+    });
+  });
+
+  describe('getMessages filters', () => {
+    it('getMessages with afterCreatedAt filters by timestamp', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'Old' });
+      store.writeMessage({ id: 'msg-2', role: 'user', content: 'New' });
+      store.writeMessage({ id: 'msg-3', role: 'user', content: 'Newest' });
+
+      // Give distinct timestamps
+      sql.rows.get('msg-1')!.created_at = 1000;
+      sql.rows.get('msg-2')!.created_at = 2000;
+      sql.rows.get('msg-3')!.created_at = 3000;
+
+      const msgs = store.getMessages({ afterCreatedAt: 1000 });
+      expect(msgs).toHaveLength(2);
+      expect(msgs[0].id).toBe('msg-2');
+      expect(msgs[1].id).toBe('msg-3');
+    });
+
+    it('getMessages with afterId uses cursor-based pagination', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'First' });
+      store.writeMessage({ id: 'msg-2', role: 'user', content: 'Second' });
+      store.writeMessage({ id: 'msg-3', role: 'user', content: 'Third' });
+
+      sql.rows.get('msg-1')!.created_at = 1000;
+      sql.rows.get('msg-2')!.created_at = 2000;
+      sql.rows.get('msg-3')!.created_at = 3000;
+
+      const msgs = store.getMessages({ afterId: 'msg-1' });
+      expect(msgs).toHaveLength(2);
+      expect(msgs[0].id).toBe('msg-2');
+      expect(msgs[1].id).toBe('msg-3');
+    });
+
+    it('getMessages with threadId filters by thread', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'Thread A', threadId: 'thread-a' });
+      store.writeMessage({ id: 'msg-2', role: 'user', content: 'Thread B', threadId: 'thread-b' });
+      store.writeMessage({ id: 'msg-3', role: 'user', content: 'Thread A again', threadId: 'thread-a' });
+
+      const msgs = store.getMessages({ threadId: 'thread-a' });
+      expect(msgs).toHaveLength(2);
+      expect(msgs[0].id).toBe('msg-1');
+      expect(msgs[1].id).toBe('msg-3');
+    });
+
+    it('getMessages with limit caps results', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'First' });
+      store.writeMessage({ id: 'msg-2', role: 'user', content: 'Second' });
+      store.writeMessage({ id: 'msg-3', role: 'user', content: 'Third' });
+
+      const msgs = store.getMessages({ limit: 2 });
+      expect(msgs).toHaveLength(2);
+      expect(msgs[0].id).toBe('msg-1');
+      expect(msgs[1].id).toBe('msg-2');
+    });
+
+    it('getMessages with combined threadId and limit', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'A1', threadId: 'thread-a' });
+      store.writeMessage({ id: 'msg-2', role: 'user', content: 'B1', threadId: 'thread-b' });
+      store.writeMessage({ id: 'msg-3', role: 'user', content: 'A2', threadId: 'thread-a' });
+      store.writeMessage({ id: 'msg-4', role: 'user', content: 'A3', threadId: 'thread-a' });
+
+      const msgs = store.getMessages({ threadId: 'thread-a', limit: 2 });
+      expect(msgs).toHaveLength(2);
+      expect(msgs[0].id).toBe('msg-1');
+      expect(msgs[1].id).toBe('msg-3');
+    });
+  });
+
+  describe('Streaming edge cases', () => {
+    it('createTurn with duplicate ID is ignored (INSERT OR IGNORE)', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      const seq1 = store.createTurn('turn-1', { channelType: 'slack' });
+      store.appendTextDelta('turn-1', 'original text');
+
+      // Second createTurn with same ID — should not overwrite
+      const seq2 = store.createTurn('turn-1', { channelType: 'web' });
+
+      // Seq still advances (bumpSeq is called before INSERT OR IGNORE)
+      expect(seq2).toBeGreaterThan(seq1);
+
+      // But the in-memory turn was overwritten (activeTurns.set replaces)
+      // This is the actual behavior — the SQLite row is unchanged but in-memory state resets
+      const snapshot = store.getTurnSnapshot('turn-1');
+      expect(snapshot).not.toBeNull();
+      // The new createTurn replaced the in-memory turn (empty parts, new metadata)
+      expect(snapshot!.content).toBe('');
+      expect(snapshot!.metadata.channelType).toBe('web');
+    });
+
+    it('multiple tool calls with different callIds coexist', () => {
+      const sql = createMockSql();
+      const store = new MessageStore(sql);
+
+      store.createTurn('turn-1', {});
+      store.appendTextDelta('turn-1', 'Let me help');
+      store.updateToolCall('turn-1', 'call-1', 'readFile', 'running', { path: '/a' });
+      store.updateToolCall('turn-1', 'call-2', 'writeFile', 'running', { path: '/b' });
+      store.updateToolCall('turn-1', 'call-1', 'readFile', 'complete', undefined, 'contents of a');
+      store.updateToolCall('turn-1', 'call-2', 'writeFile', 'complete', undefined, 'ok');
+
+      const snapshot = store.getTurnSnapshot('turn-1')!;
+      const toolParts = snapshot.parts.filter((p): p is ToolCallPart => p.type === 'tool-call');
+      expect(toolParts).toHaveLength(2);
+
+      expect(toolParts[0].callId).toBe('call-1');
+      expect(toolParts[0].toolName).toBe('readFile');
+      expect(toolParts[0].status).toBe('complete');
+      expect(toolParts[0].result).toBe('contents of a');
+
+      expect(toolParts[1].callId).toBe('call-2');
+      expect(toolParts[1].toolName).toBe('writeFile');
+      expect(toolParts[1].status).toBe('complete');
+      expect(toolParts[1].result).toBe('ok');
+    });
+
+    it('recoverTurn then continue streaming works', () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      // Create a turn and simulate partial streaming
+      store.createTurn('turn-1', { channelType: 'web' });
+      store.appendTextDelta('turn-1', 'Before hibernate');
+      store.updateToolCall('turn-1', 'c1', 'tool', 'running');
+
+      // Simulate hibernation: finalize to persist, then manually reset state
+      store.finalizeTurn('turn-1', 'Before hibernate');
+
+      // Put the row back to mid-stream state (as it would be before finalize)
+      const row = sql.rows.get('turn-1')!;
+      row.parts = JSON.stringify([
+        { type: 'text', text: 'Before hibernate', streaming: false },
+        { type: 'tool-call', callId: 'c1', toolName: 'tool', status: 'running' },
+      ]);
+      row.content = 'Before hibernate';
+
+      // Recover
+      const recovered = store.recoverTurn('turn-1');
+      expect(recovered).not.toBeNull();
+      expect(store.activeTurnIds.has('turn-1')).toBe(true);
+
+      // Continue streaming after recovery
+      const deltaOk = store.appendTextDelta('turn-1', ' After wake');
+      expect(deltaOk).toBe(true);
+
+      const toolSeq = store.updateToolCall('turn-1', 'c1', 'tool', 'complete', undefined, 'done');
+      expect(toolSeq).not.toBeNull();
+
+      const snapshot = store.getTurnSnapshot('turn-1')!;
+      expect(snapshot.content).toBe('Before hibernate After wake');
+
+      const toolParts = snapshot.parts.filter((p): p is ToolCallPart => p.type === 'tool-call');
+      expect(toolParts[0].status).toBe('complete');
+      expect(toolParts[0].result).toBe('done');
+
+      // Can finalize after recovery
+      const final = store.finalizeTurn('turn-1', 'Before hibernate After wake')!;
+      expect(final.content).toBe('Before hibernate After wake');
+      expect(store.activeTurnIds.has('turn-1')).toBe(false);
+    });
+  });
+
+  describe('flushToD1 edge cases', () => {
+    it('flushToD1 does not advance watermark when batchUpsert throws', async () => {
+      const sql = createStatefulMockSql();
+      const store = new MessageStore(sql);
+
+      store.writeMessage({ id: 'msg-1', role: 'user', content: 'First' });
+
+      const failingUpsert = vi.fn(async () => {
+        throw new Error('D1 is down');
+      });
+
+      await expect(store.flushToD1({}, 'session-1', failingUpsert)).rejects.toThrow('D1 is down');
+
+      // Watermark should NOT have advanced
+      expect(store.replicatedSeq).toBe(0);
+
+      // Subsequent successful flush should pick up the same messages
+      const successUpsert = vi.fn(async () => {});
+      const count = await store.flushToD1({}, 'session-1', successUpsert);
+      expect(count).toBe(1);
+      expect(store.replicatedSeq).toBe(1);
     });
   });
 });

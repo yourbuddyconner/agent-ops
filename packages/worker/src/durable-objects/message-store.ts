@@ -7,7 +7,7 @@
  * - In-memory `activeTurns` map for streaming turn assembly
  * - D1 flush via seq-based watermark
  *
- * SqlStorage is the Cloudflare Durable Object `ctx.storage.sql` API.
+ * Uses Cloudflare's SqlStorage type directly (globally available via @cloudflare/workers-types).
  */
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -26,10 +26,39 @@ export interface TurnMetadata {
   threadId?: string;
 }
 
+/** Discriminated union for message parts. */
+export interface TextPart {
+  type: 'text';
+  text: string;
+  streaming?: boolean;
+}
+
+export interface ToolCallPart {
+  type: 'tool-call';
+  callId: string;
+  toolName: string;
+  status: string;
+  args?: unknown;
+  result?: unknown;
+  error?: unknown;
+}
+
+export interface ErrorPart {
+  type: 'error';
+  message: string;
+}
+
+export interface FinishPart {
+  type: 'finish';
+  reason: string;
+}
+
+export type MessagePart = TextPart | ToolCallPart | ErrorPart | FinishPart;
+
 export interface TurnSnapshot {
   turnId: string;
   content: string;
-  parts: Array<{ type: string; [key: string]: unknown }>;
+  parts: MessagePart[];
   metadata: TurnMetadata;
 }
 
@@ -51,15 +80,29 @@ export interface MessageRow {
   createdAt: number;
 }
 
-/** Minimal interface for Cloudflare DO SqlStorage. */
-export interface SqlStorage {
-  exec(query: string, ...params: unknown[]): { toArray(): Record<string, unknown>[] };
+/** Shape of a full row from the messages table (SQL column names). */
+interface MessageSqlRow extends Record<string, SqlStorageValue> {
+  id: string;
+  seq: number;
+  role: string;
+  content: string;
+  parts: string | null;
+  author_id: string | null;
+  author_email: string | null;
+  author_name: string | null;
+  author_avatar_url: string | null;
+  channel_type: string | null;
+  channel_id: string | null;
+  opencode_session_id: string | null;
+  message_format: string;
+  thread_id: string | null;
+  created_at: number;
 }
 
 /** Shape of a single active turn held in memory during streaming. */
 interface ActiveTurn {
   text: string;
-  parts: Array<{ type: string; [key: string]: unknown }>;
+  parts: MessagePart[];
   metadata: TurnMetadata;
 }
 
@@ -103,6 +146,9 @@ const MIGRATION_COLUMNS: Array<{ sql: string }> = [
   { sql: 'ALTER TABLE messages ADD COLUMN opencode_session_id TEXT' },
 ];
 
+/** All columns for a full message SELECT. */
+const MESSAGE_COLUMNS = 'id, seq, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id, message_format, thread_id, created_at';
+
 // ─── MessageStore Class ──────────────────────────────────────────────────────
 
 export class MessageStore {
@@ -132,15 +178,12 @@ export class MessageStore {
     this.sql.exec(MESSAGES_INDEX_SQL);
 
     // Initialize seq counter from MAX(seq) in messages table
-    const maxSeqRows = this.sql.exec('SELECT MAX(seq) as max_seq FROM messages').toArray();
-    const maxSeq = maxSeqRows[0]?.max_seq;
-    this.nextSeq = typeof maxSeq === 'number' && maxSeq > 0 ? maxSeq + 1 : 1;
+    const maxSeqRow = this.sql.exec<{ max_seq: number | null }>('SELECT MAX(seq) as max_seq FROM messages').one();
+    this.nextSeq = typeof maxSeqRow.max_seq === 'number' && maxSeqRow.max_seq > 0 ? maxSeqRow.max_seq + 1 : 1;
 
     // Initialize replication watermark
-    const repRows = this.sql.exec("SELECT value FROM replication_state WHERE key = 'last_replicated_seq'").toArray();
-    this.lastReplicatedSeq = repRows.length > 0 && typeof repRows[0].value === 'number'
-      ? (repRows[0].value as number)
-      : 0;
+    const repRows = this.sql.exec<{ value: number }>("SELECT value FROM replication_state WHERE key = 'last_replicated_seq'").toArray();
+    this.lastReplicatedSeq = repRows.length > 0 ? repRows[0].value : 0;
   }
 
   // ─── Seq Counter ─────────────────────────────────────────────────────
@@ -236,7 +279,7 @@ export class MessageStore {
     // Update or create the current streaming text part
     const lastPart = turn.parts[turn.parts.length - 1];
     if (lastPart && lastPart.type === 'text' && lastPart.streaming) {
-      lastPart.text = (lastPart.text as string) + delta;
+      lastPart.text += delta;
     } else {
       // New text part — starts after a non-text part (e.g., tool-call) or is the first part
       turn.parts.push({ type: 'text', text: delta, streaming: true });
@@ -263,7 +306,7 @@ export class MessageStore {
 
     // Find existing tool part or create new one
     let toolPart = turn.parts.find(
-      (p) => p.type === 'tool-call' && p.callId === callId,
+      (p): p is ToolCallPart => p.type === 'tool-call' && p.callId === callId,
     );
 
     if (toolPart) {
@@ -327,7 +370,7 @@ export class MessageStore {
 
     // Mark all text parts as not streaming.
     // If there's only one text part and finalText was provided, use it (more complete).
-    const textParts = turn.parts.filter((p) => p.type === 'text');
+    const textParts = turn.parts.filter((p): p is TextPart => p.type === 'text');
     if (textParts.length === 1 && finalText) {
       textParts[0].text = finalContent;
     }
@@ -388,29 +431,29 @@ export class MessageStore {
    * Re-adds to activeTurns. Returns the snapshot if found.
    */
   recoverTurn(turnId: string): TurnSnapshot | null {
-    const rows = this.sql.exec(
-      "SELECT content, parts, channel_type, channel_id, opencode_session_id, thread_id FROM messages WHERE id = ? AND role = 'assistant' AND message_format = 'v2'",
+    const rows = this.sql.exec<MessageSqlRow>(
+      `SELECT ${MESSAGE_COLUMNS} FROM messages WHERE id = ? AND role = 'assistant' AND message_format = 'v2'`,
       turnId,
     ).toArray();
     if (rows.length === 0) return null;
 
     const row = rows[0];
-    let recoveredParts: Array<{ type: string; [key: string]: unknown }> = [];
+    let recoveredParts: MessagePart[] = [];
     try {
-      if (row.parts && typeof row.parts === 'string') {
-        recoveredParts = JSON.parse(row.parts as string);
+      if (row.parts) {
+        recoveredParts = JSON.parse(row.parts) as MessagePart[];
       }
     } catch { /* corrupted parts — start fresh */ }
 
     const metadata: TurnMetadata = {
-      channelType: (row.channel_type as string) || undefined,
-      channelId: (row.channel_id as string) || undefined,
-      opencodeSessionId: (row.opencode_session_id as string) || undefined,
-      threadId: (row.thread_id as string) || undefined,
+      channelType: row.channel_type || undefined,
+      channelId: row.channel_id || undefined,
+      opencodeSessionId: row.opencode_session_id || undefined,
+      threadId: row.thread_id || undefined,
     };
 
     const turn: ActiveTurn = {
-      text: (row.content as string) || '',
+      text: row.content || '',
       parts: recoveredParts,
       metadata,
     };
@@ -444,8 +487,8 @@ export class MessageStore {
 
   /** Read a single message by ID. */
   getMessage(id: string): MessageRow | null {
-    const rows = this.sql.exec(
-      'SELECT id, seq, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id, message_format, thread_id, created_at FROM messages WHERE id = ?',
+    const rows = this.sql.exec<MessageSqlRow>(
+      `SELECT ${MESSAGE_COLUMNS} FROM messages WHERE id = ?`,
       id,
     ).toArray();
     if (rows.length === 0) return null;
@@ -454,8 +497,8 @@ export class MessageStore {
 
   /** Read messages, ordered by created_at ASC, seq ASC. Supports optional limit and cursor. */
   getMessages(opts?: { limit?: number; afterId?: string; afterCreatedAt?: number; threadId?: string }): MessageRow[] {
-    let query = 'SELECT id, seq, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id, message_format, thread_id, created_at FROM messages';
-    const params: unknown[] = [];
+    let query = `SELECT ${MESSAGE_COLUMNS} FROM messages`;
+    const params: (string | number)[] = [];
     const conditions: string[] = [];
 
     if (opts?.afterId) {
@@ -482,7 +525,7 @@ export class MessageStore {
       params.push(opts.limit);
     }
 
-    const rows = this.sql.exec(query, ...params).toArray();
+    const rows = this.sql.exec<MessageSqlRow>(query, ...params).toArray();
     return rows.map((r) => this.rowToMessageRow(r));
   }
 
@@ -507,7 +550,7 @@ export class MessageStore {
    * Flush messages with seq > lastReplicatedSeq to D1 via the provided callback.
    * Advances the watermark in replication_state on success.
    */
-  async flushToD1<TDb = unknown>(
+  async flushToD1<TDb>(
     db: TDb,
     sessionId: string,
     batchUpsert: (db: TDb, sessionId: string, msgs: Array<{
@@ -527,28 +570,28 @@ export class MessageStore {
       createdAt?: number;
     }>) => Promise<void>,
   ): Promise<number> {
-    const rows = this.sql.exec(
-      'SELECT id, seq, role, content, parts, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, opencode_session_id, message_format, thread_id, created_at FROM messages WHERE seq > ? ORDER BY seq ASC LIMIT 200',
+    const rows = this.sql.exec<MessageSqlRow>(
+      `SELECT ${MESSAGE_COLUMNS} FROM messages WHERE seq > ? ORDER BY seq ASC LIMIT 200`,
       this.lastReplicatedSeq,
     ).toArray();
 
     if (rows.length === 0) return 0;
 
     const msgs = rows.map((row) => ({
-      id: row.id as string,
-      role: row.role as string,
-      content: row.content as string,
-      parts: row.parts as string | null,
-      authorId: row.author_id as string | null,
-      authorEmail: row.author_email as string | null,
-      authorName: row.author_name as string | null,
-      authorAvatarUrl: row.author_avatar_url as string | null,
-      channelType: row.channel_type as string | null,
-      channelId: row.channel_id as string | null,
-      opencodeSessionId: row.opencode_session_id as string | null,
-      messageFormat: (row.message_format as string) || 'v2',
-      threadId: row.thread_id as string | null,
-      createdAt: row.created_at as number,
+      id: row.id,
+      role: row.role,
+      content: row.content,
+      parts: row.parts,
+      authorId: row.author_id,
+      authorEmail: row.author_email,
+      authorName: row.author_name,
+      authorAvatarUrl: row.author_avatar_url,
+      channelType: row.channel_type,
+      channelId: row.channel_id,
+      opencodeSessionId: row.opencode_session_id,
+      messageFormat: row.message_format || 'v2',
+      threadId: row.thread_id,
+      createdAt: row.created_at,
     }));
 
     await batchUpsert(db, sessionId, msgs);
@@ -556,10 +599,10 @@ export class MessageStore {
     // Advance watermark — but don't advance past active turns so they get re-flushed
     const activeTurnIdSet = this.activeTurnIds;
     const activeSeqs = rows
-      .filter((row) => activeTurnIdSet.has(row.id as string))
-      .map((row) => row.seq as number);
+      .filter((row) => activeTurnIdSet.has(row.id))
+      .map((row) => row.seq);
     const minActiveSeq = activeSeqs.length > 0 ? Math.min(...activeSeqs) : null;
-    const maxFlushedSeq = rows[rows.length - 1].seq as number;
+    const maxFlushedSeq = rows[rows.length - 1].seq;
     const safeWatermark = Math.max(
       0,
       minActiveSeq !== null ? Math.min(maxFlushedSeq, minActiveSeq - 1) : maxFlushedSeq,
@@ -579,25 +622,75 @@ export class MessageStore {
     return this.lastReplicatedSeq;
   }
 
+  // ─── Delete Operations ──────────────────────────────────────────────
+
+  /**
+   * Delete a message and all messages created at or after it (revert).
+   * Bumps seq so the deletion is visible to the replication watermark.
+   * Returns the list of deleted message IDs.
+   */
+  deleteMessagesFrom(messageId: string): string[] {
+    const targetRows = this.sql.exec<{ created_at: number }>(
+      'SELECT created_at FROM messages WHERE id = ?', messageId,
+    ).toArray();
+
+    if (targetRows.length === 0) return [];
+
+    const createdAt = targetRows[0].created_at;
+    const affected = this.sql.exec<{ id: string }>(
+      'SELECT id FROM messages WHERE created_at >= ? ORDER BY created_at ASC', createdAt,
+    ).toArray();
+
+    const removedIds = affected.map((m) => m.id);
+    if (removedIds.length === 0) return [];
+
+    const placeholders = removedIds.map(() => '?').join(',');
+    this.sql.exec(`DELETE FROM messages WHERE id IN (${placeholders})`, ...removedIds);
+
+    // Clean up any active turns that were deleted
+    for (const id of removedIds) {
+      this.activeTurns.delete(id);
+    }
+
+    // Bump seq so watermark logic knows state changed
+    this.bumpSeq();
+
+    return removedIds;
+  }
+
+  /**
+   * Delete all messages (session reset/reuse). Resets seq counter and
+   * replication watermark so the session starts fresh.
+   */
+  reset(): void {
+    this.sql.exec('DELETE FROM messages');
+    this.activeTurns.clear();
+    this.nextSeq = 1;
+    this.lastReplicatedSeq = 0;
+    this.sql.exec(
+      "INSERT OR REPLACE INTO replication_state (key, value) VALUES ('last_replicated_seq', 0)",
+    );
+  }
+
   // ─── Helpers ─────────────────────────────────────────────────────────
 
-  private rowToMessageRow(row: Record<string, unknown>): MessageRow {
+  private rowToMessageRow(row: MessageSqlRow): MessageRow {
     return {
-      id: row.id as string,
-      seq: row.seq as number,
-      role: row.role as string,
-      content: row.content as string,
-      parts: row.parts as string | null,
-      authorId: row.author_id as string | null,
-      authorEmail: row.author_email as string | null,
-      authorName: row.author_name as string | null,
-      authorAvatarUrl: row.author_avatar_url as string | null,
-      channelType: row.channel_type as string | null,
-      channelId: row.channel_id as string | null,
-      opencodeSessionId: row.opencode_session_id as string | null,
-      messageFormat: (row.message_format as string) || 'v2',
-      threadId: row.thread_id as string | null,
-      createdAt: row.created_at as number,
+      id: row.id,
+      seq: row.seq,
+      role: row.role,
+      content: row.content,
+      parts: row.parts,
+      authorId: row.author_id,
+      authorEmail: row.author_email,
+      authorName: row.author_name,
+      authorAvatarUrl: row.author_avatar_url,
+      channelType: row.channel_type,
+      channelId: row.channel_id,
+      opencodeSessionId: row.opencode_session_id,
+      messageFormat: row.message_format || 'v2',
+      threadId: row.thread_id,
+      createdAt: row.created_at,
     };
   }
 }
