@@ -635,6 +635,11 @@ export class PromptHandler {
   // Model context limits — populated from provider discovery, used for pre-compaction flush
   private modelContextLimits = new Map<string, number>();
 
+  // Last-resort default model — first model discovered from connected providers.
+  // Used when no explicit model and no model preferences are configured, to avoid
+  // falling through to OpenCode's internal default (which may be a wrong provider).
+  private discoveredDefaultModel: string | undefined;
+
   constructor(opencodeUrl: string, agentClient: AgentClient, runnerSessionId?: string) {
     this.opencodeUrl = opencodeUrl;
     this.agentClient = agentClient;
@@ -1383,8 +1388,19 @@ export class PromptHandler {
       // Mark sync prompt in flight so SSE-side finalizeResponse is suppressed
       channel.syncPromptInFlight = true;
 
-      // Synchronous failover loop — try each model in the chain
-      const modelsToTry = failoverChain.length > 0 ? failoverChain : [undefined];
+      // Synchronous failover loop — try each model in the chain.
+      // If the chain is empty (no explicit model, no user/org preferences), fall back
+      // to the first model discovered from connected providers to avoid OpenCode
+      // picking its own internal default (which may be a wrong/unexpected provider).
+      let modelsToTry: (string | undefined)[];
+      if (failoverChain.length > 0) {
+        modelsToTry = failoverChain;
+      } else if (this.discoveredDefaultModel) {
+        console.log(`[PromptHandler] No model specified and no preferences — using discovered default: ${this.discoveredDefaultModel}`);
+        modelsToTry = [this.discoveredDefaultModel];
+      } else {
+        modelsToTry = [undefined];
+      }
       let lastModelError: string | null = null;
 
       for (let i = 0; i < modelsToTry.length; i++) {
@@ -2570,6 +2586,18 @@ export class PromptHandler {
       }
 
       console.log(`[PromptHandler] Discovered ${result.reduce((n, p) => n + p.models.length, 0)} models from ${result.length} providers`);
+
+      // Cache the first discovered model as a last-resort default.
+      // Prefer Anthropic models, then fall back to the first available model.
+      if (!this.discoveredDefaultModel && result.length > 0) {
+        const anthropicProvider = result.find((p) => p.provider.toLowerCase().includes("anthropic"));
+        const firstModel = anthropicProvider?.models[0]?.id ?? result[0].models[0]?.id;
+        if (firstModel) {
+          this.discoveredDefaultModel = firstModel;
+          console.log(`[PromptHandler] Set discovered default model: ${firstModel}`);
+        }
+      }
+
       return result;
     } catch (err) {
       console.warn("[PromptHandler] Error fetching available models:", err);
