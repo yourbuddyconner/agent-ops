@@ -269,19 +269,30 @@ async function probeCustomProviderModels(
  * Get Runner-discovered model IDs from the org-level cache.
  * Returns a Set of full model IDs (e.g. "openai/gpt-5.1-chat-latest") or null if no cache exists.
  */
-async function getRunnerDiscoveredModelIds(db: AppDb): Promise<Set<string> | null> {
+interface DiscoveredModels {
+  ids: Set<string>;
+  providerIds: Set<string>;
+}
+
+async function getRunnerDiscoveredModels(db: AppDb): Promise<DiscoveredModels | null> {
   const cached = await getCatalogCache(db, 'runner:discovered');
   if (!cached) return null;
 
   try {
     const models = JSON.parse(cached.data) as AvailableModels;
     const ids = new Set<string>();
+    const providerIds = new Set<string>();
     for (const provider of models) {
       for (const model of provider.models) {
         ids.add(model.id);
+        // Extract provider prefix from model ID (e.g. "anthropic" from "anthropic/claude-3-opus")
+        const slash = model.id.indexOf('/');
+        if (slash > 0) {
+          providerIds.add(model.id.slice(0, slash));
+        }
       }
     }
-    return ids.size > 0 ? ids : null;
+    return ids.size > 0 ? { ids, providerIds } : null;
   } catch {
     return null;
   }
@@ -297,10 +308,10 @@ async function getRunnerDiscoveredModelIds(db: AppDb): Promise<Set<string> | nul
  */
 export async function resolveAvailableModels(db: AppDb, env: Env): Promise<AvailableModels> {
   // Parallel reads
-  const [orgKeys, customProviderRows, discoveredModelIds] = await Promise.all([
+  const [orgKeys, customProviderRows, discoveredModels] = await Promise.all([
     listOrgApiKeys(db),
     getAllCustomProvidersWithKeys(db),
-    getRunnerDiscoveredModelIds(db),
+    getRunnerDiscoveredModels(db),
   ]);
 
   const result: ProviderModels[] = [];
@@ -384,9 +395,11 @@ export async function resolveAvailableModels(db: AppDb, env: Env): Promise<Avail
           id: `${providerId}/${m.id}`,
           name: m.name || m.id,
         }));
-        // Filter against Runner-discovered models to remove IDs that don't exist in OpenCode
-        if (discoveredModelIds) {
-          models = models.filter((m) => discoveredModelIds.has(m.id));
+        // Filter against Runner-discovered models to remove IDs that don't exist in OpenCode.
+        // Only filter if the runner actually discovered models from this provider —
+        // otherwise we'd incorrectly filter out all models for providers the runner doesn't know about.
+        if (discoveredModels && discoveredModels.providerIds.has(providerId)) {
+          models = models.filter((m) => discoveredModels.ids.has(m.id));
         }
       } else if (key.models && key.models.length > 0) {
         // Catalog unavailable — fall back to DB model list
@@ -455,6 +468,24 @@ export async function resolveAvailableModels(db: AppDb, env: Env): Promise<Avail
 
   for (const entry of customResults) {
     if (entry) result.push(entry);
+  }
+
+  // ─── Runner-discovered models (fallback) ────────────────────────────
+  // If no built-in or custom providers produced models, include the
+  // Runner-discovered models directly so the picker is never empty
+  // when the runner is connected.
+  if (result.length === 0 && discoveredModels) {
+    const cached = await getCatalogCache(db, 'runner:discovered');
+    if (cached) {
+      try {
+        const raw = JSON.parse(cached.data) as AvailableModels;
+        for (const provider of raw) {
+          if (provider.models.length > 0) {
+            result.push(provider);
+          }
+        }
+      } catch { /* ignore corrupted cache */ }
+    }
   }
 
   return result;
