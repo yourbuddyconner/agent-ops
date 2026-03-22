@@ -61,6 +61,11 @@ export interface ChannelContext {
   userId: string;
   orgId?: string;
   platformCache?: Record<string, unknown>;
+  persona?: {
+    name?: string;
+    avatar?: string;
+    metadata?: Record<string, unknown>;
+  };
 }
 
 // ─── Interactive Prompt Types ───────────────────────────────────────────────

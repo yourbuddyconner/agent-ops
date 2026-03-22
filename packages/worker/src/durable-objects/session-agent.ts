@@ -30,6 +30,9 @@ import { getPersonaSkills, getOrgDefaultSkills, searchSkills, listSkills, getSki
 import type { ChannelTarget, ChannelContext, InteractivePrompt, InteractiveAction, InteractivePromptRef, InteractiveResolution } from '@valet/sdk';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
 import { MessageStore } from './message-store.js';
+import { ChannelRouter } from './channel-router.js';
+import { resolveOrchestratorPersona } from '../services/persona.js';
+import { sendChannelReply } from '../services/channel-reply.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
 
@@ -633,13 +636,7 @@ export class SessionAgentDO {
   /** Debounce timer for flushing messages to D1 during active turns. */
   private d1FlushTimer: ReturnType<typeof setTimeout> | null = null;
 
-  private pendingChannelReply: {
-    channelType: string;
-    channelId: string;
-    resultContent: string | null;
-    resultMessageId: string | null;
-    handled: boolean;
-  } | null = null;
+  private channelRouter = new ChannelRouter();
 
   /** Drizzle AppDb instance wrapping the D1 binding. */
   private get appDb(): AppDb { return getDb(this.env.DB); }
@@ -656,8 +653,9 @@ export class SessionAgentDO {
 
   /** Returns the channel metadata for the currently active prompt, if any. */
   private get activeChannel(): { channelType: string; channelId: string } | null {
-    if (this.pendingChannelReply) {
-      return { channelType: this.pendingChannelReply.channelType, channelId: this.pendingChannelReply.channelId };
+    const snapshot = this.channelRouter.pendingSnapshot;
+    if (snapshot) {
+      return { channelType: snapshot.channelType, channelId: snapshot.channelId };
     }
     // Hibernation recovery: check prompt_queue for processing row with channel metadata
     const recovered = this.recoverPendingChannelReply();
@@ -826,7 +824,7 @@ export class SessionAgentDO {
         }
 
         // HTTP-based prompt submission (alternative to WebSocket)
-        const body = await request.json() as { content?: string; contextPrefix?: string; model?: string; attachments?: PromptAttachment[]; interrupt?: boolean; queueMode?: string; channelType?: string; channelId?: string; threadId?: string; authorName?: string; authorEmail?: string; authorId?: string };
+        const body = await request.json() as { content?: string; contextPrefix?: string; model?: string; attachments?: PromptAttachment[]; interrupt?: boolean; queueMode?: string; channelType?: string; channelId?: string; threadId?: string; authorName?: string; authorEmail?: string; authorId?: string; replyTo?: { channelType: string; channelId: string } };
         const content = body.content ?? '';
         const attachments = sanitizePromptAttachments(body.attachments);
         console.log(`[SessionAgentDO] /prompt HTTP: content="${content.slice(0, 60)}" channelType=${body.channelType || 'none'} channelId=${body.channelId || 'none'} queueMode=${body.queueMode || 'default'} authorName=${body.authorName || 'none'} authorId=${body.authorId || 'none'}`);
@@ -852,7 +850,7 @@ export class SessionAgentDO {
             await this.handleCollectPrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId, body.contextPrefix);
             break;
           default:
-            await this.handlePrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId, undefined, body.contextPrefix);
+            await this.handlePrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId, undefined, body.contextPrefix, body.replyTo);
             break;
         }
         console.log(`[SessionAgentDO] /prompt HTTP: completed, runnerBusy=${this.getStateValue('runnerBusy')}`);
@@ -1514,7 +1512,7 @@ export class SessionAgentDO {
       }
 
       // Web chat does not require channel_reply follow-ups.
-      if (!this.requiresExplicitChannelReply(channelType)) {
+      if (!channelType || channelType === 'web' || channelType === 'thread') {
         this.resolveChannelFollowups(channelType, channelId);
         continue;
       }
@@ -1802,6 +1800,7 @@ export class SessionAgentDO {
     threadId?: string,
     continuationContext?: string,
     contextPrefix?: string,
+    replyTo?: { channelType: string; channelId: string },
   ) {
     // ─── Thread-reply capture for pending questions ─────────────────────
     // If there's a pending question and this message came from a channel
@@ -1906,6 +1905,15 @@ export class SessionAgentDO {
     const sandboxId = this.getStateValue('sandboxId');
     const queuedCount = this.getQueueLength();
 
+    // Resolve the effective reply target early so it can be persisted in prompt_queue.
+    // Prefer explicit replyTo from the prompt envelope (set by plugin routes).
+    // Fall back to the original channel before thread normalization (legacy path).
+    // Thread origin recovery (web UI steering) happens at dispatch time, not here.
+    const effectiveReplyTo = replyTo
+      ?? (replyChannelType && replyChannelId && replyChannelType !== 'web' && replyChannelType !== 'thread'
+        ? { channelType: replyChannelType, channelId: replyChannelId }
+        : null);
+
     console.log(
       `[SessionAgentDO] handlePrompt: channel=${channelKey} runnerConnected=${runnerConnected} runnerReady=${runnerReady} runnerBusy=${runnerBusy} status=${status} sandboxId=${sandboxId || 'none'} queued=${queuedCount}`
     );
@@ -1919,7 +1927,7 @@ export class SessionAgentDO {
         messageId, content, serializedQueuedAttachments, model || null,
         author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null,
         channelType || null, channelId || null, channelKey, threadId || null, continuationContext || null,
-        contextPrefix || null, replyChannelType || null, replyChannelId || null
+        contextPrefix || null, effectiveReplyTo?.channelType || null, effectiveReplyTo?.channelId || null
       );
       this.setStateValue('promptReceivedAt', String(Date.now()));
       this.emitAuditEvent(
@@ -1942,7 +1950,7 @@ export class SessionAgentDO {
         messageId, content, serializedQueuedAttachments, model || null,
         author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null,
         channelType || null, channelId || null, channelKey, threadId || null, continuationContext || null,
-        contextPrefix || null, replyChannelType || null, replyChannelId || null
+        contextPrefix || null, effectiveReplyTo?.channelType || null, effectiveReplyTo?.channelId || null
       );
       this.setStateValue('promptReceivedAt', String(Date.now()));
       this.emitAuditEvent(
@@ -1965,7 +1973,7 @@ export class SessionAgentDO {
       messageId, content, serializedQueuedAttachments, model || null,
       author?.id || null, author?.email || null, author?.name || null, author?.avatarUrl || null,
       channelType || null, channelId || null, channelKey, threadId || null, continuationContext || null,
-      contextPrefix || null, replyChannelType || null, replyChannelId || null
+      contextPrefix || null, effectiveReplyTo?.channelType || null, effectiveReplyTo?.channelId || null
     );
 
     // Forward directly to runner with author info + channel metadata
@@ -1976,26 +1984,19 @@ export class SessionAgentDO {
     this.rescheduleIdleAlarm();
     console.log('[SessionAgentDO] handlePrompt: dispatching to runner (DO_CODE_VERSION=v2-pipeline-2)');
 
-    // Track channel context for auto-reply on completion using the ORIGINAL channel
-    // (e.g., slack:C123:thread_ts), not the normalized thread routing key.
-    // This ensures the agent is prompted to reply via the originating channel.
-    if (replyChannelType && replyChannelId && this.requiresExplicitChannelReply(replyChannelType)) {
-      this.pendingChannelReply = { channelType: replyChannelType, channelId: replyChannelId, resultContent: null, resultMessageId: null, handled: false };
-
-      // Record a follow-up reminder so the agent gets nudged if it doesn't send a substantive reply
-      this.insertChannelFollowup(replyChannelType, replyChannelId, content);
+    // Track channel context for auto-reply on completion.
+    this.channelRouter.clear();
+    if (effectiveReplyTo) {
+      this.channelRouter.trackReply(effectiveReplyTo);
+      this.insertChannelFollowup(effectiveReplyTo.channelType, effectiveReplyTo.channelId, content);
     } else if (threadId) {
       // Web UI steering of a thread — recover the thread's origin channel so
       // downstream code (approvals, auto-reply) knows where to route on Slack.
       const origin = await getThreadOriginChannel(this.env.DB, threadId);
-      if (origin && this.requiresExplicitChannelReply(origin.channelType)) {
-        this.pendingChannelReply = { channelType: origin.channelType, channelId: origin.channelId, resultContent: null, resultMessageId: null, handled: false };
+      if (origin && origin.channelType !== 'web' && origin.channelType !== 'thread') {
+        this.channelRouter.trackReply({ channelType: origin.channelType, channelId: origin.channelId });
         this.insertChannelFollowup(origin.channelType, origin.channelId, content);
-      } else {
-        this.pendingChannelReply = null;
       }
-    } else {
-      this.pendingChannelReply = null;
     }
 
     // Resolve model preferences: user prefs > org prefs fallback
@@ -2034,7 +2035,7 @@ export class SessionAgentDO {
       // Runner disappeared between the check and send — revert to queued for recovery
       this.ctx.storage.sql.exec("UPDATE prompt_queue SET status = 'queued' WHERE id = ?", messageId);
       this.setStateValue('runnerBusy', 'false');
-      this.pendingChannelReply = null;
+      this.channelRouter.clear();
       this.emitAuditEvent('prompt.dispatch_failed', `Dispatch failed, reverted to queue: ${messageId}`);
     }
   }
@@ -2686,9 +2687,8 @@ export class SessionAgentDO {
           },
         });
         // Track result content for auto channel reply
-        if (this.pendingChannelReply && !this.pendingChannelReply.handled && final.content) {
-          this.pendingChannelReply.resultContent = final.content;
-          this.pendingChannelReply.resultMessageId = turnId;
+        if (final.content) {
+          this.channelRouter.setResult(final.content, turnId);
         }
         // Increment thread message count for assistant message
         if (final.metadata.threadId) {
@@ -2700,8 +2700,8 @@ export class SessionAgentDO {
 
       case 'complete': {
         // Prompt finished — auto-reply to originating channel if needed
-        const pendingReply = this.pendingChannelReply;
-        console.log(`[SessionAgentDO] Complete received: pendingChannelReply=${pendingReply ? `${pendingReply.channelType}:${pendingReply.channelId} handled=${pendingReply.handled} resultContent=${pendingReply.resultContent?.length ?? 0}chars` : 'null'} queueLength=${this.getQueueLength()} runnerBusy=${this.getStateValue('runnerBusy')}`);
+        const pendingSnapshot = this.channelRouter.pendingSnapshot;
+        console.log(`[SessionAgentDO] Complete received: pendingChannelReply=${pendingSnapshot ? `${pendingSnapshot.channelType}:${pendingSnapshot.channelId} handled=${pendingSnapshot.handled} resultContent=${pendingSnapshot.resultContent?.length ?? 0}chars` : 'null'} queueLength=${this.getQueueLength()} runnerBusy=${this.getStateValue('runnerBusy')}`);
         await this.flushPendingChannelReply();
         // Check queue for next
         console.log(`[SessionAgentDO] Complete: flushed channel reply, now draining queue`);
@@ -6936,7 +6936,7 @@ export class SessionAgentDO {
         return this.sendNextQueuedPrompt();
       }
 
-      this.pendingChannelReply = null;
+      this.channelRouter.clear();
       this.setStateValue('runnerBusy', 'true');
       this.setStateValue('lastPromptDispatchedAt', String(Date.now()));
       this.setStateValue('lastParentIdleNotice', '');
@@ -6984,26 +6984,23 @@ export class SessionAgentDO {
     const queueChannelType = (prompt.channel_type as string) || undefined;
     const queueChannelId = (prompt.channel_id as string) || undefined;
     const queueThreadId = (prompt.thread_id as string) || undefined;
-    // Only use reply_channel columns if they exist — do NOT fall back to the
-    // normalized channel_type ('thread') which always fails requiresExplicitChannelReply.
+    // Reply channel was resolved and persisted at enqueue time (effectiveReplyTo).
+    // Trust whatever was stored — it already filters out web/thread.
     const queueReplyChannelType = (prompt.reply_channel_type as string) || undefined;
     const queueReplyChannelId = (prompt.reply_channel_id as string) || undefined;
-    if (queueReplyChannelType && queueReplyChannelId && this.requiresExplicitChannelReply(queueReplyChannelType)) {
-      this.pendingChannelReply = { channelType: queueReplyChannelType, channelId: queueReplyChannelId, resultContent: null, resultMessageId: null, handled: false };
+    this.channelRouter.clear();
+    if (queueReplyChannelType && queueReplyChannelId) {
+      this.channelRouter.trackReply({ channelType: queueReplyChannelType, channelId: queueReplyChannelId });
 
       // Record a follow-up reminder so the agent gets nudged if it doesn't send a substantive reply
       this.insertChannelFollowup(queueReplyChannelType, queueReplyChannelId, prompt.content as string);
     } else if (queueThreadId) {
       // Web UI steering of a thread — recover origin channel (same as direct dispatch path)
       const origin = await getThreadOriginChannel(this.env.DB, queueThreadId);
-      if (origin && this.requiresExplicitChannelReply(origin.channelType)) {
-        this.pendingChannelReply = { channelType: origin.channelType, channelId: origin.channelId, resultContent: null, resultMessageId: null, handled: false };
+      if (origin && origin.channelType !== 'web' && origin.channelType !== 'thread') {
+        this.channelRouter.trackReply({ channelType: origin.channelType, channelId: origin.channelId });
         this.insertChannelFollowup(origin.channelType, origin.channelId, prompt.content as string);
-      } else {
-        this.pendingChannelReply = null;
       }
-    } else {
-      this.pendingChannelReply = null;
     }
 
     // Resolve model preferences from session owner (with org fallback)
@@ -7043,7 +7040,7 @@ export class SessionAgentDO {
     });
     if (!queueDispatched) {
       this.ctx.storage.sql.exec("UPDATE prompt_queue SET status = 'queued' WHERE id = ?", prompt.id as string);
-      this.pendingChannelReply = null;
+      this.channelRouter.clear();
       this.emitAuditEvent('prompt.dispatch_failed', `Queue dispatch failed, reverted: ${(prompt.id as string).slice(0, 8)}`);
       return false;
     }
@@ -7951,7 +7948,7 @@ export class SessionAgentDO {
    * Recover pendingChannelReply from the processing prompt_queue row.
    * Used when in-memory pendingChannelReply is lost due to DO hibernation.
    */
-  private recoverPendingChannelReply(): { channelType: string; channelId: string; resultContent: string | null; resultMessageId: string | null; handled: boolean } | null {
+  private recoverPendingChannelReply(): { channelType: string; channelId: string } | null {
     const rows = this.ctx.storage.sql
       .exec("SELECT channel_type, channel_id, reply_channel_type, reply_channel_id FROM prompt_queue WHERE status = 'processing' LIMIT 1")
       .toArray();
@@ -7962,16 +7959,8 @@ export class SessionAgentDO {
     const channelId = (rows[0].reply_channel_id as string) || (rows[0].channel_id as string) || null;
     if (!channelType || !channelId) return null;
 
-    const recovered = {
-      channelType,
-      channelId,
-      resultContent: null as string | null,
-      resultMessageId: null as string | null,
-      handled: false,
-    };
-    this.pendingChannelReply = recovered;
-    console.log(`[SessionAgentDO] Recovered pendingChannelReply from prompt_queue: ${recovered.channelType}:${recovered.channelId}`);
-    return recovered;
+    console.log(`[SessionAgentDO] Recovered pendingChannelReply from prompt_queue: ${channelType}:${channelId}`);
+    return { channelType, channelId };
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────
@@ -8626,9 +8615,9 @@ export class SessionAgentDO {
           }
         : { markdown: message };
 
-      // Add persona identity for Slack messages
+      // Resolve persona identity for Slack messages and pass via ctx
       if (channelType === 'slack' && userId) {
-        outbound.platformOptions = { ...outbound.platformOptions, ...(await this.getSlackPersonaOptions(userId)) };
+        ctx.persona = await resolveOrchestratorPersona(this.appDb, userId);
       }
 
       const result = await transport.sendMessage(target, outbound, ctx);
@@ -8638,11 +8627,7 @@ export class SessionAgentDO {
       }
 
       // Mark auto-reply as handled so we don't double-send on complete
-      if (this.pendingChannelReply
-        && this.pendingChannelReply.channelType === channelType
-        && this.pendingChannelReply.channelId === channelId) {
-        this.pendingChannelReply.handled = true;
-      }
+      this.channelRouter.markHandled(channelType, channelId);
 
       // Resolve follow-up reminder if this is a substantive reply (followUp !== false)
       if (followUp !== false) {
@@ -9676,74 +9661,56 @@ export class SessionAgentDO {
    * web UI can show a "sent to <channel>" badge.
    */
   private async flushPendingChannelReply() {
-    let pending = this.pendingChannelReply;
-    console.log(`[SessionAgentDO] flushPendingChannelReply: pending=${pending ? `${pending.channelType}:${pending.channelId} handled=${pending.handled} resultContent=${pending.resultContent?.length ?? 0}chars` : 'null'}`);
-    if (!pending) {
-      // Hibernation recovery: reconstruct from prompt_queue processing row
-      pending = this.recoverPendingChannelReply();
-      if (pending) {
-        console.log(`[SessionAgentDO] flushPendingChannelReply: recovered from SQLite: ${pending.channelType}:${pending.channelId}`);
+    // Hibernation recovery: if in-memory state was lost, reconstruct from prompt_queue
+    if (!this.channelRouter.hasPending) {
+      const recovered = this.recoverPendingChannelReply();
+      if (recovered) {
+        console.log(`[SessionAgentDO] flushPendingChannelReply: recovered from SQLite: ${recovered.channelType}:${recovered.channelId}`);
+        this.channelRouter.recover(recovered.channelType, recovered.channelId);
         // Look up the most recent assistant message for resultContent
         const recentMsg = this.ctx.storage.sql
           .exec(
             "SELECT id, content FROM messages WHERE role = 'assistant' AND channel_type = ? AND channel_id = ? ORDER BY created_at DESC LIMIT 1",
-            pending.channelType, pending.channelId
+            recovered.channelType, recovered.channelId
           )
           .toArray();
         if (recentMsg.length > 0 && recentMsg[0].content) {
-          pending.resultContent = recentMsg[0].content as string;
-          pending.resultMessageId = recentMsg[0].id as string;
+          this.channelRouter.setResult(recentMsg[0].content as string, recentMsg[0].id as string);
         }
       }
     }
-    if (!pending || pending.handled || !pending.resultContent) {
-      console.log(`[SessionAgentDO] flushPendingChannelReply: skipping (pending=${!!pending} handled=${pending?.handled} resultContent=${pending?.resultContent?.length ?? 0}chars)`);
-      this.pendingChannelReply = null;
+
+    const pending = this.channelRouter.consumePendingReply();
+    if (!pending) {
+      console.log('[SessionAgentDO] flushPendingChannelReply: no reply to send');
       return;
     }
-    this.pendingChannelReply = null;
+    console.log(`[SessionAgentDO] flushPendingChannelReply: sending to ${pending.channelType}:${pending.channelId} (${pending.content.length} chars)`);
 
     const userId = this.getStateValue('userId');
     if (!userId) return;
 
-    let sent = false;
-    try {
-      const transport = channelRegistry.getTransport(pending.channelType);
-      if (!transport) {
-        console.log(`[SessionAgentDO] Auto channel reply: unsupported channel type ${pending.channelType}`);
-      } else {
-        // Resolve token: Slack uses org-level bot token, other channels use per-user credentials
-        let token: string | undefined;
-        if (pending.channelType === 'slack') {
-          token = await getSlackBotToken(this.env) ?? undefined;
-        } else {
-          const credResult = await getCredential(this.env, 'user', userId, pending.channelType);
-          if (credResult.ok) token = credResult.credential.accessToken;
-        }
-        if (!token) {
-          console.log(`[SessionAgentDO] Auto channel reply: no ${pending.channelType} config, skipping`);
-          return;
-        }
-        // Parse composite channelId (Slack encodes threadId after colon)
-        const parsed = this.parseSlackChannelId(pending.channelType, pending.channelId);
-        const target: ChannelTarget = { channelType: pending.channelType, channelId: parsed.channelId, threadId: parsed.threadId };
-        const ctx: ChannelContext = { token, userId };
-        // Add persona identity for Slack messages
-        const outbound: import('@valet/sdk').OutboundMessage = { markdown: pending.resultContent };
-        if (pending.channelType === 'slack') {
-          outbound.platformOptions = await this.getSlackPersonaOptions(userId);
-        }
-        const result = await transport.sendMessage(target, outbound, ctx);
-        if (result.success) {
-          console.log(`[SessionAgentDO] Auto channel reply sent to ${pending.channelType}:${pending.channelId}`);
-          sent = true;
-        } else {
-          console.error(`[SessionAgentDO] Auto channel reply failed for ${pending.channelType}:${pending.channelId}: ${result.error}`);
-        }
-      }
-    } catch (err) {
-      console.error('[SessionAgentDO] Auto channel reply error:', err);
+    // Resolve token: Slack uses org-level bot token, other channels use per-user credentials
+    let token: string | undefined;
+    if (pending.channelType === 'slack') {
+      token = await getSlackBotToken(this.env) ?? undefined;
+    } else {
+      const credResult = await getCredential(this.env, 'user', userId, pending.channelType);
+      if (credResult.ok) token = credResult.credential.accessToken;
     }
+    if (!token) {
+      console.log(`[SessionAgentDO] Auto channel reply: no ${pending.channelType} config, skipping`);
+      return;
+    }
+
+    // Build context with persona for Slack
+    const ctx: ChannelContext = { token, userId };
+    if (pending.channelType === 'slack') {
+      ctx.persona = await resolveOrchestratorPersona(this.appDb, userId);
+    }
+
+    // Dispatch via the extracted service
+    const sent = await sendChannelReply(pending, ctx);
 
     // Auto-reply counts as a substantive reply — resolve any pending followup reminders
     if (sent) {
@@ -9751,14 +9718,14 @@ export class SessionAgentDO {
     }
 
     // Stamp the assistant message with channel metadata so the UI shows a badge
-    if (sent && pending.resultMessageId) {
-      this.messageStore.stampChannelDelivery(pending.resultMessageId, pending.channelType, pending.channelId);
+    if (sent && pending.messageId) {
+      this.messageStore.stampChannelDelivery(pending.messageId, pending.channelType, pending.channelId);
       this.broadcastToClients({
         type: 'message.updated',
         data: {
-          id: pending.resultMessageId,
+          id: pending.messageId,
           role: 'assistant',
-          content: pending.resultContent,
+          content: pending.content,
           channelType: pending.channelType,
           channelId: pending.channelId,
           createdAt: Math.floor(Date.now() / 1000),
@@ -9767,42 +9734,12 @@ export class SessionAgentDO {
     }
   }
 
-  /**
-   * Look up orchestrator persona identity for Slack message customization.
-   * Requires the user to have linked their Slack account — throws if not linked.
-   * Returns platformOptions with username/icon_url and attribution slackUserId.
-   */
-  private async getSlackPersonaOptions(userId: string): Promise<Record<string, unknown>> {
-    const slackLink = await getUserSlackIdentityLink(this.appDb, userId);
-    if (!slackLink) {
-      throw new Error(`User ${userId} has not linked their Slack account — orchestrator cannot post to Slack without a linked identity`);
-    }
-
-    const opts: Record<string, unknown> = {
-      attribution: { slackUserId: slackLink.externalId },
-    };
-
-    try {
-      const identity = await getOrchestratorIdentity(this.appDb, userId);
-      if (identity) {
-        if (identity.name) opts.username = identity.name;
-        if (identity.avatar) opts.icon_url = identity.avatar;
-      }
-    } catch (err) {
-      console.warn('[SessionAgentDO] Failed to resolve Slack persona identity:', err);
-    }
-
-    return opts;
-  }
+  // Persona resolution extracted to services/persona.ts — resolveOrchestratorPersona()
 
   // ─── Channel Follow-up Helpers ─────────────────────────────────────
 
-  private requiresExplicitChannelReply(channelType?: string): boolean {
-    return !!channelType && channelType !== 'web' && channelType !== 'thread';
-  }
-
   private insertChannelFollowup(channelType: string, channelId: string, content: string): void {
-    if (!this.requiresExplicitChannelReply(channelType)) {
+    if (!channelType || channelType === 'web' || channelType === 'thread') {
       return;
     }
 

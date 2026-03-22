@@ -275,6 +275,7 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
             channelId: message.channelId,
             threadId: orchestratorThreadId,
             authorName: message.senderName,
+            replyTo: { channelType, channelId: message.channelId },
           }),
         }),
       );
@@ -316,6 +317,7 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
     threadId: orchestratorThreadId,
     authorName: message.senderName,
     attachments: attachments.length > 0 ? attachments : undefined,
+    replyTo: { channelType, channelId: message.channelId },
   });
 
   if (!result.dispatched) {

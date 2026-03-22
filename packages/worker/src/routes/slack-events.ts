@@ -325,6 +325,7 @@ slackEventsRouter.post('/slack/events', async (c) => {
             channelId: dispatchChannelId,
             threadId: orchestratorThreadId,
             authorName: message.senderName,
+            replyTo: { channelType: 'slack', channelId: dispatchChannelId },
           }),
         }),
       );
@@ -450,6 +451,7 @@ slackEventsRouter.post('/slack/events', async (c) => {
     threadId: orchestratorThreadId,
     authorName: message.senderName,
     attachments: attachments.length > 0 ? attachments : undefined,
+    replyTo: { channelType: 'slack', channelId: dispatchChannelId },
   });
 
   if (result.dispatched) {

@@ -446,19 +446,23 @@ export class SlackTransport implements ChannelTransport {
     }
 
     // Persona identity overrides (requires chat:write.customize scope)
-    if (message.platformOptions?.username) {
-      body.username = message.platformOptions.username;
+    // Prefer ctx.persona (new path), fall back to message.platformOptions (legacy)
+    const personaName = ctx.persona?.name || (message.platformOptions?.username as string | undefined);
+    const personaAvatar = ctx.persona?.avatar || (message.platformOptions?.icon_url as string | undefined);
+    const slackUserId = (ctx.persona?.metadata?.slackUserId || (message.platformOptions?.attribution as { slackUserId?: string })?.slackUserId) as string | undefined;
+
+    if (personaName) {
+      body.username = personaName;
     }
-    if (message.platformOptions?.icon_url) {
-      body.icon_url = message.platformOptions.icon_url;
+    if (personaAvatar) {
+      body.icon_url = personaAvatar;
     }
 
     // Add user attribution context block for non-DM channels
-    const attribution = message.platformOptions?.attribution as { slackUserId: string } | undefined;
-    if (attribution?.slackUserId && !target.channelId.startsWith('D')) {
+    if (slackUserId && !target.channelId.startsWith('D')) {
       body.blocks = [
         { type: 'section', text: { type: 'mrkdwn', text: formatted } },
-        { type: 'context', elements: [{ type: 'mrkdwn', text: `↳ <@${attribution.slackUserId}>` }] },
+        { type: 'context', elements: [{ type: 'mrkdwn', text: `↳ <@${slackUserId}>` }] },
       ];
     }
 

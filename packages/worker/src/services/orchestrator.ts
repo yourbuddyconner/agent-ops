@@ -355,6 +355,8 @@ export async function dispatchOrchestratorPrompt(
     channelId?: string;
     threadId?: string;
     attachments?: Array<{ type: string; mime: string; url: string; filename?: string }>;
+    /** Explicit reply target. If present, the DO auto-replies to this channel on turn complete. */
+    replyTo?: { channelType: string; channelId: string };
   }
 ): Promise<OrchestratorPromptDispatchResult> {
   const content = params.content.trim();
@@ -427,6 +429,7 @@ export async function dispatchOrchestratorPrompt(
       authorName: params.authorName,
       authorEmail: params.authorEmail,
       authorId: params.userId,
+      replyTo: params.replyTo,
     }),
   }));
 
