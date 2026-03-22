@@ -344,12 +344,12 @@ export class SessionState {
     if (params.terminateUrl) this.terminateUrl = params.terminateUrl;
     if (params.hibernateUrl) this.hibernateUrl = params.hibernateUrl;
     if (params.restoreUrl) this.restoreUrl = params.restoreUrl;
-    if (params.idleTimeoutMs) this.idleTimeoutMs = params.idleTimeoutMs;
+    if (params.idleTimeoutMs !== undefined) this.idleTimeoutMs = params.idleTimeoutMs;
     if (params.spawnRequest) this.spawnRequest = params.spawnRequest;
     if (params.initialPrompt) this.initialPrompt = params.initialPrompt;
     if (params.initialModel) this.initialModel = params.initialModel;
     if (params.parentThreadId) this.parentThreadId = params.parentThreadId;
-    if (params.channelFollowupIntervalMs) this.channelFollowupIntervalMs = params.channelFollowupIntervalMs;
+    if (params.channelFollowupIntervalMs !== undefined) this.channelFollowupIntervalMs = params.channelFollowupIntervalMs;
 
     // Initialize idle tracking
     this.lastUserActivityAt = Date.now();
