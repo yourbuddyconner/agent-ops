@@ -34,6 +34,7 @@ import { ChannelRouter } from './channel-router.js';
 import { PromptQueue } from './prompt-queue.js';
 import { RunnerLink, type RunnerMessage, type RunnerOutbound, type AgentStatus, type PromptAttachment, type RunnerMessageHandlers, type WorkflowExecutionDispatchPayload } from './runner-link.js';
 import { SessionState, type SessionLifecycleStatus, type SessionStartParams } from './session-state.js';
+import { SessionLifecycle, SandboxAlreadyExitedError } from './session-lifecycle.js';
 import { resolveOrchestratorPersona } from '../services/persona.js';
 import { sendChannelReply } from '../services/channel-reply.js';
 
@@ -369,6 +370,7 @@ export class SessionAgentDO {
   private promptQueue!: PromptQueue;
   private runnerLink!: RunnerLink;
   private sessionState!: SessionState;
+  private lifecycle!: SessionLifecycle;
 
   /** Debounce timer for flushing messages to D1 during active turns. */
   private d1FlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -437,6 +439,7 @@ export class SessionAgentDO {
         getRunnerSockets: () => this.ctx.getWebSockets('runner'),
         ...stateDeps,
       });
+      this.lifecycle = new SessionLifecycle(this.sessionState, this.ctx);
 
       this.initialized = true;
     });
@@ -938,7 +941,7 @@ export class SessionAgentDO {
         parsed as RunnerMessage,
         this.runnerHandlers,
         () => {
-          this.sessionState.lastUserActivityAt = Date.now();
+          this.lifecycle.touchActivity();
           this.rescheduleIdleAlarm();
         },
       );
@@ -1033,16 +1036,9 @@ export class SessionAgentDO {
     }
 
     // ─── Idle Hibernate Check ─────────────────────────────────────────
-    const status = this.sessionState.status;
-    const idleTimeoutMs = this.sessionState.idleTimeoutMs;
-    const lastActivity = this.sessionState.lastUserActivityAt;
-
-    if (status === 'running' && idleTimeoutMs && lastActivity) {
-      if (now - lastActivity >= idleTimeoutMs) {
-        // Trigger hibernate
-        this.ctx.waitUntil(this.performHibernate());
-        // Don't return — still process question expiry below
-      }
+    if (this.lifecycle.checkIdleTimeout()) {
+      this.ctx.waitUntil(this.performHibernate());
+      // Don't return — still process question expiry below
     }
 
     // ─── Stuck-Processing Watchdog ─────────────────────────────────────
@@ -1255,54 +1251,8 @@ export class SessionAgentDO {
       );
     }
 
-    // If there are still pending interactive prompts with future expiry, or pending followups, schedule next alarm
-    let nextAlarmMs: number | null = null;
-
-    const nextExpiry = this.ctx.storage.sql
-      .exec(
-        "SELECT MIN(expires_at) as next FROM interactive_prompts WHERE status = 'pending' AND expires_at IS NOT NULL"
-      )
-      .toArray();
-
-    if (nextExpiry.length > 0 && nextExpiry[0].next) {
-      const promptMs = (nextExpiry[0].next as number) * 1000;
-      if (promptMs > now) {
-        nextAlarmMs = promptMs;
-      }
-    }
-
-    const nextFollowup = this.ctx.storage.sql
-      .exec("SELECT MIN(next_reminder_at) as next FROM channel_followups WHERE status = 'pending'")
-      .toArray();
-    if (nextFollowup.length > 0 && nextFollowup[0].next) {
-      const followupMs = nextFollowup[0].next as number;
-      if (followupMs > now && (nextAlarmMs === null || followupMs < nextAlarmMs)) {
-        nextAlarmMs = followupMs;
-      }
-    }
-
-    // Also consider idle timeout for next alarm
-    const alarmStatus = this.sessionState.status;
-    const alarmIdleTimeoutMs = this.sessionState.idleTimeoutMs;
-    const alarmLastActivity = this.sessionState.lastUserActivityAt;
-    if (alarmStatus === 'running' && alarmIdleTimeoutMs && alarmLastActivity) {
-      const idleAlarmMs = alarmLastActivity + alarmIdleTimeoutMs;
-      if (idleAlarmMs > now && (nextAlarmMs === null || idleAlarmMs < nextAlarmMs)) {
-        nextAlarmMs = idleAlarmMs;
-      }
-    }
-
-    // Also consider parent idle debounce deadline
-    const alarmParentIdleMs = this.sessionState.parentIdleNotifyAt;
-    if (alarmParentIdleMs) {
-      if (alarmParentIdleMs > now && (nextAlarmMs === null || alarmParentIdleMs < nextAlarmMs)) {
-        nextAlarmMs = alarmParentIdleMs;
-      }
-    }
-
-    if (nextAlarmMs !== null) {
-      this.ctx.storage.setAlarm(nextAlarmMs);
-    }
+    // Re-arm alarm — consolidated scheduling includes all deadline sources
+    this.lifecycle.scheduleAlarm(this.collectAlarmDeadlines());
   }
 
   // ─── Client Message Handling ───────────────────────────────────────────
@@ -1522,7 +1472,7 @@ export class SessionAgentDO {
     }
 
     // Update idle tracking
-    this.sessionState.lastUserActivityAt = Date.now();
+    this.lifecycle.touchActivity();
     this.rescheduleIdleAlarm();
 
     // Track the current prompt author for PR attribution (Part 6)
@@ -1817,7 +1767,7 @@ export class SessionAgentDO {
     }
 
     // Update idle tracking
-    this.sessionState.lastUserActivityAt = Date.now();
+    this.lifecycle.touchActivity();
     this.rescheduleIdleAlarm();
 
     const normalizedAttachments = sanitizePromptAttachments(attachments);
@@ -1876,38 +1826,7 @@ export class SessionAgentDO {
   }
 
   private rescheduleCollectAlarm(flushAt: number): void {
-    // Use the earliest of: collect flush, idle timeout, question expiry, channel followups
-    let earliestAlarm = flushAt;
-
-    const idleTimeoutMs = this.sessionState.idleTimeoutMs;
-    const lastActivity = this.sessionState.lastUserActivityAt;
-    if (idleTimeoutMs && lastActivity) {
-      const idleAlarm = lastActivity + idleTimeoutMs;
-      if (idleAlarm < earliestAlarm) earliestAlarm = idleAlarm;
-    }
-
-    const nextExpiry = this.ctx.storage.sql
-      .exec("SELECT MIN(expires_at) as next FROM interactive_prompts WHERE status = 'pending' AND expires_at IS NOT NULL")
-      .toArray();
-    if (nextExpiry.length > 0 && nextExpiry[0].next) {
-      const promptMs = (nextExpiry[0].next as number) * 1000;
-      if (promptMs < earliestAlarm) earliestAlarm = promptMs;
-    }
-
-    const nextFollowup = this.ctx.storage.sql
-      .exec("SELECT MIN(next_reminder_at) as next FROM channel_followups WHERE status = 'pending'")
-      .toArray();
-    if (nextFollowup.length > 0 && nextFollowup[0].next) {
-      const followupMs = nextFollowup[0].next as number;
-      if (followupMs < earliestAlarm) earliestAlarm = followupMs;
-    }
-
-    const parentIdleMs = this.sessionState.parentIdleNotifyAt;
-    if (parentIdleMs && parentIdleMs < earliestAlarm) {
-      earliestAlarm = parentIdleMs;
-    }
-
-    this.ctx.storage.setAlarm(earliestAlarm);
+    this.lifecycle.scheduleAlarm([...this.collectAlarmDeadlines(), flushAt]);
   }
 
   private async flushCollectBuffer(): Promise<void> {
@@ -5828,7 +5747,7 @@ export class SessionAgentDO {
     // If sandbox info was provided directly, we're already running
     if (body.sandboxId && body.tunnelUrls) {
       this.sessionState.status = 'running';
-      this.markRunningStarted();
+      this.lifecycle.markRunningStarted();
       updateSessionStatus(this.appDb, body.sessionId, 'running', body.sandboxId).catch((err) =>
         console.error('[SessionAgentDO] Failed to sync status to D1:', err),
       );
@@ -5847,7 +5766,7 @@ export class SessionAgentDO {
         type: 'status',
         data: { status: 'initializing' },
       });
-      this.ctx.waitUntil(this.spawnSandbox(body.backendUrl, body.terminateUrl!, body.spawnRequest));
+      this.ctx.waitUntil(this.spawnSandbox(body.backendUrl, body.spawnRequest));
     }
 
     // Publish session.started to EventBus
@@ -5883,43 +5802,26 @@ export class SessionAgentDO {
    */
   private async spawnSandbox(
     backendUrl: string,
-    terminateUrl: string,
     spawnRequest: Record<string, unknown>,
   ): Promise<void> {
     const sessionId = this.sessionState.sessionId;
     try {
       this.sessionState.sandboxWakeStartedAt = Date.now();
-      const sandboxWakeStart = Date.now();
-      const response = await fetch(backendUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(spawnRequest),
-      });
 
-      if (!response.ok) {
-        const err = await response.text();
-        throw new Error(`Backend returned ${response.status}: ${err}`);
-      }
+      const result = await this.lifecycle.spawnSandbox(backendUrl, spawnRequest);
 
-      const result = await response.json() as {
-        sandboxId: string;
-        tunnelUrls: Record<string, string>;
-      };
-
-      this.emitEvent('sandbox_wake', { durationMs: Date.now() - sandboxWakeStart });
+      this.emitEvent('sandbox_wake', { durationMs: result.durationMs });
 
       // Store sandbox info
       this.sessionState.sandboxId = result.sandboxId;
       this.sessionState.tunnelUrls = result.tunnelUrls;
       this.sessionState.status = 'running';
-      this.markRunningStarted();
+      this.lifecycle.markRunningStarted();
 
-      // Sync status to D1 so sessions list shows correct status
       updateSessionStatus(this.appDb, sessionId!, 'running', result.sandboxId).catch((err) =>
         console.error('[SessionAgentDO] Failed to sync status to D1:', err),
       );
 
-      // Notify connected clients that sandbox is ready
       this.broadcastToClients({
         type: 'status',
         data: {
@@ -5940,7 +5842,6 @@ export class SessionAgentDO {
           console.error('[SessionAgentDO] Failed to sync error status to D1:', e),
         );
       }
-      // Persist error as a system message so it's visible on reconnect
       const errId = crypto.randomUUID();
       this.messageStore.writeMessage({
         id: errId,
@@ -5957,7 +5858,6 @@ export class SessionAgentDO {
         error: errorText,
       });
 
-      // Publish session.errored to EventBus
       this.notifyEventBus({
         type: 'session.errored',
         sessionId: sessionId || undefined,
@@ -5976,7 +5876,6 @@ export class SessionAgentDO {
   private async handleStop(reason: string = 'user_stopped'): Promise<Response> {
     const sandboxId = this.sessionState.sandboxId;
     const sessionId = this.sessionState.sessionId;
-    const terminateUrl = this.sessionState.terminateUrl;
     const currentStatus = this.sessionState.status;
 
     // Idempotency: if already terminated, skip all side-effects
@@ -5988,7 +5887,7 @@ export class SessionAgentDO {
     // Flush active time, metrics, and messages to D1 before termination
     if (currentStatus === 'running') {
       await this.flushActiveSeconds();
-      this.clearRunningStarted();
+      this.lifecycle.clearRunningStarted();
     }
     await this.flushMetrics();
     await this.flushMessagesToD1();
@@ -6036,17 +5935,7 @@ export class SessionAgentDO {
 
     // Only terminate sandbox if it's actually running (not hibernated/hibernating)
     if (currentStatus !== 'hibernated' && currentStatus !== 'hibernating') {
-      if (sandboxId && terminateUrl) {
-        try {
-          await fetch(terminateUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sandboxId }),
-          });
-        } catch (err) {
-          console.error('Failed to terminate sandbox:', err);
-        }
-      }
+      await this.lifecycle.terminateSandbox();
     }
 
     // Clear idle alarm
@@ -6331,7 +6220,7 @@ export class SessionAgentDO {
       return queueWorkflowDispatch('runner_busy');
     }
 
-    this.sessionState.lastUserActivityAt = Date.now();
+    this.lifecycle.touchActivity();
     this.promptQueue.stampDispatched();
     this.rescheduleIdleAlarm();
     this.sessionState.lastParentIdleNotice = undefined;
@@ -7034,86 +6923,38 @@ export class SessionAgentDO {
 
   private async performHibernate(): Promise<void> {
     const sessionId = this.sessionState.sessionId;
-    const sandboxId = this.sessionState.sandboxId;
-    const hibernateUrl = this.sessionState.hibernateUrl;
 
-    if (!sandboxId || !hibernateUrl) {
+    if (!this.sessionState.sandboxId || !this.sessionState.hibernateUrl) {
       console.error('[SessionAgentDO] Cannot hibernate: missing sandboxId or hibernateUrl');
       return;
     }
 
     try {
-      // Flush active time and metrics to D1 before hibernate
+      // Flush active time and metrics to D1 before snapshot kills the sandbox
       await this.flushActiveSeconds();
-      this.clearRunningStarted();
+      this.lifecycle.clearRunningStarted();
       await this.flushMetrics();
 
-      // Set status to hibernating
+      // Intermediate status — clients see this immediately
       this.sessionState.status = 'hibernating';
-      this.broadcastToClients({
-        type: 'status',
-        data: { status: 'hibernating' },
-      });
+      this.broadcastToClients({ type: 'status', data: { status: 'hibernating' } });
       if (sessionId) {
         updateSessionStatus(this.appDb, sessionId, 'hibernating').catch((e) =>
           console.error('[SessionAgentDO] Failed to sync hibernating status to D1:', e),
         );
       }
 
-      // Call Modal backend to snapshot filesystem FIRST (while sandbox is still alive),
-      // then terminate. We must NOT stop the runner before snapshotting — stopping the
-      // runner causes the sandbox process to exit, making snapshot_filesystem fail with
-      // "Sandbox has already finished".
-      const response = await fetch(hibernateUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sandboxId }),
-      });
+      // Snapshot via lifecycle (pure HTTP)
+      const result = await this.lifecycle.snapshotSandbox();
 
-      if (response.status === 409) {
-        // Sandbox already exited (idle timeout) — can't snapshot, treat as stopped.
-        // TODO: Setting status to 'terminated' here bypasses handleStop(), so parent
-        // notification, child cascade, and audit logging are all skipped. Consider
-        // calling handleStop() instead, or using an 'error' status to distinguish
-        // infrastructure-caused termination from intentional stops.
-        console.log(`[SessionAgentDO] Session ${sessionId} sandbox already finished, marking as terminated`);
-        this.runnerLink.send({ type: 'stop' });
-        const runnerSockets409 = this.ctx.getWebSockets('runner');
-        for (const ws of runnerSockets409) {
-          try { ws.close(1000, 'Sandbox already exited'); } catch { /* ignore */ }
-        }
-        this.sessionState.sandboxId = undefined;
-        this.sessionState.tunnelUrls = null;
-        this.sessionState.tunnels = [];
-        this.promptQueue.runnerBusy = false;
-        this.sessionState.status = 'terminated';
-        this.broadcastToClients({
-          type: 'status',
-          data: { status: 'terminated', sandboxRunning: false },
-        });
-        if (sessionId) {
-          updateSessionStatus(this.appDb, sessionId, 'terminated').catch((e) =>
-            console.error('[SessionAgentDO] Failed to sync terminated status to D1:', e),
-          );
-        }
-        return;
-      }
-
-      if (!response.ok) {
-        const err = await response.text();
-        throw new Error(`Backend returned ${response.status}: ${err}`);
-      }
-
-      const result = await response.json() as { snapshotImageId: string };
-
-      // Now that snapshot is taken and sandbox terminated, stop runner and close connections
+      // Stop runner AFTER snapshot — ordering enforced by call sequence
       this.runnerLink.send({ type: 'stop' });
       const runnerSockets = this.ctx.getWebSockets('runner');
       for (const ws of runnerSockets) {
         try { ws.close(1000, 'Session hibernating'); } catch { /* ignore */ }
       }
 
-      // Store snapshot info and clear sandbox info
+      // State writes from result
       this.sessionState.snapshotImageId = result.snapshotImageId;
       this.sessionState.sandboxId = undefined;
       this.sessionState.tunnelUrls = null;
@@ -7125,7 +6966,6 @@ export class SessionAgentDO {
         type: 'status',
         data: { status: 'hibernated', sandboxRunning: false },
       });
-
       if (sessionId) {
         updateSessionStatus(this.appDb, sessionId, 'hibernated').catch((e) =>
           console.error('[SessionAgentDO] Failed to sync hibernated status to D1:', e),
@@ -7135,19 +6975,22 @@ export class SessionAgentDO {
       this.emitAuditEvent('session.hibernated', 'Session hibernated');
       console.log(`[SessionAgentDO] Session ${sessionId} hibernated, snapshot: ${result.snapshotImageId}`);
 
-      // Revert any in-flight prompts (don't rely on webSocketClose timing)
       this.promptQueue.revertProcessingToQueued();
 
-      // If prompts were queued during the hibernation transition (e.g. scheduled
-      // tasks arriving while we were snapshotting), auto-wake to process them.
+      // Auto-wake if prompts arrived during snapshot window
       const queuedDuringHibernate = this.promptQueue.length;
       if (queuedDuringHibernate > 0) {
-        console.log(
-          `[SessionAgentDO] ${queuedDuringHibernate} prompt(s) queued during hibernation — auto-waking`
-        );
+        console.log(`[SessionAgentDO] ${queuedDuringHibernate} prompt(s) queued during hibernation — auto-waking`);
         this.ctx.waitUntil(this.performWake());
       }
     } catch (err) {
+      // 409: sandbox already exited — route through proper termination
+      if (err instanceof SandboxAlreadyExitedError) {
+        console.log(`[SessionAgentDO] Session ${sessionId} sandbox already finished — routing to handleStop`);
+        await this.handleStop('sandbox_exited');
+        return;
+      }
+
       console.error(`[SessionAgentDO] Failed to hibernate session ${sessionId}:`, err);
       const errorText = `Failed to hibernate: ${err instanceof Error ? err.message : String(err)}`;
       this.sessionState.status = 'error';
@@ -7156,27 +6999,19 @@ export class SessionAgentDO {
           console.error('[SessionAgentDO] Failed to sync error status to D1:', e),
         );
       }
-      // Persist error as a system message
       const errId = crypto.randomUUID();
       this.messageStore.writeMessage({
         id: errId,
         role: 'system',
         content: `Error: ${errorText}`,
       });
-      this.broadcastToClients({
-        type: 'status',
-        data: { status: 'error' },
-      });
-      this.broadcastToClients({
-        type: 'error',
-        messageId: errId,
-        error: errorText,
-      });
+      this.broadcastToClients({ type: 'status', data: { status: 'error' } });
+      this.broadcastToClients({ type: 'error', messageId: errId, error: errorText });
     }
   }
 
   private async performWake(): Promise<void> {
-    // Guard against concurrent wake calls (e.g. two prompts arriving while hibernated)
+    // Concurrency guard — prevents duplicate wake calls
     const currentStatus = this.sessionState.status;
     if (currentStatus === 'restoring' || currentStatus === 'running') {
       console.log(`[SessionAgentDO] performWake skipped — already ${currentStatus}`);
@@ -7184,11 +7019,8 @@ export class SessionAgentDO {
     }
 
     const sessionId = this.sessionState.sessionId;
-    const snapshotImageId = this.sessionState.snapshotImageId;
-    const restoreUrl = this.sessionState.restoreUrl;
-    const spawnRequest = this.sessionState.spawnRequest;
 
-    if (!snapshotImageId || !restoreUrl || !spawnRequest) {
+    if (!this.sessionState.snapshotImageId || !this.sessionState.restoreUrl || !this.sessionState.spawnRequest) {
       const errorText = 'Cannot wake: missing snapshotImageId, restoreUrl, or spawnRequest';
       console.error(`[SessionAgentDO] ${errorText}`);
       this.sessionState.status = 'error';
@@ -7202,12 +7034,12 @@ export class SessionAgentDO {
       return;
     }
 
+    const snapshotId = this.sessionState.snapshotImageId;
+
     try {
+      // Intermediate status — also acts as concurrency guard
       this.sessionState.status = 'restoring';
-      this.broadcastToClients({
-        type: 'status',
-        data: { status: 'restoring' },
-      });
+      this.broadcastToClients({ type: 'status', data: { status: 'restoring' } });
       if (sessionId) {
         updateSessionStatus(this.appDb, sessionId, 'restoring').catch((e) =>
           console.error('[SessionAgentDO] Failed to sync restoring status to D1:', e),
@@ -7215,38 +7047,22 @@ export class SessionAgentDO {
       }
 
       this.sessionState.sandboxWakeStartedAt = Date.now();
-      const restoreStart = Date.now();
-      const response = await fetch(restoreUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...spawnRequest,
-          snapshotImageId,
-        }),
-      });
 
-      if (!response.ok) {
-        const err = await response.text();
-        throw new Error(`Backend returned ${response.status}: ${err}`);
-      }
-
-      const result = await response.json() as {
-        sandboxId: string;
-        tunnelUrls: Record<string, string>;
-      };
+      // Restore via lifecycle (pure HTTP)
+      const result = await this.lifecycle.restoreSandbox();
 
       this.emitEvent('sandbox_restore', {
-        durationMs: Date.now() - restoreStart,
-        properties: { snapshot_id: snapshotImageId },
+        durationMs: result.durationMs,
+        properties: { snapshot_id: snapshotId },
       });
 
-      // Update state with new sandbox info
+      // State writes from result
       this.sessionState.sandboxId = result.sandboxId;
       this.sessionState.tunnelUrls = result.tunnelUrls;
       this.sessionState.snapshotImageId = undefined;
       this.sessionState.status = 'running';
-      this.markRunningStarted();
-      this.sessionState.lastUserActivityAt = Date.now();
+      this.lifecycle.markRunningStarted();
+      this.lifecycle.touchActivity();
 
       this.rescheduleIdleAlarm();
 
@@ -7276,87 +7092,51 @@ export class SessionAgentDO {
           console.error('[SessionAgentDO] Failed to sync error status to D1:', e),
         );
       }
-      // Persist error as a system message
       const errId = crypto.randomUUID();
       this.messageStore.writeMessage({
         id: errId,
         role: 'system',
         content: `Error: ${errorText}`,
       });
-      this.broadcastToClients({
-        type: 'status',
-        data: { status: 'error' },
-      });
-      this.broadcastToClients({
-        type: 'error',
-        messageId: errId,
-        error: errorText,
-      });
+      this.broadcastToClients({ type: 'status', data: { status: 'error' } });
+      this.broadcastToClients({ type: 'error', messageId: errId, error: errorText });
     }
   }
 
   /**
-   * Schedule the idle alarm based on the configured idle timeout.
-   * Called after any user activity and after sandbox transitions to running.
+   * Collect all subsystem-specific alarm deadlines. The lifecycle class
+   * combines these with its own idle deadline in scheduleAlarm().
    */
-  private rescheduleIdleAlarm(): void {
-    // Start with a far-future default; idle timeout narrows it if configured
-    let earliestAlarm = Infinity;
-
-    const idleTimeoutMs = this.sessionState.idleTimeoutMs;
-    if (idleTimeoutMs > 0) {
-      earliestAlarm = Date.now() + idleTimeoutMs;
-    }
-
-    // Consider pending interactive prompt expiry — use the earliest time
+  private collectAlarmDeadlines(): (number | null)[] {
+    // Interactive prompt expiry
     const nextExpiry = this.ctx.storage.sql
       .exec(
         "SELECT MIN(expires_at) as next FROM interactive_prompts WHERE status = 'pending' AND expires_at IS NOT NULL"
       )
       .toArray();
-    if (nextExpiry.length > 0 && nextExpiry[0].next) {
-      const promptExpiryMs = (nextExpiry[0].next as number) * 1000;
-      if (promptExpiryMs < earliestAlarm) {
-        earliestAlarm = promptExpiryMs;
-      }
-    }
+    const promptExpiry = nextExpiry[0]?.next ? (nextExpiry[0].next as number) * 1000 : null;
 
-    // Also consider pending channel followup reminders
+    // Channel followup reminders
     const nextFollowup = this.ctx.storage.sql
       .exec("SELECT MIN(next_reminder_at) as next FROM channel_followups WHERE status = 'pending'")
       .toArray();
-    if (nextFollowup.length > 0 && nextFollowup[0].next) {
-      const followupMs = nextFollowup[0].next as number;
-      if (followupMs < earliestAlarm) {
-        earliestAlarm = followupMs;
-      }
-    }
+    const followupMs = (nextFollowup[0]?.next as number) || null;
 
-    // Also consider stuck-processing watchdog deadline
+    // Stuck-processing watchdog
     const dispatchMs = this.promptQueue.lastPromptDispatchedAt;
-    if (dispatchMs > 0) {
-      const watchdogMs = dispatchMs + 5 * 60 * 1000; // 5 min timeout
-      if (watchdogMs < earliestAlarm) {
-        earliestAlarm = watchdogMs;
-      }
-    }
+    const watchdog = dispatchMs > 0 ? dispatchMs + 5 * 60 * 1000 : null;
 
-    // Also consider error safety-net deadline
-    const safetyNetMs = this.promptQueue.errorSafetyNetAt;
-    if (safetyNetMs > 0 && safetyNetMs < earliestAlarm) {
-      earliestAlarm = safetyNetMs;
-    }
+    // Error safety-net
+    const safetyNet = this.promptQueue.errorSafetyNetAt || null;
 
-    // Also consider parent idle debounce deadline
-    const parentIdleMs = this.sessionState.parentIdleNotifyAt;
-    if (parentIdleMs && parentIdleMs < earliestAlarm) {
-      earliestAlarm = parentIdleMs;
-    }
+    // Parent idle debounce
+    const parentIdle = this.sessionState.parentIdleNotifyAt || null;
 
-    // Only set alarm if we have at least one deadline
-    if (earliestAlarm < Infinity) {
-      this.ctx.storage.setAlarm(earliestAlarm);
-    }
+    return [promptExpiry, followupMs, watchdog, safetyNet, parentIdle];
+  }
+
+  private rescheduleIdleAlarm(): void {
+    this.lifecycle.scheduleAlarm(this.collectAlarmDeadlines());
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────
@@ -7566,41 +7346,21 @@ export class SessionAgentDO {
   }
 
   /**
-   * Record that the sandbox just entered the 'running' state.
-   * Stores a timestamp so we can later compute elapsed active seconds.
-   */
-  private markRunningStarted(): void {
-    this.sessionState.runningStartedAt = Date.now();
-  }
-
-  /**
    * Flush accumulated active seconds to D1.
-   * Called when leaving the 'running' state (hibernate, terminate, error).
-   * Also called periodically from flushMetrics to avoid losing time if the DO restarts.
+   * Delegates elapsed-time computation to lifecycle, handles D1 write here.
    */
   private async flushActiveSeconds(): Promise<void> {
-    const sessionId = this.sessionState.sessionId;
-    const startMs = this.sessionState.runningStartedAt;
-    if (!sessionId || !startMs) return;
-
-    const elapsedSeconds = Math.floor((Date.now() - startMs) / 1000);
-    if (elapsedSeconds > 0) {
-      try {
-        await addActiveSeconds(this.appDb, sessionId, elapsedSeconds);
-      } catch (err) {
-        console.error('[SessionAgentDO] Failed to flush active seconds:', err);
+    const seconds = this.lifecycle.flushActiveSeconds();
+    if (seconds > 0) {
+      const sessionId = this.sessionState.sessionId;
+      if (sessionId) {
+        try {
+          await addActiveSeconds(this.appDb, sessionId, seconds);
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to flush active seconds:', err);
+        }
       }
     }
-    // Reset the start marker to now so we don't double-count on next flush
-    this.sessionState.runningStartedAt = Date.now();
-  }
-
-  /**
-   * Clear the running start marker (when leaving running state permanently).
-   */
-  private clearRunningStarted(): void {
-    this.sessionState.runningStartedAt = 0;
-    this.sessionState.sandboxWakeStartedAt = 0;
   }
 
   /**
