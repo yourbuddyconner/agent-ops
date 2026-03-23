@@ -744,12 +744,22 @@ export function ChatInput({
                     {attachment.filename || 'voice'}
                   </span>
                 </div>
-              ) : (
+              ) : attachment.mime.startsWith('image/') ? (
                 <img
                   src={attachment.url}
                   alt={attachment.filename || `Attachment ${index + 1}`}
                   className="h-full w-14 object-cover"
                 />
+              ) : (
+                <div className="flex h-full w-28 items-center gap-1.5 px-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`h-4 w-4 shrink-0 ${attachment.mime === 'application/pdf' ? 'text-red-500' : 'text-neutral-400'}`}>
+                    <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                    <polyline points="14 2 14 8 20 8" />
+                  </svg>
+                  <span className="truncate font-mono text-[10px] text-neutral-500">
+                    {attachment.filename || 'file'}
+                  </span>
+                </div>
               )}
               <button
                 type="button"
