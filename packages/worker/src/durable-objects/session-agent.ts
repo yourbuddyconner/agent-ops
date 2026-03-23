@@ -13,7 +13,6 @@ import { getSlackBotToken } from '../services/slack.js';
 import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
 import { listTriggers, getTrigger, deleteTrigger, createTrigger, getTriggerForRun, updateTriggerLastRun, findScheduleTriggerByNameAndWorkflow, findScheduleTriggersByWorkflow, findScheduleTriggersByName, updateTriggerFull } from '../lib/db/triggers.js';
 import { getExecution, getExecutionWithWorkflowName, getExecutionForAuth, getExecutionSteps, getExecutionOwnerAndStatus, checkIdempotencyKey, createExecution, completeExecutionFull, upsertExecutionStep, listExecutions } from '../lib/db/executions.js';
-import { updateOrchestratorIdentity } from '../lib/db/orchestrator.js';
 import { buildOrchestratorPersonaFiles } from '../lib/orchestrator-persona.js';
 import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 import { assembleCustomProviders, assembleBuiltInProviderModelConfigs, assembleRepoEnv } from '../lib/env-assembly.js';
@@ -41,7 +40,7 @@ import { sendChannelReply } from '../services/channel-reply.js';
 import { mailboxSend, mailboxCheck } from '../services/session-mailbox.js';
 import { taskCreate, taskList, taskUpdate, taskMy } from '../services/session-tasks.js';
 import { handleIdentityAction } from '../services/session-identity.js';
-import { MAX_PROMPT_ATTACHMENTS, MAX_PROMPT_ATTACHMENT_URL_LENGTH, MAX_TOTAL_ATTACHMENT_BYTES, parseBase64DataUrl, sanitizePromptAttachments, attachmentPartsForMessage, parseQueuedPromptAttachments } from '../lib/utils/prompt-validation.js';
+import { sanitizePromptAttachments, attachmentPartsForMessage, parseQueuedPromptAttachments } from '../lib/utils/prompt-validation.js';
 import { parseQueuedWorkflowPayload, deriveRuntimeStates } from '../lib/utils/runtime.js';
 
 // ─── WebSocket Message Types ───────────────────────────────────────────────
@@ -5508,19 +5507,6 @@ export class SessionAgentDO {
     return 'web:default';
   }
 
-  private isChannelBusy(channelKey: string): boolean {
-    const row = this.ctx.storage.sql
-      .exec('SELECT busy FROM channel_state WHERE channel_key = ?', channelKey)
-      .toArray();
-    return row.length > 0 && (row[0].busy as number) === 1;
-  }
-
-  private setChannelBusy(channelKey: string, busy: boolean): void {
-    this.ctx.storage.sql.exec(
-      'INSERT INTO channel_state (channel_key, busy) VALUES (?, ?) ON CONFLICT(channel_key) DO UPDATE SET busy = excluded.busy',
-      channelKey, busy ? 1 : 0
-    );
-  }
 
   private setChannelOcSessionId(channelKey: string, ocSessionId: string): void {
     this.ctx.storage.sql.exec(
