@@ -1,7 +1,7 @@
 import type { Env } from '../env.js';
 import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrgRepositories, getUserById, getUsersByIds, createMailboxMessage, getOrchestratorIdentity, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getUserIdentityLinks, getUserSlackIdentityLink, getThreadOriginChannel } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrgRepositories, getUserById, getUsersByIds, createMailboxMessage, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getThreadOriginChannel } from '../lib/db.js';
 import { getCredential, type CredentialResult } from '../services/credentials.js';
 import { memRead, memWrite, memPatch, memRm, memSearch } from '../services/session-memory.js';
 import { resolveRepoCredential, type CredentialRow } from '../lib/db/credentials.js';
@@ -19,13 +19,10 @@ import { assembleCustomProviders, assembleBuiltInProviderModelConfigs, assembleR
 import { resolveAvailableModels } from '../services/model-catalog.js';
 import { channelRegistry } from '../channels/registry.js';
 import { integrationRegistry } from '../integrations/registry.js';
-import { getUserIntegrations, getOrgIntegrations, updateIntegrationStatus } from '../lib/db/integrations.js';
-import { resolveMode } from '../services/action-policy.js';
-import { invokeAction, markExecuted, markFailed, approveInvocation, denyInvocation } from '../services/actions.js';
+import { updateIntegrationStatus } from '../lib/db/integrations.js';
+import { approveInvocation, denyInvocation } from '../services/actions.js';
 import { updateInvocationStatus } from '../lib/db/actions.js';
-import { getDisabledActionsIndex, isActionDisabled } from '../lib/db/disabled-actions.js';
-import { upsertMcpToolCache } from '../lib/db/mcp-tool-cache.js';
-import { getActivePluginArtifacts, getPluginSettings, getAutoEnabledServices, getDisabledPluginServices } from '../lib/db/plugins.js';
+import { getActivePluginArtifacts, getPluginSettings } from '../lib/db/plugins.js';
 import { getPersonaSkills, getOrgDefaultSkills, getPersonaToolWhitelist } from '../lib/db.js';
 import type { ChannelTarget, ChannelContext, InteractivePrompt, InteractiveAction, InteractivePromptRef, InteractiveResolution } from '@valet/sdk';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
@@ -43,6 +40,7 @@ import { handleIdentityAction } from '../services/session-identity.js';
 import { handleSkillAction } from '../services/session-skills.js';
 import { handlePersonaAction, listPersonasForRunner } from '../services/session-personas.js';
 import { spawnChild, sendSessionMessage, getSessionMessages, forwardMessages, terminateChild, listChildSessions, getSessionStatus, listChannels } from '../services/session-cross.js';
+import { listTools as listToolsSvc, resolveActionPolicy, executeAction as executeActionSvc, type CredentialCache, type ExecuteActionResult } from '../services/session-tools.js';
 import { sanitizePromptAttachments, attachmentPartsForMessage, parseQueuedPromptAttachments } from '../lib/utils/prompt-validation.js';
 import { parseQueuedWorkflowPayload, deriveRuntimeStates } from '../lib/utils/runtime.js';
 
@@ -6932,6 +6930,15 @@ export class SessionAgentDO {
 
   // ─── Tool Discovery & Invocation ──────────────────────────────────────
 
+  /** Adapter exposing the DO's credential cache as a CredentialCache interface. */
+  private get credentialCacheAdapter(): CredentialCache {
+    return {
+      get: (ownerType, ownerId, service) => this.getCachedCredential(ownerType, ownerId, service),
+      set: (ownerType, ownerId, service, result) => this.setCachedCredential(ownerType, ownerId, service, result),
+      invalidate: (ownerType, ownerId, service) => this.invalidateCachedCredential(ownerType, ownerId, service),
+    };
+  }
+
   private async handleListTools(requestId: string, service?: string, query?: string) {
     try {
       const userId = this.sessionState.userId;
@@ -6940,189 +6947,35 @@ export class SessionAgentDO {
         return;
       }
 
-      // Fetch integrations, auto-enabled services, disabled-actions index, and disabled plugins in parallel
-      const [userIntegrations, orgIntegrations, autoServices, { disabledActions: disabledActionSet, disabledServices: disabledServiceSet }, disabledPluginServices] =
-        await Promise.all([
-          getUserIntegrations(this.appDb, userId),
-          getOrgIntegrations(this.appDb),
-          getAutoEnabledServices(this.env.DB),
-          getDisabledActionsIndex(this.appDb),
-          getDisabledPluginServices(this.env.DB),
-        ]);
-
-      // Populate cache so handleCallTool doesn't need a separate query
-      this.disabledPluginServicesCache = {
-        services: disabledPluginServices,
-        expiresAt: Date.now() + SessionAgentDO.DISABLED_PLUGINS_CACHE_TTL_MS,
-      };
-
-      const allIntegrations = [
-        ...userIntegrations.filter((i) => i.status === 'active'),
-        ...orgIntegrations.filter((i) => i.status === 'active'),
-      ];
-
-      console.log(`[SessionAgentDO] list-tools: userId=${userId}, service=${service ?? 'all'}, active integrations: [${allIntegrations.map((i) => `${i.service}(${i.status})`).join(', ')}]`);
-
-      // Deduplicate by service (user-scoped takes precedence)
-      const seen = new Set<string>();
-      const dedupedIntegrations = allIntegrations.filter((i) => {
-        if (seen.has(i.service)) return false;
-        seen.add(i.service);
-        return true;
+      const result = await listToolsSvc(this.appDb, this.env.DB, this.env, userId, {
+        service,
+        query,
+        credentialCache: this.credentialCacheAdapter,
       });
 
-      // Inject synthetic integrations for plugins that don't require auth
-      for (const svc of autoServices) {
-        if (!seen.has(svc)) {
-          dedupedIntegrations.push({ id: `auto:${svc}`, service: svc, status: 'active' } as any);
-          seen.add(svc);
-        }
+      // Update DO-level caches from service result
+      for (const [key, value] of result.discoveredRiskLevels) {
+        this.discoveredToolRiskLevels.set(key, value);
       }
-
-      const tools: unknown[] = [];
-      const warnings: Array<{ service: string; displayName: string; reason: string; message: string; integrationId: string }> = [];
-      const mcpCacheEntries: Array<{ service: string; actionId: string; name: string; description: string; riskLevel: string }> = [];
-
-      for (const integration of dedupedIntegrations) {
-        // If filtering by service, skip non-matching integrations
-        if (service && integration.service !== service) continue;
-
-        // Skip entirely disabled services (via disabled_actions table or plugin status)
-        if (disabledServiceSet.has(integration.service)) continue;
-        if (disabledPluginServices.has(integration.service)) continue;
-
-        const actionSource = integrationRegistry.getActions(integration.service);
-        if (!actionSource) {
-          console.warn(`[SessionAgentDO] list-tools: no action source for ${integration.service}`);
-          continue;
-        }
-
-        // Resolve credentials for this integration to pass to listActions (needed by MCP-backed sources)
-        // No-auth services (e.g. DeepWiki) skip credential lookup entirely.
-        const provider = integrationRegistry.getProvider(integration.service);
-        let credCtx: { credentials: { access_token: string } } | undefined;
-        const isOrgScopedIntegration = 'scope' in integration && integration.scope === 'org';
-        if (provider?.authType === 'none') {
-          // No credentials needed — pass undefined context
-          console.log(`[SessionAgentDO] list-tools: ${integration.service} is no-auth, skipping credential lookup`);
-        } else {
-          const credentialUserId = (isOrgScopedIntegration && 'userId' in integration)
-            ? (integration as { userId: string }).userId
-            : userId;
-          const scope = isOrgScopedIntegration ? 'org' as const : 'user' as const;
-
-          // Check credential cache first
-          let credResult = this.getCachedCredential('user', credentialUserId, integration.service);
-          if (!credResult) {
-            credResult = await integrationRegistry.resolveCredentials(integration.service, this.env, credentialUserId, scope);
-            // If the initial credential fetch fails with a refreshable reason, try force-refresh
-            if (!credResult.ok && (credResult.error.reason === 'expired' || credResult.error.reason === 'refresh_failed')) {
-              console.log(`[SessionAgentDO] list-tools: ${integration.service} credential ${credResult.error.reason}, attempting force-refresh`);
-              credResult = await integrationRegistry.resolveCredentials(integration.service, this.env, credentialUserId, scope, { forceRefresh: true });
-            }
-            // Only cache successful results — failure states (not_found, revoked) are
-            // transient and should be re-checked so newly connected integrations work immediately.
-            if (credResult.ok) {
-              this.setCachedCredential('user', credentialUserId, integration.service, credResult);
-            }
-          }
-
-          if (!credResult.ok) {
-            const displayName = provider?.displayName || integration.service;
-            console.warn(`[SessionAgentDO] list-tools: credential failure for ${integration.service}: ${credResult.error.reason} — ${credResult.error.message}`);
-            warnings.push({
-              service: integration.service,
-              displayName,
-              reason: credResult.error.reason,
-              message: credResult.error.message,
-              integrationId: integration.id,
-            });
-            continue;
-          } else {
-            console.log(`[SessionAgentDO] list-tools: credentials OK for ${integration.service} (type=${credResult.credential.credentialType}, refreshed=${credResult.credential.refreshed}, hasToken=${!!credResult.credential.accessToken})`);
-            credCtx = { credentials: { access_token: credResult.credential.accessToken } };
-          }
-        }
-
-        let actions = await actionSource.listActions(credCtx);
-
-        // If no actions returned and we have credentials, the token may be silently expired
-        // (MCP listTools returns [] on auth failure). Try force-refreshing the credential.
-        if (actions.length === 0 && credCtx && provider?.authType !== 'none') {
-          const credentialUserId = ('scope' in integration && integration.scope === 'org' && 'userId' in integration)
-            ? (integration as { userId: string }).userId
-            : userId;
-          this.invalidateCachedCredential('user', credentialUserId, integration.service);
-          const refreshed = await integrationRegistry.resolveCredentials(integration.service, this.env, credentialUserId, isOrgScopedIntegration ? 'org' : 'user', { forceRefresh: true });
-          if (refreshed.ok && refreshed.credential.refreshed) {
-            console.log(`[SessionAgentDO] list-tools: ${integration.service} returned 0 actions, retrying with force-refreshed token`);
-            this.setCachedCredential('user', credentialUserId, integration.service, refreshed);
-            credCtx = { credentials: { access_token: refreshed.credential.accessToken } };
-            actions = await actionSource.listActions(credCtx);
-          }
-        }
-
-        console.log(`[SessionAgentDO] list-tools: ${integration.service} returned ${actions.length} actions`);
-
-        // Cache ALL discovered tools for the catalog/policy UI, before any filtering
-        for (const action of actions) {
-          const compositeId = `${integration.service}:${action.id}`;
-          this.discoveredToolRiskLevels.set(compositeId, action.riskLevel);
-          mcpCacheEntries.push({
-            service: integration.service,
-            actionId: action.id,
-            name: action.name,
-            description: action.description,
-            riskLevel: action.riskLevel,
-          });
-        }
-
-        for (const action of actions) {
-          // If query provided, filter by case-insensitive word match — every word in the
-          // query must appear in at least one of name, description, or service.
-          if (query) {
-            const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-            const haystack = `${action.name} ${action.description} ${integration.service}`.toLowerCase();
-            if (!words.every((w) => haystack.includes(w))) continue;
-          }
-
-          const compositeId = `${integration.service}:${action.id}`;
-
-          // Skip individually disabled actions
-          if (disabledActionSet.has(compositeId)) continue;
-
-          tools.push({
-            id: compositeId,
-            name: action.name,
-            description: action.description,
-            riskLevel: action.riskLevel,
-            params: action.inputSchema || this.serializeZodSchema(action.params),
-          });
-        }
-      }
-
-      // Fire-and-forget: persist discovered tools to D1 cache for the catalog endpoint.
-      // This allows MCP tools to appear in the policy editor UI even without live credentials.
-      if (mcpCacheEntries.length > 0) {
-        upsertMcpToolCache(this.appDb, mcpCacheEntries).catch((err) => {
-          console.warn('[SessionAgentDO] mcp tool cache upsert failed:', err instanceof Error ? err.message : String(err));
-        });
-      }
+      this.disabledPluginServicesCache = {
+        services: result.disabledPluginServices,
+        expiresAt: Date.now() + SessionAgentDO.DISABLED_PLUGINS_CACHE_TTL_MS,
+      };
 
       this.runnerLink.send({
         type: 'list-tools-result',
         requestId,
-        tools,
-        ...(warnings.length > 0 ? {
-          warnings: warnings.map(({ integrationId: _, ...rest }) => rest),
+        tools: result.tools,
+        ...(result.warnings.length > 0 ? {
+          warnings: result.warnings.map(({ integrationId: _, ...rest }) => rest),
         } : {}),
       } as any);
 
       // Broadcast reauth-required event to connected frontend clients
-      if (warnings.length > 0) {
+      if (result.warnings.length > 0) {
         this.broadcastToClients({
           type: 'integration-auth-required',
-          services: warnings.map((w) => ({
+          services: result.warnings.map((w) => ({
             service: w.service,
             displayName: w.displayName,
             reason: w.reason,
@@ -7131,7 +6984,7 @@ export class SessionAgentDO {
 
         // Fire-and-forget: mark integrations as 'error' in D1 only for definitive failures
         // (not transient ones like refresh_failed which may succeed on retry)
-        const definitiveFailures = warnings.filter((w) => w.reason === 'revoked' || w.reason === 'not_found');
+        const definitiveFailures = result.warnings.filter((w) => w.reason === 'revoked' || w.reason === 'not_found');
         if (definitiveFailures.length > 0) {
           this.ctx.waitUntil(
             (async () => {
@@ -7164,116 +7017,28 @@ export class SessionAgentDO {
         return;
       }
 
-      // Parse toolId: "service:actionId"
-      const colonIndex = toolId.indexOf(':');
-      if (colonIndex === -1) {
-        this.runnerLink.send({ type: 'call-tool-result', requestId, error: `Invalid tool ID format "${toolId}". Expected "service:actionId" (e.g. "gmail:gmail.send_email")` } as any);
-        return;
-      }
-      const service = toolId.slice(0, colonIndex);
-      const actionId = toolId.slice(colonIndex + 1);
-
-      // Safety net: reject disabled actions even if the tool ID was guessed
-      if (await isActionDisabled(this.appDb, service, actionId)) {
-        this.runnerLink.send({ type: 'call-tool-result', requestId, error: `Action "${toolId}" is disabled by your organization.` } as any);
-        return;
-      }
-
-      // Safety net: reject actions from disabled plugins (cached to avoid per-invocation D1 query)
-      if (!this.disabledPluginServicesCache || Date.now() > this.disabledPluginServicesCache.expiresAt) {
-        this.disabledPluginServicesCache = {
-          services: await getDisabledPluginServices(this.env.DB),
-          expiresAt: Date.now() + SessionAgentDO.DISABLED_PLUGINS_CACHE_TTL_MS,
-        };
-      }
-      if (this.disabledPluginServicesCache.services.has(service)) {
-        this.runnerLink.send({ type: 'call-tool-result', requestId, error: `Action "${toolId}" is disabled by your organization.` } as any);
-        return;
-      }
-
-      // Verify user or org has this integration active
-      const userIntegrations = await getUserIntegrations(this.appDb, userId);
-      let activeIntegration = userIntegrations.find(
-        (i) => i.service === service && i.status === 'active',
-      );
-
-      // Fall back to org-scoped integrations
-      let isOrgScoped = false;
-      if (!activeIntegration) {
-        const orgIntegrations = await getOrgIntegrations(this.appDb);
-        const orgMatch = orgIntegrations.find(
-          (i) => i.service === service && i.status === 'active',
-        );
-        if (orgMatch) {
-          activeIntegration = { ...orgMatch, userId: '', scope: 'org' as const, updatedAt: orgMatch.createdAt } as any;
-          isOrgScoped = true;
-        }
-      }
-
-      // Fall back to auto-enabled plugins (no auth required)
-      if (!activeIntegration) {
-        const autoServices = await getAutoEnabledServices(this.env.DB);
-        if (autoServices.includes(service)) {
-          activeIntegration = { id: `auto:${service}`, service, status: 'active' } as any;
-        }
-      }
-
-      if (!activeIntegration) {
-        this.runnerLink.send({ type: 'call-tool-result', requestId, error: `Integration "${service}" is not active. Configure it in Settings > Integrations.` } as any);
-        return;
-      }
-
-      // Look up ActionSource
-      const actionSource = integrationRegistry.getActions(service);
-      if (!actionSource) {
-        this.runnerLink.send({ type: 'call-tool-result', requestId, error: `No integration package found for service "${service}".` } as any);
-        return;
-      }
-
-      // ─── Policy Resolution ─────────────────────────────────────────────
-      // Use cached risk level from handleListTools if available (avoids MCP round-trip).
-      // Fall back to listActions only if the cache misses (e.g. tool was never listed).
-      const cachedRisk = this.discoveredToolRiskLevels.get(toolId);
-      let riskLevel: string;
-      if (cachedRisk) {
-        riskLevel = cachedRisk;
-      } else {
-        // Resolve list context for policy fallback — skip credential lookup for no-auth services
-        const fallbackProvider = integrationRegistry.getProvider(service);
-        let listCtx: { credentials: { access_token: string } } | undefined;
-        if (fallbackProvider?.authType !== 'none') {
-          let listCredResult = this.getCachedCredential('user', userId, service)
-            || await integrationRegistry.resolveCredentials(service, this.env, userId, isOrgScoped ? 'org' : 'user');
-          if (listCredResult.ok) {
-            this.setCachedCredential('user', userId, service, listCredResult);
-          }
-          listCtx = listCredResult.ok
-            ? { credentials: { access_token: listCredResult.credential.accessToken } }
-            : undefined;
-        }
-        const actionDef = (await actionSource.listActions(listCtx)).find(a => a.id === actionId);
-        riskLevel = actionDef?.riskLevel || 'medium';
-      }
-
-      // Resolve policy mode
-      const invocationResult = await invokeAction(this.appDb, {
+      // Resolve policy (validates toolId, checks disabled status, resolves risk level)
+      const policyResult = await resolveActionPolicy(this.appDb, this.env.DB, this.env, userId, toolId, params, {
         sessionId: sessionId || '',
-        userId,
-        service,
-        actionId,
-        riskLevel,
-        params,
+        discoveredToolRiskLevels: this.discoveredToolRiskLevels,
+        credentialCache: this.credentialCacheAdapter,
+        disabledPluginServicesCache: this.disabledPluginServicesCache,
       });
 
+      // Update the disabled plugin services cache from the policy resolution
+      this.disabledPluginServicesCache = policyResult.disabledPluginServicesCache;
+
+      const { outcome, invocationId, riskLevel, service, actionId, isOrgScoped, actionSource } = policyResult;
+
       // ─── Deny ──────────────────────────────────────────────────────────
-      if (invocationResult.outcome === 'denied') {
+      if (outcome === 'denied') {
         this.runnerLink.send({ type: 'call-tool-result', requestId, error: `Action "${toolId}" denied by policy (risk level: ${riskLevel})` } as any);
-        this.emitAuditEvent('agent.tool_call', `Action ${toolId} denied by policy`, undefined, { invocationId: invocationResult.invocationId, riskLevel });
+        this.emitAuditEvent('agent.tool_call', `Action ${toolId} denied by policy`, undefined, { invocationId, riskLevel });
         return;
       }
 
       // ─── Require Approval ──────────────────────────────────────────────
-      if (invocationResult.outcome === 'pending_approval') {
+      if (outcome === 'pending_approval') {
         if (!summary) {
           this.runnerLink.send({
             type: 'call-tool-result',
@@ -7292,7 +7057,7 @@ export class SessionAgentDO {
           params,
           riskLevel,
           isOrgScoped,
-          invocationId: invocationResult.invocationId,
+          invocationId: invocationId,
           summary,
         };
         const approvalCh = this.activeChannel;
@@ -7309,7 +7074,7 @@ export class SessionAgentDO {
           `INSERT OR REPLACE INTO interactive_prompts
             (id, type, request_id, title, body, actions, context, status, expires_at)
            VALUES (?, 'approval', ?, ?, ?, ?, ?, 'pending', ?)`,
-          invocationResult.invocationId,
+          invocationId,
           requestId,
           'Action requires approval',
           approvalBody,
@@ -7325,12 +7090,12 @@ export class SessionAgentDO {
         this.runnerLink.send({
           type: 'call-tool-pending',
           requestId,
-          invocationId: invocationResult.invocationId,
+          invocationId: invocationId,
           message: `Action "${toolId}" requires approval (risk level: ${riskLevel}). Waiting for human review.`,
         } as any);
 
         const prompt: InteractivePrompt = {
-          id: invocationResult.invocationId,
+          id: invocationId,
           sessionId: sessionId || '',
           type: 'approval',
           title: 'Action requires approval',
@@ -7355,7 +7120,7 @@ export class SessionAgentDO {
           sessionId,
           userId,
           data: {
-            invocationId: invocationResult.invocationId,
+            invocationId: invocationId,
             toolId,
             service,
             actionId,
@@ -7364,11 +7129,11 @@ export class SessionAgentDO {
           timestamp: new Date().toISOString(),
         });
 
-        this.emitAuditEvent('agent.tool_call', `Action ${toolId} requires approval (${riskLevel})`, undefined, { invocationId: invocationResult.invocationId, riskLevel });
+        this.emitAuditEvent('agent.tool_call', `Action ${toolId} requires approval (${riskLevel})`, undefined, { invocationId: invocationId, riskLevel });
 
         // Fire-and-forget: send interactive prompts to all bound channels
         this.ctx.waitUntil(
-          this.sendChannelInteractivePrompts(invocationResult.invocationId, prompt)
+          this.sendChannelInteractivePrompts(invocationId, prompt)
         );
 
         // Schedule alarm for expiry
@@ -7378,7 +7143,7 @@ export class SessionAgentDO {
       }
 
       // ─── Allow — execute immediately ───────────────────────────────────
-      await this.executeAction(requestId, toolId, service, actionId, params, isOrgScoped, userId, actionSource, invocationResult.invocationId);
+      await this.executeActionAndSend(requestId, toolId, service, actionId, params, isOrgScoped, userId, actionSource, invocationId);
     } catch (err) {
       this.runnerLink.send({
         type: 'call-tool-result',
@@ -7389,10 +7154,10 @@ export class SessionAgentDO {
   }
 
   /**
-   * Execute an integration action and send the result to the runner.
+   * Execute an integration action via the service and send the result to the runner.
    * Shared between immediate execution and post-approval execution.
    */
-  private async executeAction(
+  private async executeActionAndSend(
     requestId: string,
     toolId: string,
     service: string,
@@ -7403,121 +7168,35 @@ export class SessionAgentDO {
     actionSource: ReturnType<typeof integrationRegistry.getActions>,
     invocationId: string,
   ) {
-    if (!actionSource) {
-      this.runnerLink.send({ type: 'call-tool-result', requestId, error: `No integration package found for service "${service}".` } as any);
-      await markFailed(this.appDb, invocationId, 'No integration package found');
-      return;
-    }
+    const spawnRequest = this.sessionState.spawnRequest;
+    const spawnEnvVars = spawnRequest?.envVars as Record<string, string> | undefined;
 
-    // Resolve credentials based on integration scope
-    const provider = integrationRegistry.getProvider(service);
-    let credentials: Record<string, string>;
-    if (provider?.authType === 'none') {
-      // No-auth services (e.g. DeepWiki) don't need credentials
-      credentials = {};
-    } else {
-      const scope = isOrgScoped ? 'org' as const : 'user' as const;
-      let credResult = this.getCachedCredential('user', userId, service)
-        || await integrationRegistry.resolveCredentials(service, this.env, userId, scope);
-      if (credResult.ok) {
-        this.setCachedCredential('user', userId, service, credResult);
-      }
-      if (!credResult.ok) {
-        const scopeLabel = isOrgScoped ? `org-scoped "${service}"` : `"${service}"`;
-        this.runnerLink.send({ type: 'call-tool-result', requestId, error: `No credentials found for ${scopeLabel}: ${credResult.error.message}. Connect it in Settings > Integrations.` } as any);
-        await markFailed(this.appDb, invocationId, `No credentials: ${credResult.error.message}`);
-        return;
-      }
-      // Map resolved credential to the format actions expect
-      const token = credResult.credential.accessToken;
-      credentials = credResult.credential.credentialType === 'bot_token'
-        ? { bot_token: token } as Record<string, string>
-        : { access_token: token };
-
-      // For Slack: inject the session owner's Slack user ID so dm_owner works
-      if (service === 'slack') {
-        const identityLinks = await getUserIdentityLinks(this.appDb, userId);
-        const slackLink = identityLinks.find((l) => l.provider === 'slack');
-        if (slackLink) credentials.owner_slack_user_id = slackLink.externalId;
-      }
-    }
-
-    // Resolve caller identity for orchestrator sessions (used by Slack for username/avatar override)
-    let callerIdentity: { name: string; avatar?: string } | undefined;
-    try {
-      const spawnRequest = this.sessionState.spawnRequest;
-      if (spawnRequest) {
-        const envVars = spawnRequest.envVars as Record<string, string> | undefined;
-        if (envVars?.IS_ORCHESTRATOR === 'true') {
-          const identity = await getOrchestratorIdentity(this.appDb, userId);
-          if (identity) {
-            callerIdentity = { name: identity.name, avatar: identity.avatar };
-          }
-        }
-      }
-    } catch {
-      // Non-critical — proceed without identity
-    }
-
-    // Create analytics collector for this action execution
-    const collectedEvents: Array<{ eventType: string; durationMs?: number; properties?: Record<string, unknown> }> = [];
-    const actionAnalytics = {
-      emit: (eventType: string, data?: { durationMs?: number; properties?: Record<string, unknown> }) => {
-        collectedEvents.push({ eventType, ...data });
-      },
-    };
-
-    // Execute the action with timing for tool_exec event
-    const toolExecStart = Date.now();
-    let actionResult = await actionSource.execute(actionId, params, { credentials, userId, callerIdentity, analytics: actionAnalytics });
-
-    // If auth error, retry once with force-refreshed credentials (skip no-auth and bot_token services which have nothing to refresh)
-    if (provider?.authType !== 'none' && provider?.authType !== 'bot_token' && !actionResult.success && actionResult.error && /\b(401|403|unauthorized|invalid.credentials|token.*expired|token.*revoked)\b/i.test(actionResult.error)) {
-      const scope = isOrgScoped ? 'org' as const : 'user' as const;
-      console.log(`[SessionAgentDO] Tool "${toolId}" returned auth error, retrying with refreshed credentials`);
-      this.invalidateCachedCredential('user', userId, service);
-      const refreshedCred = await integrationRegistry.resolveCredentials(service, this.env, userId, scope, { forceRefresh: true });
-      if (refreshedCred.ok) {
-        this.setCachedCredential('user', userId, service, refreshedCred);
-        const refreshedToken = refreshedCred.credential.accessToken;
-        const refreshedCredentials: Record<string, string> = refreshedCred.credential.credentialType === 'bot_token'
-          ? { bot_token: refreshedToken }
-          : { access_token: refreshedToken };
-        // Re-inject service-specific credential extras (e.g. owner_slack_user_id)
-        if (service === 'slack' && credentials.owner_slack_user_id) {
-          refreshedCredentials.owner_slack_user_id = credentials.owner_slack_user_id;
-        }
-        actionResult = await actionSource.execute(actionId, params, {
-          credentials: refreshedCredentials,
-          userId,
-          callerIdentity,
-          analytics: actionAnalytics,
-        });
-      }
-    }
+    const result = await executeActionSvc(
+      this.appDb, this.env, userId, toolId, service, actionId, params,
+      isOrgScoped, actionSource, invocationId,
+      { credentialCache: this.credentialCacheAdapter, spawnEnvVars },
+    );
 
     // Emit tool_exec timing event
     this.emitEvent('tool_exec', {
       toolName: toolId,
-      durationMs: Date.now() - toolExecStart,
-      errorCode: actionResult.success ? undefined : 'action_failed',
+      durationMs: result.durationMs,
+      errorCode: result.success ? undefined : 'action_failed',
     });
 
     // Flush plugin analytics events
-    for (const event of collectedEvents) {
+    for (const event of result.analyticsEvents) {
       this.emitEvent(event.eventType, {
         durationMs: event.durationMs,
         properties: event.properties,
       });
     }
 
-    // Record result and send to runner
-    if (!actionResult.success) {
-      await markFailed(this.appDb, invocationId, actionResult.error || 'Action failed');
-      this.runnerLink.send({ type: 'call-tool-result', requestId, error: actionResult.error || 'Action failed' } as any);
+    // Send result to runner
+    if (!result.success) {
+      this.runnerLink.send({ type: 'call-tool-result', requestId, error: result.error || 'Action failed' } as any);
     } else {
-      await markExecuted(this.appDb, invocationId, actionResult.data);
-      this.runnerLink.send({ type: 'call-tool-result', requestId, result: actionResult.data } as any);
+      this.runnerLink.send({ type: 'call-tool-result', requestId, result: result.data } as any);
     }
   }
 
@@ -7584,7 +7263,7 @@ export class SessionAgentDO {
 
         const actionSource = integrationRegistry.getActions(service);
         if (requestId) {
-          await this.executeAction(requestId, toolId, service, actionId, params, isOrgScoped, userId, actionSource, promptId);
+          await this.executeActionAndSend(requestId, toolId, service, actionId, params, isOrgScoped, userId, actionSource, promptId);
         }
 
         // Broadcast approval to clients
@@ -7848,55 +7527,6 @@ export class SessionAgentDO {
       await this.ctx.storage.setAlarm(expiryMs);
     }
     // Otherwise the existing alarm() handler will check interactive_prompts
-  }
-
-  /** Serialize a Zod schema into a simple param descriptor object for tool discovery. */
-  private serializeZodSchema(schema: unknown): Record<string, { type: string; required: boolean; description?: string }> {
-    const result: Record<string, { type: string; required: boolean; description?: string }> = {};
-
-    // Walk ZodObject .shape
-    const shape = (schema as any)?._def?.shape?.();
-    if (!shape || typeof shape !== 'object') return result;
-
-    for (const [key, fieldSchema] of Object.entries(shape)) {
-      let inner: any = fieldSchema;
-      let required = true;
-
-      // Unwrap ZodOptional / ZodDefault / ZodNullable
-      while (inner?._def) {
-        const tn = inner._def.typeName;
-        if (tn === 'ZodOptional' || tn === 'ZodDefault' || tn === 'ZodNullable') {
-          if (tn === 'ZodOptional' || tn === 'ZodDefault') required = false;
-          inner = inner._def.innerType;
-        } else {
-          break;
-        }
-      }
-
-      const type = this.zodTypeToString(inner);
-      const description = inner?._def?.description || (fieldSchema as any)?._def?.description || undefined;
-      result[key] = { type, required, description };
-    }
-
-    return result;
-  }
-
-  /** Map a Zod type to a human-readable type string. */
-  private zodTypeToString(inner: any): string {
-    const typeName = inner?._def?.typeName;
-    if (typeName === 'ZodString') return 'string';
-    if (typeName === 'ZodNumber') return 'number';
-    if (typeName === 'ZodBoolean') return 'boolean';
-    if (typeName === 'ZodEnum') {
-      const values = inner._def.values;
-      return Array.isArray(values) ? `enum(${values.join(',')})` : 'enum';
-    }
-    if (typeName === 'ZodArray') {
-      const itemType = inner._def.type ? this.zodTypeToString(inner._def.type) : 'unknown';
-      return `array<${itemType}>`;
-    }
-    if (typeName === 'ZodObject') return 'object';
-    return 'unknown';
   }
 
   /**
