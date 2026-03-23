@@ -1113,8 +1113,7 @@ export function useChat(sessionId: string) {
     (content: string, model?: string, attachments?: PromptAttachment[], channelType?: string, channelId?: string, queueModeOverride?: QueueMode, threadId?: string, continuationContext?: string) => {
       if (!isConnected) return;
 
-      send({
-        type: 'prompt',
+      const payload = {
         content,
         ...(model ? { model } : {}),
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
@@ -1123,7 +1122,20 @@ export function useChat(sessionId: string) {
         ...(channelId ? { channelId } : {}),
         ...(threadId ? { threadId } : {}),
         ...(continuationContext ? { continuationContext } : {}),
-      });
+      };
+
+      // Use HTTP for large payloads (e.g. PDF attachments) since CF Workers
+      // has a 1MB WebSocket frame limit. HTTP supports up to 100MB.
+      const payloadSize = attachments?.reduce((sum, a) => sum + (a.url?.length ?? 0), 0) ?? 0;
+      if (payloadSize > 800_000) {
+        console.log(`[chat] Using HTTP for large payload (${(payloadSize / 1_000_000).toFixed(1)}MB)`);
+        api.post(`/sessions/${sessionIdRef.current}/prompt`, payload).catch((err) => {
+          console.error('[chat] HTTP prompt failed:', err);
+        });
+      } else {
+        send({ type: 'prompt', ...payload });
+      }
+
       // Start thinking indicator when user sends a message
       setState((prev) => ({ ...prev, isAgentThinking: true }));
     },
