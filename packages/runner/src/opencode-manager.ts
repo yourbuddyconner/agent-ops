@@ -404,6 +404,20 @@ export class OpenCodeManager {
     this.autoRestartTimer = setTimeout(async () => {
       this.autoRestartTimer = null;
       if (this.stopping || this.process) return;
+
+      // If something is already listening on the port and healthy,
+      // another process owns it — adopt it instead of spawning a new one.
+      try {
+        const res = await fetch(`http://localhost:${this.port}/health`);
+        if (res.ok) {
+          console.log("[OpenCodeManager] Port already has a healthy OpenCode, skipping restart");
+          this.healthy = true;
+          return;
+        }
+      } catch {
+        // Port is free — proceed with restart
+      }
+
       try {
         console.log("[OpenCodeManager] Auto-restarting OpenCode after crash");
         await this.spawnProcess();
@@ -430,7 +444,6 @@ export class OpenCodeManager {
         const res = await fetch(url);
         if (res.ok) {
           this.healthy = true;
-          this.consecutiveCrashes = 0;
           console.log("[OpenCodeManager] OpenCode is healthy");
           return;
         }
