@@ -1,7 +1,7 @@
 import type { Env } from '../env.js';
 import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getOrchestratorIdentity, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getUserIdentityLinks, getUserSlackIdentityLink, getThreadOriginChannel } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrgRepositories, getUserById, getUsersByIds, createMailboxMessage, getOrchestratorIdentity, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getUserIdentityLinks, getUserSlackIdentityLink, getThreadOriginChannel } from '../lib/db.js';
 import { getCredential, type CredentialResult } from '../services/credentials.js';
 import { memRead, memWrite, memPatch, memRm, memSearch } from '../services/session-memory.js';
 import { resolveRepoCredential, type CredentialRow } from '../lib/db/credentials.js';
@@ -26,7 +26,7 @@ import { updateInvocationStatus } from '../lib/db/actions.js';
 import { getDisabledActionsIndex, isActionDisabled } from '../lib/db/disabled-actions.js';
 import { upsertMcpToolCache } from '../lib/db/mcp-tool-cache.js';
 import { getActivePluginArtifacts, getPluginSettings, getAutoEnabledServices, getDisabledPluginServices } from '../lib/db/plugins.js';
-import { getPersonaSkills, getOrgDefaultSkills, getSkill, getPersonaToolWhitelist, createPersona, updatePersona, deletePersona, getPersonaWithFiles, upsertPersonaFile, attachSkillToPersona, detachSkillFromPersona, getPersonaSkillsForApi } from '../lib/db.js';
+import { getPersonaSkills, getOrgDefaultSkills, getPersonaToolWhitelist } from '../lib/db.js';
 import type { ChannelTarget, ChannelContext, InteractivePrompt, InteractiveAction, InteractivePromptRef, InteractiveResolution } from '@valet/sdk';
 import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
 import { MessageStore } from './message-store.js';
@@ -41,6 +41,7 @@ import { mailboxSend, mailboxCheck } from '../services/session-mailbox.js';
 import { taskCreate, taskList, taskUpdate, taskMy } from '../services/session-tasks.js';
 import { handleIdentityAction } from '../services/session-identity.js';
 import { handleSkillAction } from '../services/session-skills.js';
+import { handlePersonaAction, listPersonasForRunner } from '../services/session-personas.js';
 import { sanitizePromptAttachments, attachmentPartsForMessage, parseQueuedPromptAttachments } from '../lib/utils/prompt-validation.js';
 import { parseQueuedWorkflowPayload, deriveRuntimeStates } from '../lib/utils/runtime.js';
 
@@ -2609,7 +2610,13 @@ export class SessionAgentDO {
       },
 
       'list-personas': async (msg) => {
-        await this.handleListPersonas(msg.requestId!);
+        try {
+          const personas = await listPersonasForRunner(this.env.DB, this.sessionState.userId);
+          this.runnerLink.send({ type: 'list-personas-result', requestId: msg.requestId!, personas } as any);
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to list personas:', err);
+          this.runnerLink.send({ type: 'list-personas-result', requestId: msg.requestId!, error: err instanceof Error ? err.message : String(err) } as any);
+        }
       },
 
       'list-channels': async (msg) => {
@@ -2698,7 +2705,23 @@ export class SessionAgentDO {
       },
 
       'persona-api': async (msg) => {
-        await this.handlePersonaApi(msg.requestId!, msg.action || '', msg.payload);
+        try {
+          const result = await handlePersonaAction(
+            this.appDb,
+            this.env.DB,
+            this.sessionState.userId,
+            msg.action || '',
+            msg.payload,
+          );
+          if (result.error) {
+            this.runnerLink.send({ type: 'persona-api-result', requestId: msg.requestId!, error: result.error, statusCode: result.statusCode });
+            return;
+          }
+          this.runnerLink.send({ type: 'persona-api-result', requestId: msg.requestId!, data: result.data });
+        } catch (err) {
+          console.error('[SessionAgentDO] Persona API error:', err);
+          this.runnerLink.send({ type: 'persona-api-result', requestId: msg.requestId!, error: err instanceof Error ? err.message : String(err), statusCode: 500 });
+        }
       },
 
       'identity-api': async (msg) => {
@@ -4235,218 +4258,6 @@ export class SessionAgentDO {
     }
   }
 
-  private async handlePersonaApi(requestId: string, action: string, payload?: Record<string, unknown>) {
-    try {
-      const userId = this.sessionState.userId;
-
-      if (action === 'get') {
-        const id = payload?.id as string;
-        if (!id) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'id is required', statusCode: 400 });
-          return;
-        }
-        const persona = await getPersonaWithFiles(this.env.DB, id);
-        if (!persona) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Persona not found', statusCode: 404 });
-          return;
-        }
-        if (persona.visibility === 'private' && persona.createdBy !== userId) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Persona not found', statusCode: 404 });
-          return;
-        }
-        this.runnerLink.send({ type: 'persona-api-result', requestId, data: { persona } });
-        return;
-      }
-
-      if (action === 'create') {
-        const name = payload?.name as string;
-        const slug = payload?.slug as string;
-        if (!name || !slug) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'name and slug are required', statusCode: 400 });
-          return;
-        }
-        const personaId = crypto.randomUUID();
-        const persona = await createPersona(this.appDb, {
-          id: personaId,
-          name,
-          slug,
-          description: payload?.description as string | undefined,
-          icon: payload?.icon as string | undefined,
-          defaultModel: payload?.defaultModel as string | undefined,
-          visibility: (payload?.visibility as 'private' | 'shared') || 'shared',
-          createdBy: userId,
-        });
-        // Create inline files if provided
-        const files = payload?.files as Array<{ filename: string; content: string; sortOrder?: number }> | undefined;
-        if (files?.length) {
-          for (const file of files) {
-            await upsertPersonaFile(this.appDb, {
-              id: crypto.randomUUID(),
-              personaId,
-              filename: file.filename,
-              content: file.content,
-              sortOrder: file.sortOrder ?? 0,
-            });
-          }
-        }
-        this.runnerLink.send({ type: 'persona-api-result', requestId, data: { persona } });
-        return;
-      }
-
-      if (action === 'update') {
-        const id = payload?.id as string;
-        if (!id) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'id is required', statusCode: 400 });
-          return;
-        }
-        const persona = await getPersonaWithFiles(this.env.DB, id);
-        if (!persona) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Persona not found', statusCode: 404 });
-          return;
-        }
-        if (persona.createdBy !== userId) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Only the creator can update this persona', statusCode: 403 });
-          return;
-        }
-        const updates: Record<string, unknown> = {};
-        if (payload?.name) updates.name = payload.name;
-        if (payload?.slug) updates.slug = payload.slug;
-        if (payload?.description !== undefined) updates.description = payload.description;
-        if (payload?.icon !== undefined) updates.icon = payload.icon;
-        if (payload?.defaultModel !== undefined) updates.defaultModel = payload.defaultModel;
-        if (payload?.visibility) updates.visibility = payload.visibility;
-        await updatePersona(this.appDb, id, updates);
-        this.runnerLink.send({ type: 'persona-api-result', requestId, data: { ok: true } });
-        return;
-      }
-
-      if (action === 'delete') {
-        const id = payload?.id as string;
-        if (!id) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'id is required', statusCode: 400 });
-          return;
-        }
-        const persona = await getPersonaWithFiles(this.env.DB, id);
-        if (!persona) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Persona not found', statusCode: 404 });
-          return;
-        }
-        if (persona.createdBy !== userId) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Only the creator can delete this persona', statusCode: 403 });
-          return;
-        }
-        await deletePersona(this.appDb, id);
-        this.runnerLink.send({ type: 'persona-api-result', requestId, data: { deleted: true } });
-        return;
-      }
-
-      if (action === 'upsert-file') {
-        const personaId = payload?.personaId as string;
-        const filename = payload?.filename as string;
-        const content = payload?.content as string;
-        if (!personaId || !filename || !content) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'personaId, filename, and content are required', statusCode: 400 });
-          return;
-        }
-        const persona = await getPersonaWithFiles(this.env.DB, personaId);
-        if (!persona) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Persona not found', statusCode: 404 });
-          return;
-        }
-        if (persona.createdBy !== userId) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Only the creator can edit this persona', statusCode: 403 });
-          return;
-        }
-        await upsertPersonaFile(this.appDb, {
-          id: crypto.randomUUID(),
-          personaId,
-          filename,
-          content,
-          sortOrder: (payload?.sortOrder as number) ?? 0,
-        });
-        this.runnerLink.send({ type: 'persona-api-result', requestId, data: { ok: true } });
-        return;
-      }
-
-      if (action === 'list-skills') {
-        const personaId = payload?.personaId as string;
-        if (!personaId) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'personaId is required', statusCode: 400 });
-          return;
-        }
-        const persona = await getPersonaWithFiles(this.env.DB, personaId);
-        if (!persona) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Persona not found', statusCode: 404 });
-          return;
-        }
-        if (persona.visibility === 'private' && persona.createdBy !== userId) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Persona not found', statusCode: 404 });
-          return;
-        }
-        const skills = await getPersonaSkillsForApi(this.appDb, personaId);
-        this.runnerLink.send({ type: 'persona-api-result', requestId, data: { skills } });
-        return;
-      }
-
-      if (action === 'attach-skill') {
-        const personaId = payload?.personaId as string;
-        const skillId = payload?.skillId as string;
-        const sortOrder = (payload?.sortOrder as number) ?? 0;
-        if (!personaId || !skillId) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'personaId and skillId are required', statusCode: 400 });
-          return;
-        }
-        const persona = await getPersonaWithFiles(this.env.DB, personaId);
-        if (!persona) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Persona not found', statusCode: 404 });
-          return;
-        }
-        if (persona.createdBy !== userId) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Only the creator can modify this persona', statusCode: 403 });
-          return;
-        }
-        const skill = await getSkill(this.appDb, skillId);
-        if (!skill) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Skill not found', statusCode: 404 });
-          return;
-        }
-        await attachSkillToPersona(this.appDb, crypto.randomUUID(), personaId, skillId, sortOrder);
-        this.runnerLink.send({ type: 'persona-api-result', requestId, data: { attached: true } });
-        return;
-      }
-
-      if (action === 'detach-skill') {
-        const personaId = payload?.personaId as string;
-        const skillId = payload?.skillId as string;
-        if (!personaId || !skillId) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'personaId and skillId are required', statusCode: 400 });
-          return;
-        }
-        const persona = await getPersonaWithFiles(this.env.DB, personaId);
-        if (!persona) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Persona not found', statusCode: 404 });
-          return;
-        }
-        if (persona.createdBy !== userId) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Only the creator can modify this persona', statusCode: 403 });
-          return;
-        }
-        const changes = await detachSkillFromPersona(this.appDb, personaId, skillId);
-        if (changes === 0) {
-          this.runnerLink.send({ type: 'persona-api-result', requestId, error: 'Skill was not attached to this persona', statusCode: 404 });
-          return;
-        }
-        this.runnerLink.send({ type: 'persona-api-result', requestId, data: { detached: true } });
-        return;
-      }
-
-      this.runnerLink.send({ type: 'persona-api-result', requestId, error: `Unsupported persona action: ${action}`, statusCode: 400 });
-    } catch (err) {
-      console.error('[SessionAgentDO] Persona API error:', err);
-      this.runnerLink.send({ type: 'persona-api-result', requestId, error: err instanceof Error ? err.message : String(err), statusCode: 500 });
-    }
-  }
-
   // ─── Identity API (orchestrator self-edit) ─────────────────────────────────
 
   private async handleExecutionApi(requestId: string, action: string, payload?: Record<string, unknown>) {
@@ -5138,17 +4949,6 @@ export class SessionAgentDO {
     } catch (err) {
       console.error('[SessionAgentDO] Failed to inspect pull request:', err);
       this.runnerLink.send({ type: 'inspect-pull-request-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
-    }
-  }
-
-  private async handleListPersonas(requestId: string) {
-    try {
-      const userId = this.sessionState.userId;
-      const personas = await listPersonas(this.env.DB, userId);
-      this.runnerLink.send({ type: 'list-personas-result', requestId, personas } as any);
-    } catch (err) {
-      console.error('[SessionAgentDO] Failed to list personas:', err);
-      this.runnerLink.send({ type: 'list-personas-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
     }
   }
 
