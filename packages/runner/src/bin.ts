@@ -174,18 +174,6 @@ async function main() {
       const result = await agentClient.requestReadMessages(targetSessionId, limit, after);
       return result.messages;
     },
-    onCreatePullRequest: async (params) => {
-      return await agentClient.requestCreatePullRequest(params);
-    },
-    onUpdatePullRequest: async (params) => {
-      return await agentClient.requestUpdatePullRequest(params);
-    },
-    onListPullRequests: async (params) => {
-      return await agentClient.requestListPullRequests(params);
-    },
-    onInspectPullRequest: async (params) => {
-      return await agentClient.requestInspectPullRequest(params);
-    },
     onReportGitState: (params) => {
       agentClient.sendGitState(params);
     },
@@ -204,9 +192,6 @@ async function main() {
     onMemSearch: async (query, path, limit) => {
       return await agentClient.requestMemSearch(query, path, limit);
     },
-    onListRepos: async (source) => {
-      return await agentClient.requestListRepos(source);
-    },
     onListPersonas: async () => {
       return await agentClient.requestListPersonas();
     },
@@ -221,9 +206,6 @@ async function main() {
     },
     onForwardMessages: async (targetSessionId, limit, after) => {
       return await agentClient.requestForwardMessages(targetSessionId, limit, after);
-    },
-    onReadRepoFile: async (params) => {
-      return await agentClient.requestReadRepoFile(params);
     },
     onListWorkflows: async () => {
       return await agentClient.requestListWorkflows();

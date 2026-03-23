@@ -35,7 +35,6 @@ const PING_INTERVAL_MS = 30_000;
 const SPAWN_CHILD_TIMEOUT_MS = 60_000;
 const TERMINATE_CHILD_TIMEOUT_MS = 30_000;
 const MESSAGE_OP_TIMEOUT_MS = 15_000;
-const PR_OP_TIMEOUT_MS = 30_000;
 const TOOL_OP_TIMEOUT_MS = 30_000;
 const APPROVAL_TIMEOUT_MS = 11 * 60 * 1000; // 11 min — slightly longer than DO's 10 min expiry
 // If the server rejects the WebSocket upgrade N times in a row (e.g. 401 due to
@@ -251,20 +250,6 @@ export class AgentClient {
     this.send({ type: "agentStatus", status, detail });
   }
 
-  requestCreatePullRequest(params: { branch: string; title: string; body?: string; base?: string }): Promise<{ number: number; url: string; title: string; state: string }> {
-    const requestId = crypto.randomUUID();
-    return this.createPendingRequest(requestId, PR_OP_TIMEOUT_MS, () => {
-      this.send({ type: "create-pr", requestId, ...params });
-    });
-  }
-
-  requestUpdatePullRequest(params: { prNumber: number; title?: string; body?: string; state?: string; labels?: string[] }): Promise<{ number: number; url: string; title: string; state: string }> {
-    const requestId = crypto.randomUUID();
-    return this.createPendingRequest(requestId, PR_OP_TIMEOUT_MS, () => {
-      this.send({ type: "update-pr", requestId, ...params });
-    });
-  }
-
   sendGitState(params: { branch?: string; baseBranch?: string; commitCount?: number }): void {
     this.send({ type: "git-state", ...params });
   }
@@ -454,27 +439,6 @@ export class AgentClient {
     });
   }
 
-  requestListRepos(source?: string): Promise<{ repos: unknown[] }> {
-    const requestId = crypto.randomUUID();
-    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
-      this.send({ type: "list-repos", requestId, source });
-    });
-  }
-
-  requestListPullRequests(params: { owner?: string; repo?: string; state?: string; limit?: number }): Promise<{ pulls: unknown[] }> {
-    const requestId = crypto.randomUUID();
-    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
-      this.send({ type: "list-pull-requests", requestId, ...params });
-    });
-  }
-
-  requestInspectPullRequest(params: { prNumber: number; owner?: string; repo?: string; filesLimit?: number; commentsLimit?: number }): Promise<unknown> {
-    const requestId = crypto.randomUUID();
-    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
-      this.send({ type: "inspect-pull-request", requestId, ...params });
-    });
-  }
-
   requestListPersonas(): Promise<{ personas: unknown[] }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
@@ -507,13 +471,6 @@ export class AgentClient {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
       this.send({ type: "forward-messages", requestId, targetSessionId, limit, after });
-    });
-  }
-
-  requestReadRepoFile(params: { owner?: string; repo?: string; repoUrl?: string; path: string; ref?: string }): Promise<{ content: string; encoding?: string; truncated?: boolean; path?: string; repo?: string; ref?: string }> {
-    const requestId = crypto.randomUUID();
-    return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
-      this.send({ type: "read-repo-file", requestId, ...params });
     });
   }
 

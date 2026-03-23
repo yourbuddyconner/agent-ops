@@ -539,50 +539,6 @@ export interface MessageEntry {
   createdAt: string;
 }
 
-export interface CreatePullRequestParams {
-  branch: string;
-  title: string;
-  body?: string;
-  base?: string;
-}
-
-export interface CreatePullRequestResult {
-  number: number;
-  url: string;
-  title: string;
-  state: string;
-}
-
-export interface UpdatePullRequestParams {
-  prNumber: number;
-  title?: string;
-  body?: string;
-  state?: string;
-  labels?: string[];
-}
-
-export interface UpdatePullRequestResult {
-  number: number;
-  url: string;
-  title: string;
-  state: string;
-}
-
-export interface ListPullRequestsParams {
-  owner?: string;
-  repo?: string;
-  state?: "open" | "closed" | "all";
-  limit?: number;
-}
-
-export interface InspectPullRequestParams {
-  prNumber: number;
-  owner?: string;
-  repo?: string;
-  filesLimit?: number;
-  commentsLimit?: number;
-}
-
 export interface GitStateParams {
   branch?: string;
   baseBranch?: string;
@@ -632,23 +588,17 @@ export interface GatewayCallbacks {
   onSelfTerminate?: () => void;
   onSendMessage?: (targetSessionId: string, content: string, interrupt: boolean) => Promise<void>;
   onReadMessages?: (targetSessionId: string, limit?: number, after?: string) => Promise<MessageEntry[]>;
-  onCreatePullRequest?: (params: CreatePullRequestParams) => Promise<CreatePullRequestResult>;
-  onUpdatePullRequest?: (params: UpdatePullRequestParams) => Promise<UpdatePullRequestResult>;
-  onListPullRequests?: (params: ListPullRequestsParams) => Promise<{ pulls: unknown[] }>;
-  onInspectPullRequest?: (params: InspectPullRequestParams) => Promise<unknown>;
   onReportGitState?: (params: GitStateParams) => void;
   onMemRead?: (path: string) => Promise<{ file?: unknown; files?: unknown[]; content?: string }>;
   onMemWrite?: (path: string, content: string) => Promise<{ file: unknown }>;
   onMemPatch?: (path: string, operations: unknown[]) => Promise<{ result: unknown }>;
   onMemRm?: (path: string) => Promise<{ deleted: number }>;
   onMemSearch?: (query: string, path?: string, limit?: number) => Promise<{ results: unknown[] }>;
-  onListRepos?: (source?: string) => Promise<{ repos: unknown[] }>;
   onListPersonas?: () => Promise<{ personas: unknown[] }>;
   onListChannels?: () => Promise<{ channels: unknown[] }>;
   onGetSessionStatus?: (targetSessionId: string) => Promise<{ sessionStatus: unknown }>;
   onListChildSessions?: () => Promise<{ children: unknown[] }>;
   onForwardMessages?: (targetSessionId: string, limit?: number, after?: string) => Promise<{ count: number; sourceSessionId: string }>;
-  onReadRepoFile?: (params: { owner?: string; repo?: string; repoUrl?: string; path: string; ref?: string }) => Promise<{ content: string; encoding?: string; truncated?: boolean; path?: string; repo?: string; ref?: string }>;
   onListWorkflows?: () => Promise<{ workflows: unknown[] }>;
   onSyncWorkflow?: (params: WorkflowSyncParams) => Promise<{ success: boolean; workflow?: unknown }>;
   onGetWorkflow?: (workflowId: string) => Promise<{ workflow: unknown }>;
@@ -899,122 +849,6 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
     }
   });
 
-  // ─── GitHub Lifecycle API ─────────────────────────────────────────
-
-  app.post("/api/create-pull-request", async (c) => {
-    if (!callbacks.onCreatePullRequest) {
-      return c.json({ error: "Create pull request handler not configured" }, 500);
-    }
-    try {
-      const body = await c.req.json() as { branch?: string; title?: string; body?: string; base?: string };
-      if (!body.branch || !body.title) {
-        return c.json({ error: "Missing required fields: branch, title" }, 400);
-      }
-      const result = await callbacks.onCreatePullRequest({
-        branch: body.branch,
-        title: body.title,
-        body: body.body,
-        base: body.base,
-      });
-      return c.json(result);
-    } catch (err) {
-      console.error("[Gateway] Create pull request error:", err);
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
-    }
-  });
-
-  app.post("/api/update-pull-request", async (c) => {
-    if (!callbacks.onUpdatePullRequest) {
-      return c.json({ error: "Update pull request handler not configured" }, 500);
-    }
-    try {
-      const body = await c.req.json() as { pr_number?: number; title?: string; body?: string; state?: string; labels?: string[] };
-      if (!body.pr_number) {
-        return c.json({ error: "Missing required field: pr_number" }, 400);
-      }
-      const result = await callbacks.onUpdatePullRequest({
-        prNumber: body.pr_number,
-        title: body.title,
-        body: body.body,
-        state: body.state,
-        labels: body.labels,
-      });
-      return c.json(result);
-    } catch (err) {
-      console.error("[Gateway] Update pull request error:", err);
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
-    }
-  });
-
-  app.get("/api/pull-requests", async (c) => {
-    if (!callbacks.onListPullRequests) {
-      return c.json({ error: "List pull requests handler not configured" }, 500);
-    }
-    try {
-      const owner = c.req.query("owner") || undefined;
-      const repo = c.req.query("repo") || undefined;
-      const state = c.req.query("state") as "open" | "closed" | "all" | undefined;
-      const limit = c.req.query("limit") ? parseInt(c.req.query("limit")!, 10) : undefined;
-
-      if ((owner && !repo) || (!owner && repo)) {
-        return c.json({ error: "Both owner and repo are required when targeting a specific repository" }, 400);
-      }
-
-      if (limit !== undefined && (Number.isNaN(limit) || limit < 1 || limit > 100)) {
-        return c.json({ error: "limit must be between 1 and 100" }, 400);
-      }
-
-      if (state && !["open", "closed", "all"].includes(state)) {
-        return c.json({ error: "state must be one of: open, closed, all" }, 400);
-      }
-
-      const result = await callbacks.onListPullRequests({ owner, repo, state, limit });
-      return c.json(result);
-    } catch (err) {
-      console.error("[Gateway] List pull requests error:", err);
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
-    }
-  });
-
-  app.get("/api/pull-request", async (c) => {
-    if (!callbacks.onInspectPullRequest) {
-      return c.json({ error: "Inspect pull request handler not configured" }, 500);
-    }
-    try {
-      const prNumberRaw = c.req.query("pr_number");
-      if (!prNumberRaw) {
-        return c.json({ error: "Missing required query param: pr_number" }, 400);
-      }
-      const prNumber = parseInt(prNumberRaw, 10);
-      if (Number.isNaN(prNumber) || prNumber < 1) {
-        return c.json({ error: "pr_number must be a positive integer" }, 400);
-      }
-
-      const owner = c.req.query("owner") || undefined;
-      const repo = c.req.query("repo") || undefined;
-      const filesLimit = c.req.query("files_limit") ? parseInt(c.req.query("files_limit")!, 10) : undefined;
-      const commentsLimit = c.req.query("comments_limit") ? parseInt(c.req.query("comments_limit")!, 10) : undefined;
-
-      if ((owner && !repo) || (!owner && repo)) {
-        return c.json({ error: "Both owner and repo are required when targeting a specific repository" }, 400);
-      }
-
-      if (filesLimit !== undefined && (Number.isNaN(filesLimit) || filesLimit < 1 || filesLimit > 300)) {
-        return c.json({ error: "files_limit must be between 1 and 300" }, 400);
-      }
-
-      if (commentsLimit !== undefined && (Number.isNaN(commentsLimit) || commentsLimit < 1 || commentsLimit > 300)) {
-        return c.json({ error: "comments_limit must be between 1 and 300" }, 400);
-      }
-
-      const result = await callbacks.onInspectPullRequest({ prNumber, owner, repo, filesLimit, commentsLimit });
-      return c.json(result);
-    } catch (err) {
-      console.error("[Gateway] Inspect pull request error:", err);
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
-    }
-  });
-
   app.post("/api/git-state", async (c) => {
     if (!callbacks.onReportGitState) {
       return c.json({ error: "Report git state handler not configured" }, 500);
@@ -1116,20 +950,6 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] Memory search error:", err);
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
-    }
-  });
-
-  app.get("/api/org-repos", async (c) => {
-    if (!callbacks.onListRepos) {
-      return c.json({ error: "List repos handler not configured" }, 500);
-    }
-    try {
-      const source = c.req.query("source") || undefined;
-      const result = await callbacks.onListRepos(source);
-      return c.json(result);
-    } catch (err) {
-      console.error("[Gateway] List repos error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });
@@ -1370,29 +1190,6 @@ export function startGateway(port: number, callbacks: GatewayCallbacks): void {
       return c.json(result);
     } catch (err) {
       console.error("[Gateway] Forward messages error:", err);
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
-    }
-  });
-
-  app.post("/api/read-repo-file", async (c) => {
-    if (!callbacks.onReadRepoFile) {
-      return c.json({ error: "Read repo file handler not configured" }, 500);
-    }
-    try {
-      const body = await c.req.json() as { owner?: string; repo?: string; repoUrl?: string; path?: string; ref?: string };
-      if (!body.path) {
-        return c.json({ error: "Missing required field: path" }, 400);
-      }
-      const result = await callbacks.onReadRepoFile({
-        owner: body.owner,
-        repo: body.repo,
-        repoUrl: body.repoUrl,
-        path: body.path,
-        ref: body.ref,
-      });
-      return c.json(result);
-    } catch (err) {
-      console.error("[Gateway] Read repo file error:", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });
