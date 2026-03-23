@@ -1,7 +1,7 @@
 import type { Env } from '../env.js';
 import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getSessionMailbox, markSessionMailboxRead, getOrchestratorIdentity, getOrchestratorIdentityByHandle, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getUserIdentityLinks, getUserSlackIdentityLink, getThreadOriginChannel } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrgRepositories, listPersonas, getUserById, getUsersByIds, createMailboxMessage, getOrchestratorIdentity, createSessionTask, getSessionTasks, getMyTasks, updateSessionTask, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getUserIdentityLinks, getUserSlackIdentityLink, getThreadOriginChannel } from '../lib/db.js';
 import { getCredential, type CredentialResult } from '../services/credentials.js';
 import { memRead, memWrite, memPatch, memRm, memSearch } from '../services/session-memory.js';
 import { resolveRepoCredential, type CredentialRow } from '../lib/db/credentials.js';
@@ -38,6 +38,7 @@ import { SessionState, type SessionLifecycleStatus, type SessionStartParams } fr
 import { SessionLifecycle, SandboxAlreadyExitedError } from './session-lifecycle.js';
 import { resolveOrchestratorPersona } from '../services/persona.js';
 import { sendChannelReply } from '../services/channel-reply.js';
+import { mailboxSend, mailboxCheck } from '../services/session-mailbox.js';
 import { MAX_PROMPT_ATTACHMENTS, MAX_PROMPT_ATTACHMENT_URL_LENGTH, MAX_TOTAL_ATTACHMENT_BYTES, parseBase64DataUrl, sanitizePromptAttachments, attachmentPartsForMessage, parseQueuedPromptAttachments } from '../lib/utils/prompt-validation.js';
 import { parseQueuedWorkflowPayload, deriveRuntimeStates } from '../lib/utils/runtime.js';
 
@@ -2695,11 +2696,43 @@ export class SessionAgentDO {
 
       // ─── Phase C: Mailbox + Task Board ──────────────────────────────
       'mailbox-send': async (msg) => {
-        await this.handleMailboxSend(msg.requestId!, msg);
+        try {
+          const result = await mailboxSend(
+            this.appDb,
+            this.env.DB,
+            this.sessionState.sessionId,
+            this.sessionState.userId,
+            {
+              toSessionId: msg.toSessionId,
+              toUserId: msg.toUserId,
+              toHandle: msg.toHandle,
+              messageType: msg.messageType,
+              content: msg.content!,
+              contextSessionId: msg.contextSessionId,
+              contextTaskId: msg.contextTaskId,
+              replyToId: msg.replyToId,
+            },
+          );
+          this.runnerLink.send({ type: 'mailbox-send-result', requestId: msg.requestId!, ...result } as any);
+        } catch (err) {
+          this.runnerLink.send({ type: 'mailbox-send-result', requestId: msg.requestId!, error: err instanceof Error ? err.message : String(err) } as any);
+        }
       },
 
       'mailbox-check': async (msg) => {
-        await this.handleMailboxCheck(msg.requestId!, msg.limit, msg.after);
+        try {
+          const result = await mailboxCheck(
+            this.appDb,
+            this.env.DB,
+            this.sessionState.sessionId,
+            this.sessionState.userId,
+            msg.limit,
+            msg.after,
+          );
+          this.runnerLink.send({ type: 'mailbox-check-result', requestId: msg.requestId!, ...result } as any);
+        } catch (err) {
+          this.runnerLink.send({ type: 'mailbox-check-result', requestId: msg.requestId!, error: err instanceof Error ? err.message : String(err) } as any);
+        }
       },
 
       'task-create': async (msg) => {
@@ -7334,65 +7367,6 @@ export class SessionAgentDO {
   }
 
   // ─── Phase C: Mailbox + Task Board Handlers ─────────────────────────
-
-  private async handleMailboxSend(requestId: string, msg: RunnerMessage) {
-    try {
-      const sessionId = this.sessionState.sessionId;
-      const userId = this.sessionState.userId;
-
-      // Resolve @handle to userId if provided
-      let toUserId = msg.toUserId;
-      if (msg.toHandle && !toUserId && !msg.toSessionId) {
-        const identity = await getOrchestratorIdentityByHandle(this.appDb, msg.toHandle);
-        if (!identity) {
-          this.runnerLink.send({ type: 'mailbox-send-result', requestId, error: `Handle @${msg.toHandle} not found` } as any);
-          return;
-        }
-        toUserId = identity.userId;
-      }
-
-      const message = await createMailboxMessage(this.appDb, {
-        fromSessionId: sessionId || undefined,
-        fromUserId: userId || undefined,
-        toSessionId: msg.toSessionId,
-        toUserId,
-        messageType: msg.messageType,
-        content: msg.content!,
-        contextSessionId: msg.contextSessionId,
-        contextTaskId: msg.contextTaskId,
-        replyToId: msg.replyToId,
-      });
-
-      this.runnerLink.send({ type: 'mailbox-send-result', requestId, messageId: message.id } as any);
-    } catch (err) {
-      this.runnerLink.send({ type: 'mailbox-send-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
-    }
-  }
-
-  private async handleMailboxCheck(requestId: string, limit?: number, after?: string) {
-    try {
-      const sessionId = this.sessionState.sessionId;
-      if (!sessionId) {
-        this.runnerLink.send({ type: 'mailbox-check-result', requestId, error: 'No session ID' } as any);
-        return;
-      }
-
-      const messages = await getSessionMailbox(this.env.DB, sessionId, {
-        unreadOnly: true,
-        limit,
-        after,
-      });
-
-      // Auto-mark as read
-      if (messages.length > 0) {
-        await markSessionMailboxRead(this.appDb, sessionId);
-      }
-
-      this.runnerLink.send({ type: 'mailbox-check-result', requestId, messages } as any);
-    } catch (err) {
-      this.runnerLink.send({ type: 'mailbox-check-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
-    }
-  }
 
   private async handleTaskCreate(requestId: string, msg: RunnerMessage) {
     try {
