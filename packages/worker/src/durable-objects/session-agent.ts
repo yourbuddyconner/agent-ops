@@ -1,7 +1,7 @@
 import type { Env } from '../env.js';
 import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, createSession, createSessionGitState, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrgRepositories, getUserById, getUsersByIds, createMailboxMessage, getOrchestratorIdentity, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getUserIdentityLinks, getUserSlackIdentityLink, getThreadOriginChannel } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrgRepositories, getUserById, getUsersByIds, createMailboxMessage, getOrchestratorIdentity, getUserTelegramConfig, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getUserIdentityLinks, getUserSlackIdentityLink, getThreadOriginChannel } from '../lib/db.js';
 import { getCredential, type CredentialResult } from '../services/credentials.js';
 import { memRead, memWrite, memPatch, memRm, memSearch } from '../services/session-memory.js';
 import { resolveRepoCredential, type CredentialRow } from '../lib/db/credentials.js';
@@ -42,6 +42,7 @@ import { taskCreate, taskList, taskUpdate, taskMy } from '../services/session-ta
 import { handleIdentityAction } from '../services/session-identity.js';
 import { handleSkillAction } from '../services/session-skills.js';
 import { handlePersonaAction, listPersonasForRunner } from '../services/session-personas.js';
+import { spawnChild, sendSessionMessage, getSessionMessages, forwardMessages, terminateChild, listChildSessions, getSessionStatus, listChannels } from '../services/session-cross.js';
 import { sanitizePromptAttachments, attachmentPartsForMessage, parseQueuedPromptAttachments } from '../lib/utils/prompt-validation.js';
 import { parseQueuedWorkflowPayload, deriveRuntimeStates } from '../lib/utils/runtime.js';
 
@@ -2413,32 +2414,143 @@ export class SessionAgentDO {
       },
 
       'spawn-child': async (msg) => {
-        await this.handleSpawnChild(msg.requestId!, {
-          task: msg.task!,
-          workspace: msg.workspace!,
-          repoUrl: msg.repoUrl,
-          branch: msg.branch,
-          ref: msg.ref,
-          title: msg.title,
-          sourceType: msg.sourceType,
-          sourcePrNumber: msg.sourcePrNumber,
-          sourceIssueNumber: msg.sourceIssueNumber,
-          sourceRepoFullName: msg.sourceRepoFullName,
-          model: msg.model,
-          personaId: msg.personaId,
-        });
+        const requestId = msg.requestId!;
+        const spawnRequest = this.sessionState.spawnRequest;
+        const backendUrl = this.sessionState.backendUrl;
+
+        if (!spawnRequest || !backendUrl) {
+          this.runnerLink.send({ type: 'spawn-child-result', requestId, error: 'Session not configured for spawning children (missing spawnRequest or backendUrl)' });
+          return;
+        }
+
+        try {
+          const result = await spawnChild(
+            this.appDb,
+            this.env,
+            {
+              parentSessionId: this.sessionState.sessionId,
+              userId: this.sessionState.userId,
+              parentThreadId: this.promptQueue.getProcessingThreadId() || undefined,
+              spawnRequest: spawnRequest as Record<string, unknown> & { doWsUrl: string; envVars: Record<string, string> },
+              backendUrl,
+              terminateUrl: this.sessionState.terminateUrl,
+              hibernateUrl: this.sessionState.hibernateUrl,
+              restoreUrl: this.sessionState.restoreUrl,
+              idleTimeoutMs: this.sessionState.idleTimeoutMs,
+            },
+            {
+              task: msg.task!,
+              workspace: msg.workspace!,
+              repoUrl: msg.repoUrl,
+              branch: msg.branch,
+              ref: msg.ref,
+              title: msg.title,
+              sourceType: msg.sourceType,
+              sourcePrNumber: msg.sourcePrNumber,
+              sourceIssueNumber: msg.sourceIssueNumber,
+              sourceRepoFullName: msg.sourceRepoFullName,
+              model: msg.model,
+              personaId: msg.personaId,
+            },
+          );
+          if (result.error) {
+            this.runnerLink.send({ type: 'spawn-child-result', requestId, error: result.error });
+          } else {
+            this.runnerLink.send({ type: 'spawn-child-result', requestId, childSessionId: result.childSessionId });
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to spawn child:', err);
+          this.runnerLink.send({
+            type: 'spawn-child-result',
+            requestId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       },
 
       'session-message': async (msg) => {
-        await this.handleSessionMessage(msg.requestId!, msg.targetSessionId!, msg.content!, msg.interrupt);
+        const requestId = msg.requestId!;
+        try {
+          const result = await sendSessionMessage(
+            this.env,
+            this.appDb,
+            this.sessionState.userId,
+            msg.targetSessionId!,
+            msg.content!,
+            msg.interrupt,
+          );
+          if (result.error) {
+            this.runnerLink.send({ type: 'session-message-result', requestId, error: result.error });
+          } else {
+            this.runnerLink.send({ type: 'session-message-result', requestId, success: true });
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to send message:', err);
+          this.runnerLink.send({
+            type: 'session-message-result',
+            requestId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       },
 
       'session-messages': async (msg) => {
-        await this.handleSessionMessages(msg.requestId!, msg.targetSessionId!, msg.limit, msg.after);
+        const requestId = msg.requestId!;
+        try {
+          const result = await getSessionMessages(
+            this.env,
+            this.appDb,
+            this.sessionState.userId,
+            msg.targetSessionId!,
+            msg.limit,
+            msg.after,
+          );
+          if (result.error) {
+            this.runnerLink.send({ type: 'session-messages-result', requestId, error: result.error });
+          } else {
+            this.runnerLink.send({
+              type: 'session-messages-result',
+              requestId,
+              messages: result.messages!.map((m) => ({
+                role: m.role,
+                content: m.content,
+                createdAt: m.createdAt,
+              })),
+            });
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to read messages:', err);
+          this.runnerLink.send({
+            type: 'session-messages-result',
+            requestId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       },
 
       'terminate-child': async (msg) => {
-        await this.handleTerminateChild(msg.requestId!, msg.childSessionId!);
+        const requestId = msg.requestId!;
+        try {
+          const result = await terminateChild(
+            this.appDb,
+            this.env,
+            this.sessionState.sessionId,
+            this.sessionState.userId,
+            msg.childSessionId!,
+          );
+          if (result.error) {
+            this.runnerLink.send({ type: 'terminate-child-result', requestId, error: result.error });
+          } else {
+            this.runnerLink.send({ type: 'terminate-child-result', requestId, success: true });
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to terminate child:', err);
+          this.runnerLink.send({
+            type: 'terminate-child-result',
+            requestId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       },
 
       'channel-session-created': (msg) => {
@@ -2620,15 +2732,44 @@ export class SessionAgentDO {
       },
 
       'list-channels': async (msg) => {
-        await this.handleListChannels(msg.requestId!);
+        const requestId = msg.requestId!;
+        try {
+          const result = await listChannels(this.appDb, this.sessionState.sessionId, this.sessionState.userId);
+          if (result.error) {
+            this.runnerLink.send({ type: 'list-channels-result', requestId, error: result.error } as any);
+          } else {
+            this.runnerLink.send({ type: 'list-channels-result', requestId, channels: result.channels } as any);
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to list channels:', err);
+          this.runnerLink.send({ type: 'list-channels-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+        }
       },
 
       'get-session-status': async (msg) => {
-        await this.handleGetSessionStatus(msg.requestId!, msg.targetSessionId!);
+        const requestId = msg.requestId!;
+        try {
+          const result = await getSessionStatus(this.appDb, this.env, this.sessionState.userId, msg.targetSessionId!);
+          if (result.error) {
+            this.runnerLink.send({ type: 'get-session-status-result', requestId, error: result.error } as any);
+          } else {
+            this.runnerLink.send({ type: 'get-session-status-result', requestId, sessionStatus: result.sessionStatus } as any);
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to get session status:', err);
+          this.runnerLink.send({ type: 'get-session-status-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+        }
       },
 
       'list-child-sessions': async (msg) => {
-        await this.handleListChildSessions(msg.requestId!);
+        const requestId = msg.requestId!;
+        try {
+          const { children } = await listChildSessions(this.env, this.sessionState.sessionId);
+          this.runnerLink.send({ type: 'list-child-sessions-result', requestId, children } as any);
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to list child sessions:', err);
+          this.runnerLink.send({ type: 'list-child-sessions-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
+        }
       },
 
       'read-repo-file': async (msg) => {
@@ -2642,7 +2783,80 @@ export class SessionAgentDO {
       },
 
       'forward-messages': async (msg) => {
-        await this.handleForwardMessages(msg.requestId!, msg.targetSessionId!, msg.limit, msg.after);
+        const requestId = msg.requestId!;
+        try {
+          const result = await forwardMessages(
+            this.env,
+            this.appDb,
+            this.sessionState.userId,
+            msg.targetSessionId!,
+            msg.limit,
+            msg.after,
+          );
+          if (result.error) {
+            this.runnerLink.send({ type: 'forward-messages-result', requestId, error: result.error });
+            return;
+          }
+
+          const messages = result.messages!;
+          const { sessionTitle, sourceSessionId } = result;
+
+          if (messages.length === 0) {
+            this.runnerLink.send({ type: 'forward-messages-result', requestId, count: 0, sourceSessionId });
+            return;
+          }
+
+          // Insert each message into our own messages table with forwarded metadata
+          for (const msg of messages) {
+            const newId = crypto.randomUUID();
+            const parts = JSON.stringify({
+              forwarded: true,
+              sourceSessionId,
+              sourceSessionTitle: sessionTitle,
+              originalRole: msg.role,
+              originalCreatedAt: msg.createdAt,
+            });
+
+            // Store all forwarded messages as 'assistant' role for consistent left-aligned rendering
+            this.messageStore.writeMessage({
+              id: newId,
+              role: 'assistant',
+              content: msg.content,
+              parts,
+            });
+
+            this.broadcastToClients({
+              type: 'message',
+              data: {
+                id: newId,
+                role: 'assistant',
+                content: msg.content,
+                parts: {
+                  forwarded: true,
+                  sourceSessionId,
+                  sourceSessionTitle: sessionTitle,
+                  originalRole: msg.role,
+                  originalCreatedAt: msg.createdAt,
+                },
+                createdAt: Math.floor(Date.now() / 1000),
+              },
+            });
+          }
+
+          this.runnerLink.send({
+            type: 'forward-messages-result',
+            requestId,
+            count: messages.length,
+            sourceSessionId,
+          });
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to forward messages:', err);
+          this.runnerLink.send({
+            type: 'forward-messages-result',
+            requestId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       },
 
       'workflow-list': async (msg) => {
@@ -2937,388 +3151,6 @@ export class SessionAgentDO {
     };
   }
 
-  // ─── Cross-Session Operations ─────────────────────────────────────────
-
-  private async handleSpawnChild(
-    requestId: string,
-    params: {
-      task: string; workspace: string; repoUrl?: string; branch?: string; ref?: string; title?: string;
-      sourceType?: string; sourcePrNumber?: number; sourceIssueNumber?: number; sourceRepoFullName?: string;
-      model?: string; personaId?: string;
-    },
-  ) {
-    try {
-      const parentSessionId = this.sessionState.sessionId;
-      const userId = this.sessionState.userId;
-
-      // Resolve the parent's active threadId so the child can route notifications back
-      let parentThreadId: string | undefined = this.promptQueue.getProcessingThreadId() || undefined;
-
-      const parentSpawnRequest = this.sessionState.spawnRequest;
-      const backendUrl = this.sessionState.backendUrl;
-      const terminateUrl = this.sessionState.terminateUrl;
-      const hibernateUrl = this.sessionState.hibernateUrl;
-      const restoreUrl = this.sessionState.restoreUrl;
-
-      if (!parentSpawnRequest || !backendUrl) {
-        this.runnerLink.send({ type: 'spawn-child-result', requestId, error: 'Session not configured for spawning children (missing spawnRequest or backendUrl)' });
-        return;
-      }
-
-      // Query parent's git state to use as defaults for the child
-      const parentGitState = await getSessionGitState(this.appDb, parentSessionId);
-
-      // Merge: explicit params override parent defaults
-      const mergedRepoUrl = params.repoUrl || parentGitState?.sourceRepoUrl || undefined;
-      const mergedBranch = params.branch || parentGitState?.branch || undefined;
-      const mergedRef = params.ref || parentGitState?.ref || undefined;
-      const mergedSourceType = params.sourceType || parentGitState?.sourceType || undefined;
-      const mergedSourcePrNumber = params.sourcePrNumber ?? parentGitState?.sourcePrNumber ?? undefined;
-      const mergedSourceIssueNumber = params.sourceIssueNumber ?? parentGitState?.sourceIssueNumber ?? undefined;
-      const mergedSourceRepoFullName = params.sourceRepoFullName || parentGitState?.sourceRepoFullName || undefined;
-
-      // Generate child session identifiers
-      const childSessionId = crypto.randomUUID();
-      const childRunnerToken = Array.from(crypto.getRandomValues(new Uint8Array(32)))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
-
-      // Create child session in D1
-      await createSession(this.appDb, {
-        id: childSessionId,
-        userId,
-        workspace: params.workspace,
-        title: params.title || params.workspace,
-        parentSessionId,
-        personaId: params.personaId,
-      });
-
-      // Create git state for child (always create if we have any git context)
-      if (mergedRepoUrl || mergedSourceType) {
-        // Derive sourceRepoFullName from URL if not explicitly set
-        let derivedRepoFullName = mergedSourceRepoFullName;
-        if (!derivedRepoFullName && mergedRepoUrl) {
-          const match = mergedRepoUrl.match(/github\.com[/:]([^/]+\/[^/.]+)/);
-          if (match) derivedRepoFullName = match[1];
-        }
-
-        await createSessionGitState(this.appDb, {
-          sessionId: childSessionId,
-          sourceType: (mergedSourceType as any) || 'branch',
-          sourceRepoUrl: mergedRepoUrl,
-          sourceRepoFullName: derivedRepoFullName,
-          branch: mergedBranch,
-          ref: mergedRef,
-          sourcePrNumber: mergedSourcePrNumber,
-          sourceIssueNumber: mergedSourceIssueNumber,
-        });
-      }
-
-      // Build child DO WebSocket URL
-      // Extract host from backendUrl or use the parent's DO WebSocket pattern
-      const parentDoWsUrl = parentSpawnRequest.doWsUrl as string;
-      // Replace parent sessionId with child sessionId in the URL
-      const childDoWsUrl = parentDoWsUrl.replace(parentSessionId, childSessionId);
-
-      // Build child spawn request, inheriting parent env vars
-      const childSpawnRequest: Record<string, unknown> & { envVars: Record<string, string> } = {
-        ...parentSpawnRequest,
-        sessionId: childSessionId,
-        doWsUrl: childDoWsUrl,
-        runnerToken: childRunnerToken,
-        workspace: params.workspace,
-        envVars: {
-          ...(parentSpawnRequest.envVars as Record<string, string> | undefined),
-          PARENT_SESSION_ID: parentSessionId,
-        },
-      };
-
-      // Override repo-specific env vars if we have repo info (explicit or inherited)
-      if (mergedRepoUrl) {
-        childSpawnRequest.envVars = {
-          ...childSpawnRequest.envVars,
-          REPO_URL: mergedRepoUrl,
-        };
-        if (mergedBranch) {
-          childSpawnRequest.envVars.REPO_BRANCH = mergedBranch;
-        }
-        if (mergedRef) {
-          childSpawnRequest.envVars.REPO_REF = mergedRef;
-        }
-
-        // Inject git credentials if the parent doesn't have them (e.g. orchestrator)
-        if (!childSpawnRequest.envVars.GITHUB_TOKEN) {
-          try {
-            const ghResult = await getCredential(this.env, 'user', userId, 'github', { credentialType: 'oauth2' });
-            if (ghResult.ok) {
-              childSpawnRequest.envVars.GITHUB_TOKEN = ghResult.credential.accessToken;
-            }
-          } catch (err) {
-            console.warn('[SessionAgentDO] Failed to fetch GitHub token for child:', err);
-          }
-        }
-
-        // Inject git user identity if missing
-        if (!childSpawnRequest.envVars.GIT_USER_NAME || !childSpawnRequest.envVars.GIT_USER_EMAIL) {
-          try {
-            const userRow = await getUserById(this.appDb, userId);
-            if (userRow) {
-              if (!childSpawnRequest.envVars.GIT_USER_NAME) {
-                childSpawnRequest.envVars.GIT_USER_NAME = userRow.gitName || userRow.name || userRow.githubUsername || 'Valet User';
-              }
-              if (!childSpawnRequest.envVars.GIT_USER_EMAIL) {
-                childSpawnRequest.envVars.GIT_USER_EMAIL = userRow.gitEmail || userRow.email;
-              }
-            }
-          } catch (err) {
-            console.warn('[SessionAgentDO] Failed to fetch user info for child git config:', err);
-          }
-        }
-      }
-
-      // Initialize child SessionAgentDO
-      const childDoId = this.env.SESSIONS.idFromName(childSessionId);
-      const childDO = this.env.SESSIONS.get(childDoId);
-
-      const idleTimeoutMs = this.sessionState.idleTimeoutMs;
-
-      await childDO.fetch(new Request('http://do/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: childSessionId,
-          userId,
-          workspace: params.workspace,
-          runnerToken: childRunnerToken,
-          backendUrl,
-          terminateUrl: terminateUrl || undefined,
-          hibernateUrl: hibernateUrl || undefined,
-          restoreUrl: restoreUrl || undefined,
-          idleTimeoutMs,
-          spawnRequest: childSpawnRequest,
-          initialPrompt: params.task,
-          initialModel: params.model,
-          parentThreadId,
-        }),
-      }));
-
-      this.runnerLink.send({ type: 'spawn-child-result', requestId, childSessionId });
-    } catch (err) {
-      console.error('[SessionAgentDO] Failed to spawn child:', err);
-      this.runnerLink.send({
-        type: 'spawn-child-result',
-        requestId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  private async handleSessionMessage(requestId: string, targetSessionId: string, content: string, interrupt?: boolean) {
-    try {
-      const userId = this.sessionState.userId;
-
-      // Verify target session belongs to the same user
-      const targetSession = await getSession(this.appDb, targetSessionId);
-      if (!targetSession || targetSession.userId !== userId) {
-        this.runnerLink.send({ type: 'session-message-result', requestId, error: 'Session not found or access denied' });
-        return;
-      }
-
-      // Forward prompt to target DO
-      const targetDoId = this.env.SESSIONS.idFromName(targetSessionId);
-      const targetDO = this.env.SESSIONS.get(targetDoId);
-
-      const resp = await targetDO.fetch(new Request('http://do/prompt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, interrupt: interrupt ?? false }),
-      }));
-
-      if (!resp.ok) {
-        const errText = await resp.text();
-        this.runnerLink.send({ type: 'session-message-result', requestId, error: `Target DO returned ${resp.status}: ${errText}` });
-        return;
-      }
-
-      this.runnerLink.send({ type: 'session-message-result', requestId, success: true });
-    } catch (err) {
-      console.error('[SessionAgentDO] Failed to send message:', err);
-      this.runnerLink.send({
-        type: 'session-message-result',
-        requestId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  private async handleSessionMessages(requestId: string, targetSessionId: string, limit?: number, after?: string) {
-    try {
-      const userId = this.sessionState.userId;
-
-      // Verify target session belongs to the same user
-      const targetSession = await getSession(this.appDb, targetSessionId);
-      if (!targetSession || targetSession.userId !== userId) {
-        this.runnerLink.send({ type: 'session-messages-result', requestId, error: 'Session not found or access denied' });
-        return;
-      }
-
-      // Fetch messages from the target DO's local SQLite (not D1)
-      const messages = await this.fetchMessagesFromDO(targetSessionId, limit || 20, after);
-
-      this.runnerLink.send({
-        type: 'session-messages-result',
-        requestId,
-        messages: messages.map((m: { role: string; content: string; createdAt: string }) => ({
-          role: m.role,
-          content: m.content,
-          createdAt: m.createdAt,
-        })),
-      });
-    } catch (err) {
-      console.error('[SessionAgentDO] Failed to read messages:', err);
-      this.runnerLink.send({
-        type: 'session-messages-result',
-        requestId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  private async handleForwardMessages(requestId: string, targetSessionId: string, limit?: number, after?: string) {
-    try {
-      const userId = this.sessionState.userId;
-
-      // Verify target session belongs to the same user
-      const targetSession = await getSession(this.appDb, targetSessionId);
-      if (!targetSession || targetSession.userId !== userId) {
-        this.runnerLink.send({ type: 'forward-messages-result', requestId, error: 'Session not found or access denied' });
-        return;
-      }
-
-      // Fetch messages from target DO
-      const messages = await this.fetchMessagesFromDO(targetSessionId, limit || 20, after);
-
-      if (messages.length === 0) {
-        this.runnerLink.send({ type: 'forward-messages-result', requestId, count: 0, sourceSessionId: targetSessionId });
-        return;
-      }
-
-      // Insert each message into our own messages table with forwarded metadata
-      const sessionTitle = targetSession.title || targetSession.workspace || targetSessionId.slice(0, 8);
-      for (const msg of messages) {
-        const newId = crypto.randomUUID();
-        const parts = JSON.stringify({
-          forwarded: true,
-          sourceSessionId: targetSessionId,
-          sourceSessionTitle: sessionTitle,
-          originalRole: msg.role,
-          originalCreatedAt: msg.createdAt,
-        });
-
-        // Store all forwarded messages as 'assistant' role for consistent left-aligned rendering
-        this.messageStore.writeMessage({
-          id: newId,
-          role: 'assistant',
-          content: msg.content,
-          parts,
-        });
-
-        this.broadcastToClients({
-          type: 'message',
-          data: {
-            id: newId,
-            role: 'assistant',
-            content: msg.content,
-            parts: {
-              forwarded: true,
-              sourceSessionId: targetSessionId,
-              sourceSessionTitle: sessionTitle,
-              originalRole: msg.role,
-              originalCreatedAt: msg.createdAt,
-            },
-            createdAt: Math.floor(Date.now() / 1000),
-          },
-        });
-      }
-
-      this.runnerLink.send({
-        type: 'forward-messages-result',
-        requestId,
-        count: messages.length,
-        sourceSessionId: targetSessionId,
-      });
-    } catch (err) {
-      console.error('[SessionAgentDO] Failed to forward messages:', err);
-      this.runnerLink.send({
-        type: 'forward-messages-result',
-        requestId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  /** Fetch messages from another session's DO via internal HTTP endpoint. */
-  private async fetchMessagesFromDO(
-    targetSessionId: string,
-    limit: number,
-    after?: string,
-  ): Promise<Array<{ role: string; content: string; createdAt: string }>> {
-    const doId = this.env.SESSIONS.idFromName(targetSessionId);
-    const targetDO = this.env.SESSIONS.get(doId);
-
-    const params = new URLSearchParams({ limit: String(limit) });
-    if (after) params.set('after', after);
-
-    const res = await targetDO.fetch(new Request(`http://do/messages?${params}`));
-    if (!res.ok) {
-      throw new Error(`Target DO returned ${res.status}: ${await res.text()}`);
-    }
-
-    const data = await res.json() as { messages: Array<{ role: string; content: string; createdAt: string }> };
-    return data.messages;
-  }
-
-  private async handleTerminateChild(requestId: string, childSessionId: string) {
-    try {
-      const sessionId = this.sessionState.sessionId;
-      const userId = this.sessionState.userId;
-
-      // Verify the child belongs to this parent session
-      const childSession = await getSession(this.appDb, childSessionId);
-      if (!childSession || childSession.userId !== userId) {
-        this.runnerLink.send({ type: 'terminate-child-result', requestId, error: 'Child session not found or access denied' });
-        return;
-      }
-      if (childSession.parentSessionId !== sessionId) {
-        this.runnerLink.send({ type: 'terminate-child-result', requestId, error: 'Session is not a child of this session' });
-        return;
-      }
-
-      // Stop the child via its DO
-      const childDoId = this.env.SESSIONS.idFromName(childSessionId);
-      const childDO = this.env.SESSIONS.get(childDoId);
-      const resp = await childDO.fetch(new Request('http://do/stop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: 'parent_stopped' }),
-      }));
-
-      if (!resp.ok) {
-        const errText = await resp.text();
-        this.runnerLink.send({ type: 'terminate-child-result', requestId, error: `Child DO returned ${resp.status}: ${errText}` });
-        return;
-      }
-
-      this.runnerLink.send({ type: 'terminate-child-result', requestId, success: true });
-    } catch (err) {
-      console.error('[SessionAgentDO] Failed to terminate child:', err);
-      this.runnerLink.send({
-        type: 'terminate-child-result',
-        requestId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
 
   private async handleSelfTerminate() {
     const sessionId = this.sessionState.sessionId;
@@ -4952,48 +4784,6 @@ export class SessionAgentDO {
     }
   }
 
-  private async handleListChannels(requestId: string) {
-    try {
-      const userId = this.sessionState.userId;
-      const sessionId = this.sessionState.sessionId;
-
-      let bindings = userId
-        ? await listUserChannelBindings(this.appDb, userId)
-        : [];
-
-      // Fallback to session-scoped bindings if user-level bindings are unavailable.
-      if (bindings.length === 0) {
-        bindings = await getSessionChannelBindings(this.appDb, sessionId);
-      }
-
-      // Deduplicate by destination while preserving recency ordering.
-      const unique: typeof bindings = [];
-      const seen = new Set<string>();
-      for (const binding of bindings) {
-        const key = `${binding.channelType}:${binding.channelId}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        unique.push(binding);
-      }
-
-      this.runnerLink.send({ type: 'list-channels-result', requestId, channels: unique } as any);
-    } catch (err) {
-      console.error('[SessionAgentDO] Failed to list channels:', err);
-      this.runnerLink.send({ type: 'list-channels-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
-    }
-  }
-
-  private async handleListChildSessions(requestId: string) {
-    try {
-      const sessionId = this.sessionState.sessionId;
-      const { children } = await getChildSessions(this.env.DB, sessionId);
-      this.runnerLink.send({ type: 'list-child-sessions-result', requestId, children } as any);
-    } catch (err) {
-      console.error('[SessionAgentDO] Failed to list child sessions:', err);
-      this.runnerLink.send({ type: 'list-child-sessions-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
-    }
-  }
-
   private async handleReadRepoFile(
     requestId: string,
     params: { owner?: string; repo?: string; repoUrl?: string; path?: string; ref?: string },
@@ -5091,69 +4881,6 @@ export class SessionAgentDO {
     } catch (err) {
       console.error('[SessionAgentDO] Failed to read repo file:', err);
       this.runnerLink.send({ type: 'read-repo-file-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
-    }
-  }
-
-  private async handleGetSessionStatus(requestId: string, targetSessionId: string) {
-    try {
-      const userId = this.sessionState.userId;
-      const session = await getSession(this.appDb, targetSessionId);
-      if (!session || session.userId !== userId) {
-        this.runnerLink.send({ type: 'get-session-status-result', requestId, error: 'Session not found or access denied' } as any);
-        return;
-      }
-
-      // Fetch recent messages from the target DO's local SQLite (not D1)
-      const recentMessages = await this.fetchMessagesFromDO(targetSessionId, 10);
-
-      // Fetch live runner/sandbox status from target DO
-      let liveStatus: {
-        runnerConnected?: boolean;
-        runnerBusy?: boolean;
-        queuedPrompts?: number;
-        sandboxId?: string | null;
-        status?: string;
-        tunnelUrls?: Record<string, string> | null;
-        tunnels?: Array<{ name: string; url?: string; path?: string; port?: number; protocol?: string }> | null;
-      } | null = null;
-      try {
-        const doId = this.env.SESSIONS.idFromName(targetSessionId);
-        const targetDO = this.env.SESSIONS.get(doId);
-        const statusRes = await targetDO.fetch(new Request('http://do/status'));
-        if (statusRes.ok) {
-          liveStatus = await statusRes.json() as any;
-        }
-      } catch (err) {
-        console.warn('[SessionAgentDO] Failed to fetch live status for session:', targetSessionId, err);
-      }
-
-      const runnerBusy = liveStatus?.runnerBusy ?? false;
-      const queuedPrompts = liveStatus?.queuedPrompts ?? 0;
-      const runnerConnected = liveStatus?.runnerConnected ?? false;
-      const agentStatus = runnerBusy || queuedPrompts > 0 ? 'working' : 'idle';
-
-      this.runnerLink.send({
-        type: 'get-session-status-result',
-        requestId,
-        sessionStatus: {
-          id: session.id,
-          status: session.status,
-          workspace: session.workspace,
-          title: session.title,
-          createdAt: session.createdAt instanceof Date ? session.createdAt.toISOString() : String(session.createdAt),
-          lastActiveAt: session.lastActiveAt instanceof Date ? session.lastActiveAt.toISOString() : String(session.lastActiveAt),
-          runnerConnected,
-          runnerBusy,
-          queuedPrompts,
-          agentStatus,
-          recentMessages,
-          tunnelUrls: liveStatus?.tunnelUrls ?? null,
-          tunnels: liveStatus?.tunnels ?? null,
-        },
-      } as any);
-    } catch (err) {
-      console.error('[SessionAgentDO] Failed to get session status:', err);
-      this.runnerLink.send({ type: 'get-session-status-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
     }
   }
 
