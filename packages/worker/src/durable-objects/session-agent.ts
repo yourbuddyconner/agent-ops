@@ -1,7 +1,7 @@
 import type { Env } from '../env.js';
 import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
-import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrgRepositories, getUserById, getUsersByIds, createMailboxMessage, getOrgSettings, enqueueWorkflowApprovalNotificationIfMissing, markWorkflowApprovalNotificationsRead, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getThreadOriginChannel } from '../lib/db.js';
+import { updateSessionStatus, updateSessionMetrics, addActiveSeconds, updateSessionGitState, upsertSessionFileChanged, updateSessionTitle, getSession, getSessionGitState, getChildSessions, getSessionChannelBindings, listUserChannelBindings, listOrgRepositories, getUserById, getUsersByIds, createMailboxMessage, getOrgSettings, isNotificationWebEnabled, batchInsertAnalyticsEvents, batchUpsertMessages, updateUserDiscoveredModels, setCatalogCache, updateThread, incrementThreadMessageCount, getThread, getThreadOriginChannel } from '../lib/db.js';
 import { getCredential, type CredentialResult } from '../services/credentials.js';
 import { memRead, memWrite, memPatch, memRm, memSearch } from '../services/session-memory.js';
 import { resolveRepoCredential, type CredentialRow } from '../lib/db/credentials.js';
@@ -10,11 +10,7 @@ import { repoProviderRegistry } from '../repos/registry.js';
 import { getGitHubConfig } from '../services/github-config.js';
 import type { RepoCredential } from '@valet/sdk/repos';
 import { getSlackBotToken } from '../services/slack.js';
-import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
-import { listTriggers, getTrigger, deleteTrigger, createTrigger, getTriggerForRun, updateTriggerLastRun, findScheduleTriggerByNameAndWorkflow, findScheduleTriggersByWorkflow, findScheduleTriggersByName, updateTriggerFull } from '../lib/db/triggers.js';
-import { getExecution, getExecutionWithWorkflowName, getExecutionForAuth, getExecutionSteps, getExecutionOwnerAndStatus, checkIdempotencyKey, createExecution, completeExecutionFull, upsertExecutionStep, listExecutions } from '../lib/db/executions.js';
 import { buildOrchestratorPersonaFiles } from '../lib/orchestrator-persona.js';
-import { checkWorkflowConcurrency, createWorkflowSession, dispatchOrchestratorPrompt, enqueueWorkflowExecution, sha256Hex } from '../lib/workflow-runtime.js';
 import { assembleCustomProviders, assembleBuiltInProviderModelConfigs, assembleRepoEnv } from '../lib/env-assembly.js';
 import { resolveAvailableModels } from '../services/model-catalog.js';
 import { channelRegistry } from '../channels/registry.js';
@@ -25,7 +21,6 @@ import { updateInvocationStatus } from '../lib/db/actions.js';
 import { getActivePluginArtifacts, getPluginSettings } from '../lib/db/plugins.js';
 import { getPersonaSkills, getOrgDefaultSkills, getPersonaToolWhitelist } from '../lib/db.js';
 import type { ChannelTarget, ChannelContext, InteractivePrompt, InteractiveAction, InteractivePromptRef, InteractiveResolution } from '@valet/sdk';
-import { validateWorkflowDefinition } from '../lib/workflow-definition.js';
 import { MessageStore } from './message-store.js';
 import { ChannelRouter } from './channel-router.js';
 import { PromptQueue } from './prompt-queue.js';
@@ -41,6 +36,19 @@ import { handleSkillAction } from '../services/session-skills.js';
 import { handlePersonaAction, listPersonasForRunner } from '../services/session-personas.js';
 import { spawnChild, sendSessionMessage, getSessionMessages, forwardMessages, terminateChild, listChildSessions, getSessionStatus, listChannels } from '../services/session-cross.js';
 import { listTools as listToolsSvc, resolveActionPolicy, executeAction as executeActionSvc, type CredentialCache, type ExecuteActionResult } from '../services/session-tools.js';
+import {
+  workflowList as workflowListSvc,
+  workflowSync as workflowSyncSvc,
+  workflowRun as workflowRunSvc,
+  workflowExecutions as workflowExecutionsSvc,
+  handleWorkflowAction as handleWorkflowActionSvc,
+  handleTriggerAction as handleTriggerActionSvc,
+  handleExecutionAction as handleExecutionActionSvc,
+  processWorkflowExecutionResult as processWorkflowExecutionResultSvc,
+  buildWorkflowDispatch,
+  deriveWorkerOriginFromSpawnRequest,
+  deriveRepoFullName,
+} from '../services/session-workflows.js';
 import { sanitizePromptAttachments, attachmentPartsForMessage, parseQueuedPromptAttachments } from '../lib/utils/prompt-validation.js';
 import { parseQueuedWorkflowPayload, deriveRuntimeStates } from '../lib/utils/runtime.js';
 
@@ -2858,41 +2866,107 @@ export class SessionAgentDO {
       },
 
       'workflow-list': async (msg) => {
-        await this.handleWorkflowList(msg.requestId!);
+        try {
+          const result = await workflowListSvc(this.appDb, this.sessionState.userId);
+          if (result.error) {
+            this.runnerLink.send({ type: 'workflow-list-result', requestId: msg.requestId!, error: result.error } as any);
+          } else {
+            this.runnerLink.send({ type: 'workflow-list-result', requestId: msg.requestId!, workflows: result.data!.workflows } as any);
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to list workflows:', err);
+          this.runnerLink.send({ type: 'workflow-list-result', requestId: msg.requestId!, error: err instanceof Error ? err.message : String(err) } as any);
+        }
       },
 
       'workflow-sync': async (msg) => {
-        await this.handleWorkflowSync(msg.requestId!, {
-          id: msg.id || msg.workflowId,
-          slug: msg.slug,
-          name: msg.name || msg.title,
-          description: msg.description,
-          version: msg.version,
-          data: (typeof msg.data === 'object' && msg.data !== null && !Array.isArray(msg.data))
-            ? (msg.data as Record<string, unknown>)
-            : msg.dataJson,
-        });
+        try {
+          const result = await workflowSyncSvc(this.appDb, this.env.DB, this.sessionState.userId, {
+            id: msg.id || msg.workflowId,
+            slug: msg.slug,
+            name: msg.name || msg.title,
+            description: msg.description,
+            version: msg.version,
+            data: (typeof msg.data === 'object' && msg.data !== null && !Array.isArray(msg.data))
+              ? (msg.data as Record<string, unknown>)
+              : msg.dataJson,
+          });
+          if (result.error) {
+            this.runnerLink.send({ type: 'workflow-sync-result', requestId: msg.requestId!, error: result.error } as any);
+          } else {
+            this.runnerLink.send({ type: 'workflow-sync-result', requestId: msg.requestId!, success: true, workflow: result.data!.workflow } as any);
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to sync workflow:', err);
+          this.runnerLink.send({ type: 'workflow-sync-result', requestId: msg.requestId!, error: err instanceof Error ? err.message : String(err) } as any);
+        }
       },
 
       'workflow-run': async (msg) => {
-        await this.handleWorkflowRun(msg.requestId!, msg.workflowId!, msg.variables, {
-          repoUrl: msg.repoUrl,
-          branch: msg.branch,
-          ref: msg.ref,
-          sourceRepoFullName: msg.sourceRepoFullName,
-        });
+        try {
+          const result = await workflowRunSvc(this.appDb, this.env.DB, this.env, this.sessionState.userId, msg.requestId!, {
+            workflowId: msg.workflowId!,
+            variables: msg.variables,
+            repoContext: {
+              repoUrl: msg.repoUrl,
+              branch: msg.branch,
+              ref: msg.ref,
+              sourceRepoFullName: msg.sourceRepoFullName,
+            },
+            spawnRequest: this.sessionState.spawnRequest,
+          });
+          if (result.error) {
+            this.runnerLink.send({ type: 'workflow-run-result', requestId: msg.requestId!, error: result.error } as any);
+          } else {
+            this.runnerLink.send({ type: 'workflow-run-result', requestId: msg.requestId!, execution: result.data!.execution } as any);
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to run workflow:', err);
+          this.runnerLink.send({ type: 'workflow-run-result', requestId: msg.requestId!, error: err instanceof Error ? err.message : String(err) } as any);
+        }
       },
 
       'workflow-executions': async (msg) => {
-        await this.handleWorkflowExecutions(msg.requestId!, msg.workflowId, msg.limit);
+        try {
+          const result = await workflowExecutionsSvc(this.appDb, this.env.DB, this.sessionState.userId, msg.workflowId, msg.limit);
+          if (result.error) {
+            this.runnerLink.send({ type: 'workflow-executions-result', requestId: msg.requestId!, error: result.error } as any);
+          } else {
+            this.runnerLink.send({ type: 'workflow-executions-result', requestId: msg.requestId!, executions: result.data!.executions } as any);
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Failed to list workflow executions:', err);
+          this.runnerLink.send({ type: 'workflow-executions-result', requestId: msg.requestId!, error: err instanceof Error ? err.message : String(err) } as any);
+        }
       },
 
       'workflow-api': async (msg) => {
-        await this.handleWorkflowApi(msg.requestId!, msg.action || '', msg.payload);
+        try {
+          const result = await handleWorkflowActionSvc(this.appDb, this.env.DB, this.sessionState.userId, msg.action || '', msg.payload);
+          if (result.error) {
+            this.runnerLink.send({ type: 'workflow-api-result', requestId: msg.requestId!, error: result.error } as any);
+          } else {
+            this.runnerLink.send({ type: 'workflow-api-result', requestId: msg.requestId!, data: result.data } as any);
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Workflow API error:', err);
+          this.runnerLink.send({ type: 'workflow-api-result', requestId: msg.requestId!, error: err instanceof Error ? err.message : String(err) } as any);
+        }
       },
 
       'trigger-api': async (msg) => {
-        await this.handleTriggerApi(msg.requestId!, msg.action || '', msg.payload);
+        try {
+          const augmentedPayload = msg.payload ? { ...msg.payload, requestId: msg.requestId, _spawnRequest: this.sessionState.spawnRequest } : { requestId: msg.requestId, _spawnRequest: this.sessionState.spawnRequest };
+          const result = await handleTriggerActionSvc(this.appDb, this.env.DB, this.env, this.sessionState.userId, this.sessionState.sessionId, msg.action || '', augmentedPayload);
+          if (result.error) {
+            this.runnerLink.send({ type: 'trigger-api-result', requestId: msg.requestId!, error: result.error } as any);
+          } else {
+            this.runnerLink.send({ type: 'trigger-api-result', requestId: msg.requestId!, data: result.data } as any);
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Trigger API error:', err);
+          this.runnerLink.send({ type: 'trigger-api-result', requestId: msg.requestId!, error: err instanceof Error ? err.message : String(err) } as any);
+        }
       },
 
       'skill-api': async (msg) => {
@@ -2970,11 +3044,29 @@ export class SessionAgentDO {
       },
 
       'execution-api': async (msg) => {
-        await this.handleExecutionApi(msg.requestId!, msg.action || '', msg.payload);
+        try {
+          const result = await handleExecutionActionSvc(this.appDb, this.env.DB, this.env, this.sessionState.userId, msg.action || '', msg.payload);
+          if (result.error) {
+            this.runnerLink.send({ type: 'execution-api-result', requestId: msg.requestId!, error: result.error } as any);
+          } else {
+            this.runnerLink.send({ type: 'execution-api-result', requestId: msg.requestId!, data: result.data } as any);
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Execution API error:', err);
+          this.runnerLink.send({ type: 'execution-api-result', requestId: msg.requestId!, error: err instanceof Error ? err.message : String(err) } as any);
+        }
       },
 
       'workflow-execution-result': async (msg) => {
-        await this.handleWorkflowExecutionResult(msg);
+        const resultData = await processWorkflowExecutionResultSvc(
+          this.appDb,
+          this.env.DB,
+          msg,
+          this.sessionState.sessionId,
+        );
+        if (resultData?.shouldStopSession) {
+          this.ctx.waitUntil(this.handleStop(`workflow_execution_${resultData.nextStatus}`));
+        }
       },
 
       // ─── Phase C: Mailbox + Task Board ──────────────────────────────
@@ -3203,1217 +3295,6 @@ export class SessionAgentDO {
     }
   }
 
-  private async handleWorkflowList(requestId: string) {
-    try {
-      const userId = this.sessionState.userId;
-      const result = await listWorkflows(this.appDb, userId);
-
-      const workflows = (result.results || []).map((row) => {
-        let data: Record<string, unknown> = {};
-        let tags: string[] = [];
-        try { data = JSON.parse(String(row.data || '{}')); } catch {}
-        try { tags = row.tags ? JSON.parse(String(row.tags)) : []; } catch {}
-        return {
-          id: row.id,
-          slug: row.slug,
-          name: row.name,
-          description: row.description,
-          version: row.version,
-          data,
-          enabled: Boolean(row.enabled),
-          tags,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        };
-      });
-
-      this.runnerLink.send({ type: 'workflow-list-result', requestId, workflows } as any);
-    } catch (err) {
-      console.error('[SessionAgentDO] Failed to list workflows:', err);
-      this.runnerLink.send({ type: 'workflow-list-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
-    }
-  }
-
-  private async handleWorkflowSync(
-    requestId: string,
-    params: {
-      id?: string;
-      slug?: string;
-      name?: string;
-      description?: string;
-      version?: string;
-      data?: Record<string, unknown>;
-    },
-  ) {
-    try {
-      const userId = this.sessionState.userId;
-      const name = (params.name || '').trim();
-      if (!name) {
-        this.runnerLink.send({ type: 'workflow-sync-result', requestId, error: 'Workflow name is required' } as any);
-        return;
-      }
-      const validation = validateWorkflowDefinition(params.data);
-      if (!validation.valid) {
-        this.runnerLink.send({ type: 'workflow-sync-result', requestId, error: `Invalid workflow definition: ${validation.errors[0]}` } as any);
-        return;
-      }
-
-      const workflowId = (params.id || '').trim() || `wf_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
-      const slug = (params.slug || '')
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .slice(0, 80) || null;
-      const version = (params.version || '1.0.0').trim() || '1.0.0';
-      const now = new Date().toISOString();
-
-      await upsertWorkflow(this.appDb, {
-        id: workflowId,
-        userId,
-        slug,
-        name,
-        description: params.description || null,
-        version,
-        data: JSON.stringify(params.data),
-        now,
-      });
-
-      const workflow = {
-        id: workflowId,
-        slug,
-        name,
-        description: params.description || null,
-        version,
-        data: params.data,
-        enabled: true,
-        tags: [],
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      this.runnerLink.send({ type: 'workflow-sync-result', requestId, success: true, workflow } as any);
-    } catch (err) {
-      console.error('[SessionAgentDO] Failed to sync workflow:', err);
-      this.runnerLink.send({ type: 'workflow-sync-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
-    }
-  }
-
-  private deriveRepoFullName(repoUrl?: string, sourceRepoFullName?: string): string | undefined {
-    const explicit = sourceRepoFullName?.trim();
-    if (explicit) return explicit;
-
-    const rawUrl = repoUrl?.trim();
-    if (!rawUrl) return undefined;
-
-    const match = rawUrl.match(/github\.com[/:]([^/]+\/[^/.]+)/i);
-    return match?.[1] || undefined;
-  }
-
-  private deriveWorkerOriginFromSpawnRequest(): string | undefined {
-    const spawnRequest = this.sessionState.spawnRequest;
-    if (!spawnRequest) return undefined;
-
-    try {
-      const doWsUrl = typeof spawnRequest.doWsUrl === 'string' ? (spawnRequest.doWsUrl as string).trim() : '';
-      if (!doWsUrl) return undefined;
-      return new URL(doWsUrl).origin;
-    } catch {
-      return undefined;
-    }
-  }
-
-  private async handleWorkflowRun(
-    requestId: string,
-    workflowId: string,
-    variables?: Record<string, unknown>,
-    repoContext?: { repoUrl?: string; branch?: string; ref?: string; sourceRepoFullName?: string },
-  ) {
-    try {
-      const userId = this.sessionState.userId;
-      const workflowLookupId = (workflowId || '').trim();
-      if (!workflowLookupId) {
-        this.runnerLink.send({ type: 'workflow-run-result', requestId, error: 'workflowId is required' } as any);
-        return;
-      }
-
-      const workflow = await getWorkflowByIdOrSlug(this.appDb, userId, workflowLookupId) as {
-        id: string;
-        name: string;
-        version: string | null;
-        data: string;
-      } | null;
-
-      if (!workflow) {
-        this.runnerLink.send({ type: 'workflow-run-result', requestId, error: `Workflow not found: ${workflowLookupId}` } as any);
-        return;
-      }
-
-      const concurrency = await checkWorkflowConcurrency(this.appDb, userId);
-      if (!concurrency.allowed) {
-        this.runnerLink.send({
-          type: 'workflow-run-result',
-          requestId,
-          error: `Too many concurrent executions (${concurrency.reason})`,
-        } as any);
-        return;
-      }
-
-      const idempotencyKey = `agent:${workflow.id}:${userId}:${requestId}`;
-      const existing = await checkIdempotencyKey(this.env.DB, workflow.id, idempotencyKey) as {
-        id: string;
-        status: string;
-        session_id: string | null;
-      } | null;
-
-      if (existing) {
-        this.runnerLink.send({
-          type: 'workflow-run-result',
-          requestId,
-          execution: {
-            executionId: existing.id,
-            workflowId: workflow.id,
-            workflowName: workflow.name,
-            status: existing.status,
-            sessionId: existing.session_id,
-            deduplicated: true,
-          },
-        } as any);
-        return;
-      }
-
-      const executionId = crypto.randomUUID();
-      const now = new Date().toISOString();
-      const workflowHash = await sha256Hex(String(workflow.data || '{}'));
-      const repoUrl = repoContext?.repoUrl?.trim() || undefined;
-      const branch = repoContext?.branch?.trim() || undefined;
-      const ref = repoContext?.ref?.trim() || undefined;
-      const workerOrigin = this.deriveWorkerOriginFromSpawnRequest();
-      const sourceRepoFullName = this.deriveRepoFullName(repoUrl, repoContext?.sourceRepoFullName);
-      const sessionId = await createWorkflowSession(this.appDb, {
-        userId,
-        workflowId: workflow.id,
-        executionId,
-        sourceRepoUrl: repoUrl,
-        sourceRepoFullName,
-        branch,
-        ref,
-      });
-
-      await createExecution(this.env.DB, {
-        id: executionId,
-        workflowId: workflow.id,
-        userId,
-        triggerId: null,
-        triggerType: 'manual',
-        triggerMetadata: JSON.stringify({ triggeredBy: 'agent_tool', direct: true }),
-        variables: JSON.stringify(variables || {}),
-        now,
-        workflowVersion: workflow.version || null,
-        workflowHash,
-        workflowSnapshot: workflow.data,
-        idempotencyKey,
-        sessionId,
-        initiatorType: 'manual',
-        initiatorUserId: userId,
-      });
-
-      const dispatched = await enqueueWorkflowExecution(this.env, {
-        executionId,
-        workflowId: workflow.id,
-        userId,
-        sessionId,
-        triggerType: 'manual',
-        workerOrigin,
-      });
-
-      this.runnerLink.send({
-        type: 'workflow-run-result',
-        requestId,
-        execution: {
-          executionId,
-          workflowId: workflow.id,
-          workflowName: workflow.name,
-          status: 'pending',
-          sessionId,
-          dispatched,
-        },
-      } as any);
-    } catch (err) {
-      console.error('[SessionAgentDO] Failed to run workflow:', err);
-      this.runnerLink.send({ type: 'workflow-run-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
-    }
-  }
-
-  private async handleWorkflowExecutions(requestId: string, workflowId?: string, limit?: number) {
-    try {
-      const userId = this.sessionState.userId;
-      const max = Math.min(Math.max(limit || 20, 1), 200);
-      const parseMaybeJson = (raw: unknown) => {
-        if (raw === null || raw === undefined) return null;
-        try {
-          return JSON.parse(String(raw));
-        } catch {
-          return null;
-        }
-      };
-
-      let workflowFilterId: string | null = null;
-      if (workflowId) {
-        const workflow = await getWorkflowOwnerCheck(this.appDb, userId, workflowId);
-        if (!workflow) {
-          this.runnerLink.send({ type: 'workflow-executions-result', requestId, executions: [] } as any);
-          return;
-        }
-        workflowFilterId = workflow.id;
-      }
-
-      const result = await listExecutions(this.env.DB, userId, {
-        workflowId: workflowFilterId || undefined,
-        limit: max,
-      });
-
-      const executions = (result.results || []).map((row) => ({
-        id: row.id,
-        workflowId: row.workflow_id,
-        triggerId: row.trigger_id,
-        status: row.status,
-        triggerType: row.trigger_type,
-        triggerMetadata: parseMaybeJson(row.trigger_metadata),
-        variables: parseMaybeJson(row.variables),
-        outputs: parseMaybeJson(row.outputs),
-        steps: parseMaybeJson(row.steps),
-        error: row.error,
-        startedAt: row.started_at,
-        completedAt: row.completed_at,
-        sessionId: row.session_id,
-      }));
-
-      this.runnerLink.send({ type: 'workflow-executions-result', requestId, executions } as any);
-    } catch (err) {
-      console.error('[SessionAgentDO] Failed to list workflow executions:', err);
-      this.runnerLink.send({ type: 'workflow-executions-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
-    }
-  }
-
-  private parseJsonOrNull(raw: unknown): unknown | null {
-    if (raw === null || raw === undefined) return null;
-    try {
-      return JSON.parse(String(raw));
-    } catch {
-      return null;
-    }
-  }
-
-  private normalizeWorkflowRow(row: Record<string, unknown>) {
-    let data: Record<string, unknown> = {};
-    let tags: string[] = [];
-    try { data = JSON.parse(String(row.data || '{}')); } catch {}
-    try { tags = row.tags ? JSON.parse(String(row.tags)) : []; } catch {}
-    return {
-      id: row.id,
-      slug: row.slug,
-      name: row.name,
-      description: row.description,
-      version: row.version,
-      data,
-      enabled: Boolean(row.enabled),
-      tags,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-  }
-
-  private async resolveWorkflowIdForUser(userId: string, workflowIdOrSlug?: string | null): Promise<string | null> {
-    const lookup = (workflowIdOrSlug || '').trim();
-    if (!lookup) return null;
-    const row = await getWorkflowOwnerCheck(this.appDb, userId, lookup);
-    return row?.id || null;
-  }
-
-  private async handleWorkflowApi(requestId: string, action: string, payload?: Record<string, unknown>) {
-    try {
-      const userId = this.sessionState.userId;
-      const workflowIdOrSlug = typeof payload?.workflowId === 'string' ? payload.workflowId.trim() : '';
-      if (!workflowIdOrSlug) {
-        this.runnerLink.send({ type: 'workflow-api-result', requestId, error: 'workflowId is required' } as any);
-        return;
-      }
-
-      const existing = await getWorkflowByIdOrSlug(this.appDb, userId, workflowIdOrSlug) as Record<string, unknown> | null;
-
-      if (!existing) {
-        this.runnerLink.send({ type: 'workflow-api-result', requestId, error: `Workflow not found: ${workflowIdOrSlug}` } as any);
-        return;
-      }
-
-      if (action === 'get') {
-        this.runnerLink.send({ type: 'workflow-api-result', requestId, data: { workflow: this.normalizeWorkflowRow(existing) } } as any);
-        return;
-      }
-
-      if (action === 'delete') {
-        await deleteWorkflowTriggers(this.appDb, existing.id as string, userId);
-        await deleteWorkflowById(this.appDb, existing.id as string, userId);
-        this.runnerLink.send({ type: 'workflow-api-result', requestId, data: { success: true } } as any);
-        return;
-      }
-
-      if (action !== 'update') {
-        this.runnerLink.send({ type: 'workflow-api-result', requestId, error: `Unsupported workflow action: ${action}` } as any);
-        return;
-      }
-
-      const updates: string[] = [];
-      const values: unknown[] = [];
-
-      if (payload && Object.prototype.hasOwnProperty.call(payload, 'name')) {
-        const nextName = typeof payload.name === 'string' ? payload.name : '';
-        if (!nextName.trim()) {
-          this.runnerLink.send({ type: 'workflow-api-result', requestId, error: 'name must be a non-empty string' } as any);
-          return;
-        }
-        updates.push('name = ?');
-        values.push(nextName.trim());
-      }
-      if (payload && Object.prototype.hasOwnProperty.call(payload, 'description')) {
-        const nextDescription = payload.description;
-        if (nextDescription !== null && typeof nextDescription !== 'string') {
-          this.runnerLink.send({ type: 'workflow-api-result', requestId, error: 'description must be a string or null' } as any);
-          return;
-        }
-        updates.push('description = ?');
-        values.push(nextDescription === null ? null : nextDescription);
-      }
-      if (payload && Object.prototype.hasOwnProperty.call(payload, 'slug')) {
-        const nextSlug = payload.slug;
-        if (nextSlug !== null && typeof nextSlug !== 'string') {
-          this.runnerLink.send({ type: 'workflow-api-result', requestId, error: 'slug must be a string or null' } as any);
-          return;
-        }
-        updates.push('slug = ?');
-        values.push(nextSlug === null ? null : nextSlug);
-      }
-      if (payload && Object.prototype.hasOwnProperty.call(payload, 'version')) {
-        const nextVersion = payload.version;
-        if (typeof nextVersion !== 'string' || !nextVersion.trim()) {
-          this.runnerLink.send({ type: 'workflow-api-result', requestId, error: 'version must be a non-empty string' } as any);
-          return;
-        }
-        updates.push('version = ?');
-        values.push(nextVersion.trim());
-      }
-      if (payload && Object.prototype.hasOwnProperty.call(payload, 'enabled')) {
-        const nextEnabled = payload.enabled;
-        if (typeof nextEnabled !== 'boolean') {
-          this.runnerLink.send({ type: 'workflow-api-result', requestId, error: 'enabled must be a boolean' } as any);
-          return;
-        }
-        updates.push('enabled = ?');
-        values.push(nextEnabled ? 1 : 0);
-      }
-      if (payload && Object.prototype.hasOwnProperty.call(payload, 'tags')) {
-        const nextTags = payload.tags;
-        if (!Array.isArray(nextTags) || nextTags.some((tag) => typeof tag !== 'string')) {
-          this.runnerLink.send({ type: 'workflow-api-result', requestId, error: 'tags must be an array of strings' } as any);
-          return;
-        }
-        updates.push('tags = ?');
-        values.push(JSON.stringify(nextTags));
-      }
-      if (payload && Object.prototype.hasOwnProperty.call(payload, 'data')) {
-        const nextData = payload.data;
-        if (!nextData || typeof nextData !== 'object' || Array.isArray(nextData)) {
-          this.runnerLink.send({ type: 'workflow-api-result', requestId, error: 'data must be an object' } as any);
-          return;
-        }
-        const validation = validateWorkflowDefinition(nextData);
-        if (!validation.valid) {
-          this.runnerLink.send({ type: 'workflow-api-result', requestId, error: `Invalid workflow definition: ${validation.errors[0]}` } as any);
-          return;
-        }
-        updates.push('data = ?');
-        values.push(JSON.stringify(nextData));
-      }
-
-      if (updates.length === 0) {
-        this.runnerLink.send({ type: 'workflow-api-result', requestId, data: { workflow: this.normalizeWorkflowRow(existing) } } as any);
-        return;
-      }
-
-      const updatedAt = new Date().toISOString();
-      updates.push('updated_at = ?');
-      values.push(updatedAt);
-      values.push(existing.id);
-
-      await updateWorkflow(this.env.DB, existing.id as string, updates, values);
-      const updated = await getWorkflowById(this.appDb, existing.id as string) as Record<string, unknown> | null;
-
-      this.runnerLink.send({
-        type: 'workflow-api-result',
-        requestId,
-        data: { workflow: this.normalizeWorkflowRow(updated || existing) },
-      } as any);
-    } catch (err) {
-      console.error('[SessionAgentDO] Workflow API error:', err);
-      this.runnerLink.send({ type: 'workflow-api-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
-    }
-  }
-
-  private scheduleTargetFromConfig(config: Record<string, unknown>): 'workflow' | 'orchestrator' {
-    if (config.type !== 'schedule') return 'workflow';
-    return config.target === 'orchestrator' ? 'orchestrator' : 'workflow';
-  }
-
-  private requiresWorkflowForTriggerConfig(config: Record<string, unknown>): boolean {
-    return config.type !== 'schedule' || this.scheduleTargetFromConfig(config) === 'workflow';
-  }
-
-  private async handleTriggerApi(requestId: string, action: string, payload?: Record<string, unknown>) {
-    try {
-      const userId = this.sessionState.userId;
-
-      if (action === 'list') {
-        const result = await listTriggers(this.env.DB, userId);
-
-        const workflowFilter = typeof payload?.workflowId === 'string' ? payload.workflowId : undefined;
-        const typeFilter = typeof payload?.type === 'string' ? payload.type : undefined;
-        const enabledFilter = typeof payload?.enabled === 'boolean' ? payload.enabled : undefined;
-
-        let triggers = (result.results || []).map((row) => ({
-          id: row.id,
-          workflowId: row.workflow_id,
-          workflowName: row.workflow_name,
-          name: row.name,
-          enabled: Boolean(row.enabled),
-          type: row.type,
-          config: this.parseJsonOrNull(row.config) || {},
-          variableMapping: this.parseJsonOrNull(row.variable_mapping) || null,
-          lastRunAt: row.last_run_at,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }));
-
-        if (workflowFilter) {
-          triggers = triggers.filter((trigger) => trigger.workflowId === workflowFilter || trigger.workflowName === workflowFilter);
-        }
-        if (typeFilter) {
-          triggers = triggers.filter((trigger) => trigger.type === typeFilter);
-        }
-        if (enabledFilter !== undefined) {
-          triggers = triggers.filter((trigger) => trigger.enabled === enabledFilter);
-        }
-
-        this.runnerLink.send({ type: 'trigger-api-result', requestId, data: { triggers } } as any);
-        return;
-      }
-
-      if (action === 'delete') {
-        const triggerId = typeof payload?.triggerId === 'string' ? payload.triggerId.trim() : '';
-        if (!triggerId) {
-          this.runnerLink.send({ type: 'trigger-api-result', requestId, error: 'triggerId is required' } as any);
-          return;
-        }
-        const result = await deleteTrigger(this.appDb, triggerId, userId);
-        if ((result.meta?.changes || 0) === 0) {
-          this.runnerLink.send({ type: 'trigger-api-result', requestId, error: `Trigger not found: ${triggerId}` } as any);
-          return;
-        }
-        this.runnerLink.send({ type: 'trigger-api-result', requestId, data: { success: true } } as any);
-        return;
-      }
-
-      if (action === 'create' || action === 'update') {
-        const triggerId = typeof payload?.triggerId === 'string' ? payload.triggerId.trim() : '';
-        const isUpdate = action === 'update';
-        const hasWorkflowIdPayload = Object.prototype.hasOwnProperty.call(payload || {}, 'workflowId');
-        let fallbackToUpdate = false;
-
-        let existing = isUpdate
-          ? await getTrigger(this.env.DB, userId, triggerId) as Record<string, unknown> | null
-          : null;
-
-        if (isUpdate && !existing) {
-          this.runnerLink.send({ type: 'trigger-api-result', requestId, error: `Trigger not found: ${triggerId}` } as any);
-          return;
-        }
-
-        const rawConfig = payload?.config && typeof payload.config === 'object' && !Array.isArray(payload.config)
-          ? payload.config as Record<string, unknown>
-          : existing?.config
-            ? (this.parseJsonOrNull(existing.config) as Record<string, unknown> | null)
-            : null;
-        if (!rawConfig || typeof rawConfig.type !== 'string') {
-          this.runnerLink.send({ type: 'trigger-api-result', requestId, error: 'config with type is required' } as any);
-          return;
-        }
-
-        const nextNameRaw = typeof payload?.name === 'string' ? payload.name : (typeof existing?.name === 'string' ? existing.name : '');
-        const nextName = (nextNameRaw || '').trim();
-        if (!nextName) {
-          this.runnerLink.send({ type: 'trigger-api-result', requestId, error: 'name is required' } as any);
-          return;
-        }
-
-        const workflowIdPayload = Object.prototype.hasOwnProperty.call(payload || {}, 'workflowId')
-          ? payload?.workflowId
-          : existing?.workflow_id;
-        let workflowId: string | null = null;
-        if (typeof workflowIdPayload === 'string' && workflowIdPayload.trim()) {
-          workflowId = await this.resolveWorkflowIdForUser(userId, workflowIdPayload);
-          if (!workflowId) {
-            this.runnerLink.send({ type: 'trigger-api-result', requestId, error: `Workflow not found: ${workflowIdPayload}` } as any);
-            return;
-          }
-        } else if (workflowIdPayload === null) {
-          workflowId = null;
-        }
-
-        const target = this.scheduleTargetFromConfig(rawConfig);
-        if (rawConfig.type === 'schedule' && target === 'orchestrator') {
-          const prompt = typeof rawConfig.prompt === 'string' ? rawConfig.prompt.trim() : '';
-          if (!prompt) {
-            this.runnerLink.send({ type: 'trigger-api-result', requestId, error: 'schedule prompt is required when target=orchestrator' } as any);
-            return;
-          }
-        }
-
-        // Fallback upsert path for schedule triggers when a create call omits triggerId.
-        // This prevents accidental duplicate schedules from repeated "update" attempts.
-        if (!isUpdate && rawConfig.type === 'schedule') {
-          if (hasWorkflowIdPayload) {
-            const sameName = await findScheduleTriggerByNameAndWorkflow(this.env.DB, userId, workflowId, nextName);
-
-            if (sameName) {
-              existing = sameName;
-              fallbackToUpdate = true;
-            } else {
-              const workflowMatches = await findScheduleTriggersByWorkflow(this.env.DB, userId, workflowId, 2);
-              const candidates = workflowMatches.results || [];
-              if (candidates.length === 1) {
-                existing = candidates[0];
-                fallbackToUpdate = true;
-              }
-            }
-          } else {
-            const sameName = await findScheduleTriggersByName(this.env.DB, userId, nextName, 2);
-            const candidates = sameName.results || [];
-            if (candidates.length === 1) {
-              existing = candidates[0];
-              fallbackToUpdate = true;
-              workflowId = typeof existing.workflow_id === 'string' && existing.workflow_id.trim()
-                ? existing.workflow_id
-                : null;
-            }
-          }
-        }
-
-        if (fallbackToUpdate && !hasWorkflowIdPayload) {
-          workflowId = typeof existing?.workflow_id === 'string' && existing.workflow_id.trim()
-            ? existing.workflow_id
-            : null;
-        }
-
-        if (this.requiresWorkflowForTriggerConfig(rawConfig) && !workflowId) {
-          this.runnerLink.send({ type: 'trigger-api-result', requestId, error: 'workflowId is required for this trigger type' } as any);
-          return;
-        }
-
-        const nextEnabled = typeof payload?.enabled === 'boolean'
-          ? payload.enabled
-          : existing
-            ? Boolean(existing.enabled)
-            : true;
-
-        const variableMapping = payload?.variableMapping && typeof payload.variableMapping === 'object' && !Array.isArray(payload.variableMapping)
-          ? payload.variableMapping as Record<string, unknown>
-          : existing?.variable_mapping
-            ? (this.parseJsonOrNull(existing.variable_mapping) as Record<string, unknown> | null)
-            : undefined;
-
-        if (variableMapping) {
-          for (const [key, value] of Object.entries(variableMapping)) {
-            if (typeof value !== 'string') {
-              this.runnerLink.send({ type: 'trigger-api-result', requestId, error: `variableMapping.${key} must be a string` } as any);
-              return;
-            }
-          }
-        }
-
-        const now = new Date().toISOString();
-        const shouldUpdate = isUpdate || fallbackToUpdate;
-        const targetTriggerId = shouldUpdate
-          ? (typeof existing?.id === 'string' ? existing.id : triggerId)
-          : crypto.randomUUID();
-        if (shouldUpdate) {
-          await updateTriggerFull(this.appDb, targetTriggerId, userId, {
-            workflowId,
-            name: nextName,
-            enabled: nextEnabled,
-            type: String(rawConfig.type),
-            config: JSON.stringify(rawConfig),
-            variableMapping: variableMapping ? JSON.stringify(variableMapping) : null,
-            now,
-          });
-        } else {
-          await createTrigger(this.appDb, {
-            id: targetTriggerId,
-            userId,
-            workflowId,
-            name: nextName,
-            enabled: nextEnabled,
-            type: String(rawConfig.type),
-            config: JSON.stringify(rawConfig),
-            variableMapping: variableMapping ? JSON.stringify(variableMapping) : null,
-            now,
-          });
-        }
-
-        const row = await getTrigger(this.env.DB, userId, targetTriggerId) as Record<string, unknown> | null;
-
-        this.runnerLink.send({
-          type: 'trigger-api-result',
-          requestId,
-          data: {
-            trigger: row
-              ? {
-                  id: row.id,
-                  workflowId: row.workflow_id,
-                  workflowName: row.workflow_name,
-                  name: row.name,
-                  enabled: Boolean(row.enabled),
-                  type: row.type,
-                  config: this.parseJsonOrNull(row.config) || {},
-                  variableMapping: this.parseJsonOrNull(row.variable_mapping) || null,
-                  lastRunAt: row.last_run_at,
-                  createdAt: row.created_at,
-                  updatedAt: row.updated_at,
-                }
-              : null,
-            success: true,
-          },
-        } as any);
-        return;
-      }
-
-      if (action === 'run') {
-        const triggerId = typeof payload?.triggerId === 'string' ? payload.triggerId.trim() : '';
-        if (!triggerId) {
-          this.runnerLink.send({ type: 'trigger-api-result', requestId, error: 'triggerId is required' } as any);
-          return;
-        }
-
-        const row = await getTriggerForRun(this.env.DB, userId, triggerId);
-
-        if (!row) {
-          this.runnerLink.send({ type: 'trigger-api-result', requestId, error: `Trigger not found: ${triggerId}` } as any);
-          return;
-        }
-
-        const config = this.parseJsonOrNull(row.config) as Record<string, unknown> | null;
-        if (!config) {
-          this.runnerLink.send({ type: 'trigger-api-result', requestId, error: 'Invalid trigger config' } as any);
-          return;
-        }
-        const target = this.scheduleTargetFromConfig(config);
-
-        if (config.type === 'schedule' && target === 'orchestrator') {
-          const prompt = typeof config.prompt === 'string' ? config.prompt.trim() : '';
-          if (!prompt) {
-            this.runnerLink.send({ type: 'trigger-api-result', requestId, error: 'Schedule orchestrator trigger requires prompt' } as any);
-            return;
-          }
-
-          const dispatch = await dispatchOrchestratorPrompt(this.env, {
-            userId,
-            content: prompt,
-          });
-          const now = new Date().toISOString();
-          if (dispatch.dispatched) {
-            await updateTriggerLastRun(this.appDb, triggerId, now);
-          }
-          this.runnerLink.send({
-            type: 'trigger-api-result',
-            requestId,
-            data: dispatch.dispatched
-              ? {
-                  status: 'queued',
-                  workflowId: row.wf_id,
-                  workflowName: row.workflow_name,
-                  sessionId: dispatch.sessionId,
-                  message: 'Orchestrator prompt dispatched.',
-                }
-              : {
-                  status: 'failed',
-                  workflowId: row.wf_id,
-                  workflowName: row.workflow_name,
-                  sessionId: dispatch.sessionId,
-                  reason: dispatch.reason || 'unknown_error',
-                },
-          } as any);
-          return;
-        }
-
-        if (!row.wf_id || !row.workflow_data) {
-          this.runnerLink.send({ type: 'trigger-api-result', requestId, error: 'Trigger is not linked to a workflow' } as any);
-          return;
-        }
-
-        const concurrency = await checkWorkflowConcurrency(this.appDb, userId);
-        if (!concurrency.allowed) {
-          this.runnerLink.send({
-            type: 'trigger-api-result',
-            requestId,
-            error: `Too many concurrent workflow executions (${concurrency.reason})`,
-          } as any);
-          return;
-        }
-
-        const variableMapping = row.variable_mapping ? (this.parseJsonOrNull(row.variable_mapping) as Record<string, string> | null) : null;
-        const extractedVariables: Record<string, unknown> = {};
-        for (const [varName, path] of Object.entries(variableMapping || {})) {
-          if (!path.startsWith('$.')) continue;
-          const key = path.slice(2).split('.')[0];
-          if (payload && Object.prototype.hasOwnProperty.call(payload, key)) {
-            extractedVariables[varName] = payload[key];
-          }
-        }
-
-        const runtimeVariables = (payload?.variables && typeof payload.variables === 'object' && !Array.isArray(payload.variables))
-          ? payload.variables as Record<string, unknown>
-          : {};
-        const variables = {
-          ...extractedVariables,
-          ...runtimeVariables,
-          _trigger: { type: 'manual', triggerId },
-        };
-
-        const idempotencyKey = `manual-trigger:${triggerId}:${userId}:${requestId}`;
-        const existingExecution = await checkIdempotencyKey(this.env.DB, row.wf_id!, idempotencyKey) as {
-          id: string;
-          status: string;
-          session_id: string | null;
-        } | null;
-
-        if (existingExecution) {
-          this.runnerLink.send({
-            type: 'trigger-api-result',
-            requestId,
-            data: {
-              executionId: existingExecution.id,
-              workflowId: row.wf_id,
-              workflowName: row.workflow_name,
-              status: existingExecution.status,
-              variables,
-              sessionId: existingExecution.session_id,
-              message: 'Workflow execution already exists for this request.',
-            },
-          } as any);
-          return;
-        }
-
-        const executionId = crypto.randomUUID();
-        const now = new Date().toISOString();
-        const workflowHash = await sha256Hex(String(row.workflow_data ?? '{}'));
-        const repoUrl = typeof payload?.repoUrl === 'string' ? payload.repoUrl.trim() || undefined : undefined;
-        const branch = typeof payload?.branch === 'string' ? payload.branch.trim() || undefined : undefined;
-        const ref = typeof payload?.ref === 'string' ? payload.ref.trim() || undefined : undefined;
-        const workerOrigin = this.deriveWorkerOriginFromSpawnRequest();
-        const sourceRepoFullName = this.deriveRepoFullName(
-          repoUrl,
-          typeof payload?.sourceRepoFullName === 'string' ? payload.sourceRepoFullName : undefined,
-        );
-        const sessionId = await createWorkflowSession(this.appDb, {
-          userId,
-          workflowId: row.wf_id,
-          executionId,
-          sourceRepoUrl: repoUrl,
-          sourceRepoFullName,
-          branch,
-          ref,
-        });
-
-        await createExecution(this.env.DB, {
-          id: executionId,
-          workflowId: row.wf_id!,
-          userId,
-          triggerId,
-          triggerType: 'manual',
-          triggerMetadata: JSON.stringify({ triggeredBy: 'api' }),
-          variables: JSON.stringify(variables),
-          now,
-          workflowVersion: row.workflow_version || null,
-          workflowHash,
-          workflowSnapshot: row.workflow_data!,
-          idempotencyKey,
-          sessionId,
-          initiatorType: 'manual',
-          initiatorUserId: userId,
-        });
-
-        await updateTriggerLastRun(this.appDb, triggerId, now);
-
-        const dispatched = await enqueueWorkflowExecution(this.env, {
-          executionId,
-          workflowId: row.wf_id,
-          userId,
-          sessionId,
-          triggerType: 'manual',
-          workerOrigin,
-        });
-
-        this.runnerLink.send({
-          type: 'trigger-api-result',
-          requestId,
-          data: {
-            executionId,
-            workflowId: row.wf_id,
-            workflowName: row.workflow_name,
-            status: 'pending',
-            variables,
-            sessionId,
-            dispatched,
-            message: dispatched
-              ? 'Trigger run accepted and dispatched.'
-              : 'Trigger run accepted but dispatch failed.',
-          },
-        } as any);
-        return;
-      }
-
-      this.runnerLink.send({ type: 'trigger-api-result', requestId, error: `Unsupported trigger action: ${action}` } as any);
-    } catch (err) {
-      console.error('[SessionAgentDO] Trigger API error:', err);
-      this.runnerLink.send({ type: 'trigger-api-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
-    }
-  }
-
-  // ─── Identity API (orchestrator self-edit) ─────────────────────────────────
-
-  private async handleExecutionApi(requestId: string, action: string, payload?: Record<string, unknown>) {
-    try {
-      const userId = this.sessionState.userId;
-      const executionId = typeof payload?.executionId === 'string' ? payload.executionId.trim() : '';
-      if (!executionId) {
-        this.runnerLink.send({ type: 'execution-api-result', requestId, error: 'executionId is required' } as any);
-        return;
-      }
-
-      if (action === 'get') {
-        const row = await getExecution(this.env.DB, executionId, userId);
-
-        if (!row) {
-          this.runnerLink.send({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
-          return;
-        }
-
-        this.runnerLink.send({
-          type: 'execution-api-result',
-          requestId,
-          data: {
-            execution: {
-              id: row.id,
-              workflowId: row.workflow_id,
-              workflowName: row.workflow_name,
-              sessionId: row.session_id,
-              triggerId: row.trigger_id,
-              triggerName: row.trigger_name,
-              status: row.status,
-              triggerType: row.trigger_type,
-              triggerMetadata: this.parseJsonOrNull(row.trigger_metadata),
-              variables: this.parseJsonOrNull(row.variables),
-              resumeToken: row.resume_token || null,
-              outputs: this.parseJsonOrNull(row.outputs),
-              steps: this.parseJsonOrNull(row.steps),
-              error: row.error,
-              startedAt: row.started_at,
-              completedAt: row.completed_at,
-            },
-          },
-        } as any);
-        return;
-      }
-
-      if (action === 'steps') {
-        const execution = await getExecutionForAuth(this.appDb, executionId);
-
-        if (!execution || execution.user_id !== userId) {
-          this.runnerLink.send({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
-          return;
-        }
-
-        const buildWorkflowStepOrderMap = (workflowSnapshotRaw: string | null): Map<string, number> => {
-          if (!workflowSnapshotRaw) return new Map();
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(workflowSnapshotRaw);
-          } catch {
-            return new Map();
-          }
-          const order = new Map<string, number>();
-          let index = 0;
-          const visitStepList = (rawSteps: unknown): void => {
-            if (!Array.isArray(rawSteps)) return;
-            for (const entry of rawSteps) {
-              if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
-              const stepRecord = entry as Record<string, unknown>;
-              const stepId = typeof stepRecord.id === 'string' ? stepRecord.id : '';
-              if (stepId && !order.has(stepId)) {
-                order.set(stepId, index);
-                index += 1;
-              }
-              visitStepList(stepRecord.then);
-              visitStepList(stepRecord.else);
-              visitStepList(stepRecord.steps);
-            }
-          };
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            visitStepList((parsed as Record<string, unknown>).steps);
-          } else if (Array.isArray(parsed)) {
-            visitStepList(parsed);
-          }
-          return order;
-        };
-
-        const workflowStepOrder = buildWorkflowStepOrderMap(execution.workflow_snapshot);
-        const rankStepOrderIndex = (value: number | null): number => value ?? Number.MAX_SAFE_INTEGER;
-
-        const result = await getExecutionSteps(this.env.DB, executionId);
-
-        const steps = (result.results || [])
-          .map((row) => ({
-            id: row.id,
-            executionId: row.execution_id,
-            stepId: String(row.step_id),
-            attempt: Number(row.attempt || 1),
-            status: String(row.status),
-            input: this.parseJsonOrNull((row.input_json as string | null) || null),
-            output: this.parseJsonOrNull((row.output_json as string | null) || null),
-            error: (row.error as string | null) || null,
-            startedAt: (row.started_at as string | null) || null,
-            completedAt: (row.completed_at as string | null) || null,
-            createdAt: String(row.created_at),
-            workflowStepIndex: workflowStepOrder.get(String(row.step_id)) ?? null,
-            insertionOrder: Number(row.insertion_order || 0),
-          }))
-          .sort((left, right) => {
-            if (left.attempt !== right.attempt) return left.attempt - right.attempt;
-            const leftIndex = rankStepOrderIndex(left.workflowStepIndex);
-            const rightIndex = rankStepOrderIndex(right.workflowStepIndex);
-            if (leftIndex !== rightIndex) return leftIndex - rightIndex;
-            if (left.insertionOrder !== right.insertionOrder) return left.insertionOrder - right.insertionOrder;
-            return left.stepId.localeCompare(right.stepId);
-          })
-          .map((step, sequence) => ({
-            id: step.id,
-            executionId: step.executionId,
-            stepId: step.stepId,
-            attempt: step.attempt,
-            status: step.status,
-            input: step.input,
-            output: step.output,
-            error: step.error,
-            startedAt: step.startedAt,
-            completedAt: step.completedAt,
-            createdAt: step.createdAt,
-            workflowStepIndex: step.workflowStepIndex,
-            sequence,
-          }));
-
-        this.runnerLink.send({ type: 'execution-api-result', requestId, data: { steps } } as any);
-        return;
-      }
-
-      if (action === 'approve') {
-        const approve = payload?.approve === true;
-        const resumeToken = typeof payload?.resumeToken === 'string' ? payload.resumeToken : '';
-        const reason = typeof payload?.reason === 'string' ? payload.reason : undefined;
-        if (!resumeToken) {
-          this.runnerLink.send({ type: 'execution-api-result', requestId, error: 'resumeToken is required' } as any);
-          return;
-        }
-
-        const execution = await getExecutionOwnerAndStatus(this.appDb, executionId) as { user_id: string; status: string } | null;
-        if (!execution || execution.user_id !== userId) {
-          this.runnerLink.send({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
-          return;
-        }
-
-        const doId = this.env.WORKFLOW_EXECUTOR.idFromName(executionId);
-        const stub = this.env.WORKFLOW_EXECUTOR.get(doId);
-        const response = await stub.fetch(new Request('https://workflow-executor/resume', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            executionId,
-            resumeToken,
-            approve,
-            reason,
-          }),
-        }));
-
-        if (!response.ok) {
-          const errorBody = await response.json<{ error?: string }>().catch((): { error?: string } => ({ error: undefined }));
-          this.runnerLink.send({
-            type: 'execution-api-result',
-            requestId,
-            error: errorBody.error || `Failed to apply approval decision (${response.status})`,
-          } as any);
-          return;
-        }
-
-        const result = await response.json<{ ok: boolean; status: string }>();
-        this.runnerLink.send({ type: 'execution-api-result', requestId, data: { success: true, status: result.status } } as any);
-        return;
-      }
-
-      if (action === 'cancel') {
-        const reason = typeof payload?.reason === 'string' ? payload.reason : undefined;
-        const execution = await getExecutionOwnerAndStatus(this.appDb, executionId) as { user_id: string; status: string } | null;
-        if (!execution || execution.user_id !== userId) {
-          this.runnerLink.send({ type: 'execution-api-result', requestId, error: `Execution not found: ${executionId}` } as any);
-          return;
-        }
-
-        const doId = this.env.WORKFLOW_EXECUTOR.idFromName(executionId);
-        const stub = this.env.WORKFLOW_EXECUTOR.get(doId);
-        const response = await stub.fetch(new Request('https://workflow-executor/cancel', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            executionId,
-            reason,
-          }),
-        }));
-
-        if (!response.ok) {
-          const errorBody = await response.json<{ error?: string }>().catch((): { error?: string } => ({ error: undefined }));
-          this.runnerLink.send({
-            type: 'execution-api-result',
-            requestId,
-            error: errorBody.error || `Failed to cancel execution (${response.status})`,
-          } as any);
-          return;
-        }
-
-        const result = await response.json<{ ok: boolean; status: string }>();
-        this.runnerLink.send({ type: 'execution-api-result', requestId, data: { success: true, status: result.status } } as any);
-        return;
-      }
-
-      this.runnerLink.send({ type: 'execution-api-result', requestId, error: `Unsupported execution action: ${action}` } as any);
-    } catch (err) {
-      console.error('[SessionAgentDO] Execution API error:', err);
-      this.runnerLink.send({ type: 'execution-api-result', requestId, error: err instanceof Error ? err.message : String(err) } as any);
-    }
-  }
-
-  private async handleWorkflowExecutionResult(msg: RunnerMessage) {
-    const executionId = msg.executionId || msg.envelope?.executionId;
-    const envelope = msg.envelope;
-    if (!executionId || !envelope) {
-      console.error('[SessionAgentDO] Invalid workflow execution result payload');
-      return;
-    }
-
-    const execution = await getExecutionWithWorkflowName(this.env.DB, executionId);
-
-    if (!execution) {
-      console.warn(`[SessionAgentDO] Received workflow result for unknown execution ${executionId}`);
-      return;
-    }
-
-    const currentSessionId = this.sessionState.sessionId;
-    if (execution.session_id && currentSessionId && execution.session_id !== currentSessionId) {
-      console.warn(
-        `[SessionAgentDO] Ignoring workflow result for ${executionId}: execution bound to ${execution.session_id}, this DO is ${currentSessionId}`,
-      );
-      return;
-    }
-
-    const outputsJson = envelope.output ? JSON.stringify(envelope.output) : null;
-    const stepsJson = envelope.steps ? JSON.stringify(envelope.steps) : null;
-
-    let nextStatus: 'completed' | 'failed' | 'cancelled' | 'waiting_approval' = 'failed';
-    let error: string | null = envelope.error || null;
-    let resumeToken: string | null = null;
-    let completedAt: string | null = new Date().toISOString();
-
-    if (envelope.status === 'ok') {
-      nextStatus = 'completed';
-      error = null;
-    } else if (envelope.status === 'failed') {
-      nextStatus = 'failed';
-      error = envelope.error || 'workflow_failed';
-    } else if (envelope.status === 'cancelled') {
-      nextStatus = 'cancelled';
-      error = envelope.error || 'workflow_cancelled';
-    } else if (envelope.status === 'needs_approval') {
-      resumeToken = envelope.requiresApproval?.resumeToken || null;
-      if (!resumeToken) {
-        nextStatus = 'failed';
-        error = 'approval_resume_token_missing';
-      } else {
-        nextStatus = 'waiting_approval';
-        error = null;
-        completedAt = null;
-      }
-    }
-
-    await completeExecutionFull(this.appDb, executionId, {
-      status: nextStatus,
-      outputs: outputsJson,
-      steps: stepsJson,
-      error,
-      resumeToken,
-      completedAt,
-    });
-
-    if (Array.isArray(envelope.steps) && envelope.steps.length > 0) {
-      for (const step of envelope.steps) {
-        const attempt = step.attempt && step.attempt > 0 ? step.attempt : 1;
-        await upsertExecutionStep(this.env.DB, executionId, {
-          stepId: step.stepId,
-          attempt,
-          status: step.status,
-          input: step.input !== undefined ? JSON.stringify(step.input) : null,
-          output: step.output !== undefined ? JSON.stringify(step.output) : null,
-          error: step.error || null,
-          startedAt: step.startedAt || null,
-          completedAt: step.completedAt || null,
-        });
-      }
-    }
-
-    if (nextStatus === 'waiting_approval') {
-      try {
-        await enqueueWorkflowApprovalNotificationIfMissing(this.env.DB, {
-          toUserId: execution.user_id,
-          executionId,
-          fromSessionId: execution.session_id || currentSessionId || undefined,
-          contextSessionId: execution.session_id || currentSessionId || undefined,
-          workflowName: execution.workflow_name,
-          approvalPrompt: envelope.requiresApproval?.prompt,
-        });
-      } catch (notifyError) {
-        console.error('[SessionAgentDO] Failed to enqueue workflow approval notification:', notifyError);
-      }
-    } else {
-      try {
-        await markWorkflowApprovalNotificationsRead(this.appDb, execution.user_id, executionId);
-      } catch (notifyError) {
-        console.error('[SessionAgentDO] Failed to clear workflow approval notifications:', notifyError);
-      }
-    }
-
-    if (nextStatus !== 'waiting_approval' && currentSessionId) {
-      const sessionRow = await getSession(this.appDb, currentSessionId);
-
-      if (sessionRow?.purpose === 'workflow') {
-        this.ctx.waitUntil(this.handleStop(`workflow_execution_${nextStatus}`));
-      }
-    }
-  }
 
   private async handleListPullRequests(
     requestId: string,
@@ -5431,35 +4312,25 @@ export class SessionAgentDO {
     executionIdRaw?: string,
     payload?: WorkflowExecutionDispatchPayload,
   ): Promise<Response> {
-    const executionId = (executionIdRaw || '').trim();
-    if (!executionId) {
-      return Response.json({ error: 'executionId is required' }, { status: 400 });
+    const dispatchResult = buildWorkflowDispatch(executionIdRaw, payload);
+    if (dispatchResult.error) {
+      return Response.json({ error: dispatchResult.error.error }, { status: dispatchResult.error.status });
     }
-    if (!payload || typeof payload !== 'object') {
-      return Response.json({ error: 'payload is required' }, { status: 400 });
-    }
-    if (payload.kind !== 'run' && payload.kind !== 'resume') {
-      return Response.json({ error: 'payload.kind must be run or resume' }, { status: 400 });
-    }
-    if (typeof payload.executionId !== 'string' || payload.executionId !== executionId) {
-      return Response.json({ error: 'payload.executionId must match executionId' }, { status: 400 });
-    }
-    if (!payload.payload || typeof payload.payload !== 'object' || Array.isArray(payload.payload)) {
-      return Response.json({ error: 'payload.payload must be an object' }, { status: 400 });
-    }
+
+    const { executionId, payload: validPayload } = dispatchResult.ready!;
 
     const status = this.sessionState.status;
     const queueWorkflowDispatch = (reason: string) => {
       const queueId = crypto.randomUUID();
       this.promptQueue.enqueue({
         id: queueId, content: '', queueType: 'workflow_execute',
-        workflowExecutionId: executionId, workflowPayload: JSON.stringify(payload),
+        workflowExecutionId: executionId, workflowPayload: JSON.stringify(validPayload),
       });
       this.emitAuditEvent(
         'workflow.dispatch_queued',
         `Workflow execution queued (${executionId.slice(0, 8)}): ${reason}`,
         undefined,
-        { executionId, kind: payload.kind, reason },
+        { executionId, kind: validPayload.kind, reason },
       );
       return Response.json({ success: true, queued: true, reason }, { status: 202 });
     };
@@ -5492,7 +4363,7 @@ export class SessionAgentDO {
     const directWfDispatched = this.runnerLink.send({
       type: 'workflow-execute',
       executionId,
-      payload,
+      payload: validPayload,
       modelPreferences: dispatchModelPrefs,
     });
     if (!directWfDispatched) {
@@ -5504,7 +4375,7 @@ export class SessionAgentDO {
       'workflow.dispatch',
       `Workflow execution dispatched (${executionId.slice(0, 8)})`,
       undefined,
-      { executionId, kind: payload.kind },
+      { executionId, kind: validPayload.kind },
     );
 
     return Response.json({ success: true });
