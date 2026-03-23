@@ -40,6 +40,7 @@ import { resolveOrchestratorPersona } from '../services/persona.js';
 import { sendChannelReply } from '../services/channel-reply.js';
 import { mailboxSend, mailboxCheck } from '../services/session-mailbox.js';
 import { taskCreate, taskList, taskUpdate, taskMy } from '../services/session-tasks.js';
+import { handleIdentityAction } from '../services/session-identity.js';
 import { MAX_PROMPT_ATTACHMENTS, MAX_PROMPT_ATTACHMENT_URL_LENGTH, MAX_TOTAL_ATTACHMENT_BYTES, parseBase64DataUrl, sanitizePromptAttachments, attachmentPartsForMessage, parseQueuedPromptAttachments } from '../lib/utils/prompt-validation.js';
 import { parseQueuedWorkflowPayload, deriveRuntimeStates } from '../lib/utils/runtime.js';
 
@@ -2684,7 +2685,36 @@ export class SessionAgentDO {
       },
 
       'identity-api': async (msg) => {
-        await this.handleIdentityApi(msg.requestId!, msg.action || '', msg.payload);
+        try {
+          const result = await handleIdentityAction(
+            this.appDb,
+            this.sessionState.userId,
+            msg.action || '',
+            msg.payload,
+          );
+          if (result.error) {
+            this.runnerLink.send({ type: 'identity-api-result', requestId: msg.requestId!, error: result.error, statusCode: result.statusCode } as any);
+            return;
+          }
+          this.runnerLink.send({ type: 'identity-api-result', requestId: msg.requestId!, data: result.data } as any);
+          // Hot-reload persona files if update-instructions returned updated files
+          const personaFiles = result.data?._personaFiles as ReturnType<typeof buildOrchestratorPersonaFiles> | null | undefined;
+          if (personaFiles) {
+            try {
+              const spawnRequest = this.sessionState.spawnRequest;
+              if (spawnRequest) {
+                spawnRequest.personaFiles = personaFiles;
+                this.sessionState.spawnRequest = spawnRequest;
+              }
+              await this.sendPluginContent();
+            } catch (err) {
+              console.warn('[SessionAgentDO] Failed to hot-reload persona files:', err);
+            }
+          }
+        } catch (err) {
+          console.error('[SessionAgentDO] Identity API error:', err);
+          this.runnerLink.send({ type: 'identity-api-result', requestId: msg.requestId!, error: err instanceof Error ? err.message : String(err), statusCode: 500 } as any);
+        }
       },
 
       'execution-api': async (msg) => {
@@ -4533,72 +4563,6 @@ export class SessionAgentDO {
   }
 
   // ─── Identity API (orchestrator self-edit) ─────────────────────────────────
-
-  private async handleIdentityApi(requestId: string, action: string, payload?: Record<string, unknown>) {
-    try {
-      const userId = this.sessionState.userId;
-
-      if (action === 'get') {
-        const identity = await getOrchestratorIdentity(this.appDb, userId);
-        if (!identity) {
-          this.runnerLink.send({ type: 'identity-api-result', requestId, error: 'Identity not found', statusCode: 404 } as any);
-          return;
-        }
-        this.runnerLink.send({ type: 'identity-api-result', requestId, data: { identity } } as any);
-        return;
-      }
-
-      if (action === 'update-instructions') {
-        const instructions = (payload?.instructions ?? payload?.customInstructions) as string | undefined;
-        if (instructions === undefined) {
-          this.runnerLink.send({ type: 'identity-api-result', requestId, error: 'instructions field is required', statusCode: 400 } as any);
-          return;
-        }
-        const identity = await getOrchestratorIdentity(this.appDb, userId);
-        if (!identity) {
-          this.runnerLink.send({ type: 'identity-api-result', requestId, error: 'Identity not found', statusCode: 404 } as any);
-          return;
-        }
-        // Use nullish coalescing: empty string clears instructions, undefined is rejected above
-        await updateOrchestratorIdentity(this.appDb, identity.id, { customInstructions: instructions || null } as any);
-        // Also update the linked persona file if a personaId exists
-        if (identity.personaId) {
-          await upsertPersonaFile(this.appDb, {
-            id: crypto.randomUUID(),
-            personaId: identity.personaId,
-            filename: 'custom-instructions.md',
-            content: instructions || '',
-            sortOrder: 10,
-          });
-        }
-        this.runnerLink.send({ type: 'identity-api-result', requestId, data: { ok: true } } as any);
-
-        // Hot-reload: rebuild persona files and re-send to runner so OpenCode
-        // picks up the change immediately (it watches .valet/persona/*.md).
-        try {
-          const updatedIdentity = await getOrchestratorIdentity(this.appDb, userId);
-          if (updatedIdentity) {
-            const personaFiles = buildOrchestratorPersonaFiles(updatedIdentity as any);
-            // Update stored spawnRequest so future sendPluginContent calls use fresh files
-            const spawnRequest = this.sessionState.spawnRequest;
-            if (spawnRequest) {
-              spawnRequest.personaFiles = personaFiles;
-              this.sessionState.spawnRequest = spawnRequest;
-            }
-            await this.sendPluginContent();
-          }
-        } catch (err) {
-          console.warn('[SessionAgentDO] Failed to hot-reload persona files:', err);
-        }
-        return;
-      }
-
-      this.runnerLink.send({ type: 'identity-api-result', requestId, error: `Unsupported identity action: ${action}`, statusCode: 400 } as any);
-    } catch (err) {
-      console.error('[SessionAgentDO] Identity API error:', err);
-      this.runnerLink.send({ type: 'identity-api-result', requestId, error: err instanceof Error ? err.message : String(err), statusCode: 500 } as any);
-    }
-  }
 
   private async handleExecutionApi(requestId: string, action: string, payload?: Record<string, unknown>) {
     try {
