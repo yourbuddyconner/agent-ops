@@ -256,18 +256,21 @@ sessionsRouter.post('/:id/prompt', async (c) => {
 
   await db.assertSessionAccess(c.get('db'), id, user.id, 'collaborator');
 
-  const body = await c.req.json();
+  // Read raw body and inject author info without full re-serialization.
+  // This avoids double-parsing multi-MB payloads (PDF base64 data URLs).
+  const rawBody = await c.req.text();
+  const injected = rawBody.replace(
+    /^\{/,
+    `{"authorId":${JSON.stringify(user.id)},"authorEmail":${JSON.stringify(user.email)},`,
+  );
+
   const doId = c.env.SESSIONS.idFromName(id);
   const sessionDO = c.env.SESSIONS.get(doId);
 
   const res = await sessionDO.fetch(new Request('http://do/prompt', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ...body,
-      authorId: user.id,
-      authorEmail: user.email,
-    }),
+    body: injected,
   }));
 
   if (!res.ok) {
