@@ -1,6 +1,7 @@
 import type { D1Database, DurableObjectNamespace } from '@cloudflare/workers-types';
 import type { AppDb } from '../lib/drizzle.js';
 import type { Env } from '../env.js';
+import type { RunnerMessageOf } from '@valet/shared';
 import { listWorkflows, upsertWorkflow, getWorkflowByIdOrSlug, getWorkflowOwnerCheck, deleteWorkflowTriggers, deleteWorkflowById, updateWorkflow, getWorkflowById } from '../lib/db/workflows.js';
 import { listTriggers, getTrigger, deleteTrigger, createTrigger, getTriggerForRun, updateTriggerLastRun, findScheduleTriggerByNameAndWorkflow, findScheduleTriggersByWorkflow, findScheduleTriggersByName, updateTriggerFull } from '../lib/db/triggers.js';
 import { getExecution, getExecutionWithWorkflowName, getExecutionForAuth, getExecutionSteps, getExecutionOwnerAndStatus, checkIdempotencyKey, createExecution, completeExecutionFull, upsertExecutionStep, listExecutions, buildWorkflowStepOrderMap, rankStepOrderIndex } from '../lib/db/executions.js';
@@ -1016,11 +1017,10 @@ export interface WorkflowExecutionResultData {
 export async function processWorkflowExecutionResult(
   db: AppDb,
   envDB: D1Database,
-  msg: { executionId?: string; envelope?: Record<string, unknown> },
+  msg: RunnerMessageOf<'workflow-execution-result'>,
   currentSessionId: string | null,
 ): Promise<WorkflowExecutionResultData | null> {
-  const executionId = msg.executionId || (msg.envelope as Record<string, unknown> | undefined)?.executionId as string | undefined;
-  const envelope = msg.envelope;
+  const { executionId, envelope } = msg;
   if (!executionId || !envelope) {
     console.error('[session-workflows] Invalid workflow execution result payload');
     return null;
@@ -1044,7 +1044,7 @@ export async function processWorkflowExecutionResult(
   const stepsJson = envelope.steps ? JSON.stringify(envelope.steps) : null;
 
   let nextStatus: 'completed' | 'failed' | 'cancelled' | 'waiting_approval' = 'failed';
-  let error: string | null = (envelope.error as string) || null;
+  let error: string | null = envelope.error || null;
   let resumeToken: string | null = null;
   let completedAt: string | null = new Date().toISOString();
 
@@ -1053,13 +1053,12 @@ export async function processWorkflowExecutionResult(
     error = null;
   } else if (envelope.status === 'failed') {
     nextStatus = 'failed';
-    error = (envelope.error as string) || 'workflow_failed';
+    error = envelope.error || 'workflow_failed';
   } else if (envelope.status === 'cancelled') {
     nextStatus = 'cancelled';
-    error = (envelope.error as string) || 'workflow_cancelled';
+    error = envelope.error || 'workflow_cancelled';
   } else if (envelope.status === 'needs_approval') {
-    const requiresApproval = envelope.requiresApproval as Record<string, unknown> | undefined;
-    resumeToken = (requiresApproval?.resumeToken as string) || null;
+    resumeToken = envelope.requiresApproval?.resumeToken || null;
     if (!resumeToken) {
       nextStatus = 'failed';
       error = 'approval_resume_token_missing';
@@ -1080,17 +1079,17 @@ export async function processWorkflowExecutionResult(
   });
 
   if (Array.isArray(envelope.steps) && envelope.steps.length > 0) {
-    for (const step of envelope.steps as Array<Record<string, unknown>>) {
-      const attempt = (step.attempt as number) && (step.attempt as number) > 0 ? (step.attempt as number) : 1;
+    for (const step of envelope.steps) {
+      const attempt = step.attempt && step.attempt > 0 ? step.attempt : 1;
       await upsertExecutionStep(envDB, executionId, {
-        stepId: step.stepId as string,
+        stepId: step.stepId,
         attempt,
-        status: step.status as string,
+        status: step.status,
         input: step.input !== undefined ? JSON.stringify(step.input) : null,
         output: step.output !== undefined ? JSON.stringify(step.output) : null,
-        error: (step.error as string) || null,
-        startedAt: (step.startedAt as string) || null,
-        completedAt: (step.completedAt as string) || null,
+        error: step.error || null,
+        startedAt: step.startedAt || null,
+        completedAt: step.completedAt || null,
       });
     }
   }

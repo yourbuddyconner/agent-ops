@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { RunnerLink, type RunnerLinkDeps, type RunnerMessage, type RunnerOutbound, type RunnerMessageHandlers } from './runner-link.js';
+import { RunnerLink, type RunnerLinkDeps, type RunnerToDOMessage, type DOToRunnerMessage, type RunnerMessageHandlers } from './runner-link.js';
 
 // ─── Mock Helpers ─────────────────────────────────────────────────────────────
 
@@ -109,7 +109,7 @@ describe('RunnerLink', () => {
     it('sends JSON to all runner sockets', () => {
       deps.addSocket();
       deps.addSocket();
-      const msg: RunnerOutbound = { type: 'pong' };
+      const msg: DOToRunnerMessage = { type: 'pong' };
 
       const result = link.send(msg);
 
@@ -142,7 +142,7 @@ describe('RunnerLink', () => {
       deps.addSocket();
       const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-      link.send({ type: 'prompt', messageId: 'msg-1', content: 'hello' } as RunnerOutbound);
+      link.send({ type: 'prompt', messageId: 'msg-1', content: 'hello' });
 
       expect(spy).toHaveBeenCalledWith(expect.stringContaining('messageId=msg-1'));
       spy.mockRestore();
@@ -158,7 +158,7 @@ describe('RunnerLink', () => {
         'complete': handler,
       };
 
-      const msg: RunnerMessage = { type: 'complete' };
+      const msg: RunnerToDOMessage = { type: 'complete' };
       await link.handleMessage(msg, handlers);
 
       expect(handler).toHaveBeenCalledWith(msg);
@@ -185,7 +185,7 @@ describe('RunnerLink', () => {
       };
 
       await expect(
-        link.handleMessage({ type: 'error' } as RunnerMessage, handlers),
+        link.handleMessage({ type: 'error', messageId: '', error: '' } as RunnerToDOMessage, handlers),
       ).rejects.toThrow('handler boom');
     });
 
@@ -209,9 +209,17 @@ describe('RunnerLink', () => {
         'message.finalize': handler,
       };
 
-      for (const type of ['agentStatus', 'message.create', 'message.part.text-delta', 'message.part.tool-update', 'message.finalize'] as const) {
+      const activityMessages: RunnerToDOMessage[] = [
+        { type: 'agentStatus', status: 'idle' },
+        { type: 'message.create', turnId: 't1' },
+        { type: 'message.part.text-delta', turnId: 't1', delta: '' },
+        { type: 'message.part.tool-update', turnId: 't1', callId: 'c1', toolName: 'test', status: 'running' },
+        { type: 'message.finalize', turnId: 't1', reason: 'end_turn' },
+      ];
+
+      for (const msg of activityMessages) {
         onActivity.mockClear();
-        await link.handleMessage({ type } as RunnerMessage, handlers, onActivity);
+        await link.handleMessage(msg, handlers, onActivity);
         expect(onActivity).toHaveBeenCalledTimes(1);
       }
     });
@@ -226,9 +234,16 @@ describe('RunnerLink', () => {
         'models': handler,
       };
 
-      for (const type of ['complete', 'error', 'ping', 'models'] as const) {
+      const nonActivityMessages: RunnerToDOMessage[] = [
+        { type: 'complete' },
+        { type: 'error', messageId: '', error: '' },
+        { type: 'ping' },
+        { type: 'models', models: [] },
+      ];
+
+      for (const msg of nonActivityMessages) {
         onActivity.mockClear();
-        await link.handleMessage({ type } as RunnerMessage, handlers, onActivity);
+        await link.handleMessage(msg, handlers, onActivity);
         expect(onActivity).not.toHaveBeenCalled();
       }
     });
@@ -238,7 +253,7 @@ describe('RunnerLink', () => {
       const handlers: RunnerMessageHandlers = { 'agentStatus': handler };
 
       // Should not throw
-      await link.handleMessage({ type: 'agentStatus' } as RunnerMessage, handlers);
+      await link.handleMessage({ type: 'agentStatus', status: 'idle' }, handlers);
 
       expect(handler).toHaveBeenCalled();
     });
