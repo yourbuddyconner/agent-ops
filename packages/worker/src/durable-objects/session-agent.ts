@@ -18,7 +18,7 @@ import type { ChannelTarget, ChannelContext, InteractivePrompt, InteractiveActio
 import { MessageStore } from './message-store.js';
 import { ChannelRouter } from './channel-router.js';
 import { PromptQueue } from './prompt-queue.js';
-import { RunnerLink, type RunnerMessage, type RunnerOutbound, type PromptAttachment, type RunnerMessageHandlers, type WorkflowExecutionDispatchPayload } from './runner-link.js';
+import { RunnerLink, type RunnerToDOMessage, type DOToRunnerMessage, type PromptAttachment, type RunnerMessageHandlers, type WorkflowExecutionDispatchPayload, type DOMessageOf } from './runner-link.js';
 import { SessionState, type SessionStartParams } from './session-state.js';
 import { SessionLifecycle, SandboxAlreadyExitedError } from './session-lifecycle.js';
 import { resolveOrchestratorPersona } from '../services/persona.js';
@@ -804,7 +804,7 @@ export class SessionAgentDO {
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     const data = typeof message === 'string' ? message : new TextDecoder().decode(message);
-    let parsed: ClientMessage | RunnerMessage;
+    let parsed: ClientMessage | RunnerToDOMessage;
 
     try {
       parsed = JSON.parse(data);
@@ -821,7 +821,7 @@ export class SessionAgentDO {
 
     if (isRunner) {
       await this.runnerLink.handleMessage(
-        parsed as RunnerMessage,
+        parsed as RunnerToDOMessage,
         this.runnerHandlers,
         () => {
           this.lifecycle.touchActivity();
@@ -1859,7 +1859,7 @@ export class SessionAgentDO {
           `INSERT INTO interactive_prompts (id, type, request_id, title, actions, context, status, expires_at)
            VALUES (?, 'question', ?, ?, ?, ?, 'pending', ?)`,
           qId,
-          msg.requestId || null,
+          null,
           msg.text || '',
           JSON.stringify(actions),
           JSON.stringify(context),
@@ -1973,7 +1973,7 @@ export class SessionAgentDO {
         // which already exists in the messages table (PRIMARY KEY conflict).
         const errId = crypto.randomUUID();
         const errCh = this.activeChannel;
-        const errorText = msg.error || msg.content || 'Unknown error';
+        const errorText = msg.error || 'Unknown error';
         this.messageStore.writeMessage({
           id: errId,
           role: 'system',
@@ -1984,7 +1984,7 @@ export class SessionAgentDO {
         this.broadcastToClients({
           type: 'error',
           messageId: errId,
-          error: msg.error || msg.content,
+          error: msg.error,
           ...(errCh ? { channelType: errCh.channelType, channelId: errCh.channelId } : {}),
         });
         this.emitEvent('turn_error', {
@@ -2280,13 +2280,10 @@ export class SessionAgentDO {
 
       'diff': (msg) => {
         // Runner returned diff data — broadcast to clients
-        // Runner sends { type, requestId, data: { files } } or { type, requestId, files }
-        const diffPayload = typeof msg.data === 'object' && msg.data !== null ? msg.data as Record<string, unknown> : null;
-        const diffFiles = diffPayload?.files ?? msg.files ?? [];
         this.broadcastToClients({
           type: 'diff',
           requestId: msg.requestId,
-          data: { files: diffFiles },
+          data: msg.data,
         });
       },
 
@@ -2306,8 +2303,8 @@ export class SessionAgentDO {
         this.broadcastToClients({
           type: 'command-result',
           requestId: msg.requestId,
-          command: (msg as any).command,
-          result: (msg as any).result ?? msg.data,
+          command: msg.command,
+          result: msg.result,
           error: msg.error,
         });
       },
@@ -2337,38 +2334,11 @@ export class SessionAgentDO {
         } as any);
       },
 
-      'pr-created': (msg) => {
-        // Runner reports a PR was created
-        const sessionIdPr = this.sessionState.sessionId;
-        if (sessionIdPr && msg.number) {
-          updateSessionGitState(this.appDb, sessionIdPr, {
-            prNumber: msg.number,
-            prTitle: msg.title,
-            prUrl: msg.url,
-            prState: (msg.status as any) || 'open',
-            prCreatedAt: new Date().toISOString(),
-          }).catch((err) =>
-            console.error('[SessionAgentDO] Failed to update PR state in D1:', err),
-          );
-        }
-        this.broadcastToClients({
-          type: 'pr-created',
-          data: {
-            number: msg.number,
-            title: msg.title,
-            url: msg.url,
-            state: msg.status || 'open',
-          },
-        } as any);
-        this.emitAuditEvent('git.pr_created', `PR #${msg.number}: ${msg.title || ''}`, undefined, { prNumber: msg.number, prUrl: msg.url });
-      },
-
       'files-changed': (msg) => {
         // Runner reports files changed — upsert in D1, broadcast to clients
         const sessionIdFc = this.sessionState.sessionId;
-        const filesChanged = (msg as any).files as Array<{ path: string; status: string; additions?: number; deletions?: number }> | undefined;
-        if (sessionIdFc && Array.isArray(filesChanged)) {
-          for (const file of filesChanged) {
+        if (sessionIdFc && Array.isArray(msg.files)) {
+          for (const file of msg.files) {
             upsertSessionFileChanged(this.appDb, sessionIdFc, {
               filePath: file.path,
               status: file.status,
@@ -2381,7 +2351,7 @@ export class SessionAgentDO {
         }
         this.broadcastToClients({
           type: 'files-changed',
-          files: filesChanged ?? [],
+          files: msg.files,
         } as any);
       },
 
@@ -2397,7 +2367,7 @@ export class SessionAgentDO {
       'title': (msg) => {
         // Runner reports session title update
         const sessionIdTitle = this.sessionState.sessionId;
-        const newTitle = msg.title || msg.content;
+        const newTitle = msg.title;
         if (sessionIdTitle && newTitle) {
           this.sessionState.title = newTitle;
           updateSessionTitle(this.appDb, sessionIdTitle, newTitle).catch((err) =>
@@ -2850,14 +2820,12 @@ export class SessionAgentDO {
       'workflow-sync': async (msg) => {
         try {
           const result = await workflowSyncSvc(this.appDb, this.env.DB, this.sessionState.userId, {
-            id: msg.id || msg.workflowId,
+            id: msg.id,
             slug: msg.slug,
-            name: msg.name || msg.title,
+            name: msg.name,
             description: msg.description,
             version: msg.version,
-            data: (typeof msg.data === 'object' && msg.data !== null && !Array.isArray(msg.data))
-              ? (msg.data as Record<string, unknown>)
-              : msg.dataJson,
+            data: msg.data,
           });
           if (result.error) {
             this.runnerLink.send({ type: 'workflow-sync-result', requestId: msg.requestId!, error: result.error } as any);
@@ -5410,7 +5378,7 @@ export class SessionAgentDO {
     }
 
     const envVars = spawnRequest.envVars || {};
-    const config: NonNullable<RunnerOutbound['config']> = {
+    const config: DOMessageOf<'opencode-config'>['config'] = {
       providerKeys: {},
       tools: {},
       instructions: [],
