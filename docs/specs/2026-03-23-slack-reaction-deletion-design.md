@@ -75,7 +75,7 @@ slack-events.ts handler
 | `packages/plugin-slack/src/channels/transport.ts` | `sendMessage()`: attach `metadata` with `event_type: "valet_bot_message"` and `event_payload: { userId }` to the `chat.postMessage` body |
 | `packages/worker/src/routes/slack-events.ts` | Add early handler for `reaction_added` events before the existing `parseInbound` flow. Extract `event.reaction`, `event.item.channel`, `event.item.ts`, `event.user`. Handler runs after install resolution (line 68) and reuses the already-decrypted `botToken` from `install.botToken` |
 | `packages/worker/src/services/slack.ts` | New `handleReactionDeletion(botToken, channel, ts, slackUserId, env)` function: fetch message, check metadata, delete, send ephemeral. Receives `botToken` from the caller in `slack-events.ts` — does not independently resolve tokens |
-| Slack App dashboard | Ensure `reaction_added` is in the bot's event subscriptions |
+| Slack App dashboard | Add `reaction_added` to bot event subscriptions under **Event Subscriptions → Subscribe to bot events**. This is a one-time manual step in the Slack API dashboard. |
 
 ### Scoping notes
 
