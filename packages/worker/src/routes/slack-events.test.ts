@@ -14,6 +14,7 @@ const {
   getOrchestratorSessionMock,
   getOrCreateChannelThreadMock,
   getChannelThreadMappingMock,
+  handleReactionDeletionMock,
 } = vi.hoisted(() => ({
   getOrgSlackInstallMock: vi.fn(),
   resolveUserByExternalIdMock: vi.fn(),
@@ -27,6 +28,7 @@ const {
   getOrchestratorSessionMock: vi.fn(),
   getOrCreateChannelThreadMock: vi.fn(),
   getChannelThreadMappingMock: vi.fn(),
+  handleReactionDeletionMock: vi.fn(),
 }));
 
 vi.mock('../lib/db.js', () => ({
@@ -69,6 +71,7 @@ vi.mock('./channel-webhooks.js', () => ({
 vi.mock('../services/slack.js', () => ({
   getSlackUserInfo: vi.fn(),
   getSlackBotInfo: vi.fn(),
+  handleReactionDeletion: handleReactionDeletionMock,
 }));
 
 vi.mock('../services/slack-threads.js', () => ({
@@ -293,5 +296,114 @@ describe('private channel access control on inbound mentions', () => {
 
     expect(res.status).toBe(200);
     expect(dispatchOrchestratorPromptMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe('slackEventsRouter /slack/events reaction_added', () => {
+  const envBindings = {
+    DB: {},
+    ENCRYPTION_KEY: 'test-key',
+    SLACK_SIGNING_SECRET: 'fallback-secret',
+  } as any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getOrgSlackInstallMock.mockResolvedValue({
+      botToken: 'xoxb-test',
+      signingSecret: 'test-secret',
+      teamId: 'T123',
+    });
+    verifySlackSignatureMock.mockResolvedValue(true);
+    handleReactionDeletionMock.mockResolvedValue({ deleted: true });
+  });
+
+  function buildReactionRequest(payload: Record<string, unknown>) {
+    return new Request('http://localhost/slack/events', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-slack-signature': 'v0=test',
+        'x-slack-request-timestamp': String(Math.floor(Date.now() / 1000)),
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  it('dispatches handleReactionDeletion for :x: reaction', async () => {
+    const app = buildApp();
+    const waitUntil = vi.fn((p: Promise<unknown>) => p);
+    const payload = {
+      type: 'event_callback',
+      team_id: 'T123',
+      event: {
+        type: 'reaction_added',
+        reaction: 'x',
+        user: 'U_REACTOR',
+        item: { type: 'message', channel: 'C_CHAN', ts: '1234567890.123456' },
+      },
+    };
+
+    const resp = await app.fetch(
+      buildReactionRequest(payload),
+      envBindings,
+      { waitUntil } as any,
+    );
+
+    expect(resp.status).toBe(200);
+    // waitUntil captures the background promise — await it to flush
+    await Promise.all(waitUntil.mock.calls.map(([p]) => p));
+    expect(handleReactionDeletionMock).toHaveBeenCalledWith(
+      'xoxb-test',
+      'C_CHAN',
+      '1234567890.123456',
+      'U_REACTOR',
+      expect.anything(),
+    );
+  });
+
+  it('ignores non-:x: reactions', async () => {
+    const app = buildApp();
+    const payload = {
+      type: 'event_callback',
+      team_id: 'T123',
+      event: {
+        type: 'reaction_added',
+        reaction: 'thumbsup',
+        user: 'U_REACTOR',
+        item: { type: 'message', channel: 'C_CHAN', ts: '1234567890.123456' },
+      },
+    };
+
+    const resp = await app.fetch(
+      buildReactionRequest(payload),
+      envBindings,
+      { waitUntil: vi.fn() } as any,
+    );
+
+    expect(resp.status).toBe(200);
+    expect(handleReactionDeletionMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 even without item data', async () => {
+    const app = buildApp();
+    const payload = {
+      type: 'event_callback',
+      team_id: 'T123',
+      event: {
+        type: 'reaction_added',
+        reaction: 'x',
+        user: 'U_REACTOR',
+        // missing item
+      },
+    };
+
+    const resp = await app.fetch(
+      buildReactionRequest(payload),
+      envBindings,
+      { waitUntil: vi.fn() } as any,
+    );
+
+    expect(resp.status).toBe(200);
+    expect(handleReactionDeletionMock).not.toHaveBeenCalled();
   });
 });
