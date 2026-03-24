@@ -48,14 +48,14 @@ interface ChannelRouterDeps {
 }
 ```
 
-The `resolveToken` callback is implemented by the DO using `getSlackBotToken(env)` for Slack and `getCredential(env, 'user', userId, channelType)` for other channels. The `resolvePersona` callback wraps `resolveOrchestratorPersona(appDb, userId)` with a `.catch(() => undefined)` guard since persona resolution can throw when Slack isn't linked — a missing persona should degrade gracefully (send without persona), not fail the send. All three imports (`getSlackBotToken`, `getCredential`, `resolveOrchestratorPersona`) stay on session-agent.ts.
+The `resolveToken` callback is implemented by the DO using `getSlackBotToken(env)` for Slack and `getCredential(env, 'user', userId, channelType)` for other channels. The `resolvePersona` callback wraps `resolveOrchestratorPersona(appDb, userId)` with a `.catch(() => undefined)` guard since persona resolution can throw when Slack isn't linked — a missing persona should degrade gracefully (send without persona), not fail the send. **This `.catch()` guard is a new addition** — the current `handleChannelReply` has no such guard, meaning persona failure currently kills the entire send. The refactor intentionally improves this: if persona resolution fails, the message is sent without persona attribution rather than failing. Without this guard, `resolvePersona` throwing would cause `ChannelRouter.sendReply()` to throw without returning a result, and the agent's `channel_reply` tool call would hang indefinitely. All three imports (`getSlackBotToken`, `getCredential`, `resolveOrchestratorPersona`) stay on session-agent.ts.
 
 #### Public API
 
 | Method | Purpose |
 |--------|---------|
-| `setActiveChannel(channel)` | Track which channel the current prompt is associated with. Called at prompt dispatch. |
-| `clearActiveChannel()` | Clear on new prompt cycle or dispatch failure. |
+| `setActiveChannel(channel)` | Track which channel the current prompt is associated with. Called at prompt dispatch. Atomically replaces any previous value — no need to call `clearActiveChannel()` first. |
+| `clearActiveChannel()` | Explicitly clear channel context (e.g. on dispatch failure). |
 | `get activeChannel` | Current channel context. Used by agent status broadcasts, approvals, etc. |
 | `recoverActiveChannel(channelType, channelId)` | Restore tracking state after DO hibernation from prompt_queue data. Sets in-memory state so subsequent `activeChannel` reads return it without hitting SQLite again. |
 | `sendReply(opts): Promise<SendReplyResult>` | Explicit reply dispatch (text + optional file/image attachments). |
@@ -168,7 +168,8 @@ ChannelRouter imports this. `parseSlackChannelId()` is removed from session-agen
 - `flushPendingChannelReply()` — entire method (~70 lines)
 - `channelRouter.setResult()` call in finalize turn handler
 - `channelRouter.markHandled()` call in `handleChannelReply()`
-- Auto-reply flush in `complete` handler
+- Auto-reply flush in `complete` handler (~line 2119)
+- Auto-reply flush in error safety-net alarm handler (~line 967) — this is a second call site that fires when the runner gets stuck; remove the `flushPendingChannelReply()` call but keep the `handlePromptComplete()` call that follows it
 - Auto-reply tracking log in `complete` handler
 - `channelRouter.clear()` + `channelRouter.trackReply()` blocks in `handlePrompt()` and `sendNextQueuedPrompt()` (replaced by `setActiveChannel()` calls)
 - Shimmer clearing code block (~13 lines) in `handleChannelReply()` — moves to Slack transport
@@ -212,9 +213,13 @@ The current `activeChannel` getter checks `channelRouter.pendingSnapshot` then f
 - `channelRouter.activeChannel` is the primary source (set via `setActiveChannel()` or `recoverActiveChannel()`)
 - The DO's `activeChannel` getter keeps the lazy fallback pattern: checks `channelRouter.activeChannel` first, then falls back to `promptQueue.getProcessingChannelContext()` and calls `channelRouter.recoverActiveChannel()` if found. This ensures correctness across all wake-up paths (alarm, WebSocket reconnect, HTTP fetch) without requiring eager recovery.
 
-### Channel Delivery Stamping
+### Channel Delivery Stamping + ChannelSentBadge — Intentionally Removed
 
-The auto-reply path stamped assistant messages with channel metadata (`stampChannelDelivery`) so the web UI could show a "sent to Slack" badge. The explicit `handleChannelReply()` path does not do this. With auto-reply removed, stamping is intentionally dropped — when the agent explicitly replies, the web UI already shows the `channel_reply` tool call.
+The auto-reply path stamped assistant messages with channel metadata (`stampChannelDelivery`) so the web UI's `ChannelSentBadge` component (in `message-list.tsx`) could show a "sent to Slack" badge on the assistant message bubble. The explicit `handleChannelReply()` path never did this stamping — the badge only appeared via auto-reply.
+
+With auto-reply removed, `stampChannelDelivery` has no callers and `ChannelSentBadge` will never render. This is an intentional removal: the badge is redundant with the `channel_reply` tool call that the web UI already renders inline in the message stream. The user sees exactly what was sent and where via the tool call.
+
+Clean up: remove `stampChannelDelivery` from `message-store.ts` and `ChannelSentBadge` from `message-list.tsx`.
 
 ### Telegram and Other Channels
 
@@ -231,6 +236,8 @@ The Telegram transport uses the same `ChannelTransport` contract. It does not us
 | `packages/plugin-slack/src/channels/transport.test.ts` | Update tests for shimmer-on-send behavior |
 | `packages/worker/src/services/channel-reply.ts` | Delete |
 | `packages/worker/src/durable-objects/channel-router.test.ts` | Rewrite for new ChannelRouter API |
+| `packages/worker/src/durable-objects/message-store.ts` | Remove `stampChannelDelivery` (dead code after auto-reply removal) |
+| `packages/client/src/components/chat/message-list.tsx` | Remove `ChannelSentBadge` rendering (redundant with tool call display) |
 
 ### Acceptance Criteria
 
@@ -247,5 +254,6 @@ The Telegram transport uses the same `ChannelTransport` contract. It does not us
 - [ ] `channelRegistry` no longer imported directly by session-agent.ts
 - [ ] Follow-up reminders still function as a soft safety net
 - [ ] ChannelRouter is unit-testable with injected deps
+- [ ] `ChannelSentBadge` and `stampChannelDelivery` removed (dead code)
 - [ ] TODO added for treating web UI as a channel
 - [ ] Build passes
