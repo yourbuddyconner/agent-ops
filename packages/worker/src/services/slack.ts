@@ -547,6 +547,7 @@ export async function handleReactionDeletion(
   }
 
   const message = historyData.messages[0];
+  console.log(`[Slack] Reaction deletion: message ts=${message.ts} metadata=${JSON.stringify(message.metadata)}`);
 
   // 3. Check metadata ownership
   if (message.metadata?.event_type !== 'valet_bot_message') {
