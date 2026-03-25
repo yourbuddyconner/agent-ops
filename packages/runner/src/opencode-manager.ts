@@ -1,13 +1,23 @@
 /**
- * OpenCodeManager — process lifecycle manager for OpenCode.
+ * OpenCodeManager — supervisor loop for the OpenCode process.
  *
- * Replaces the OpenCode auth/config/start sections of start.sh.
- * The Runner owns the OpenCode process and can restart it to apply
- * config changes pushed from the SessionAgent DO over WebSocket.
+ * A single async runLoop() is the ONLY code path that spawns a process,
+ * structurally preventing concurrent spawns. Wake signal pattern handles
+ * interruption for config changes and shutdown.
  */
 
 import { Subprocess } from "bun";
 import { OpenCodeConfigWriter } from "./opencode-config-writer.js";
+
+function createDeferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(r => { resolve = r; });
+  return { promise, resolve };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
+}
 
 export interface CustomProviderConfig {
   providerId: string;
@@ -34,24 +44,33 @@ interface OpenCodeManagerOptions {
 }
 
 export class OpenCodeManager {
+  // ─── Constants ──────────────────────────────────────────────────────
+  static readonly MAX_CRASHES = 5;
+  static readonly CRASH_RESET_MS = 60_000;
+  static readonly HEALTH_POLL_MS = 200;
+  static readonly HEALTH_MAX_RETRIES = 150;
+  static readonly BACKOFF_BASE_MS = 2000;
+  static readonly BACKOFF_MAX_MS = 32_000;
+
+  // ─── State ──────────────────────────────────────────────────────────
+  private desired: 'up' | 'down' = 'down';
+  private desiredConfig: OpenCodeConfig | null = null;
+  private runningConfig: OpenCodeConfig | null = null;
   private process: Subprocess | null = null;
-  private currentConfig: OpenCodeConfig | null = null;
-  private healthy = false;
-  private stopping = false;
-  private configLock: Promise<void> = Promise.resolve();
-  private configApplyCounter = 0;
-  private autoRestartTimer: ReturnType<typeof setTimeout> | null = null;
-  private consecutiveCrashes = 0;
-  private lastCrashAt = 0;
+  private loopRunning = false;
+  private loopPromise: Promise<void> | null = null;
+  private crashCount = 0;
+  private lastHealthyAt = 0;
+  private wake = createDeferred();
+  private healthyWaiters: Array<() => void> = [];
 
-  private readonly workspaceDir: string;
-  private readonly port: number;
   private readonly configWriter: OpenCodeConfigWriter;
+  private readonly port: number;
+  private readonly workspaceDir: string;
 
-  /** Max consecutive crashes before giving up auto-restart */
-  private static readonly MAX_CONSECUTIVE_CRASHES = 5;
-  /** Reset crash counter if stable for this long (ms) */
-  private static readonly CRASH_RESET_INTERVAL = 60_000;
+  // Event callbacks
+  private fatalCallback?: () => void;
+  private crashCallback?: (code: number) => void;
 
   constructor(options: OpenCodeManagerOptions) {
     this.workspaceDir = options.workspaceDir;
@@ -63,269 +82,199 @@ export class OpenCodeManager {
     });
   }
 
-  /**
-   * Write config files, copy tools/skills, spawn OpenCode, wait for health.
-   */
-  async start(config: OpenCodeConfig): Promise<void> {
-    this.currentConfig = config;
-    this.stopping = false;
+  // ─── Public API ─────────────────────────────────────────────────────
 
-    this.configWriter.write(config);
-    await this.spawnProcess();
-    await this.waitForHealth();
-
-    console.log("[OpenCodeManager] OpenCode started and healthy");
-  }
-
-  /**
-   * Gracefully stop OpenCode: SIGTERM → grace period → SIGKILL.
-   */
-  async stop(): Promise<void> {
-    if (this.autoRestartTimer) {
-      clearTimeout(this.autoRestartTimer);
-      this.autoRestartTimer = null;
-    }
-    if (!this.process) return;
-    this.stopping = true;
-    this.healthy = false;
-
-    const proc = this.process;
-
-    console.log("[OpenCodeManager] Stopping OpenCode");
-
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      // Process may already be dead
+  async setDesiredConfig(config: OpenCodeConfig): Promise<{ restarted: boolean }> {
+    if (this.runningConfig && JSON.stringify(this.runningConfig) === JSON.stringify(config)) {
+      return { restarted: false };
     }
 
-    // Wait up to 5s for graceful exit, then SIGKILL
-    const exited = await Promise.race([
-      proc.exited,
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
-    ]);
+    this.desiredConfig = config;
+    this.desired = 'up';
 
-    if (exited === null) {
-      console.log("[OpenCodeManager] Grace period expired, sending SIGKILL");
-      try {
-        proc.kill("SIGKILL");
-      } catch {
-        // ignore
-      }
-      await proc.exited;
+    if (!this.loopRunning) {
+      this.loopRunning = true;
+      this.loopPromise = this.runLoop().finally(() => { this.loopRunning = false; });
+    } else {
+      this.killProcess();
+      this.signal();
     }
 
-    // Clear process reference AFTER it has fully exited
-    this.process = null;
-    console.log("[OpenCodeManager] OpenCode stopped");
+    await this.nextHealthy();
+    return { restarted: true };
   }
 
-  /**
-   * Stop then start with new config. Serialized via promise lock.
-   */
-  async restart(config: OpenCodeConfig): Promise<void> {
-    // Cancel any pending auto-restart — this explicit restart supersedes it
-    if (this.autoRestartTimer) {
-      clearTimeout(this.autoRestartTimer);
-      this.autoRestartTimer = null;
-    }
-    console.log("[OpenCodeManager] Restarting OpenCode with new config");
-    await this.stop();
-    await this.start(config);
+  async shutdown(): Promise<void> {
+    if (!this.loopRunning) return;
+    this.desired = 'down';
+    this.killProcess();
+    this.signal();
+    if (this.loopPromise) await this.loopPromise;
   }
 
-  /**
-   * Merge partial config with current config. If anything changed, restart.
-   * Returns whether a restart actually occurred.
-   */
-  applyConfig(partial: Partial<OpenCodeConfig>): Promise<{ restarted: boolean }> {
-    const myNonce = ++this.configApplyCounter;
-
-    const next = this.configLock.then(async () => {
-      // If a newer applyConfig was queued behind us, skip — it has more recent config
-      if (myNonce < this.configApplyCounter) {
-        console.log("[OpenCodeManager] Skipping superseded config apply");
-        return { restarted: false };
-      }
-
-      if (!this.currentConfig) {
-        console.warn("[OpenCodeManager] applyConfig called before start, ignoring");
-        return { restarted: false };
-      }
-
-      const merged = this.mergeConfig(this.currentConfig, partial);
-      if (this.configsEqual(this.currentConfig, merged)) {
-        console.log("[OpenCodeManager] Config unchanged, no restart needed");
-        return { restarted: false };
-      }
-
-      await this.restart(merged);
-      return { restarted: true };
-    });
-
-    // Chain for serialization
-    this.configLock = next.then(() => {});
-    return next;
-  }
+  onFatal(cb: () => void): void { this.fatalCallback = cb; }
+  onCrashed(cb: (code: number) => void): void { this.crashCallback = cb; }
 
   isHealthy(): boolean {
-    return this.healthy && this.process !== null;
+    return this.process !== null && this.desired === 'up' && this.runningConfig !== null;
   }
 
   getUrl(): string {
     return `http://localhost:${this.port}`;
   }
 
-  // ─── Process Management ─────────────────────────────────────────────
+  // ─── Supervisor Loop ───────────────────────────────────────────────
 
-  /** Kill any process listening on the target port and wait for it to free up. */
+  private async runLoop(): Promise<void> {
+    while (this.desired === 'up') {
+      const config = this.desiredConfig!;
+
+      // 1. Write config files
+      this.configWriter.write(config);
+
+      // 2. Kill anything on the port, then spawn
+      await this.ensurePortFree();
+      const proc = this.spawn();
+      this.runningConfig = config;
+
+      // 3. Wait for healthy
+      const healthy = await this.waitForHealth(proc);
+      if (!healthy) {
+        if (this.desired !== 'up') break;
+        if (this.configChanged()) continue;
+        this.crashCount++;
+        this.crashCallback?.(proc.exitCode ?? 1);
+        if (this.crashCount > OpenCodeManager.MAX_CRASHES) {
+          this.enterFatal();
+          await this.wake.promise;
+          this.crashCount = 0;
+          continue;
+        }
+        await Promise.race([sleep(this.backoffMs()), this.wake.promise]);
+        continue;
+      }
+
+      // 4. Notify waiters
+      this.resolveHealthyWaiters();
+      this.lastHealthyAt = Date.now();
+
+      // 5. Block until process exits
+      await proc.exited;
+
+      // 6. Check why
+      if (this.desired !== 'up') break;
+      if (this.configChanged()) continue;
+
+      // 7. Genuine crash
+      const exitCode = proc.exitCode ?? 1;
+      console.error(`[OpenCodeManager] OpenCode exited unexpectedly with code ${exitCode}`);
+      this.crashCallback?.(exitCode);
+      this.crashCount = (Date.now() - this.lastHealthyAt > OpenCodeManager.CRASH_RESET_MS) ? 1 : this.crashCount + 1;
+      if (this.crashCount > OpenCodeManager.MAX_CRASHES) {
+        this.enterFatal();
+        await this.wake.promise;
+        this.crashCount = 0;
+        continue;
+      }
+      await Promise.race([sleep(this.backoffMs()), this.wake.promise]);
+    }
+
+    // Loop exited — clean up
+    this.process = null;
+    this.runningConfig = null;
+  }
+
+  // ─── Private Helpers ────────────────────────────────────────────────
+
+  private signal(): void {
+    this.wake.resolve();
+    this.wake = createDeferred();
+  }
+
+  private nextHealthy(): Promise<void> {
+    return new Promise(resolve => this.healthyWaiters.push(resolve));
+  }
+
+  private resolveHealthyWaiters(): void {
+    const waiters = this.healthyWaiters;
+    this.healthyWaiters = [];
+    for (const resolve of waiters) resolve();
+  }
+
+  private configChanged(): boolean {
+    return JSON.stringify(this.desiredConfig) !== JSON.stringify(this.runningConfig);
+  }
+
+  private backoffMs(): number {
+    return Math.min(
+      OpenCodeManager.BACKOFF_BASE_MS * Math.pow(2, this.crashCount - 1),
+      OpenCodeManager.BACKOFF_MAX_MS,
+    );
+  }
+
+  private enterFatal(): void {
+    console.error(`[OpenCodeManager] ${this.crashCount} consecutive crashes, entering fatal state`);
+    this.fatalCallback?.();
+  }
+
+  private killProcess(): void {
+    if (!this.process) return;
+    try { this.process.kill("SIGTERM"); } catch {}
+  }
+
+  private spawn(): Subprocess {
+    console.log(`[OpenCodeManager] Spawning opencode serve --port ${this.port} (cwd: ${this.workspaceDir})`);
+    const proc = Bun.spawn(["opencode", "serve", "--port", String(this.port)], {
+      cwd: this.workspaceDir,
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    this.process = proc;
+    return proc;
+  }
+
   private async ensurePortFree(): Promise<void> {
-    // First try to kill whatever is on the port
     try {
-      const proc = Bun.spawnSync(["fuser", "-k", `${this.port}/tcp`], {
-        stderr: "pipe",
-      });
+      const proc = Bun.spawnSync(["fuser", "-k", `${this.port}/tcp`], { stderr: "pipe" });
       if (proc.exitCode === 0) {
         console.log(`[OpenCodeManager] Killed process(es) on port ${this.port}`);
       }
-    } catch {
-      // fuser not available or no process on port — fine
-    }
+    } catch {}
 
-    // Wait briefly for port to actually free
     const maxAttempts = 15;
     for (let i = 0; i < maxAttempts; i++) {
       try {
         await fetch(`http://localhost:${this.port}/health`);
-        // Still responding — wait
         if (i === 0) console.log(`[OpenCodeManager] Waiting for port ${this.port} to free...`);
-        await new Promise((r) => setTimeout(r, 200));
+        await sleep(200);
       } catch {
-        return; // Connection refused — port is free
+        return;
       }
     }
     console.warn(`[OpenCodeManager] Port ${this.port} still occupied after ${maxAttempts} attempts, proceeding anyway`);
   }
 
-  private async spawnProcess(): Promise<void> {
-    // Ensure the port is free before spawning to prevent "Failed to start server" crashes
-    await this.ensurePortFree();
-
-    console.log(`[OpenCodeManager] Spawning opencode serve --port ${this.port} (cwd: ${this.workspaceDir})`);
-
-    this.process = Bun.spawn(["opencode", "serve", "--port", String(this.port)], {
-      cwd: this.workspaceDir,
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-
-    // Monitor for unexpected exit and auto-restart
-    this.process.exited.then((code) => {
-      if (!this.stopping) {
-        console.error(`[OpenCodeManager] OpenCode exited unexpectedly with code ${code}`);
-        this.healthy = false;
-        this.process = null;
-        this.scheduleAutoRestart();
-      }
-    });
+  private async checkHealth(proc: Subprocess): Promise<boolean> {
+    if (proc.exitCode !== null) return false;
+    try {
+      const res = await fetch(`http://localhost:${this.port}/health`);
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 
-  private scheduleAutoRestart(): void {
-    if (!this.currentConfig) return;
-
-    // Reset crash counter if we were stable for a while
-    const now = Date.now();
-    if (now - this.lastCrashAt > OpenCodeManager.CRASH_RESET_INTERVAL) {
-      this.consecutiveCrashes = 0;
-    }
-    this.lastCrashAt = now;
-    this.consecutiveCrashes++;
-
-    if (this.consecutiveCrashes > OpenCodeManager.MAX_CONSECUTIVE_CRASHES) {
-      console.error(
-        `[OpenCodeManager] OpenCode crashed ${this.consecutiveCrashes} times consecutively, giving up auto-restart`
-      );
-      return;
-    }
-
-    // Exponential backoff: 2s, 4s, 8s, 16s, 32s
-    const delayMs = Math.min(2000 * Math.pow(2, this.consecutiveCrashes - 1), 32_000);
-    console.log(
-      `[OpenCodeManager] Scheduling auto-restart in ${delayMs}ms (crash ${this.consecutiveCrashes}/${OpenCodeManager.MAX_CONSECUTIVE_CRASHES})`
-    );
-
-    this.autoRestartTimer = setTimeout(() => {
-      this.autoRestartTimer = null;
-      if (this.stopping) return;
-
-      // Serialize with applyConfig to prevent concurrent spawns
-      const next = this.configLock.then(async () => {
-        if (this.stopping || this.process) return;
-        try {
-          console.log("[OpenCodeManager] Auto-restarting OpenCode after crash");
-          await this.spawnProcess();
-          await this.waitForHealth();
-          console.log("[OpenCodeManager] Auto-restart successful");
-        } catch (err) {
-          console.error("[OpenCodeManager] Auto-restart failed:", err);
-        }
-      });
-      this.configLock = next.then(() => {});
-    }, delayMs);
-  }
-
-  private async waitForHealth(): Promise<void> {
-    const url = `http://localhost:${this.port}/health`;
-    const maxRetries = 150;
-    const pollIntervalMs = 200;
-    let retry = 0;
-
+  private async waitForHealth(proc: Subprocess): Promise<boolean> {
     console.log("[OpenCodeManager] Waiting for OpenCode health...");
-
-    while (retry < maxRetries) {
-      try {
-        const res = await fetch(url);
-        if (res.ok) {
-          this.healthy = true;
-          // Don't reset consecutiveCrashes here — the health check can hit a
-          // stale process still holding the port. Crash counter resets only
-          // via the time-based threshold in scheduleAutoRestart().
-          console.log("[OpenCodeManager] OpenCode is healthy");
-          return;
-        }
-      } catch {
-        // Not ready yet
+    for (let i = 0; i < OpenCodeManager.HEALTH_MAX_RETRIES; i++) {
+      if (this.desired !== 'up') return false;
+      if (this.configChanged()) return false;
+      if (await this.checkHealth(proc)) {
+        console.log("[OpenCodeManager] OpenCode is healthy");
+        return true;
       }
-      retry++;
-      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      await sleep(OpenCodeManager.HEALTH_POLL_MS);
     }
-
-    throw new Error(`OpenCode failed to become healthy after ${maxRetries} retries`);
-  }
-
-  // ─── Config Comparison ──────────────────────────────────────────────
-
-  private mergeConfig(current: OpenCodeConfig, partial: Partial<OpenCodeConfig>): OpenCodeConfig {
-    return {
-      tools: partial.tools !== undefined
-        ? { ...current.tools, ...partial.tools }
-        : { ...current.tools },
-      providerKeys: partial.providerKeys !== undefined
-        ? { ...current.providerKeys, ...partial.providerKeys }
-        : { ...current.providerKeys },
-      instructions: partial.instructions !== undefined
-        ? partial.instructions
-        : [...current.instructions],
-      isOrchestrator: partial.isOrchestrator !== undefined
-        ? partial.isOrchestrator
-        : current.isOrchestrator,
-      customProviders: partial.customProviders !== undefined
-        ? partial.customProviders
-        : current.customProviders,
-    };
-  }
-
-  private configsEqual(a: OpenCodeConfig, b: OpenCodeConfig): boolean {
-    return JSON.stringify(a) === JSON.stringify(b);
+    return false;
   }
 }
