@@ -36,11 +36,16 @@ export interface OpenCodeConfig {
   customProviders?: CustomProviderConfig[];
 }
 
-interface OpenCodeManagerOptions {
+export interface OpenCodeManagerOptions {
   workspaceDir: string;
   port: number;
   configSourceDir: string; // /opencode-config
   authJsonPath: string;    // /root/.local/share/opencode/auth.json
+  // Test injection points
+  spawnFn?: (cmd: string[], opts: any) => Subprocess;
+  spawnSyncFn?: (cmd: string[], opts: any) => { exitCode: number };
+  fetchFn?: (url: string) => Promise<Response>;
+  configWriter?: { write(config: OpenCodeConfig): void };
 }
 
 export class OpenCodeManager {
@@ -64,9 +69,12 @@ export class OpenCodeManager {
   private wake = createDeferred();
   private healthyWaiters: Array<() => void> = [];
 
-  private readonly configWriter: OpenCodeConfigWriter;
+  private readonly configWriter: { write(config: OpenCodeConfig): void };
   private readonly port: number;
   private readonly workspaceDir: string;
+  private readonly spawnFn: (cmd: string[], opts: any) => Subprocess;
+  private readonly spawnSyncFn: (cmd: string[], opts: any) => { exitCode: number };
+  private readonly fetchFn: (url: string) => Promise<Response>;
 
   // Event callbacks
   private fatalCallback?: () => void;
@@ -75,7 +83,10 @@ export class OpenCodeManager {
   constructor(options: OpenCodeManagerOptions) {
     this.workspaceDir = options.workspaceDir;
     this.port = options.port;
-    this.configWriter = new OpenCodeConfigWriter({
+    this.spawnFn = options.spawnFn ?? ((cmd, opts) => Bun.spawn(cmd, opts));
+    this.spawnSyncFn = options.spawnSyncFn ?? ((cmd, opts) => Bun.spawnSync(cmd, opts));
+    this.fetchFn = options.fetchFn ?? ((url) => fetch(url));
+    this.configWriter = options.configWriter ?? new OpenCodeConfigWriter({
       workspaceDir: options.workspaceDir,
       configSourceDir: options.configSourceDir,
       authJsonPath: options.authJsonPath,
@@ -224,7 +235,7 @@ export class OpenCodeManager {
 
   private spawn(): Subprocess {
     console.log(`[OpenCodeManager] Spawning opencode serve --port ${this.port} (cwd: ${this.workspaceDir})`);
-    const proc = Bun.spawn(["opencode", "serve", "--port", String(this.port)], {
+    const proc = this.spawnFn(["opencode", "serve", "--port", String(this.port)], {
       cwd: this.workspaceDir,
       stdout: "inherit",
       stderr: "inherit",
@@ -235,7 +246,7 @@ export class OpenCodeManager {
 
   private async ensurePortFree(): Promise<void> {
     try {
-      const proc = Bun.spawnSync(["fuser", "-k", `${this.port}/tcp`], { stderr: "pipe" });
+      const proc = this.spawnSyncFn(["fuser", "-k", `${this.port}/tcp`], { stderr: "pipe" });
       if (proc.exitCode === 0) {
         console.log(`[OpenCodeManager] Killed process(es) on port ${this.port}`);
       }
@@ -244,7 +255,7 @@ export class OpenCodeManager {
     const maxAttempts = 15;
     for (let i = 0; i < maxAttempts; i++) {
       try {
-        await fetch(`http://localhost:${this.port}/health`);
+        await this.fetchFn(`http://localhost:${this.port}/health`);
         if (i === 0) console.log(`[OpenCodeManager] Waiting for port ${this.port} to free...`);
         await sleep(200);
       } catch {
@@ -257,7 +268,7 @@ export class OpenCodeManager {
   private async checkHealth(proc: Subprocess): Promise<boolean> {
     if (proc.exitCode !== null) return false;
     try {
-      const res = await fetch(`http://localhost:${this.port}/health`);
+      const res = await this.fetchFn(`http://localhost:${this.port}/health`);
       return res.ok;
     } catch {
       return false;
