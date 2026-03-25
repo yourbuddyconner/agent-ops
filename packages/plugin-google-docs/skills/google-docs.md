@@ -57,7 +57,7 @@ This produces a document with proper headings, bold names, a clickable link, str
 - **`docs.read_document`** — Read entire document content as plain text. Use for short documents.
 - **`docs.read_section`** — Read a specific section by heading name. Use for long documents where you only need part of the content.
 
-### Writing
+### Writing (Markdown-Based)
 
 - **`docs.create_document`** — Create a new document. Content MUST be markdown.
 - **`docs.replace_document`** — Replace the entire document body. Content MUST be markdown.
@@ -65,6 +65,63 @@ This produces a document with proper headings, bold names, a clickable link, str
 - **`docs.replace_section`** — Replace the content under a specific heading. Content MUST be markdown.
 - **`docs.insert_section`** — Insert a new section before or after an existing heading.
 - **`docs.delete_section`** — Delete a section and all its content.
+
+### Targeted Edits (Format-Preserving)
+
+- **`docs.update_document`** — Apply surgical edits via raw Google Docs batchUpdate requests. Bypasses markdown conversion entirely, preserving all existing formatting, table styling, and document structure.
+
+**When to use `update_document`:**
+- Filling in template fields (e.g., replacing `{{PLACEHOLDER}}` with values)
+- Replacing specific text throughout a document
+- Editing individual table cells without destroying cell formatting
+- Making small targeted changes to richly formatted documents
+
+**When to use markdown-based tools instead:**
+- Rewriting large sections where formatting isn't critical
+- Creating new documents from scratch
+- Appending new content to the end of a document
+
+**Supported request types:**
+- `replaceAllText` — Find-and-replace across the document (safest, most common)
+- `insertText` — Insert text at a specific character index
+- `deleteContentRange` — Delete content by index range
+- `insertTableRow` — Add a row to an existing table
+- `deleteTableRow` / `deleteTableColumn` — Remove table rows/columns
+- `updateTextStyle` — Apply bold, italic, color, links, font changes to a range
+- `replaceNamedRangeContent` — Replace content in a pre-defined named range
+
+**Example — filling template placeholders:**
+```json
+{
+  "documentId": "1Jmzvis-SH_...",
+  "requests": [
+    {
+      "replaceAllText": {
+        "containsText": { "text": "{{PROJECT_NAME}}", "matchCase": true },
+        "replaceText": "Wallet Export v2"
+      }
+    },
+    {
+      "replaceAllText": {
+        "containsText": { "text": "{{LAUNCH_DATE}}", "matchCase": true },
+        "replaceText": "2026-04-15"
+      }
+    }
+  ]
+}
+```
+
+**Example — inserting text at a specific index:**
+```json
+{
+  "documentId": "...",
+  "requests": [
+    { "insertText": { "location": { "index": 42 }, "text": "New content here" } }
+  ]
+}
+```
+
+For index-based operations, first read the document with `docs.get_document` or `docs.read_document` to understand the document structure and identify the correct character indices.
 
 ## Common Patterns
 
@@ -87,7 +144,7 @@ Documents are organized by headings. Use section tools to surgically edit specif
 - **Insert a section**: `docs.insert_section` adds a new section before or after an existing one
 - **Delete a section**: `docs.delete_section` removes a heading and everything under it
 
-When targeting a section, use the exact heading text (case-sensitive).
+When targeting a section, the heading parameter is a case-insensitive substring match.
 
 ### Creating Well-Structured Documents
 

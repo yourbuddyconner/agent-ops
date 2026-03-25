@@ -8,6 +8,36 @@ import { findSection, getBodyEndIndex } from './sections.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Recursively inject `tabId` into location-like objects within batchUpdate requests.
+ * Targets: Location (has `index`), Range (has `startIndex`/`endIndex`),
+ * EndOfSegmentLocation, and TableCellLocation (has `tableStartLocation`).
+ */
+function injectTabId(obj: unknown, tabId: string, parentKey?: string): unknown {
+  if (obj === null || obj === undefined || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map((item) => injectTabId(item, tabId));
+
+  const record = obj as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(record)) {
+    result[key] = injectTabId(value, tabId, key);
+  }
+
+  // Inject tabId into location-like objects:
+  // - Location (has `index`), Range (has `startIndex`), objects with `segmentId`
+  // - TableCellLocation (has `tableStartLocation`)
+  // - EndOfSegmentLocation (identified by parent key, since it can be an empty object)
+  const isLocation = 'index' in record || 'startIndex' in record || 'segmentId' in record;
+  const isTableCellLocation = 'tableStartLocation' in record;
+  const isEndOfSegment = parentKey === 'endOfSegmentLocation';
+  if ((isLocation || isTableCellLocation || isEndOfSegment) && !('tabId' in record)) {
+    result.tabId = tabId;
+  }
+
+  return result;
+}
+
 /** Escape a string value for use inside a Drive API query `q` parameter. */
 function escapeDriveQuery(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -182,6 +212,30 @@ const deleteSection: ActionDefinition = {
   }),
 };
 
+const SUPPORTED_UPDATE_TYPES = new Set([
+  'replaceAllText',
+  'insertText',
+  'deleteContentRange',
+  'insertTableRow',
+  'deleteTableRow',
+  'deleteTableColumn',
+  'updateTextStyle',
+  'replaceNamedRangeContent',
+]);
+
+const updateDocument: ActionDefinition = {
+  id: 'docs.update_document',
+  name: 'Update Document',
+  description:
+    'Apply targeted edits to a Google Doc without replacing the full body. Supports text replacement, insertion, deletion, and table operations. Preserves all existing formatting.',
+  riskLevel: 'high',
+  params: z.object({
+    documentId: z.string().describe('Google Docs document ID'),
+    requests: z.array(z.record(z.unknown())).describe('Array of batchUpdate request objects'),
+    tabId: z.string().optional().describe('Tab ID for multi-tab documents (auto-injected into locations)'),
+  }),
+};
+
 // ─── Action List ─────────────────────────────────────────────────────────────
 
 const allActions: ActionDefinition[] = [
@@ -195,6 +249,7 @@ const allActions: ActionDefinition[] = [
   replaceSection,
   insertSection,
   deleteSection,
+  updateDocument,
 ];
 
 // ─── Action Execution ────────────────────────────────────────────────────────
@@ -504,6 +559,46 @@ async function executeAction(
         const batchResult = await executeBatchUpdate(documentId, token, requests);
         if (!batchResult.success) {
           return { success: false, error: batchResult.error || 'Failed to delete section' };
+        }
+
+        return { success: true, data: { documentId } };
+      }
+
+      case 'docs.update_document': {
+        const { documentId, requests, tabId } = updateDocument.params.parse(params);
+
+        // Validate that all request types are in the supported subset
+        for (let i = 0; i < requests.length; i++) {
+          const keys = Object.keys(requests[i]);
+          if (keys.length !== 1) {
+            return {
+              success: false,
+              error: `Request at index ${i} must contain exactly one request type, got: ${keys.join(', ')}`,
+            };
+          }
+          if (!SUPPORTED_UPDATE_TYPES.has(keys[0])) {
+            return {
+              success: false,
+              error: `Unsupported request type '${keys[0]}' at index ${i}. Supported types: ${[...SUPPORTED_UPDATE_TYPES].join(', ')}`,
+            };
+          }
+        }
+
+        // Inject tabId into location objects if provided
+        const finalRequests = tabId
+          ? (requests.map((req: Record<string, unknown>) => injectTabId(req, tabId)) as Record<string, unknown>[])
+          : requests;
+
+        // Send all requests in a single batchUpdate call to preserve caller-specified
+        // order and index consistency (chunking would break index-relative operations)
+        if (finalRequests.length > 0) {
+          const res = await docsFetch(`/documents/${encodeURIComponent(documentId)}:batchUpdate`, token, {
+            method: 'POST',
+            body: JSON.stringify({ requests: finalRequests }),
+          });
+          if (!res.ok) {
+            return await apiError(res, 'Docs batchUpdate');
+          }
         }
 
         return { success: true, data: { documentId } };
