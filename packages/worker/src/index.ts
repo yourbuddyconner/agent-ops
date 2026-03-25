@@ -118,9 +118,13 @@ app.use(
 // Error handling
 app.onError(errorHandler);
 
-// Sync plugin registry to D1 on cold start
+// Sync plugin registry to D1 on cold start (best-effort — don't block requests on failure)
 app.use('*', async (c, next) => {
-  await syncPluginsOnce(c.env.DB);
+  try {
+    await syncPluginsOnce(c.env.DB);
+  } catch (err) {
+    console.error('[plugin-sync] Sync failed, continuing:', err);
+  }
   return next();
 });
 
