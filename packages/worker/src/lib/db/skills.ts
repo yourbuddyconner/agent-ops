@@ -30,9 +30,10 @@ async function syncSkillFts(db: AppDb, skillId: string): Promise<void> {
 
     const { rowid, name, description, content } = row[0];
 
-    // Truncate content for FTS — D1 has a bind-parameter size limit
-    // and full content isn't needed for search relevance
-    const truncatedContent = content.length > 8000 ? content.slice(0, 8000) : content;
+    // Truncate content for FTS — D1 has a bind-parameter size limit (~100KB total
+    // per query, but FTS tokenization can amplify size). Keep it short since full
+    // content isn't needed for search relevance.
+    const truncatedContent = content.length > 2000 ? content.slice(0, 2000) : content;
 
     // Delete existing FTS entry
     await db.run(sql`DELETE FROM skills_fts WHERE rowid = ${rowid}`);
