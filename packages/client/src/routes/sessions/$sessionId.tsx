@@ -1,16 +1,18 @@
-import { createContext, useCallback, useContext, useState } from 'react';
+import { createContext, lazy, Suspense, useCallback, useContext, useState } from 'react';
 import { createFileRoute, Outlet } from '@tanstack/react-router';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
-import { EditorDrawer } from '@/components/session/editor-drawer';
-import { FilesDrawer } from '@/components/session/files-drawer';
-import { ReviewDrawer } from '@/components/session/review-drawer';
-import { LogsPanel } from '@/components/panels/logs-panel';
-import { SessionMetadataSidebar } from '@/components/session/session-metadata-sidebar';
-import { OrchestratorMetadataSidebar } from '@/components/session/orchestrator-metadata-sidebar';
-import { SessionMetadataModal } from '@/components/session/session-metadata-modal';
 import { useSession } from '@/api/sessions';
 import type { LogEntry, ConnectedUser } from '@/hooks/use-chat';
 import { useIsMobile } from '@/hooks/use-is-mobile';
+
+// Lazy-load drawer panels — only rendered when user opens a specific panel
+const EditorDrawer = lazy(() => import('@/components/session/editor-drawer').then((m) => ({ default: m.EditorDrawer })));
+const FilesDrawer = lazy(() => import('@/components/session/files-drawer').then((m) => ({ default: m.FilesDrawer })));
+const ReviewDrawer = lazy(() => import('@/components/session/review-drawer').then((m) => ({ default: m.ReviewDrawer })));
+const LogsPanel = lazy(() => import('@/components/panels/logs-panel').then((m) => ({ default: m.LogsPanel })));
+const SessionMetadataSidebar = lazy(() => import('@/components/session/session-metadata-sidebar').then((m) => ({ default: m.SessionMetadataSidebar })));
+const OrchestratorMetadataSidebar = lazy(() => import('@/components/session/orchestrator-metadata-sidebar').then((m) => ({ default: m.OrchestratorMetadataSidebar })));
+const SessionMetadataModal = lazy(() => import('@/components/session/session-metadata-modal').then((m) => ({ default: m.SessionMetadataModal })));
 
 type DrawerPanel = 'vscode' | 'desktop' | 'terminal' | 'files' | 'review' | 'logs' | null;
 
@@ -308,24 +310,28 @@ function SessionLayout() {
             </PanelResizeHandle>
             <Panel defaultSize={75} minSize={30}>
               <div className="flex h-full">
-                {sidebarOpen && (
-                  session?.isOrchestrator
-                    ? <OrchestratorMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} compact />
-                    : <SessionMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} compact />
-                )}
+                <Suspense>
+                  {sidebarOpen && (
+                    session?.isOrchestrator
+                      ? <OrchestratorMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} compact />
+                      : <SessionMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} compact />
+                  )}
+                </Suspense>
                 <div className="flex-1 min-w-0">
-                  {(activePanel === 'vscode' || activePanel === 'desktop' || activePanel === 'terminal') && (
-                    <EditorDrawer sessionId={sessionId} activeTab={activePanel} />
-                  )}
-                  {activePanel === 'files' && (
-                    <FilesDrawer sessionId={sessionId} />
-                  )}
-                  {activePanel === 'review' && (
-                    <ReviewDrawer sessionId={sessionId} />
-                  )}
-                  {activePanel === 'logs' && (
-                    <LogsDrawerWrapper logEntries={logEntries} onClose={closeDrawer} />
-                  )}
+                  <Suspense>
+                    {(activePanel === 'vscode' || activePanel === 'desktop' || activePanel === 'terminal') && (
+                      <EditorDrawer sessionId={sessionId} activeTab={activePanel} />
+                    )}
+                    {activePanel === 'files' && (
+                      <FilesDrawer sessionId={sessionId} />
+                    )}
+                    {activePanel === 'review' && (
+                      <ReviewDrawer sessionId={sessionId} />
+                    )}
+                    {activePanel === 'logs' && (
+                      <LogsDrawerWrapper logEntries={logEntries} onClose={closeDrawer} />
+                    )}
+                  </Suspense>
                 </div>
               </div>
             </Panel>
@@ -336,43 +342,49 @@ function SessionLayout() {
               <div className="flex-1 min-w-0">
                 <Outlet />
               </div>
-              {!isMobile && sidebarOpen && (
-                session?.isOrchestrator
-                  ? <OrchestratorMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} />
-                  : <SessionMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} />
-              )}
+              <Suspense>
+                {!isMobile && sidebarOpen && (
+                  session?.isOrchestrator
+                    ? <OrchestratorMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} />
+                    : <SessionMetadataSidebar sessionId={sessionId} connectedUsers={connectedUsers} selectedModel={selectedModel} />
+                )}
+              </Suspense>
             </div>
 
-            {isMobile && (activePanel === 'vscode' || activePanel === 'desktop' || activePanel === 'terminal') && (
-              <div className="absolute inset-0 z-40 bg-surface-0">
-                <EditorDrawer sessionId={sessionId} activeTab={activePanel} />
-              </div>
-            )}
-            {isMobile && activePanel === 'files' && (
-              <div className="absolute inset-0 z-40 bg-surface-0">
-                <FilesDrawer sessionId={sessionId} />
-              </div>
-            )}
-            {isMobile && activePanel === 'review' && (
-              <div className="absolute inset-0 z-40 bg-surface-0">
-                <ReviewDrawer sessionId={sessionId} />
-              </div>
-            )}
-            {isMobile && activePanel === 'logs' && (
-              <div className="absolute inset-0 z-40 bg-surface-0">
-                <LogsDrawerWrapper logEntries={logEntries} onClose={closeDrawer} />
-              </div>
-            )}
+            <Suspense>
+              {isMobile && (activePanel === 'vscode' || activePanel === 'desktop' || activePanel === 'terminal') && (
+                <div className="absolute inset-0 z-40 bg-surface-0">
+                  <EditorDrawer sessionId={sessionId} activeTab={activePanel} />
+                </div>
+              )}
+              {isMobile && activePanel === 'files' && (
+                <div className="absolute inset-0 z-40 bg-surface-0">
+                  <FilesDrawer sessionId={sessionId} />
+                </div>
+              )}
+              {isMobile && activePanel === 'review' && (
+                <div className="absolute inset-0 z-40 bg-surface-0">
+                  <ReviewDrawer sessionId={sessionId} />
+                </div>
+              )}
+              {isMobile && activePanel === 'logs' && (
+                <div className="absolute inset-0 z-40 bg-surface-0">
+                  <LogsDrawerWrapper logEntries={logEntries} onClose={closeDrawer} />
+                </div>
+              )}
+            </Suspense>
 
             {isMobile && (
-              <SessionMetadataModal
-                sessionId={sessionId}
-                connectedUsers={connectedUsers}
-                selectedModel={selectedModel}
-                isOrchestrator={Boolean(session?.isOrchestrator)}
-                open={mobileMetadataOpen}
-                onOpenChange={setMobileMetadataOpen}
-              />
+              <Suspense>
+                <SessionMetadataModal
+                  sessionId={sessionId}
+                  connectedUsers={connectedUsers}
+                  selectedModel={selectedModel}
+                  isOrchestrator={Boolean(session?.isOrchestrator)}
+                  open={mobileMetadataOpen}
+                  onOpenChange={setMobileMetadataOpen}
+                />
+              </Suspense>
             )}
           </>
         )}

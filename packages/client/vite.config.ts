@@ -7,13 +7,30 @@ export default defineConfig({
   plugins: [
     TanStackRouterVite({
       autoCodeSplitting: true,
-      enableRouteGeneration: false,
     }),
     react()
   ],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Vendor chunks — change rarely, cache well
+          'vendor-react': ['react', 'react-dom', 'react/jsx-runtime'],
+          'vendor-markdown': ['react-markdown', 'remark-gfm', 'rehype-sanitize'],
+          'vendor-radix': [
+            '@radix-ui/react-dialog',
+            '@radix-ui/react-dropdown-menu',
+            '@radix-ui/react-tooltip',
+            '@radix-ui/react-alert-dialog',
+            '@radix-ui/react-toast',
+          ],
+        },
+      },
     },
   },
   server: {

@@ -1,7 +1,5 @@
+import { lazy, Suspense } from 'react';
 import type { ToolCallData } from './types';
-import { ReadCard } from './read-card';
-import { EditCard } from './edit-card';
-import { WriteCard } from './write-card';
 import { BashCard } from './bash-card';
 import { GlobCard } from './glob-card';
 import { GrepCard } from './grep-card';
@@ -9,7 +7,6 @@ import { TodoWriteCard, TodoReadCard } from './todo-card';
 import { ListCard } from './list-card';
 import { QuestionCard } from './question-card';
 import { WebFetchCard } from './webfetch-card';
-import { PatchCard } from './patch-card';
 import { LspCard } from './lsp-card';
 import { SkillCard } from './skill-card';
 import { SpawnSessionCard } from './spawn-session-card';
@@ -17,10 +14,22 @@ import { SendMessageCard, ReadMessagesCard } from './session-message-card';
 import { TaskCard } from './task-card';
 import { GenericCard } from './generic-card';
 
+// Lazy-load cards that import @pierre/diffs/react (~800KB)
+const ReadCard = lazy(() => import('./read-card').then((m) => ({ default: m.ReadCard })));
+const EditCard = lazy(() => import('./edit-card').then((m) => ({ default: m.EditCard })));
+const WriteCard = lazy(() => import('./write-card').then((m) => ({ default: m.WriteCard })));
+const PatchCard = lazy(() => import('./patch-card').then((m) => ({ default: m.PatchCard })));
+
 export type { ToolCallData, ToolCallStatus } from './types';
 
 /** Route a tool call to its specialized card component */
 export function ToolCard({ tool }: { tool: ToolCallData }) {
+  const card = resolveToolCard(tool);
+  // Suspense boundary for lazy-loaded diff cards (read, edit, write, patch)
+  return <Suspense fallback={<GenericCard tool={tool} />}>{card}</Suspense>;
+}
+
+function resolveToolCard(tool: ToolCallData) {
   const name = tool.toolName.toLowerCase();
 
   // Exact matches

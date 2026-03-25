@@ -1,20 +1,26 @@
 import { memo, useEffect, useRef, useState, useCallback, type PointerEvent as ReactPointerEvent } from 'react';
-import mermaid from 'mermaid';
 
-let mermaidInitialized = false;
+let mermaidInstance: typeof import('mermaid').default | null = null;
+let mermaidLoading: Promise<typeof import('mermaid').default> | null = null;
 let idCounter = 0;
 
-function ensureMermaidInit(isDark: boolean) {
-  const theme = isDark ? 'dark' : 'default';
-  if (!mermaidInitialized) {
-    mermaid.initialize({
+async function getMermaid(isDark: boolean) {
+  if (!mermaidInstance) {
+    if (!mermaidLoading) {
+      mermaidLoading = import('mermaid').then((m) => m.default).catch((err) => {
+        mermaidLoading = null;
+        throw err;
+      });
+    }
+    mermaidInstance = await mermaidLoading;
+    mermaidInstance.initialize({
       startOnLoad: false,
-      theme,
+      theme: isDark ? 'dark' : 'default',
       securityLevel: 'strict',
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
     });
-    mermaidInitialized = true;
   }
+  return mermaidInstance;
 }
 
 const MIN_ZOOM = 0.25;
@@ -86,7 +92,7 @@ export const MermaidBlock = memo(function MermaidBlock({ children }: MermaidBloc
 
     async function render() {
       try {
-        ensureMermaidInit(isDark);
+        const mermaid = await getMermaid(isDark);
         const { svg: rendered } = await mermaid.render(idRef.current, children.trim());
         if (!cancelled) {
           setSvg(rendered);
