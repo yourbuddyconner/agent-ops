@@ -4103,6 +4103,7 @@ export class SessionAgentDO {
       return Response.json({ status, message: 'Can only hibernate a running session' });
     }
 
+    this.sessionState.status = 'hibernating';
     this.ctx.waitUntil(this.performHibernate());
     return Response.json({ status: 'hibernating', message: 'Hibernate initiated' });
   }
