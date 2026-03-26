@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { encode as encodeToon } from '@toon-format/toon';
 import { googleDocsActions } from './actions.js';
 import type { ActionContext } from '@valet/sdk';
 
-// Mock fetch globally
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
@@ -14,33 +14,149 @@ function makeCtx(): ActionContext {
 }
 
 function okResponse(data: unknown = {}) {
-  return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  return new Response(JSON.stringify(data), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function makeDocument() {
+  return {
+    body: {
+      content: [
+        {
+          paragraph: {
+            elements: [
+              {
+                startIndex: 1,
+                endIndex: 7,
+                textRun: { content: 'Intro\n' },
+              },
+            ],
+          },
+        },
+        {
+          table: {
+            rows: 2,
+            columns: 2,
+            tableRows: [
+              {
+                tableCells: [
+                  {
+                    content: [
+                      {
+                        paragraph: {
+                          elements: [
+                            {
+                              startIndex: 8,
+                              endIndex: 14,
+                              textRun: { content: 'Name\n' },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                  {
+                    content: [
+                      {
+                        paragraph: {
+                          elements: [
+                            {
+                              startIndex: 14,
+                              endIndex: 15,
+                              textRun: { content: '\n' },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+              {
+                tableCells: [
+                  {
+                    content: [
+                      {
+                        paragraph: {
+                          elements: [
+                            {
+                              startIndex: 15,
+                              endIndex: 21,
+                              textRun: { content: 'Tier\n' },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                  {
+                    content: [
+                      {
+                        paragraph: {
+                          elements: [
+                            {
+                              startIndex: 21,
+                              endIndex: 29,
+                              textRun: { content: 'Current\n' },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        {
+          paragraph: {
+            elements: [
+              {
+                startIndex: 29,
+                endIndex: 46,
+                textRun: { content: 'Marketing Owner:\n' },
+              },
+            ],
+          },
+        },
+      ],
+    },
+  };
 }
 
 function errorResponse(status: number, message: string) {
-  return new Response(JSON.stringify({ error: { message } }), { status, headers: { 'Content-Type': 'application/json' } });
+  return new Response(JSON.stringify({ error: { message } }), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function operationsToon(operations: unknown[]): string {
+  return encodeToon(operations);
 }
 
 describe('docs.update_document', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockFetch.mockReset();
   });
 
-  it('executes replaceAllText requests', async () => {
+  it('translates replaceAll operations to replaceAllText requests', async () => {
     mockFetch.mockResolvedValueOnce(okResponse());
 
     const result = await googleDocsActions.execute(
       'docs.update_document',
       {
         documentId: 'doc-123',
-        requests: [
+        operationsToon: operationsToon([
           {
-            replaceAllText: {
-              containsText: { text: '{{NAME}}', matchCase: true },
-              replaceText: 'Alice',
-            },
+            type: 'replaceAll',
+            find: '{{NAME}}',
+            replace: 'Alice',
           },
-        ],
+        ]),
       },
       makeCtx(),
     );
@@ -51,199 +167,247 @@ describe('docs.update_document', () => {
     const [url, opts] = mockFetch.mock.calls[0];
     expect(url).toContain('/documents/doc-123:batchUpdate');
     const body = JSON.parse(opts.body);
-    expect(body.requests).toHaveLength(1);
-    expect(body.requests[0].replaceAllText.replaceText).toBe('Alice');
+    expect(body.requests).toEqual([
+      {
+        replaceAllText: {
+          containsText: { text: '{{NAME}}', matchCase: true },
+          replaceText: 'Alice',
+        },
+      },
+    ]);
   });
 
-  it('executes insertText at a specific index', async () => {
-    mockFetch.mockResolvedValueOnce(okResponse());
+  it('fills an empty table cell without deleting the placeholder newline', async () => {
+    mockFetch
+      .mockResolvedValueOnce(okResponse(makeDocument()))
+      .mockResolvedValueOnce(okResponse());
 
     const result = await googleDocsActions.execute(
       'docs.update_document',
       {
         documentId: 'doc-123',
-        requests: [
+        operationsToon: operationsToon([
           {
-            insertText: {
-              location: { index: 42 },
-              text: 'Hello',
-            },
+            type: 'fillCell',
+            tableIndex: 0,
+            row: 0,
+            col: 1,
+            text: 'Wallet Export v2',
           },
-        ],
+        ]),
       },
       makeCtx(),
     );
 
     expect(result.success).toBe(true);
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(body.requests[0].insertText.location.index).toBe(42);
-    expect(body.requests[0].insertText.text).toBe('Hello');
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(body.requests).toEqual([
+      {
+        insertText: {
+          location: { index: 14 },
+          text: 'Wallet Export v2',
+        },
+      },
+    ]);
   });
 
-  it('executes deleteContentRange', async () => {
-    mockFetch.mockResolvedValueOnce(okResponse());
+  it('overwrites an existing table cell by deleting current content then inserting new text', async () => {
+    mockFetch
+      .mockResolvedValueOnce(okResponse(makeDocument()))
+      .mockResolvedValueOnce(okResponse())
+      .mockResolvedValueOnce(okResponse());
 
     const result = await googleDocsActions.execute(
       'docs.update_document',
       {
         documentId: 'doc-123',
-        requests: [
+        operationsToon: operationsToon([
           {
-            deleteContentRange: {
-              range: { startIndex: 10, endIndex: 20 },
-            },
+            type: 'fillCell',
+            tableIndex: 0,
+            row: 1,
+            col: 1,
+            text: 'Tier 1',
           },
-        ],
+        ]),
       },
       makeCtx(),
     );
 
     expect(result.success).toBe(true);
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(body.requests[0].deleteContentRange.range.startIndex).toBe(10);
-    expect(body.requests[0].deleteContentRange.range.endIndex).toBe(20);
-  });
+    expect(mockFetch).toHaveBeenCalledTimes(3);
 
-  it('injects tabId into location objects', async () => {
-    mockFetch.mockResolvedValueOnce(okResponse());
-
-    await googleDocsActions.execute(
-      'docs.update_document',
+    const deleteBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(deleteBody.requests).toEqual([
       {
-        documentId: 'doc-123',
-        tabId: 'tab-1',
-        requests: [
-          {
-            insertText: {
-              location: { index: 5 },
-              text: 'Hi',
-            },
-          },
-          {
-            deleteContentRange: {
-              range: { startIndex: 10, endIndex: 20 },
-            },
-          },
-        ],
+        deleteContentRange: {
+          range: { startIndex: 21, endIndex: 28 },
+        },
       },
-      makeCtx(),
-    );
-
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    // tabId should be injected into the location object
-    expect(body.requests[0].insertText.location.tabId).toBe('tab-1');
-    // tabId should be injected into the range object (has startIndex)
-    expect(body.requests[1].deleteContentRange.range.tabId).toBe('tab-1');
-  });
-
-  it('injects tabId into empty endOfSegmentLocation', async () => {
-    mockFetch.mockResolvedValueOnce(okResponse());
-
-    await googleDocsActions.execute(
-      'docs.update_document',
+    ]);
+    const insertBody = JSON.parse(mockFetch.mock.calls[2][1].body);
+    expect(insertBody.requests).toEqual([
       {
-        documentId: 'doc-123',
-        tabId: 'tab-1',
-        requests: [
-          {
-            insertText: {
-              endOfSegmentLocation: {},
-              text: 'Appended',
-            },
-          },
-        ],
+        insertText: {
+          location: { index: 21 },
+          text: 'Tier 1',
+        },
       },
-      makeCtx(),
-    );
-
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(body.requests[0].insertText.endOfSegmentLocation.tabId).toBe('tab-1');
+    ]);
   });
 
-  it('does not overwrite existing tabId in location objects', async () => {
-    mockFetch.mockResolvedValueOnce(okResponse());
+  it('inserts text after an anchor string', async () => {
+    mockFetch
+      .mockResolvedValueOnce(okResponse(makeDocument()))
+      .mockResolvedValueOnce(okResponse());
 
-    await googleDocsActions.execute(
-      'docs.update_document',
-      {
-        documentId: 'doc-123',
-        tabId: 'tab-1',
-        requests: [
-          {
-            insertText: {
-              location: { index: 5, tabId: 'tab-2' },
-              text: 'Hi',
-            },
-          },
-        ],
-      },
-      makeCtx(),
-    );
-
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    // Existing tabId should be preserved
-    expect(body.requests[0].insertText.location.tabId).toBe('tab-2');
-  });
-
-  it('rejects unsupported request types', async () => {
     const result = await googleDocsActions.execute(
       'docs.update_document',
       {
         documentId: 'doc-123',
-        requests: [
-          { insertTable: { rows: 2, columns: 2, location: { index: 1 } } },
-        ],
+        operationsToon: operationsToon([
+          {
+            type: 'insertText',
+            after: 'Marketing Owner:',
+            text: ' Jane Smith',
+          },
+        ]),
+      },
+      makeCtx(),
+    );
+
+    expect(result.success).toBe(true);
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(body.requests).toEqual([
+      {
+        insertText: {
+          location: { index: 45 },
+          text: ' Jane Smith',
+        },
+      },
+    ]);
+  });
+
+  it('injects tabId into generated location objects', async () => {
+    mockFetch
+      .mockResolvedValueOnce(okResponse(makeDocument()))
+      .mockResolvedValueOnce(okResponse())
+      .mockResolvedValueOnce(okResponse());
+
+    const result = await googleDocsActions.execute(
+      'docs.update_document',
+      {
+        documentId: 'doc-123',
+        tabId: 'tab-1',
+        operationsToon: operationsToon([
+          {
+            type: 'fillCell',
+            tableIndex: 0,
+            row: 1,
+            col: 1,
+            text: 'Tier 1',
+          },
+          {
+            type: 'insertText',
+            after: 'Marketing Owner:',
+            text: ' Jane Smith',
+          },
+        ]),
+      },
+      makeCtx(),
+    );
+
+    expect(result.success).toBe(true);
+
+    const deleteBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(deleteBody.requests[0].deleteContentRange.range.tabId).toBe('tab-1');
+
+    const insertBody = JSON.parse(mockFetch.mock.calls[2][1].body);
+    expect(insertBody.requests).toEqual([
+      {
+        insertText: {
+          location: { index: 21, tabId: 'tab-1' },
+          text: 'Tier 1',
+        },
+      },
+      {
+        insertText: {
+          location: { index: 45, tabId: 'tab-1' },
+          text: ' Jane Smith',
+        },
+      },
+    ]);
+  });
+
+  it('reports table bounds errors clearly', async () => {
+    mockFetch.mockResolvedValueOnce(okResponse(makeDocument()));
+
+    const result = await googleDocsActions.execute(
+      'docs.update_document',
+      {
+        documentId: 'doc-123',
+        operationsToon: operationsToon([
+          {
+            type: 'fillCell',
+            tableIndex: 0,
+            row: 7,
+            col: 0,
+            text: 'Out of bounds',
+          },
+        ]),
       },
       makeCtx(),
     );
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain("Unsupported request type 'insertTable'");
-    expect(result.error).toContain('Supported types');
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(result.error).toContain('operation[0]');
+    expect(result.error).toContain('table 0 has 2 rows');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects requests with multiple keys', async () => {
+  it('reports a missing anchor clearly', async () => {
+    mockFetch.mockResolvedValueOnce(okResponse(makeDocument()));
+
     const result = await googleDocsActions.execute(
       'docs.update_document',
       {
         documentId: 'doc-123',
-        requests: [
+        operationsToon: operationsToon([
           {
-            replaceAllText: { containsText: { text: 'a' }, replaceText: 'b' },
-            insertText: { location: { index: 1 }, text: 'c' },
+            type: 'insertText',
+            after: 'Missing Anchor:',
+            text: ' Jane Smith',
           },
-        ],
+        ]),
       },
       makeCtx(),
     );
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('exactly one request type');
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(result.error).toContain("operation[0]: anchor 'Missing Anchor:' not found");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves caller-specified request order', async () => {
-    mockFetch.mockResolvedValueOnce(okResponse());
-
-    await googleDocsActions.execute(
+  it('reports unknown operation types clearly', async () => {
+    const result = await googleDocsActions.execute(
       'docs.update_document',
       {
         documentId: 'doc-123',
-        requests: [
-          { insertText: { location: { index: 1 }, text: 'first' } },
-          { deleteContentRange: { range: { startIndex: 10, endIndex: 20 } } },
-          { replaceAllText: { containsText: { text: 'a' }, replaceText: 'b' } },
-        ],
+        operationsToon: operationsToon([
+          {
+            type: 'explodeCell',
+            row: 0,
+          },
+        ]),
       },
       makeCtx(),
     );
 
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    // Requests should be in the exact order provided (not reordered by phase)
-    expect(Object.keys(body.requests[0])[0]).toBe('insertText');
-    expect(Object.keys(body.requests[1])[0]).toBe('deleteContentRange');
-    expect(Object.keys(body.requests[2])[0]).toBe('replaceAllText');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Unknown operation type 'explodeCell'");
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('handles API errors', async () => {
@@ -253,9 +417,13 @@ describe('docs.update_document', () => {
       'docs.update_document',
       {
         documentId: 'doc-123',
-        requests: [
-          { replaceAllText: { containsText: { text: 'a' }, replaceText: 'b' } },
-        ],
+        operationsToon: operationsToon([
+          {
+            type: 'replaceAll',
+            find: '{{NAME}}',
+            replace: 'Alice',
+          },
+        ]),
       },
       makeCtx(),
     );
@@ -265,17 +433,16 @@ describe('docs.update_document', () => {
     expect(result.error).toContain('Insufficient permissions');
   });
 
-  it('handles empty requests array', async () => {
+  it('handles an empty operations array', async () => {
     const result = await googleDocsActions.execute(
       'docs.update_document',
       {
         documentId: 'doc-123',
-        requests: [],
+        operationsToon: operationsToon([]),
       },
       makeCtx(),
     );
 
-    // Empty requests = nothing to do, should succeed
     expect(result.success).toBe(true);
     expect(mockFetch).not.toHaveBeenCalled();
   });

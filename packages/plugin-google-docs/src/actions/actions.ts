@@ -1,10 +1,16 @@
 import { z } from 'zod';
+import { decode as decodeToon } from '@toon-format/toon';
 import type { ActionDefinition, ActionSource, ActionContext, ActionResult } from '@valet/sdk';
 import { docsFetch, driveFetch, apiError, executeBatchUpdate } from './api.js';
 import { docsToMarkdown } from './docs-to-markdown.js';
 import type { DocsBody, DocsLists } from './docs-to-markdown.js';
 import { convertMarkdownToRequests } from './markdown-to-docs.js';
 import { findSection, getBodyEndIndex } from './sections.js';
+import {
+  parseUpdateOperation,
+  requiresDocumentRead,
+  translateUpdateOperations,
+} from './operations.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -212,29 +218,24 @@ const deleteSection: ActionDefinition = {
   }),
 };
 
-const SUPPORTED_UPDATE_TYPES = new Set([
-  'replaceAllText',
-  'insertText',
-  'deleteContentRange',
-  'insertTableRow',
-  'deleteTableRow',
-  'deleteTableColumn',
-  'updateTextStyle',
-  'replaceNamedRangeContent',
-]);
-
 const updateDocument: ActionDefinition = {
   id: 'docs.update_document',
   name: 'Update Document',
   description:
-    'Apply targeted edits to a Google Doc without replacing the full body. Supports text replacement, insertion, deletion, and table operations. Preserves all existing formatting.',
+    'Apply targeted edits to a Google Doc without replacing the full body. Accepts TOON-encoded operations for find-and-replace, table cell fill, and anchor-based text insertion while preserving existing formatting.',
   riskLevel: 'high',
   params: z.object({
     documentId: z.string().describe('Google Docs document ID'),
-    requests: z.array(z.record(z.unknown())).describe('Array of batchUpdate request objects'),
-    tabId: z.string().optional().describe('Tab ID for multi-tab documents (auto-injected into locations)'),
+    operationsToon: z.string().describe('TOON-encoded array of operations to apply'),
+    tabId: z.string().optional().describe('Tab ID for multi-tab documents'),
   }),
 };
+
+const updateDocumentRuntimeParams = z.object({
+  documentId: z.string(),
+  operationsToon: z.string(),
+  tabId: z.string().optional(),
+});
 
 // ─── Action List ─────────────────────────────────────────────────────────────
 
@@ -565,40 +566,36 @@ async function executeAction(
       }
 
       case 'docs.update_document': {
-        const { documentId, requests, tabId } = updateDocument.params.parse(params);
-
-        // Validate that all request types are in the supported subset
-        for (let i = 0; i < requests.length; i++) {
-          const keys = Object.keys(requests[i]);
-          if (keys.length !== 1) {
-            return {
-              success: false,
-              error: `Request at index ${i} must contain exactly one request type, got: ${keys.join(', ')}`,
-            };
-          }
-          if (!SUPPORTED_UPDATE_TYPES.has(keys[0])) {
-            return {
-              success: false,
-              error: `Unsupported request type '${keys[0]}' at index ${i}. Supported types: ${[...SUPPORTED_UPDATE_TYPES].join(', ')}`,
-            };
-          }
+        const { documentId, operationsToon, tabId } = updateDocumentRuntimeParams.parse(params);
+        let decodedOperations: unknown;
+        try {
+          decodedOperations = decodeToon(operationsToon);
+        } catch (error) {
+          return { success: false, error: `Failed to decode operationsToon: ${String(error)}` };
+        }
+        if (!Array.isArray(decodedOperations)) {
+          return { success: false, error: 'operationsToon must decode to an array of operations' };
         }
 
-        // Inject tabId into location objects if provided
-        const finalRequests = tabId
-          ? (requests.map((req: Record<string, unknown>) => injectTabId(req, tabId)) as Record<string, unknown>[])
-          : requests;
+        const rawOperations = decodedOperations as unknown[];
+        const operations = rawOperations.map((operation, index) => parseUpdateOperation(operation, index));
 
-        // Send all requests in a single batchUpdate call to preserve caller-specified
-        // order and index consistency (chunking would break index-relative operations)
-        if (finalRequests.length > 0) {
-          const res = await docsFetch(`/documents/${encodeURIComponent(documentId)}:batchUpdate`, token, {
-            method: 'POST',
-            body: JSON.stringify({ requests: finalRequests }),
-          });
-          if (!res.ok) {
-            return await apiError(res, 'Docs batchUpdate');
-          }
+        let doc: Record<string, unknown> | undefined;
+        if (requiresDocumentRead(operations)) {
+          const result = await fetchDocument(documentId, token);
+          if (!result.ok) return result.error;
+          doc = result.doc;
+        }
+
+        let requests = translateUpdateOperations(operations, doc, tabId);
+
+        if (tabId) {
+          requests = requests.map((request) => injectTabId(request, tabId)) as Record<string, unknown>[];
+        }
+
+        const batchResult = await executeBatchUpdate(documentId, token, requests);
+        if (!batchResult.success) {
+          return { success: false, error: batchResult.error || 'Failed to update document' };
         }
 
         return { success: true, data: { documentId } };
