@@ -438,6 +438,10 @@ export class ChannelSession {
   turnCreated = false;
   turnId: string | null = null;
 
+  // Callback to reset the sync prompt timeout on SSE activity.
+  // Set by the failover loop, cleared when the sync fetch completes.
+  resetSyncTimeout: (() => void) | null = null;
+
   // Per-message usage entries for the current turn (reset per prompt)
   usageEntries = new Map<string, { model: string; inputTokens: number; outputTokens: number }>();
 
@@ -473,6 +477,7 @@ export class ChannelSession {
     this.awaitingAssistantForAttempt = false;
     this.turnCreated = false;
     this.turnId = null;
+    this.resetSyncTimeout = null;
     this.usageEntries.clear();
   }
 
@@ -494,6 +499,7 @@ export class ChannelSession {
     this.awaitingAssistantForAttempt = false;
     this.turnCreated = false;
     this.turnId = null;
+    this.resetSyncTimeout = null;
     // Note: usageEntries NOT cleared on retry — entries from failed attempt
     // are still valid usage that was billed by the provider
   }
@@ -517,6 +523,7 @@ export class ChannelSession {
     this.awaitingAssistantForAttempt = false;
     this.turnCreated = false;
     this.turnId = null;
+    this.resetSyncTimeout = null;
     // Tokens consumed during aborted turns are still billed by the provider
     // but we drop them here since turnId is cleared and we can't attribute them.
     // This causes minor underreporting of actual provider cost on aborted turns.
@@ -1447,18 +1454,27 @@ export class PromptHandler {
           this.awaitingAssistantForAttempt = true;
         }
 
-        // Create an AbortController with a hard timeout to prevent blocking forever
-        // when OpenCode enters an internal provider retry loop (repeated 429/5xx).
+        // Create an AbortController with a resettable inactivity timeout.
+        // The timeout resets whenever SSE events indicate the model is actively
+        // working (text streaming, tool calls, step events). This prevents
+        // aborting long-running but actively-progressing prompts.
         const syncAbort = new AbortController();
         const sessionId = channel.opencodeSessionId;
-        const syncTimeoutId = setTimeout(() => {
-          console.log(`[PromptHandler] Sync prompt timeout (${SYNC_PROMPT_TIMEOUT_MS}ms) — aborting fetch and OpenCode session`);
-          syncAbort.abort();
-          // Abort the OpenCode session to stop its internal retry loop
-          if (sessionId) {
-            fetch(`${this.opencodeUrl}/session/${sessionId}/abort`, { method: "POST" }).catch(() => undefined);
-          }
-        }, SYNC_PROMPT_TIMEOUT_MS);
+        let syncTimeoutId: ReturnType<typeof setTimeout> | undefined;
+        const startSyncTimeout = () => {
+          clearTimeout(syncTimeoutId);
+          syncTimeoutId = setTimeout(() => {
+            console.log(`[PromptHandler] Sync prompt inactivity timeout (${SYNC_PROMPT_TIMEOUT_MS}ms) — aborting fetch and OpenCode session`);
+            syncAbort.abort();
+            // Abort the OpenCode session to stop its internal retry loop
+            if (sessionId) {
+              fetch(`${this.opencodeUrl}/session/${sessionId}/abort`, { method: "POST" }).catch(() => undefined);
+            }
+          }, SYNC_PROMPT_TIMEOUT_MS);
+        };
+        startSyncTimeout();
+        // Expose to SSE handlers so activity resets the timeout
+        channel.resetSyncTimeout = startSyncTimeout;
 
         try {
           console.log(`[PromptHandler] Sending sync prompt ${messageId} (channel: ${channel.channelKey})${currentModel ? ` (model: ${currentModel})` : ''}`);
@@ -1524,6 +1540,7 @@ export class PromptHandler {
           return;
         } finally {
           clearTimeout(syncTimeoutId);
+          channel.resetSyncTimeout = null;
         }
       }
 
@@ -3936,6 +3953,8 @@ export class PromptHandler {
 
   private resetResponseTimeout(): void {
     this.clearResponseTimeout();
+    // Also reset the sync prompt inactivity timeout — the model is actively working
+    this.activeChannel?.resetSyncTimeout?.();
     // Set a timeout to finalize the response if no completion event is received
     this.responseTimeoutId = setTimeout(() => {
       if (this.activeMessageId && this.hasActivity) {
