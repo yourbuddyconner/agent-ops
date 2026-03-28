@@ -355,6 +355,19 @@ describe('SessionAgentDO', () => {
     expect(JSON.parse(storedPrompt!.context)).toEqual({ options: ['Yes', 'No'] });
   });
 
+  it('re-arms the alarm when idle hibernation is the only pending deadline', async () => {
+    const { agent } = await createTestAgent();
+
+    (agent as any).sessionState.idleTimeoutMs = 60_000;
+    (agent as any).sessionState.lastUserActivityAt = Date.now() - 1_000;
+
+    const scheduleAlarm = vi.spyOn((agent as any).lifecycle, 'scheduleAlarm');
+
+    await agent.alarm();
+
+    expect(scheduleAlarm).toHaveBeenCalledTimes(1);
+  });
+
   it('sends a minimal init payload during client websocket upgrade', async () => {
     const send = vi.fn();
     const serverSocket = { send };

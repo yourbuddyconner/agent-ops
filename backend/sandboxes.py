@@ -43,6 +43,14 @@ class SandboxAlreadyFinishedError(Exception):
         super().__init__(f"Sandbox {sandbox_id} has already finished and cannot be snapshotted")
 
 
+class SandboxSnapshotFailedError(Exception):
+    """Raised when Modal cannot create a snapshot image for a sandbox."""
+
+    def __init__(self, sandbox_id: str, message: str) -> None:
+        self.sandbox_id = sandbox_id
+        super().__init__(message)
+
+
 @dataclass
 class SandboxConfig:
     session_id: str
@@ -182,6 +190,8 @@ class SandboxManager:
             exc_type = type(exc).__name__
             if exc_type in ("GRPCError", "ConflictError") and "already finished" in str(exc).lower():
                 raise SandboxAlreadyFinishedError(sandbox_id)
+            if exc_type == "ExecutionError" and "failed to create image" in str(exc).lower():
+                raise SandboxSnapshotFailedError(sandbox_id, "Failed to create image")
             logger.warning(
                 "snapshot_and_terminate: unhandled %s for sandbox %s: %s",
                 exc_type, sandbox_id, exc,

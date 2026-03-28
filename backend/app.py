@@ -21,7 +21,7 @@ fn_image = (
     .add_local_dir("packages/shared", remote_path="/root/packages/shared")
 )
 
-from sandboxes import SandboxAlreadyFinishedError
+from sandboxes import SandboxAlreadyFinishedError, SandboxSnapshotFailedError
 from session import CreateSessionRequest, SessionManager
 
 session_manager = SessionManager(app)
@@ -106,6 +106,11 @@ async def hibernate_session(request: dict) -> dict:
         return JSONResponse(
             status_code=409,
             content={"error": "sandbox_already_finished", "message": "Sandbox has already exited (idle timeout). Cannot hibernate."},
+        )
+    except SandboxSnapshotFailedError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "snapshot_failed", "message": str(exc)},
         )
     return {"snapshotImageId": snapshot_image_id}
 

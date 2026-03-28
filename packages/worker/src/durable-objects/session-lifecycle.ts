@@ -22,6 +22,14 @@ export class SandboxAlreadyExitedError extends Error {
   }
 }
 
+/** Thrown when the backend cannot create a snapshot image for hibernation. */
+export class SandboxSnapshotFailedError extends Error {
+  constructor(message?: string) {
+    super(message ?? 'Snapshot failed');
+    this.name = 'SandboxSnapshotFailedError';
+  }
+}
+
 // ─── Result Types ─────────────────────────────────────────────────────────────
 
 export interface SpawnResult {
@@ -120,6 +128,19 @@ export class SessionLifecycle {
 
     if (response.status === 409) {
       throw new SandboxAlreadyExitedError();
+    }
+
+    if (response.status === 503) {
+      let message = 'Snapshot failed';
+      try {
+        const body = await response.json() as { error?: string; message?: string };
+        if (body.error === 'snapshot_failed') {
+          message = body.message ? `Snapshot failed: ${body.message}` : message;
+        }
+      } catch {
+        // Ignore parse failure and fall back to generic error below.
+      }
+      throw new SandboxSnapshotFailedError(message);
     }
 
     if (!response.ok) {
