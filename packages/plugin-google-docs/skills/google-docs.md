@@ -54,7 +54,7 @@ This produces a document with proper headings, bold names, a clickable link, str
 
 - **`docs.search_documents`** — Find documents by title keyword. Use this to locate documents before reading/editing.
 - **`docs.get_document`** — Get full document metadata (title, sections, revision info). Good for understanding document structure.
-- **`docs.read_document`** — Read entire document content as plain text. Use for short documents.
+- **`docs.read_document`** — Read entire document content as markdown. Tables are annotated as `[Table N]` in document order to make `fillCell` targeting easier.
 - **`docs.read_section`** — Read a specific section by heading name. Use for long documents where you only need part of the content.
 
 ### Writing (Markdown-Based)
@@ -86,39 +86,65 @@ This produces a document with proper headings, bold names, a clickable link, str
 - `fillCell` — Replace the content of a specific table cell by `(tableIndex, row, col)`, using 0-based indexing.
 - `insertText` — Insert text immediately after an anchor string that already exists in the document.
 
+**Input formats:**
+- `operationsJson` — Preferred when possible. Pass a normal JSON array of operations.
+- `operationsToon` — Supported for token-efficient prompts, but easier to misformat than JSON.
+
+**Document identifiers:**
+- All tools that take `documentId` accept either a bare document ID or a full Google Docs URL. You do not need to manually strip the ID out of a standard Docs URL.
+
 **Use `replaceAll` for placeholders:**
 ```text
 documentId: 1Jmzvis-SH_...
-operationsToon: |
-  [2]{type,find,replace}:
-    replaceAll,"{{PROJECT_NAME}}",Wallet Export v2
-    replaceAll,"{{LAUNCH_DATE}}",2026-04-15
+operationsJson:
+  - type: replaceAll
+    find: "{{PROJECT_NAME}}"
+    replace: Wallet Export v2
+  - type: replaceAll
+    find: "{{LAUNCH_DATE}}"
+    replace: 2026-04-15
 ```
 
 **Use `fillCell` for template tables:**
 ```text
 documentId: 1Jmzvis-SH_...
-operationsToon: |
-  [2]{type,tableIndex,row,col,text}:
-    fillCell,0,0,1,Wallet Export v2
-    fillCell,0,1,1,Tier 1
+operationsJson:
+  - type: fillCell
+    tableIndex: 0
+    row: 0
+    col: 1
+    text: Wallet Export v2
+  - type: fillCell
+    tableIndex: 0
+    row: 1
+    col: 1
+    text: Tier 1
 ```
 
 **Use `insertText` for anchored insertions:**
 ```text
 documentId: 1Jmzvis-SH_...
-operationsToon: |
-  [1]{type,after,text}:
-    insertText,"Marketing Owner:"," Jane Smith"
+operationsJson:
+  - type: insertText
+    after: "Marketing Owner:"
+    text: " Jane Smith"
 ```
 
 For `update_document`, first read the doc with `docs.read_document` to understand the structure:
-- Count tables in document order starting from `0`
+- Use the `[Table N]` labels in the readback to map table indices
 - Count table rows and columns starting from `0`
 - Prefer `replaceAll` when the template already has stable placeholder text
 - Use `fillCell` when a value belongs in a specific table cell
 - Use `insertText` when you know the exact anchor string already present in the doc
-- Encode the final operation array as TOON before calling the tool
+- Prefer `operationsJson` unless you specifically need TOON
+
+**Caution:** `fillCell` and `insertText` require non-empty `text`. The Google Docs API rejects empty `insertText` requests. If a cell should remain blank, omit the operation for that cell instead of passing an empty string.
+
+**TOON encoding rules:**
+- Each TOON block must use a single consistent column schema.
+- Do not mix `replaceAll`, `fillCell`, and `insertText` rows in the same TOON block because they have different fields.
+- In practice, prefer `operationsJson` when mixing operation types.
+- If you must use TOON, keep each `update_document` call to one operation shape or make separate `update_document` calls per shape.
 
 ## Common Patterns
 
@@ -137,21 +163,56 @@ For targeted edits to formatted templates:
 
 ```
 1. docs.read_document({ documentId: "..." })
-2. Count tables in document order and identify the row/col layout you need
+2. Use the [Table N] labels to identify the table you want, then count row/col positions
 3. docs.update_document({
      documentId: "...",
-     operationsToon: `
-       [2]:
-         - type: replaceAll
-           find: "{{PROJECT_NAME}}"
-           replace: Wallet Export v2
-         - type: fillCell
-           tableIndex: 0
-           row: 2
-           col: 1
-           text: 2026-04-01
-     `
+     operationsJson: [
+       { type: "replaceAll", find: "{{PROJECT_NAME}}", replace: "Wallet Export v2" },
+       { type: "fillCell", tableIndex: 0, row: 2, col: 1, text: "2026-04-01" }
+     ]
    })
+```
+
+### Worked Example: Read → Plan → Fill
+
+Use this workflow when filling a structured template without disturbing formatting:
+
+```text
+1. docs.read_document({
+     documentId: "https://docs.google.com/document/d/1Jmzvis-SH_.../edit"
+   })
+
+2. Inspect the markdown response:
+   - Find `[Table 0]`, `[Table 1]`, etc.
+   - Note which table row/col holds each value you need to fill
+   - Leave untouched cells out of the plan entirely
+
+3. Build the operation list:
+   operationsJson:
+     - type: replaceAll
+       find: "{{CAPABILITY_NAME}}"
+       replace: Wallet Export v2
+     - type: insertText
+       after: "Marketing Owner:"
+       text: " Jane Smith"
+     - type: fillCell
+       tableIndex: 0
+       row: 0
+       col: 1
+       text: Wallet Export v2
+     - type: fillCell
+       tableIndex: 0
+       row: 1
+       col: 1
+       text: Tier 1
+
+4. Apply the targeted edit:
+   docs.update_document({
+     documentId: "https://docs.google.com/document/d/1Jmzvis-SH_.../edit",
+     operationsJson: [...]
+   })
+
+5. Re-read the document and verify the filled cells and inline fields landed in the expected places.
 ```
 
 ### Section-Based Editing
@@ -220,5 +281,5 @@ Inline code like `variable_name` renders in green monospace font.
 - **Search first**: Use `docs.search_documents` to find documents by title before working with them. You need the document ID for all other operations.
 - **Use sections**: For large documents, prefer `read_section` and `replace_section` over reading/replacing the entire document.
 - **Markdown everywhere**: Every content string — in create, replace, append, insert — is parsed as markdown. Take advantage of this for professional-looking documents.
-- **Targeted edits are not markdown**: `docs.update_document` writes plain text into existing structures and takes a TOON-encoded operation list. Use it when preserving current formatting matters more than generating new formatting from markdown.
+- **Targeted edits are not markdown**: `docs.update_document` writes plain text into existing structures and takes either `operationsJson` or a TOON-encoded operation list. Use it when preserving current formatting matters more than generating new formatting from markdown.
 - **Heading levels matter**: Section operations use heading hierarchy. A `## Subheading` under `# Heading` is part of the `# Heading` section. Replacing `# Heading` replaces everything including sub-sections.

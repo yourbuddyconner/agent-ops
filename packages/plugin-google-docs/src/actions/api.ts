@@ -69,8 +69,25 @@ export async function executeBatchUpdate(
   documentId: string,
   token: string,
   requests: DocsRequest[],
+  options?: { preserveOrder?: boolean },
 ): Promise<{ success: boolean; error?: string }> {
   if (requests.length === 0) {
+    return { success: true };
+  }
+
+  if (options?.preserveOrder) {
+    for (let i = 0; i < requests.length; i += MAX_BATCH_SIZE) {
+      const chunk = requests.slice(i, i + MAX_BATCH_SIZE);
+      const res = await docsFetch(
+        `/documents/${documentId}:batchUpdate`,
+        token,
+        { method: 'POST', body: JSON.stringify({ requests: chunk }) },
+      );
+      if (!res.ok) {
+        return apiError(res, 'Docs batchUpdate');
+      }
+    }
+
     return { success: true };
   }
 

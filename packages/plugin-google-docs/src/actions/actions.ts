@@ -10,6 +10,7 @@ import {
   parseUpdateOperation,
   requiresDocumentRead,
   translateUpdateOperations,
+  type UpdateDocumentOperation,
 } from './operations.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -49,12 +50,74 @@ function escapeDriveQuery(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
+function normalizeDocumentId(input: string): string {
+  const trimmed = input.trim();
+  const match = trimmed.match(/docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]+)/);
+  return match?.[1] ?? trimmed;
+}
+
+function annotateTables(markdown: string): string {
+  const lines = markdown.split('\n');
+  const output: string[] = [];
+  let tableIndex = 0;
+  let inTable = false;
+
+  for (const line of lines) {
+    const isTableLine = /^\|.*\|$/.test(line.trim());
+
+    if (isTableLine && !inTable) {
+      if (output.length > 0 && output[output.length - 1] !== '') {
+        output.push('');
+      }
+      output.push(`[Table ${tableIndex}]`);
+      tableIndex += 1;
+      inTable = true;
+    } else if (!isTableLine) {
+      inTable = false;
+    }
+
+    output.push(line);
+  }
+
+  return output.join('\n');
+}
+
+function decodeUpdateOperations(params: {
+  operationsToon?: string;
+  operationsJson?: unknown[];
+}): UpdateDocumentOperation[] | { error: string } {
+  let decodedOperations: unknown;
+
+  if (params.operationsJson) {
+    decodedOperations = params.operationsJson;
+  } else if (params.operationsToon) {
+    try {
+      decodedOperations = decodeToon(params.operationsToon);
+    } catch (error) {
+      return { error: `Failed to decode operationsToon: ${String(error)}` };
+    }
+  } else {
+    return { error: 'Provide either operationsToon or operationsJson' };
+  }
+
+  if (!Array.isArray(decodedOperations)) {
+    return { error: 'Update operations must decode to an array of operations' };
+  }
+
+  try {
+    return decodedOperations.map((operation, index) => parseUpdateOperation(operation, index));
+  } catch (error) {
+    return { error: String(error) };
+  }
+}
+
 /** Fetch a full document and return the parsed JSON. */
 async function fetchDocument(
   documentId: string,
   token: string,
 ): Promise<{ ok: true; doc: Record<string, unknown> } | { ok: false; error: ActionResult }> {
-  const res = await docsFetch(`/documents/${encodeURIComponent(documentId)}`, token);
+  const normalizedDocumentId = normalizeDocumentId(documentId);
+  const res = await docsFetch(`/documents/${encodeURIComponent(normalizedDocumentId)}`, token);
   if (!res.ok) {
     return { ok: false, error: await apiError(res, 'Docs') };
   }
@@ -121,7 +184,7 @@ const getDocument: ActionDefinition = {
   description: 'Get document metadata (title, revision ID) by ID',
   riskLevel: 'low',
   params: z.object({
-    documentId: z.string().describe('Google Docs document ID'),
+    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
   }),
 };
 
@@ -131,7 +194,7 @@ const readDocument: ActionDefinition = {
   description: 'Read the full content of a Google Doc as markdown',
   riskLevel: 'low',
   params: z.object({
-    documentId: z.string().describe('Google Docs document ID'),
+    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
     tabId: z.string().optional().describe('Specific tab ID to read (for multi-tab documents)'),
   }),
 };
@@ -142,7 +205,7 @@ const readSection: ActionDefinition = {
   description: 'Read a specific section of a Google Doc by heading text',
   riskLevel: 'low',
   params: z.object({
-    documentId: z.string().describe('Google Docs document ID'),
+    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
     heading: z.string().describe('Heading text to find (case-insensitive substring match)'),
     tabId: z.string().optional().describe('Specific tab ID (for multi-tab docs)'),
   }),
@@ -166,7 +229,7 @@ const replaceDocument: ActionDefinition = {
   description: 'Replace the entire content of a Google Doc with new markdown',
   riskLevel: 'high',
   params: z.object({
-    documentId: z.string().describe('Google Docs document ID'),
+    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
     markdown: z.string().describe('New markdown content to replace the entire document body'),
   }),
 };
@@ -177,7 +240,7 @@ const appendContent: ActionDefinition = {
   description: 'Append markdown content to the end of a Google Doc',
   riskLevel: 'medium',
   params: z.object({
-    documentId: z.string().describe('Google Docs document ID'),
+    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
     markdown: z.string().describe('Markdown content to append'),
   }),
 };
@@ -188,7 +251,7 @@ const replaceSection: ActionDefinition = {
   description: 'Replace a specific section of a Google Doc identified by heading',
   riskLevel: 'medium',
   params: z.object({
-    documentId: z.string().describe('Google Docs document ID'),
+    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
     heading: z.string().describe('Heading text of the section to replace (case-insensitive substring match)'),
     markdown: z.string().describe('New markdown content to replace the section with'),
   }),
@@ -200,7 +263,7 @@ const insertSection: ActionDefinition = {
   description: 'Insert markdown content before or after a specific section',
   riskLevel: 'medium',
   params: z.object({
-    documentId: z.string().describe('Google Docs document ID'),
+    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
     heading: z.string().describe('Heading text of the reference section (case-insensitive substring match)'),
     position: z.enum(['before', 'after']).describe('Insert before or after the reference section'),
     markdown: z.string().describe('Markdown content to insert'),
@@ -213,7 +276,7 @@ const deleteSection: ActionDefinition = {
   description: 'Delete a section (heading and all content until next same-level heading) from a Google Doc',
   riskLevel: 'high',
   params: z.object({
-    documentId: z.string().describe('Google Docs document ID'),
+    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
     heading: z.string().describe('Heading text of the section to delete (case-insensitive substring match)'),
   }),
 };
@@ -222,19 +285,27 @@ const updateDocument: ActionDefinition = {
   id: 'docs.update_document',
   name: 'Update Document',
   description:
-    'Apply targeted edits to a Google Doc without replacing the full body. Accepts TOON-encoded operations for find-and-replace, table cell fill, and anchor-based text insertion while preserving existing formatting.',
+    'Apply targeted edits to a Google Doc without replacing the full body. Accepts TOON-encoded operations or JSON operations for find-and-replace, table cell fill, and anchor-based text insertion while preserving existing formatting.',
   riskLevel: 'high',
   params: z.object({
-    documentId: z.string().describe('Google Docs document ID'),
-    operationsToon: z.string().describe('TOON-encoded array of operations to apply'),
+    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
+    operationsToon: z.string().optional().describe('TOON-encoded array of operations to apply'),
+    operationsJson: z.array(z.unknown()).optional().describe('JSON array of operations to apply'),
     tabId: z.string().optional().describe('Tab ID for multi-tab documents'),
+  }).refine((value) => Boolean(value.operationsToon || value.operationsJson), {
+    message: 'Provide either operationsToon or operationsJson',
+    path: ['operationsToon'],
   }),
 };
 
 const updateDocumentRuntimeParams = z.object({
   documentId: z.string(),
-  operationsToon: z.string(),
+  operationsToon: z.string().optional(),
+  operationsJson: z.array(z.unknown()).optional(),
   tabId: z.string().optional(),
+}).refine((value) => Boolean(value.operationsToon || value.operationsJson), {
+  message: 'Provide either operationsToon or operationsJson',
+  path: ['operationsToon'],
 });
 
 // ─── Action List ─────────────────────────────────────────────────────────────
@@ -284,7 +355,8 @@ async function executeAction(
 
       case 'docs.get_document': {
         const { documentId } = getDocument.params.parse(params);
-        const result = await fetchDocument(documentId, token);
+        const normalizedDocumentId = normalizeDocumentId(documentId);
+        const result = await fetchDocument(normalizedDocumentId, token);
         if (!result.ok) return result.error;
         const doc = result.doc as { documentId?: string; title?: string; revisionId?: string };
         return {
@@ -299,7 +371,8 @@ async function executeAction(
 
       case 'docs.read_document': {
         const { documentId, tabId } = readDocument.params.parse(params);
-        const result = await fetchDocument(documentId, token);
+        const normalizedDocumentId = normalizeDocumentId(documentId);
+        const result = await fetchDocument(normalizedDocumentId, token);
         if (!result.ok) return result.error;
         const doc = result.doc;
 
@@ -320,13 +393,14 @@ async function executeAction(
           lists = doc.lists as DocsLists | undefined;
         }
 
-        const markdown = docsToMarkdown(body, lists);
+        const markdown = annotateTables(docsToMarkdown(body, lists));
         return { success: true, data: { markdown } };
       }
 
       case 'docs.read_section': {
         const { documentId, heading, tabId } = readSection.params.parse(params);
-        const result = await fetchDocument(documentId, token);
+        const normalizedDocumentId = normalizeDocumentId(documentId);
+        const result = await fetchDocument(normalizedDocumentId, token);
         if (!result.ok) return result.error;
         const doc = result.doc;
 
@@ -411,9 +485,10 @@ async function executeAction(
 
       case 'docs.replace_document': {
         const { documentId, markdown } = replaceDocument.params.parse(params);
+        const normalizedDocumentId = normalizeDocumentId(documentId);
 
         // 1. Get current document body
-        const result = await fetchDocument(documentId, token);
+        const result = await fetchDocument(normalizedDocumentId, token);
         if (!result.ok) return result.error;
         const body = (result.doc.body ?? {}) as DocsBody;
         const endIndex = getBodyEndIndex(body);
@@ -434,19 +509,20 @@ async function executeAction(
         requests.push(...insertRequests);
 
         // 4. Execute batch update
-        const batchResult = await executeBatchUpdate(documentId, token, requests);
+        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests);
         if (!batchResult.success) {
           return { success: false, error: batchResult.error || 'Failed to replace document content' };
         }
 
-        return { success: true, data: { documentId } };
+        return { success: true, data: { documentId: normalizedDocumentId } };
       }
 
       case 'docs.append_content': {
         const { documentId, markdown } = appendContent.params.parse(params);
+        const normalizedDocumentId = normalizeDocumentId(documentId);
 
         // 1. Get current document body to find end index
-        const result = await fetchDocument(documentId, token);
+        const result = await fetchDocument(normalizedDocumentId, token);
         if (!result.ok) return result.error;
         const body = (result.doc.body ?? {}) as DocsBody;
         const endIndex = getBodyEndIndex(body);
@@ -455,19 +531,20 @@ async function executeAction(
         const requests = convertMarkdownToRequests(markdown, { startIndex: endIndex - 1 });
 
         // 3. Execute batch update
-        const batchResult = await executeBatchUpdate(documentId, token, requests);
+        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests);
         if (!batchResult.success) {
           return { success: false, error: batchResult.error || 'Failed to append content' };
         }
 
-        return { success: true, data: { documentId } };
+        return { success: true, data: { documentId: normalizedDocumentId } };
       }
 
       case 'docs.replace_section': {
         const { documentId, heading, markdown } = replaceSection.params.parse(params);
+        const normalizedDocumentId = normalizeDocumentId(documentId);
 
         // 1. Get current document body
-        const result = await fetchDocument(documentId, token);
+        const result = await fetchDocument(normalizedDocumentId, token);
         if (!result.ok) return result.error;
         const body = (result.doc.body ?? {}) as DocsBody;
 
@@ -493,19 +570,20 @@ async function executeAction(
         requests.push(...insertRequests);
 
         // 5. Execute batch update
-        const batchResult = await executeBatchUpdate(documentId, token, requests);
+        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests);
         if (!batchResult.success) {
           return { success: false, error: batchResult.error || 'Failed to replace section' };
         }
 
-        return { success: true, data: { documentId } };
+        return { success: true, data: { documentId: normalizedDocumentId } };
       }
 
       case 'docs.insert_section': {
         const { documentId, heading, position, markdown } = insertSection.params.parse(params);
+        const normalizedDocumentId = normalizeDocumentId(documentId);
 
         // 1. Get current document body
-        const result = await fetchDocument(documentId, token);
+        const result = await fetchDocument(normalizedDocumentId, token);
         if (!result.ok) return result.error;
         const body = (result.doc.body ?? {}) as DocsBody;
 
@@ -522,19 +600,20 @@ async function executeAction(
         const requests = convertMarkdownToRequests(markdown, { startIndex: insertIndex });
 
         // 5. Execute batch update
-        const batchResult = await executeBatchUpdate(documentId, token, requests);
+        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests);
         if (!batchResult.success) {
           return { success: false, error: batchResult.error || 'Failed to insert section' };
         }
 
-        return { success: true, data: { documentId } };
+        return { success: true, data: { documentId: normalizedDocumentId } };
       }
 
       case 'docs.delete_section': {
         const { documentId, heading } = deleteSection.params.parse(params);
+        const normalizedDocumentId = normalizeDocumentId(documentId);
 
         // 1. Get current document body
-        const result = await fetchDocument(documentId, token);
+        const result = await fetchDocument(normalizedDocumentId, token);
         if (!result.ok) return result.error;
         const body = (result.doc.body ?? {}) as DocsBody;
 
@@ -546,7 +625,7 @@ async function executeAction(
 
         // 3. Delete the section
         if (section.endIndex <= section.startIndex) {
-          return { success: true, data: { documentId } }; // Empty section, nothing to delete
+          return { success: true, data: { documentId: normalizedDocumentId } }; // Empty section, nothing to delete
         }
 
         const requests = [
@@ -557,32 +636,27 @@ async function executeAction(
           },
         ];
 
-        const batchResult = await executeBatchUpdate(documentId, token, requests);
+        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests);
         if (!batchResult.success) {
           return { success: false, error: batchResult.error || 'Failed to delete section' };
         }
 
-        return { success: true, data: { documentId } };
+        return { success: true, data: { documentId: normalizedDocumentId } };
       }
 
       case 'docs.update_document': {
-        const { documentId, operationsToon, tabId } = updateDocumentRuntimeParams.parse(params);
-        let decodedOperations: unknown;
-        try {
-          decodedOperations = decodeToon(operationsToon);
-        } catch (error) {
-          return { success: false, error: `Failed to decode operationsToon: ${String(error)}` };
+        const { documentId, operationsToon, operationsJson, tabId } =
+          updateDocumentRuntimeParams.parse(params);
+        const normalizedDocumentId = normalizeDocumentId(documentId);
+        const decoded = decodeUpdateOperations({ operationsToon, operationsJson });
+        if ('error' in decoded) {
+          return { success: false, error: decoded.error };
         }
-        if (!Array.isArray(decodedOperations)) {
-          return { success: false, error: 'operationsToon must decode to an array of operations' };
-        }
-
-        const rawOperations = decodedOperations as unknown[];
-        const operations = rawOperations.map((operation, index) => parseUpdateOperation(operation, index));
+        const operations = decoded;
 
         let doc: Record<string, unknown> | undefined;
         if (requiresDocumentRead(operations)) {
-          const result = await fetchDocument(documentId, token);
+          const result = await fetchDocument(normalizedDocumentId, token);
           if (!result.ok) return result.error;
           doc = result.doc;
         }
@@ -593,12 +667,14 @@ async function executeAction(
           requests = requests.map((request) => injectTabId(request, tabId)) as Record<string, unknown>[];
         }
 
-        const batchResult = await executeBatchUpdate(documentId, token, requests);
+        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests, {
+          preserveOrder: true,
+        });
         if (!batchResult.success) {
           return { success: false, error: batchResult.error || 'Failed to update document' };
         }
 
-        return { success: true, data: { documentId } };
+        return { success: true, data: { documentId: normalizedDocumentId } };
       }
 
       default:

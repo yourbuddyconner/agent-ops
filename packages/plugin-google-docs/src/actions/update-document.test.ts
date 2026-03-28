@@ -216,7 +216,6 @@ describe('docs.update_document', () => {
   it('overwrites an existing table cell by deleting current content then inserting new text', async () => {
     mockFetch
       .mockResolvedValueOnce(okResponse(makeDocument()))
-      .mockResolvedValueOnce(okResponse())
       .mockResolvedValueOnce(okResponse());
 
     const result = await googleDocsActions.execute(
@@ -237,21 +236,72 @@ describe('docs.update_document', () => {
     );
 
     expect(result.success).toBe(true);
-    expect(mockFetch).toHaveBeenCalledTimes(3);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
 
-    const deleteBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-    expect(deleteBody.requests).toEqual([
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(body.requests).toEqual([
       {
         deleteContentRange: {
           range: { startIndex: 21, endIndex: 28 },
         },
       },
-    ]);
-    const insertBody = JSON.parse(mockFetch.mock.calls[2][1].body);
-    expect(insertBody.requests).toEqual([
       {
         insertText: {
           location: { index: 21 },
+          text: 'Tier 1',
+        },
+      },
+    ]);
+  });
+
+  it('tracks downstream indexes across multiple fillCell operations in one batch', async () => {
+    mockFetch
+      .mockResolvedValueOnce(okResponse(makeDocument()))
+      .mockResolvedValueOnce(okResponse());
+
+    const result = await googleDocsActions.execute(
+      'docs.update_document',
+      {
+        documentId: 'doc-123',
+        operationsToon: operationsToon([
+          {
+            type: 'fillCell',
+            tableIndex: 0,
+            row: 0,
+            col: 1,
+            text: 'Wallet Export v2',
+          },
+          {
+            type: 'fillCell',
+            tableIndex: 0,
+            row: 1,
+            col: 1,
+            text: 'Tier 1',
+          },
+        ]),
+      },
+      makeCtx(),
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(body.requests).toEqual([
+      {
+        insertText: {
+          location: { index: 14 },
+          text: 'Wallet Export v2',
+        },
+      },
+      {
+        deleteContentRange: {
+          range: { startIndex: 37, endIndex: 44 },
+        },
+      },
+      {
+        insertText: {
+          location: { index: 37 },
           text: 'Tier 1',
         },
       },
@@ -293,7 +343,6 @@ describe('docs.update_document', () => {
   it('injects tabId into generated location objects', async () => {
     mockFetch
       .mockResolvedValueOnce(okResponse(makeDocument()))
-      .mockResolvedValueOnce(okResponse())
       .mockResolvedValueOnce(okResponse());
 
     const result = await googleDocsActions.execute(
@@ -320,12 +369,16 @@ describe('docs.update_document', () => {
     );
 
     expect(result.success).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
 
-    const deleteBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-    expect(deleteBody.requests[0].deleteContentRange.range.tabId).toBe('tab-1');
-
-    const insertBody = JSON.parse(mockFetch.mock.calls[2][1].body);
-    expect(insertBody.requests).toEqual([
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(body.requests[0].deleteContentRange.range.tabId).toBe('tab-1');
+    expect(body.requests).toEqual([
+      {
+        deleteContentRange: {
+          range: { startIndex: 21, endIndex: 28, tabId: 'tab-1' },
+        },
+      },
       {
         insertText: {
           location: { index: 21, tabId: 'tab-1' },
@@ -334,7 +387,7 @@ describe('docs.update_document', () => {
       },
       {
         insertText: {
-          location: { index: 45, tabId: 'tab-1' },
+          location: { index: 44, tabId: 'tab-1' },
           text: ' Jane Smith',
         },
       },

@@ -21,13 +21,13 @@ export const fillCellOperationSchema = z.object({
   tableIndex: z.number().int().min(0).describe('0-based index of the table in the document'),
   row: z.number().int().min(0).describe('0-based row index'),
   col: z.number().int().min(0).describe('0-based column index'),
-  text: z.string().describe('Text to put in the cell (replaces existing content)'),
+  text: z.string().min(1).describe('Text to put in the cell (replaces existing content)'),
 });
 
 export const insertTextOperationSchema = z.object({
   type: z.literal('insertText'),
   after: z.string().describe('Anchor text to find — new text is inserted immediately after this string'),
-  text: z.string().describe('Text to insert'),
+  text: z.string().min(1).describe('Text to insert'),
 });
 
 export const updateDocumentOperationSchema = z.union([
@@ -49,6 +49,12 @@ interface DocsTab {
 interface TextSegment {
   text: string;
   startIndex: number;
+}
+
+interface IndexMutation {
+  startIndex: number;
+  endIndex: number;
+  newLength: number;
 }
 
 export function parseUpdateOperation(input: unknown, index: number): UpdateDocumentOperation {
@@ -83,6 +89,7 @@ export function translateUpdateOperations(
 ): DocsRequest[] {
   const body = requiresDocumentRead(operations) ? getDocumentBody(doc, tabId) : undefined;
   const requests: DocsRequest[] = [];
+  const mutations: IndexMutation[] = [];
 
   for (let index = 0; index < operations.length; index++) {
     const operation = operations[index];
@@ -105,12 +112,16 @@ export function translateUpdateOperations(
     }
 
     if (operation.type === 'fillCell') {
-      requests.push(...translateFillCellOperation(body, operation, index));
+      const translated = translateFillCellOperation(body, operation, index, mutations);
+      requests.push(...translated.requests);
+      mutations.push(translated.mutation);
       continue;
     }
 
     if (operation.type === 'insertText') {
-      requests.push(translateInsertTextOperation(body, operation, index));
+      const translated = translateInsertTextOperation(body, operation, index, mutations);
+      requests.push(translated.request);
+      mutations.push(translated.mutation);
       continue;
     }
   }
@@ -143,7 +154,8 @@ function translateFillCellOperation(
   body: DocsBody,
   operation: Extract<UpdateDocumentOperation, { type: 'fillCell' }>,
   operationIndex: number,
-): DocsRequest[] {
+  mutations: IndexMutation[],
+): { requests: DocsRequest[]; mutation: IndexMutation } {
   const tables = collectTables(body);
   const table = tables[operation.tableIndex];
 
@@ -176,12 +188,18 @@ function translateFillCellOperation(
   }
 
   const requests: DocsRequest[] = [];
-  if (range.deleteEndIndex > range.startIndex) {
+  const adjustedStartIndex = adjustIndexForMutations(range.startIndex, mutations, operationIndex);
+  const adjustedDeleteEndIndex =
+    range.deleteEndIndex > range.startIndex
+      ? adjustIndexForMutations(range.deleteEndIndex, mutations, operationIndex)
+      : adjustedStartIndex;
+
+  if (adjustedDeleteEndIndex > adjustedStartIndex) {
     requests.push({
       deleteContentRange: {
         range: {
-          startIndex: range.startIndex,
-          endIndex: range.deleteEndIndex,
+          startIndex: adjustedStartIndex,
+          endIndex: adjustedDeleteEndIndex,
         },
       },
     });
@@ -189,19 +207,27 @@ function translateFillCellOperation(
 
   requests.push({
     insertText: {
-      location: { index: range.startIndex },
+      location: { index: adjustedStartIndex },
       text: operation.text,
     },
   });
 
-  return requests;
+  return {
+    requests,
+    mutation: {
+      startIndex: range.startIndex,
+      endIndex: range.deleteEndIndex,
+      newLength: operation.text.length,
+    },
+  };
 }
 
 function translateInsertTextOperation(
   body: DocsBody,
   operation: Extract<UpdateDocumentOperation, { type: 'insertText' }>,
   operationIndex: number,
-): DocsRequest {
+  mutations: IndexMutation[],
+): { request: DocsRequest; mutation: IndexMutation } {
   const segments = collectTextSegments(body.content ?? []);
   const fullText = segments.map((segment) => segment.text).join('');
   const anchorOffset = fullText.indexOf(operation.after);
@@ -213,13 +239,45 @@ function translateInsertTextOperation(
   const indexMap = buildIndexMap(segments);
   const anchorEnd = anchorOffset + operation.after.length - 1;
   const insertIndex = indexMap[anchorEnd] + 1;
+  const adjustedInsertIndex = adjustIndexForMutations(insertIndex, mutations, operationIndex);
 
   return {
-    insertText: {
-      location: { index: insertIndex },
-      text: operation.text,
+    request: {
+      insertText: {
+        location: { index: adjustedInsertIndex },
+        text: operation.text,
+      },
+    },
+    mutation: {
+      startIndex: insertIndex,
+      endIndex: insertIndex,
+      newLength: operation.text.length,
     },
   };
+}
+
+function adjustIndexForMutations(
+  index: number,
+  mutations: IndexMutation[],
+  operationIndex: number,
+): number {
+  let adjustedIndex = index;
+
+  for (const mutation of mutations) {
+    if (index < mutation.startIndex) {
+      continue;
+    }
+
+    if (index < mutation.endIndex) {
+      throw new Error(
+        `operation[${operationIndex}]: target index ${index} overlaps an earlier document mutation`,
+      );
+    }
+
+    adjustedIndex += mutation.newLength - (mutation.endIndex - mutation.startIndex);
+  }
+
+  return adjustedIndex;
 }
 
 function collectTables(body: DocsBody): Table[] {
