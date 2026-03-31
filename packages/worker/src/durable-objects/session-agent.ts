@@ -3702,33 +3702,46 @@ export class SessionAgentDO {
     });
 
     if (wake) {
+      // Normalize threadId → channel routing so system messages land in the
+      // same OpenCode session as the thread that spawned the child. Without
+      // this, child notifications resolve to 'web:default' instead of the
+      // correct 'thread:<id>' session.
+      let sysChannelType: string | undefined;
+      let sysChannelId: string | undefined;
+      if (threadId) {
+        sysChannelType = 'thread';
+        sysChannelId = threadId;
+      }
+
       const status = this.sessionState.status;
       if (status === 'hibernated') {
         // Queue the prompt so the runner picks it up after connecting.
-        this.promptQueue.enqueue({ id: messageId, content, threadId });
+        this.promptQueue.enqueue({ id: messageId, content, threadId, channelType: sysChannelType, channelId: sysChannelId });
         this.ctx.waitUntil(this.performWake());
       } else if (status === 'restoring') {
         // Wake already in progress — just queue the prompt for when the runner connects.
-        this.promptQueue.enqueue({ id: messageId, content, threadId });
+        this.promptQueue.enqueue({ id: messageId, content, threadId, channelType: sysChannelType, channelId: sysChannelId });
       } else if (status === 'running') {
         // Dispatch the system event as a prompt so the runner wakes up and can
         // decide whether to act on it (e.g. child session idle/completed events).
         const runnerBusy = this.promptQueue.runnerBusy;
         if (this.runnerLink.isConnected && !runnerBusy) {
           // Runner is connected and idle — insert as 'processing' for recoverability, then dispatch
-          this.promptQueue.enqueue({ id: messageId, content, threadId, status: 'processing' });
+          this.promptQueue.enqueue({ id: messageId, content, threadId, channelType: sysChannelType, channelId: sysChannelId, status: 'processing' });
           this.promptQueue.stampDispatched();
           this.sessionState.lastParentIdleNotice = undefined;
           this.sessionState.parentIdleNotifyAt = 0;
           const ownerId = this.sessionState.userId;
           const ownerDetails = ownerId ? await this.getUserDetails(ownerId) : undefined;
           const sysModelPrefs = await this.resolveModelPreferences(ownerDetails);
-          const sysChannelKey = this.channelKeyFrom(undefined, undefined);
+          const sysChannelKey = this.channelKeyFrom(sysChannelType, sysChannelId);
           const sysOcSessionId = this.getChannelOcSessionId(sysChannelKey);
           const sysDispatched = this.runnerLink.send({
             type: 'prompt',
             messageId,
             content,
+            channelType: sysChannelType,
+            channelId: sysChannelId,
             threadId: threadId || undefined,
             opencodeSessionId: sysOcSessionId,
             modelPreferences: sysModelPrefs,
@@ -3742,7 +3755,7 @@ export class SessionAgentDO {
           this.rescheduleIdleAlarm();
         } else {
           // Runner busy or not connected — queue the prompt
-          this.promptQueue.enqueue({ id: messageId, content, threadId });
+          this.promptQueue.enqueue({ id: messageId, content, threadId, channelType: sysChannelType, channelId: sysChannelId });
         }
       }
     }
