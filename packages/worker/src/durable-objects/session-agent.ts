@@ -2284,18 +2284,15 @@ export class SessionAgentDO {
         this.emitAuditEvent('agent.error', switchText.slice(0, 120));
       },
 
-      'aborted': async (msg) => {
-        // Runner confirmed abort — mark idle, broadcast
-        this.promptQueue.runnerBusy = false;
+      'aborted': async (_msg) => {
+        // Runner confirmed abort — let handlePromptComplete clear runnerBusy
+        // and broadcast status. Don't clear runnerBusy early — that creates a
+        // race where a rapid new prompt can be dispatched then immediately
+        // completed by markCompleted().
         this.broadcastToClients({
           type: 'agentStatus',
           status: 'idle',
         });
-        this.broadcastToClients({
-          type: 'status',
-          data: { runnerBusy: false, aborted: true },
-        });
-        // Drain the queue — if prompts were queued after abort, process them now
         await this.handlePromptComplete();
       },
 
