@@ -119,6 +119,16 @@ export class RunnerLink {
     this.deps.setState('runnerToken', val);
   }
 
+  /** Timestamp (ms since epoch) when the runner WebSocket last connected, or null if never. */
+  get connectedAt(): number | null {
+    const val = this.deps.getState('runnerConnectedAt');
+    return val ? parseInt(val, 10) : null;
+  }
+
+  set connectedAt(ms: number | null) {
+    this.deps.setState('runnerConnectedAt', ms ? String(ms) : '');
+  }
+
   // ─── Send ───────────────────────────────────────────────────────────
 
   /**

@@ -747,6 +747,7 @@ export class SessionAgentDO {
 
     // Mark runner as not-yet-ready via RunnerLink
     this.runnerLink.onConnect();
+    this.runnerLink.connectedAt = Date.now();
 
     // Send init message to runner
     server.send(JSON.stringify({ type: 'init' }));

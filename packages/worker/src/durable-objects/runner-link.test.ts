@@ -261,6 +261,23 @@ describe('RunnerLink', () => {
 
   // ─── Connection Lifecycle ─────────────────────────────────────────
 
+  describe('connectedAt', () => {
+    it('is null by default', () => {
+      expect(link.connectedAt).toBeNull();
+    });
+
+    it('stores and retrieves a timestamp', () => {
+      link.connectedAt = Date.now();
+      expect(link.connectedAt).toBeGreaterThan(0);
+    });
+
+    it('clears when set to null', () => {
+      link.connectedAt = Date.now();
+      link.connectedAt = null;
+      expect(link.connectedAt).toBeNull();
+    });
+  });
+
   describe('onConnect', () => {
     it('sets ready to false', () => {
       deps.state.set('runnerReady', 'true');
