@@ -352,6 +352,10 @@ export class AgentClient {
     this.send({ type: "opencode-config-applied", success, restarted, error });
   }
 
+  sendRunnerHealth(kind: 'opencode_crash' | 'opencode_fatal' | 'upgrade_failure', details?: { exitCode?: number; crashCount?: number; message?: string }): void {
+    this.send({ type: 'runner-health', kind, ...details });
+  }
+
   sendUsageReport(turnId: string, entries: Array<{ ocMessageId: string; model: string; inputTokens: number; outputTokens: number }>): void {
     if (entries.length === 0) return;
     this.send({ type: "usage-report", turnId, entries });

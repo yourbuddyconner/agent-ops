@@ -173,6 +173,17 @@ async function main() {
   // ─── Connect to SessionAgent DO ─────────────────────────────────────
   const agentClient = new AgentClient(doUrl!, runnerToken!);
 
+  // Wire OpenCode crash/fatal callbacks to runner-health messages
+  openCodeManager.onCrashed((exitCode) => {
+    console.log(`[Runner] OpenCode crashed with exit code ${exitCode}`);
+    agentClient.sendRunnerHealth('opencode_crash', { exitCode });
+  });
+
+  openCodeManager.onFatal(() => {
+    console.log('[Runner] OpenCode entered fatal state');
+    agentClient.sendRunnerHealth('opencode_fatal', { message: 'OpenCode entered fatal state after too many crashes' });
+  });
+
   // Start auth gateway with callbacks
   startGateway(gatewayPort, {
     onImage: (data, description) => {

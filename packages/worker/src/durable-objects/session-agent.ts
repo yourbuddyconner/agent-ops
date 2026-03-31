@@ -3193,6 +3193,29 @@ export class SessionAgentDO {
         }
       },
 
+      'runner-health': (msg) => {
+        const kind = msg.kind;
+        const detail = [
+          kind,
+          msg.exitCode != null ? `exit=${msg.exitCode}` : '',
+          msg.crashCount != null ? `crashes=${msg.crashCount}` : '',
+          msg.message || '',
+        ].filter(Boolean).join(', ');
+
+        console.warn(`[SessionAgentDO] Runner health event: ${detail}`);
+
+        this.emitEvent('session.recovery', {
+          summary: `runner_health: ${kind}`,
+          properties: {
+            kind,
+            exitCode: msg.exitCode,
+            crashCount: msg.crashCount,
+            message: msg.message,
+          },
+        });
+        this.emitAuditEvent('runner.health', detail);
+      },
+
       'ping': () => {
         // Keepalive from runner — respond with pong
         this.runnerLink.send({ type: 'pong' });
