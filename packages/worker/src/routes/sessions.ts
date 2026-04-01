@@ -5,8 +5,13 @@ import type { Env, Variables } from '../env.js';
 import * as db from '../lib/db.js';
 import * as sessionService from '../services/sessions.js';
 import { resolveAvailableModels } from '../services/model-catalog.js';
+import { NotFoundError, type AgentSession } from '@valet/shared';
 
 export const sessionsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+function isOrchestratorSession(session: AgentSession): boolean {
+  return !!session.isOrchestrator || session.purpose === 'orchestrator';
+}
 
 // Validation schemas
 const createSessionSchema = z.object({
@@ -308,9 +313,9 @@ sessionsRouter.post('/:id/clear-queue', async (c) => {
 sessionsRouter.get('/:id/messages', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
-  const { limit, after } = c.req.query();
+  const { limit, after, threadId } = c.req.query();
 
-  await db.assertSessionAccess(c.get('db'), id, user.id, 'viewer');
+  const session = await db.assertSessionAccess(c.get('db'), id, user.id, 'viewer');
 
   // Proxy to the DO's /messages endpoint for authoritative data from DO SQLite.
   // D1 can lag behind (debounced flushes, background waitUntil), causing tool call
@@ -320,9 +325,40 @@ sessionsRouter.get('/:id/messages', async (c) => {
   const params = new URLSearchParams();
   if (limit) params.set('limit', limit);
   if (after) params.set('after', after);
+  if (threadId) params.set('threadId', threadId);
   const qs = params.toString();
   const doRes = await sessionDO.fetch(new Request(`http://do/messages${qs ? `?${qs}` : ''}`));
-  const data = await doRes.json();
+  const data = await doRes.json() as { messages?: unknown[] };
+
+  // For thread-specific queries, the DO may have no messages if the session was
+  // restarted (orchestrators call messageStore.reset() on start). Fall back to
+  // D1 which retains the full historical archive.
+  if (threadId && (!data.messages || data.messages.length === 0)) {
+    let messageSessionId = id;
+
+    if (isOrchestratorSession(session)) {
+      const thread = await db.getThread(c.env.DB, threadId);
+      if (!thread) {
+        throw new NotFoundError('Thread', threadId);
+      }
+
+      if (thread.sessionId !== session.id) {
+        const threadSession = await db.assertSessionAccess(c.get('db'), thread.sessionId, user.id, 'viewer');
+        if (!isOrchestratorSession(threadSession)) {
+          throw new NotFoundError('Thread', threadId);
+        }
+      }
+
+      messageSessionId = thread.sessionId;
+    }
+
+    const d1Messages = await db.getSessionMessages(c.get('db'), messageSessionId, {
+      ...(limit ? { limit: parseInt(limit, 10) } : {}),
+      ...(after ? { after } : {}),
+      threadId,
+    });
+    return c.json({ messages: d1Messages });
+  }
 
   return c.json(data);
 });
