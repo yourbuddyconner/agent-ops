@@ -522,6 +522,43 @@ describe('SessionAgentDO', () => {
     });
   });
 
+  it('hydrates both persisted session id and fallback continuation context for a cold resumed thread', async () => {
+    const runnerSocket = { send: vi.fn() };
+    const { agent } = await createTestAgent({
+      sockets: [runnerSocket],
+      dbOptions: {
+        threadRow: {
+          session_id: 'orchestrator:user-1:old',
+          opencode_session_id: 'persisted-thread-session',
+        },
+        threadMessages: [
+          { role: 'assistant', content: 'Earlier answer' },
+          { role: 'user', content: 'Earlier question' },
+        ],
+      },
+    });
+
+    await (agent as any).handlePrompt(
+      'resume persisted thread with fallback',
+      undefined,
+      undefined,
+      undefined,
+      'web',
+      'default',
+      'thread-persisted-fallback',
+    );
+
+    const sent = JSON.parse(runnerSocket.send.mock.calls.at(-1)?.[0] as string);
+    expect(sent).toMatchObject({
+      type: 'prompt',
+      threadId: 'thread-persisted-fallback',
+      channelType: 'thread',
+      channelId: 'thread-persisted-fallback',
+      opencodeSessionId: 'persisted-thread-session',
+      continuationContext: '[user]: Earlier question\n[assistant]: Earlier answer',
+    });
+  });
+
   it('hydrates continuation context for a cold legacy thread before dispatch', async () => {
     const runnerSocket = { send: vi.fn() };
     const { agent } = await createTestAgent({

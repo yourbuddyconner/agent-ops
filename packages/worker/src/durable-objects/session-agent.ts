@@ -3341,13 +3341,9 @@ export class SessionAgentDO {
       .first<{ session_id?: string | null; opencode_session_id?: string | null }>();
 
     const persistedSessionId = threadRow?.opencode_session_id || undefined;
-    if (persistedSessionId) {
-      return { opencodeSessionId: persistedSessionId };
-    }
-
     const owningSessionId = threadRow?.session_id;
     if (!owningSessionId) {
-      return {};
+      return persistedSessionId ? { opencodeSessionId: persistedSessionId } : {};
     }
 
     const msgResult = await this.env.DB
@@ -3359,7 +3355,10 @@ export class SessionAgentDO {
 
     const rows = (msgResult.results || []).reverse();
     const continuationContext = buildThreadContinuationContext(rows);
-    return continuationContext ? { continuationContext } : {};
+    return {
+      ...(persistedSessionId ? { opencodeSessionId: persistedSessionId } : {}),
+      ...(continuationContext ? { continuationContext } : {}),
+    };
   }
 
 
