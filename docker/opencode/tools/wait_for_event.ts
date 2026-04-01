@@ -4,7 +4,7 @@ export default tool({
   description:
     "Yield control and wait for the next incoming event. Call this when you have finished " +
     "your current work and are waiting for something external — a child session's notify_parent, " +
-    "a user message, or any other prompt. Your turn ends after this tool returns. " +
+    "a user message, or any other prompt. Your turn ends immediately after this tool returns. " +
     "The next message you receive will be from whoever wakes you (child notification, user, etc.). " +
     "Prefer this over sleep loops when the wait time is unknown or when you expect a child " +
     "to notify you proactively.",
@@ -22,10 +22,11 @@ export default tool({
         "Optional list of child session IDs to monitor. If omitted, all child sessions are monitored.",
       ),
     notify_on: tool.schema
-      .enum(["terminal", "status_change", "started"])
+      .enum(["terminal", "status_change"])
       .optional()
       .describe(
-        "Which events should wake you. 'terminal' (default) only fires when a child reaches a terminal status.",
+        "Which events should wake you. 'terminal' (default) only fires when a child reaches a terminal status. " +
+        "'status_change' fires on any child status transition.",
       ),
     statuses: tool.schema
       .array(tool.schema.string())
@@ -35,98 +36,16 @@ export default tool({
       ),
   },
   async execute(args) {
-    const sessionId = process.env.SESSION_ID
-    if (!sessionId) {
-      return (
-        "Cannot wait for events because SESSION_ID is not set. " +
-        "Your turn is now over — do NOT call any more tools or generate further output."
-      )
-    }
-
-    const pollIntervalMs = 2000
-    const terminalStatuses = new Set(["terminated", "error", "hibernated"])
-    const notifyOn = args.notify_on || "terminal"
-    const statusFilter = args.statuses?.length ? new Set(args.statuses) : null
-    let lastSnapshot = new Map<string, string>()
-    let initialized = false
-
-    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
-    while (true) {
-      try {
-        const res = await fetch("http://localhost:9000/api/child-sessions")
-        if (!res.ok) {
-          await sleep(pollIntervalMs)
-          continue
-        }
-
-        const data = (await res.json()) as {
-          children?: Array<{ id: string; title?: string; status: string }>
-        }
-        const allChildren = data.children ?? []
-        const children = args.session_ids?.length
-          ? allChildren.filter((c) => args.session_ids!.includes(c.id))
-          : allChildren
-        const current = new Map<string, string>(
-          children.map((c) => [c.id, c.status]),
-        )
-
-        if (initialized) {
-          // New child spawned
-          if (notifyOn === "started") {
-            for (const [id, status] of current) {
-              if (!lastSnapshot.has(id)) {
-                const event = terminalStatuses.has(status)
-                  ? `Child session event: ${id} is ${status}.`
-                  : `Child session event: ${id} started.`
-                return (
-                  `${event} ` +
-                  `Yielding control.${args.reason ? " Reason: " + args.reason : ""} ` +
-                  "Your turn is now over — do NOT call any more tools or generate further output."
-                )
-              }
-            }
-          }
-
-          // Status changes (explicit opt-in)
-          if (notifyOn === "status_change") {
-            for (const [id, status] of current) {
-              const prev = lastSnapshot.get(id)
-              if (prev && prev !== status) {
-                if (statusFilter && !statusFilter.has(status)) continue
-                const event = `Child session event: ${id} changed status from ${prev} to ${status}.`
-                return (
-                  `${event} ` +
-                  `Yielding control.${args.reason ? " Reason: " + args.reason : ""} ` +
-                  "Your turn is now over — do NOT call any more tools or generate further output."
-                )
-              }
-            }
-          }
-
-          // Terminal transitions (non-terminal -> terminal) or filtered statuses
-          for (const [id, status] of current) {
-            const prev = lastSnapshot.get(id)
-            const isTerminal = terminalStatuses.has(status)
-            const matchesFilter = statusFilter ? statusFilter.has(status) : false
-            if (prev && prev !== status && (matchesFilter || (notifyOn === "terminal" && !terminalStatuses.has(prev) && isTerminal))) {
-              const event = `Child session event: ${id} is ${status}.`
-              return (
-                `${event} ` +
-                `Yielding control.${args.reason ? " Reason: " + args.reason : ""} ` +
-                "Your turn is now over — do NOT call any more tools or generate further output."
-              )
-            }
-          }
-        }
-
-        lastSnapshot = current
-        initialized = true
-      } catch {
-        // Ignore transient failures and keep waiting
-      }
-
-      await sleep(pollIntervalMs)
-    }
+    // This tool is a pure yield — it returns immediately.
+    // The Runner intercepts the completion, records the subscription args,
+    // and ends the agent's turn. The DO will wake the agent later with a
+    // structured system message when a matching event arrives.
+    const parts: string[] = ["Yielding control."]
+    if (args.reason) parts.push(`Reason: ${args.reason}`)
+    if (args.session_ids?.length) parts.push(`Monitoring sessions: ${args.session_ids.join(", ")}`)
+    if (args.notify_on) parts.push(`Notify on: ${args.notify_on}`)
+    if (args.statuses?.length) parts.push(`Status filter: ${args.statuses.join(", ")}`)
+    parts.push("Your turn is now over — do NOT call any more tools or generate further output.")
+    return parts.join(" ")
   },
 })

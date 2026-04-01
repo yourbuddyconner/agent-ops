@@ -286,6 +286,15 @@ export class AgentClient {
     this.send({ type: "aborted" });
   }
 
+  sendWaitSubscription(subscription: {
+    reason?: string;
+    sessionIds?: string[];
+    notifyOn?: string;
+    statuses?: string[];
+  }): void {
+    this.send({ type: "wait-subscription", ...subscription });
+  }
+
   sendChannelSessionCreated(channelKey: string, opencodeSessionId: string): void {
     this.send({ type: "channel-session-created", channelKey, opencodeSessionId });
   }

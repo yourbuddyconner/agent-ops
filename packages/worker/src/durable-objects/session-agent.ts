@@ -1023,7 +1023,7 @@ export class SessionAgentDO {
 
         if (idleSessionId && idleStatus === 'running' && !idleRunnerBusy && idleQueued === 0 && idleLast !== 'true') {
           this.sessionState.lastParentIdleNotice = 'true';
-          this.ctx.waitUntil(this.notifyParentEvent(`Child session event: ${idleSessionId} is idle.`, { wake: true }));
+          this.ctx.waitUntil(this.notifyParentEvent(`Child session event: ${idleSessionId} is idle.`, { wake: true, childStatus: 'idle' }));
         }
       }
     }
@@ -1573,6 +1573,7 @@ export class SessionAgentDO {
     this.promptQueue.idleQueuedSince = 0;
     this.sessionState.lastParentIdleNotice = undefined;
     this.sessionState.parentIdleNotifyAt = 0;
+    this.sessionState.waitSubscription = null;
     this.rescheduleIdleAlarm();
     console.log('[SessionAgentDO] handlePrompt: dispatching to runner (DO_CODE_VERSION=v2-pipeline-2)');
 
@@ -2330,6 +2331,18 @@ export class SessionAgentDO {
           reason: msg.reason,
         });
         this.emitAuditEvent('agent.error', switchText.slice(0, 120));
+      },
+
+      'wait-subscription': async (msg) => {
+        // Agent called wait_for_event — record what events should wake it.
+        // Cleared when the next prompt is dispatched.
+        this.sessionState.waitSubscription = {
+          reason: msg.reason || undefined,
+          sessionIds: msg.sessionIds || undefined,
+          notifyOn: msg.notifyOn || undefined,
+          statuses: msg.statuses || undefined,
+        };
+        console.log(`[SessionAgentDO] Wait subscription registered: notifyOn=${msg.notifyOn || 'terminal'}, sessions=${msg.sessionIds?.join(',') || 'all'}`);
       },
 
       'aborted': async (_msg) => {
@@ -3692,7 +3705,7 @@ export class SessionAgentDO {
       });
     }
 
-    await this.notifyParentEvent(`Child session event: ${sessionId} completed (reason: ${reason}).`, { wake: true });
+    await this.notifyParentEvent(`Child session event: ${sessionId} completed (reason: ${reason}).`, { wake: true, childStatus: reason === 'error' ? 'error' : 'terminated' });
 
     return Response.json({
       success: true,
@@ -3777,7 +3790,7 @@ export class SessionAgentDO {
     this.rescheduleIdleAlarm();
   }
 
-  private async notifyParentEvent(content: string, options?: { wake?: boolean }) {
+  private async notifyParentEvent(content: string, options?: { wake?: boolean; childStatus?: string }) {
     try {
       const sessionId = this.sessionState.sessionId;
       if (!sessionId) return;
@@ -3796,6 +3809,8 @@ export class SessionAgentDO {
           parts: {
             systemTitle: childTitle,
             systemAvatarKey: 'child-session',
+            childSessionId: sessionId,
+            childStatus: options?.childStatus,
           },
           wake: options?.wake ?? true,
           threadId: parentThreadId,
@@ -3831,6 +3846,36 @@ export class SessionAgentDO {
     });
 
     if (wake) {
+      // Check wait subscription filter — if the agent registered a subscription
+      // via wait_for_event, only wake for matching child events.
+      const sub = this.sessionState.waitSubscription;
+      if (sub && parts?.childSessionId) {
+        const childId = parts.childSessionId as string;
+        const childStatus = parts.childStatus as string | undefined;
+        const terminalStatuses = new Set(['terminated', 'error', 'hibernated']);
+        const notifyOn = sub.notifyOn || 'terminal';
+
+        // Session ID filter
+        if (sub.sessionIds?.length && !sub.sessionIds.includes(childId)) {
+          console.log(`[SessionAgentDO] Wait subscription: ignoring event from ${childId} (not in watched list)`);
+          return;
+        }
+
+        // Status filter (explicit statuses override notifyOn)
+        if (sub.statuses?.length) {
+          if (!childStatus || !sub.statuses.includes(childStatus)) {
+            console.log(`[SessionAgentDO] Wait subscription: ignoring ${childStatus} (not in ${sub.statuses.join(',')})`);
+            return;
+          }
+        } else if (notifyOn === 'terminal') {
+          if (!childStatus || !terminalStatuses.has(childStatus)) {
+            console.log(`[SessionAgentDO] Wait subscription: ignoring non-terminal status ${childStatus}`);
+            return;
+          }
+        }
+        // notifyOn === 'status_change' — wake on any child event
+      }
+
       // Normalize threadId → channel routing so system messages land in the
       // same OpenCode session as the thread that spawned the child. Without
       // this, child notifications resolve to 'web:default' instead of the
@@ -3860,6 +3905,7 @@ export class SessionAgentDO {
           this.promptQueue.stampDispatched();
           this.sessionState.lastParentIdleNotice = undefined;
           this.sessionState.parentIdleNotifyAt = 0;
+          this.sessionState.waitSubscription = null;
           const ownerId = this.sessionState.userId;
           const ownerDetails = ownerId ? await this.getUserDetails(ownerId) : undefined;
           const sysModelPrefs = await this.resolveModelPreferences(ownerDetails);
@@ -4098,6 +4144,7 @@ export class SessionAgentDO {
     this.promptQueue.idleQueuedSince = 0;
     this.sessionState.lastParentIdleNotice = undefined;
     this.sessionState.parentIdleNotifyAt = 0;
+    this.sessionState.waitSubscription = null;
     this.rescheduleIdleAlarm();
 
     // Emit queue_wait timing — measure how long the prompt waited before dispatch

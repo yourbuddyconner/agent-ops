@@ -322,6 +322,18 @@ export class SessionState {
     this.set('parentIdleNotifyAt', ts ? String(ts) : '');
   }
 
+  // ─── Wait Subscription ──────────────────────────────────────────
+
+  get waitSubscription(): { reason?: string; sessionIds?: string[]; notifyOn?: string; statuses?: string[] } | null {
+    const raw = this.get('waitSubscription');
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch { return null; }
+  }
+
+  set waitSubscription(val: { reason?: string; sessionIds?: string[]; notifyOn?: string; statuses?: string[] } | null) {
+    this.set('waitSubscription', val ? JSON.stringify(val) : '');
+  }
+
   // ─── Bulk Initialization ──────────────────────────────────────────
 
   /**

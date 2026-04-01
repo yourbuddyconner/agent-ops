@@ -3436,8 +3436,8 @@ export class PromptHandler {
   private handlePartUpdated(props: Record<string, unknown>): void {
     if (!this.activeMessageId) return;
 
-    // After wait_for_event force-complete + abort, suppress stale SSE events
-    // (the abort causes OpenCode to emit "The operation was aborted." text).
+    // After wait_for_event completes, suppress stale SSE events from the
+    // remainder of the OpenCode turn.
     if (this.waitForEventForced) return;
 
     // The part can be a tool part or a text part
@@ -3574,21 +3574,9 @@ export class PromptHandler {
     // Only act on state transitions
     if (currentStatus === prevStatus) return;
 
-    // wait_for_event: treat as an immediate yield — force completion + idle
-    if (toolName === "wait_for_event" && (currentStatus === "pending" || currentStatus === "running") && !this.waitForEventForced) {
-      this.waitForEventForced = true;
-      console.log(`[PromptHandler] wait_for_event observed (${currentStatus}) — forcing completion + idle`);
-      this.toolStates.set(callID, { status: "completed", toolName });
-      this.ensureTurnCreated();
-      this.agentClient.sendToolUpdate(this.turnId!, callID, toolName, "completed", state.input ?? undefined);
-      this.finalizeResponse(true);
-      this.agentClient.sendComplete();
-      this.agentClient.sendAgentStatus("idle");
-      this.idleNotified = true;
-      if (this.sessionId) {
-        fetch(`${this.opencodeUrl}/session/${this.sessionId}/abort`, { method: "POST" })
-          .catch((err) => console.error("[PromptHandler] Error aborting after wait_for_event:", err));
-      }
+    // wait_for_event pending/running: suppress — the tool returns immediately,
+    // so we just wait for the completed status to arrive naturally.
+    if (toolName === "wait_for_event" && (currentStatus === "pending" || currentStatus === "running")) {
       return;
     }
 
@@ -3624,28 +3612,31 @@ export class PromptHandler {
 
       this.agentClient.sendToolUpdate(this.turnId!, callID, toolName, "completed", state.input ?? undefined, toolResult ?? undefined);
 
-      // wait_for_event: forcibly end the turn so the agent actually stops
+      // wait_for_event: end the turn and register the event subscription with the DO.
+      // The tool returns immediately so OpenCode will naturally stop after this.
       if (toolName === "wait_for_event") {
-        console.log(`[PromptHandler] wait_for_event completed — aborting OpenCode and finalizing turn`);
+        console.log(`[PromptHandler] wait_for_event completed — finalizing turn and registering subscription`);
         this.waitForEventForced = true;
+
+        // Parse subscription args from the tool input
+        const input = state.input as Record<string, unknown> | undefined;
+        this.agentClient.sendWaitSubscription({
+          reason: (input?.reason as string) || undefined,
+          sessionIds: (input?.session_ids as string[]) || undefined,
+          notifyOn: (input?.notify_on as string) || undefined,
+          statuses: (input?.statuses as string[]) || undefined,
+        });
+
         this.finalizeResponse(true);
-        // Send complete so the DO clears runnerBusy and drains the prompt queue.
-        // Without this, child session notifications get queued but never processed.
         this.agentClient.sendComplete();
         this.agentClient.sendAgentStatus("idle");
         this.idleNotified = true;
-        // Abort OpenCode generation so it fully yields
-        if (this.sessionId) {
-          fetch(`${this.opencodeUrl}/session/${this.sessionId}/abort`, { method: "POST" })
-            .catch((err) => console.error("[PromptHandler] Error aborting after wait_for_event:", err));
-        }
       }
 
     } else if (currentStatus === "error") {
-      // Suppress abort errors from wait_for_event — the Runner already force-completed
-      // it and sent idle status; the abort error is a stale artifact of killing OpenCode.
+      // Suppress stale errors from wait_for_event — the turn was already finalized.
       if (toolName === "wait_for_event" && this.waitForEventForced) {
-        console.log(`[PromptHandler] Suppressing post-abort error for wait_for_event`);
+        console.log(`[PromptHandler] Suppressing stale wait_for_event error`);
         return;
       }
       console.log(`[PromptHandler] Tool "${toolName}" error: ${state.error}`);
@@ -3654,7 +3645,7 @@ export class PromptHandler {
   }
 
   private handleMessageUpdated(props: Record<string, unknown>): void {
-    // After wait_for_event force-complete + abort, suppress stale SSE events.
+    // After wait_for_event completes, suppress stale SSE events.
     if (this.waitForEventForced) return;
 
     // OpenCode wraps the message in an "info" property: { info: { role, ... } }
@@ -3743,7 +3734,7 @@ export class PromptHandler {
   }
 
   private handleSessionStatus(props: Record<string, unknown>): void {
-    // After wait_for_event force-complete + abort, suppress stale SSE events.
+    // After wait_for_event completes, suppress stale SSE events.
     if (this.waitForEventForced) return;
 
     // SessionStatus is an object: { type: "idle" | "busy" | "retry" }
