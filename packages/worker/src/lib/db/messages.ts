@@ -1,9 +1,9 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { Message } from '@valet/shared';
-import { eq, and, gt, asc } from 'drizzle-orm';
+import { eq, and, gt, asc, isNull } from 'drizzle-orm';
 import type { AppDb } from '../drizzle.js';
 import { toDate } from '../drizzle.js';
-import { messages } from '../schema/index.js';
+import { messages, sessions } from '../schema/index.js';
 
 export async function getSessionMessages(
   db: AppDb,
@@ -52,14 +52,37 @@ export async function getThreadMessages(
 ): Promise<Message[]> {
   const limit = options.limit || 5000;
 
-  const conditions = [eq(messages.threadId, threadId)];
+  // Only include messages from orchestrator sessions (not child sessions).
+  // Threads can span multiple orchestrator session rows (resumed threads),
+  // but child session messages that share the same threadId should be excluded.
+  const conditions = [
+    eq(messages.threadId, threadId),
+    isNull(sessions.parentSessionId),
+  ];
   if (options.after) {
     conditions.push(gt(messages.createdAt, options.after));
   }
 
   const rows = await db
-    .select()
+    .select({
+      id: messages.id,
+      sessionId: messages.sessionId,
+      role: messages.role,
+      content: messages.content,
+      parts: messages.parts,
+      authorId: messages.authorId,
+      authorEmail: messages.authorEmail,
+      authorName: messages.authorName,
+      authorAvatarUrl: messages.authorAvatarUrl,
+      channelType: messages.channelType,
+      channelId: messages.channelId,
+      opencodeSessionId: messages.opencodeSessionId,
+      threadId: messages.threadId,
+      createdAt: messages.createdAt,
+      createdAtEpoch: messages.createdAtEpoch,
+    })
     .from(messages)
+    .innerJoin(sessions, eq(messages.sessionId, sessions.id))
     .where(and(...conditions))
     .orderBy(asc(messages.createdAtEpoch), asc(messages.createdAt))
     .limit(limit);
