@@ -46,7 +46,7 @@ function ThreadDetailPage() {
           </Link>
           <div className="min-w-0">
             <h1 className="truncate font-mono text-sm font-semibold text-neutral-800 dark:text-neutral-100">
-              {thread?.title || 'Untitled thread'}
+              {thread?.title || thread?.firstMessagePreview || 'Untitled thread'}
             </h1>
             {thread && (
               <div className="flex items-center gap-2 font-mono text-[10px] text-neutral-400 dark:text-neutral-500">

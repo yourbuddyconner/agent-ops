@@ -62,14 +62,14 @@ function ThreadHistoryPage() {
               >
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="truncate font-mono text-[12px] font-medium text-neutral-800 transition-colors group-hover:text-accent dark:text-neutral-200 dark:group-hover:text-accent">
-                    {thread.title || 'Untitled thread'}
+                    {thread.title || thread.firstMessagePreview || 'Untitled thread'}
                   </span>
                   <span className="shrink-0 font-mono text-[10px] tabular-nums text-neutral-400 dark:text-neutral-500">
                     {formatRelativeTime(thread.lastActiveAt)}
                   </span>
                 </div>
 
-                {thread.firstMessagePreview && (
+                {thread.title && thread.firstMessagePreview && (
                   <p className="mt-1 line-clamp-2 font-mono text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
                     {thread.firstMessagePreview}
                   </p>

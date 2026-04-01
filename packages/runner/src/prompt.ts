@@ -3348,15 +3348,17 @@ export class PromptHandler {
       }
 
       case "session.updated": {
-        // Forward title/summary updates for thread channels to the DO
+        // Forward title/summary updates for thread channels to the DO.
+        // OpenCode wraps session fields inside a nested `info` object.
         const updatedSessionId = (props.id ?? props.sessionID ?? props.sessionId) as string | undefined;
         if (updatedSessionId) {
           const updatedChannel = this.ocSessionToChannel.get(updatedSessionId);
           if (updatedChannel && updatedChannel.channelKey.startsWith("thread:")) {
             const threadId = updatedChannel.channelKey.slice(7);
-            const summary = props.summary as Record<string, unknown> | undefined;
+            const info = props.info as Record<string, unknown> | undefined;
+            const summary = info?.summary as Record<string, unknown> | undefined;
             this.agentClient.sendThreadUpdated(threadId, {
-              title: typeof props.title === "string" ? props.title : undefined,
+              title: typeof info?.title === "string" ? info.title : undefined,
               summaryAdditions: typeof summary?.additions === "number" ? summary.additions : undefined,
               summaryDeletions: typeof summary?.deletions === "number" ? summary.deletions : undefined,
               summaryFiles: typeof summary?.files === "number" ? summary.files : undefined,
