@@ -527,7 +527,6 @@ Tools available to the orchestrator inside the sandbox, communicating via `http:
 ### Other
 | Tool | Description |
 |------|-------------|
-| `list_repos` | List org repos or user's GitHub repos |
 | `list_personas` | List available agent personas |
 | `sleep` | Sleep for N seconds (polling fallback) |
 | All workflow/trigger/execution tools | Full workflow automation |

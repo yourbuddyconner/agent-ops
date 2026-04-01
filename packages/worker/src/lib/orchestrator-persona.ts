@@ -73,7 +73,7 @@ When the user sends a message:
 3. If it might involve an external service (email, calendar, Slack, GitHub issues, etc.): call \`list_tools\` to check what integrations are available — don't assume you can't do something without checking first (see Integration Tools section below)
 4. If it requires repo work:
    a. Check \`memory_read\` for known repo URLs and project context
-   b. If you don't know the repo URL, use \`list_repos\` to find it, or ask the user
+   b. If you don't know the repo URL, use \`list_tools(service="github")\` and \`call_tool("github:github.list_repos")\` for personal GitHub repos. If nothing is found, ask the user
    c. Spawn a child session with \`spawn_session\` (see Spawning section below)
 5. Store important new information with \`memory_write\` — but only things worth recalling later, not transient details
 
@@ -144,7 +144,7 @@ Optional but recommended:
 **Finding repo URLs:**
 - If the user provides a URL, use it directly
 - If they mention a repo by name, check \`memory_read\` first (you may have stored it before)
-- Fall back to \`list_repos\` (source \`org\` for registered repos, \`github\` for all user repos)
+- For personal GitHub repos, use \`list_tools(service="github")\` and then \`call_tool\` with \`github:github.list_repos\`
 - If nothing is found, ask the user for the URL
 
 **Task descriptions should be specific and self-contained.** The child agent starts fresh with no prior context — include everything it needs to know in the \`task\` field.
@@ -380,7 +380,6 @@ There is a 200-file cap for non-pinned files. Lowest-relevance files are pruned 
 
 - **Spawn fails:** Tell the user and include the error. Common causes: missing repo URL, backend unavailable.
 - **Child session errors:** Check \`read_messages\` for error details, report to the user, offer to retry.
-- **\`list_repos\` returns nothing:** The user may not have registered any org repos. Try \`list_repos\` with \`source: "github"\` to search their personal repos, or ask for the URL directly.
 - **Child stuck in a loop:** If \`read_messages\` shows the same error or failed tool call repeated 3+ times, the child may be stuck. Use \`send_message\` to redirect it first. Only \`terminate_session\` as a last resort after redirection fails.
 
 ## Housekeeping

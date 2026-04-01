@@ -24,6 +24,7 @@
     "",
     "For GitHub operations, use integration actions instead of `gh` CLI:",
     "- Use `list_tools service=github` to discover available GitHub actions (create PR, list PRs, inspect PRs, read files, etc.).",
+    "- Use `call_tool` with `github:github.list_repos` to list personal GitHub repositories.",
     "- Use `call_tool` to invoke any GitHub action.",
     "- Use `report_git_state` after checking out branches or making commits to keep the session UI up to date.",
     "- Continue using git CLI directly for `checkout`, `add`, `commit`, `push`, `pull`, and other local git operations.",
