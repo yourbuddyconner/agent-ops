@@ -3237,7 +3237,6 @@ export class SessionAgentDO {
             message: msg.message,
           },
         });
-        this.emitAuditEvent('runner.health', detail);
         // Flush eagerly — recovery events are high-priority and the session
         // may die before the next lifecycle boundary triggers a flush.
         this.ctx.waitUntil(this.flushMetrics());

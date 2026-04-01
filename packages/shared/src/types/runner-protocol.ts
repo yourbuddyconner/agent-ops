@@ -407,7 +407,7 @@ export type RunnerToDOMessage =
   | { type: 'ping' }
   | {
       type: 'runner-health';
-      kind: 'opencode_crash' | 'opencode_fatal' | 'upgrade_failure';
+      kind: 'opencode_crash' | 'opencode_health_timeout' | 'opencode_fatal' | 'upgrade_failure';
       exitCode?: number;
       crashCount?: number;
       message?: string;

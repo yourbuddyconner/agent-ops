@@ -174,9 +174,10 @@ async function main() {
   const agentClient = new AgentClient(doUrl!, runnerToken!);
 
   // Wire OpenCode crash/fatal callbacks to runner-health messages
-  openCodeManager.onCrashed((exitCode) => {
-    console.log(`[Runner] OpenCode crashed with exit code ${exitCode}`);
-    agentClient.sendRunnerHealth('opencode_crash', { exitCode });
+  openCodeManager.onCrashed((exitCode, crashCount, healthTimeout) => {
+    const kind = healthTimeout ? 'opencode_health_timeout' as const : 'opencode_crash' as const;
+    console.log(`[Runner] OpenCode ${healthTimeout ? 'health timeout' : 'crashed'} with exit code ${exitCode} (crash ${crashCount})`);
+    agentClient.sendRunnerHealth(kind, { exitCode, crashCount });
   });
 
   openCodeManager.onFatal(() => {

@@ -180,6 +180,9 @@ export class AgentClient {
           this.consecutiveUpgradeFailures++;
           if (this.consecutiveUpgradeFailures >= MAX_CONSECUTIVE_UPGRADE_FAILURES) {
             console.log(`[AgentClient] ${this.consecutiveUpgradeFailures} consecutive upgrade failures — token likely rotated, exiting`);
+            // Best-effort send before exit — WS is down so this buffers and likely won't deliver,
+            // but if a reconnect sneaks in before exit it will flush.
+            this.send({ type: 'runner-health', kind: 'upgrade_failure', crashCount: this.consecutiveUpgradeFailures, message: 'Token likely rotated — consecutive upgrade failures' });
             this.closing = true;
             process.exit(1);
           }
@@ -356,7 +359,7 @@ export class AgentClient {
     this.send({ type: "opencode-config-applied", success, restarted, error });
   }
 
-  sendRunnerHealth(kind: 'opencode_crash' | 'opencode_fatal' | 'upgrade_failure', details?: { exitCode?: number; crashCount?: number; message?: string }): void {
+  sendRunnerHealth(kind: 'opencode_crash' | 'opencode_health_timeout' | 'opencode_fatal' | 'upgrade_failure', details?: { exitCode?: number; crashCount?: number; message?: string }): void {
     this.send({ type: 'runner-health', kind, ...details });
   }
 

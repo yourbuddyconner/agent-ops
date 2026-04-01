@@ -80,7 +80,7 @@ export class OpenCodeManager {
 
   // Event callbacks
   private fatalCallback?: () => void;
-  private crashCallback?: (code: number) => void;
+  private crashCallback?: (code: number, crashCount: number, healthTimeout: boolean) => void;
 
   constructor(options: OpenCodeManagerOptions) {
     this.workspaceDir = options.workspaceDir;
@@ -126,7 +126,7 @@ export class OpenCodeManager {
   }
 
   onFatal(cb: () => void): void { this.fatalCallback = cb; }
-  onCrashed(cb: (code: number) => void): void { this.crashCallback = cb; }
+  onCrashed(cb: (code: number, crashCount: number, healthTimeout: boolean) => void): void { this.crashCallback = cb; }
 
   isHealthy(): boolean {
     return this.process !== null && this.desired === 'up' && this.runningConfig !== null;
@@ -156,7 +156,7 @@ export class OpenCodeManager {
         if (this.desired !== 'up') break;
         if (this.configChanged()) continue;
         this.crashCount++;
-        this.crashCallback?.(proc.exitCode ?? 1);
+        this.crashCallback?.(proc.exitCode ?? 1, this.crashCount, true);
         if (this.crashCount > OpenCodeManager.MAX_CRASHES) {
           this.enterFatal();
           await this.wake.promise;
@@ -192,8 +192,8 @@ export class OpenCodeManager {
       // 7. Genuine crash
       const exitCode = proc.exitCode ?? 1;
       console.error(`[OpenCodeManager] OpenCode exited unexpectedly with code ${exitCode}`);
-      this.crashCallback?.(exitCode);
       this.crashCount = (Date.now() - this.lastHealthyAt > OpenCodeManager.CRASH_RESET_MS) ? 1 : this.crashCount + 1;
+      this.crashCallback?.(exitCode, this.crashCount, false);
       if (this.crashCount > OpenCodeManager.MAX_CRASHES) {
         this.enterFatal();
         await this.wake.promise;
