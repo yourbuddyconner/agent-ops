@@ -29,6 +29,11 @@ describe('searchMemoryFiles', () => {
     const { sqlite } = createTestDb();
     rawDb = makeD1Adapter(sqlite);
 
+    // Seed user row to satisfy FK on orchestrator_memory_files.user_id
+    sqlite.prepare(
+      "INSERT INTO users (id, email, role) VALUES (?, ?, 'member')"
+    ).run(USER_ID, `${USER_ID}@test.com`);
+
     await writeMemoryFile(rawDb, USER_ID, 'projects/valet/overview.md',
       '# Valet Project\n\nValet is a hosted coding agent platform built on Cloudflare Workers.');
     await writeMemoryFile(rawDb, USER_ID, 'preferences/coding-style.md',
