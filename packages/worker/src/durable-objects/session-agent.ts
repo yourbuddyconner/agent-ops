@@ -945,7 +945,9 @@ export class SessionAgentDO {
     }
 
     // ─── Health Monitor ──────────────────────────────────────────────────
-    {
+    // Skip if we just transitioned to hibernating — recovery actions would
+    // race with performHibernate() tearing down the runner.
+    if (this.sessionState.status !== 'hibernating') {
       const snapshot = this.buildHealthSnapshot();
       const result = this.healthMonitor.check(snapshot);
 
@@ -979,6 +981,9 @@ export class SessionAgentDO {
           case 'mark_not_busy':
             this.promptQueue.runnerBusy = false;
             this.promptQueue.clearDispatchTimers();
+            if (this.promptQueue.length > 0 && !this.promptQueue.idleQueuedSince) {
+              this.promptQueue.idleQueuedSince = Date.now();
+            }
             break;
           case 'clear_safety_net':
             this.promptQueue.errorSafetyNetAt = 0;
@@ -1495,6 +1500,11 @@ export class SessionAgentDO {
         `Queued: ${reason} (status=${status || 'unknown'}, sandbox=${sandboxId ? 'yes' : 'no'}, queued=${this.promptQueue.length})`,
         author?.id
       );
+      // Runner not busy — arm idle-queue watchdog
+      if (!runnerBusy && !this.promptQueue.idleQueuedSince) {
+        this.promptQueue.idleQueuedSince = Date.now();
+        this.rescheduleIdleAlarm();
+      }
       this.broadcastToClients({
         type: 'status',
         data: { promptQueued: true, queuePosition: this.promptQueue.length, queueReason: 'waking' },
@@ -1593,6 +1603,10 @@ export class SessionAgentDO {
       // Runner disappeared between the check and send — revert to queued for recovery
       this.promptQueue.revertProcessingToQueued(messageId);
       this.promptQueue.runnerBusy = false;
+      if (!this.promptQueue.idleQueuedSince) {
+        this.promptQueue.idleQueuedSince = Date.now();
+        this.rescheduleIdleAlarm();
+      }
       this.channelRouter.clearActiveChannel();
       this.emitAuditEvent('prompt.dispatch_failed', `Dispatch failed, reverted to queue: ${messageId}`);
     }
@@ -3224,6 +3238,9 @@ export class SessionAgentDO {
           },
         });
         this.emitAuditEvent('runner.health', detail);
+        // Flush eagerly — recovery events are high-priority and the session
+        // may die before the next lifecycle boundary triggers a flush.
+        this.ctx.waitUntil(this.flushMetrics());
       },
 
       'ping': () => {
@@ -3296,60 +3313,70 @@ export class SessionAgentDO {
 
 
   private async handlePromptComplete() {
-    this.promptQueue.clearDispatchTimers();
+    try {
+      this.promptQueue.clearDispatchTimers();
 
-    // Emit turn_complete timing — measure total time from prompt received to completion
-    const promptStart = this.promptQueue.promptReceivedAt;
-    if (promptStart > 0) {
-      // Read model from the processing prompt_queue entry before it's marked completed
-      const turnModel = this.promptQueue.getProcessingModel() || undefined;
-      this.emitEvent('turn_complete', {
-        durationMs: Date.now() - promptStart,
-        channel: this.activeChannel?.channelType || undefined,
-        model: turnModel,
-        queueMode: this.promptQueue.queueMode || undefined,
-      });
-      this.promptQueue.clearPromptReceived();
-    }
-
-    this.emitAuditEvent('agent.turn_complete', 'Agent turn completed');
-
-    // Mark processing → completed, then prune
-    const processingCount = this.promptQueue.markCompleted();
-
-    const queuedAfterPrune = this.promptQueue.length;
-    console.log(`[SessionAgentDO] handlePromptComplete: marked ${processingCount} processing→completed, queuedRemaining=${queuedAfterPrune}`);
-
-    if (await this.sendNextQueuedPrompt()) {
-      console.log(`[SessionAgentDO] handlePromptComplete: dispatched next queued prompt, keeping runnerBusy=true`);
-      // More work in the queue — flush messages synchronously so they survive hibernation
-      await this.flushMessagesToD1();
-      return;
-    }
-
-    this.channelRouter.clearActiveChannel();
-
-    // Runner is now idle — flush messages synchronously so they survive hibernation
-    await this.flushMessagesToD1();
-
-    // Track idle-queued timing for watchdog
-    if (this.promptQueue.length > 0) {
-      if (!this.promptQueue.idleQueuedSince) {
-        this.promptQueue.idleQueuedSince = Date.now();
-        this.rescheduleIdleAlarm();
+      // Emit turn_complete timing — measure total time from prompt received to completion
+      const promptStart = this.promptQueue.promptReceivedAt;
+      if (promptStart > 0) {
+        // Read model from the processing prompt_queue entry before it's marked completed
+        const turnModel = this.promptQueue.getProcessingModel() || undefined;
+        this.emitEvent('turn_complete', {
+          durationMs: Date.now() - promptStart,
+          channel: this.activeChannel?.channelType || undefined,
+          model: turnModel,
+          queueMode: this.promptQueue.queueMode || undefined,
+        });
+        this.promptQueue.clearPromptReceived();
       }
-    } else {
-      this.promptQueue.idleQueuedSince = 0;
-    }
 
-    // Runner is now idle
-    console.log(`[SessionAgentDO] handlePromptComplete: queue empty, setting runnerBusy=false`);
-    this.promptQueue.runnerBusy = false;
-    this.broadcastToClients({
-      type: 'status',
-      data: { runnerBusy: false },
-    });
-    this.notifyParentIfIdle();
+      this.emitAuditEvent('agent.turn_complete', 'Agent turn completed');
+
+      // Mark processing → completed, then prune
+      const processingCount = this.promptQueue.markCompleted();
+
+      const queuedAfterPrune = this.promptQueue.length;
+      console.log(`[SessionAgentDO] handlePromptComplete: marked ${processingCount} processing→completed, queuedRemaining=${queuedAfterPrune}`);
+
+      if (await this.sendNextQueuedPrompt()) {
+        console.log(`[SessionAgentDO] handlePromptComplete: dispatched next queued prompt, keeping runnerBusy=true`);
+        // More work in the queue — flush messages synchronously so they survive hibernation
+        await this.flushMessagesToD1();
+        return;
+      }
+
+      this.channelRouter.clearActiveChannel();
+
+      // Runner is now idle — flush messages synchronously so they survive hibernation
+      await this.flushMessagesToD1();
+
+      // Track idle-queued timing for watchdog
+      if (this.promptQueue.length > 0) {
+        if (!this.promptQueue.idleQueuedSince) {
+          this.promptQueue.idleQueuedSince = Date.now();
+          this.rescheduleIdleAlarm();
+        }
+      } else {
+        this.promptQueue.idleQueuedSince = 0;
+      }
+
+      // Runner is now idle
+      console.log(`[SessionAgentDO] handlePromptComplete: queue empty, setting runnerBusy=false`);
+      this.promptQueue.runnerBusy = false;
+      this.broadcastToClients({
+        type: 'status',
+        data: { runnerBusy: false },
+      });
+      this.notifyParentIfIdle();
+    } catch (err) {
+      // Ensure runnerBusy is cleared even on error to prevent permanent stuck state
+      console.error('[SessionAgentDO] handlePromptComplete error, forcing runnerBusy=false:', err);
+      this.promptQueue.runnerBusy = false;
+      this.broadcastToClients({
+        type: 'status',
+        data: { runnerBusy: false },
+      });
+    }
   }
 
   // ─── Internal Endpoints ────────────────────────────────────────────────
@@ -3366,6 +3393,7 @@ export class SessionAgentDO {
     // This is important for well-known DOs (orchestrators) that get reused.
     this.messageStore.reset();
     this.promptQueue.clearAll();
+    this.promptQueue.idleQueuedSince = 0;
     this.ctx.storage.sql.exec('DELETE FROM analytics_events');
     this.ctx.storage.sql.exec('DELETE FROM channel_followups');
 
@@ -3801,6 +3829,10 @@ export class SessionAgentDO {
             this.promptQueue.revertProcessingToQueued(messageId);
             this.promptQueue.runnerBusy = false;
             this.promptQueue.clearDispatchTimers();
+            if (!this.promptQueue.idleQueuedSince) {
+              this.promptQueue.idleQueuedSince = Date.now();
+              this.rescheduleIdleAlarm();
+            }
             this.emitAuditEvent('prompt.dispatch_failed', `System prompt dispatch failed, reverted: ${messageId.slice(0, 8)}`);
           }
           this.rescheduleIdleAlarm();
@@ -3924,6 +3956,9 @@ export class SessionAgentDO {
       if (!wfDispatched) {
         this.promptQueue.revertProcessingToQueued(prompt.id);
         this.promptQueue.runnerBusy = false;
+        if (!this.promptQueue.idleQueuedSince) {
+          this.promptQueue.idleQueuedSince = Date.now();
+        }
         this.emitAuditEvent('workflow.dispatch_failed', `Workflow dispatch failed, reverted to queue: ${queuedExecutionId.slice(0, 8)}`);
         return false;
       }
@@ -4429,11 +4464,14 @@ export class SessionAgentDO {
     const idleQueued = this.promptQueue.idleQueuedSince;
     const idleQueueDeadline = idleQueued > 0 ? idleQueued + 60 * 1000 : null;
 
-    // Ready timeout (runner connected but never became ready)
+    // Ready timeout (runner connected but never became ready).
+    // Only schedule if the deadline is still in the future — once past,
+    // the monitor emits the event and we don't need to re-arm.
     const connectedAt = this.runnerLink.connectedAt;
-    const readyDeadline = connectedAt && this.runnerLink.isConnected && !this.runnerLink.isReady
+    const readyRaw = connectedAt && this.runnerLink.isConnected && !this.runnerLink.isReady
       ? connectedAt + 2 * 60 * 1000
       : null;
+    const readyDeadline = readyRaw && readyRaw > Date.now() ? readyRaw : null;
 
     return [promptExpiry, followupMs, watchdog, safetyNet, parentIdle, gracePeriod, idleQueueDeadline, readyDeadline];
   }

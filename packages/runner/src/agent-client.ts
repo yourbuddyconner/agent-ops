@@ -131,11 +131,15 @@ export class AgentClient {
         this.reconnectAttempts = 0;
         this.consecutiveUpgradeFailures = 0;
         const isReconnect = this.hasEverConnected;
+        const hadBuffered = this.buffer.length > 0;
         this.hasEverConnected = true;
         this.flushBuffer();
         this.startPing();
         resolve();
-        if (isReconnect && this.reconnectCallback) {
+        // Only fire reconnect callback if the buffer was empty — flushed
+        // messages already contain the authoritative terminal state (e.g.,
+        // agentStatus:idle) and emitting a second idle would double-dispatch.
+        if (isReconnect && !hadBuffered && this.reconnectCallback) {
           this.reconnectCallback();
         }
       });
