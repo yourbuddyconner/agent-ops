@@ -370,7 +370,6 @@ export class SessionState {
     if (params.initialPrompt) this.initialPrompt = params.initialPrompt;
     if (params.initialModel) this.initialModel = params.initialModel;
     if (params.parentThreadId) this.parentThreadId = params.parentThreadId;
-    if (params.parentThreadId) this.currentThreadId = params.parentThreadId;
     if (params.channelFollowupIntervalMs !== undefined) this.channelFollowupIntervalMs = params.channelFollowupIntervalMs;
 
     // Initialize idle tracking
