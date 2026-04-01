@@ -334,3 +334,30 @@ describe("PromptHandler thread resume", () => {
     expect(agentClient.sendError).not.toHaveBeenCalled();
   });
 });
+
+describe("PromptHandler reconnect readiness", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("re-emits idle after SSE reconnect even if the channel had already notified idle before", async () => {
+    const agentClient = createAgentClientMock();
+    const handler = createHandler(agentClient);
+
+    const channel = (handler as any).getOrCreateChannel("thread", "thread-slack");
+    (handler as any).activeChannel = channel;
+    channel.opencodeSessionId = "oc-thread-slack";
+    (handler as any).ocSessionToChannel.set("oc-thread-slack", channel);
+    channel.idleNotified = true;
+    (handler as any).eventStreamActive = false;
+    (handler as any).consumeEventStream = vi.fn().mockResolvedValue(undefined);
+
+    await (handler as any).startEventStream();
+    (handler as any).handleEvent({
+      type: "session.idle",
+      properties: { sessionID: channel.opencodeSessionId ?? "oc-thread-slack" },
+    });
+
+    expect(agentClient.sendAgentStatus).toHaveBeenCalledWith("idle");
+  });
+});

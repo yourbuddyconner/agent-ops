@@ -1306,6 +1306,13 @@ export class PromptHandler {
       this.eventStreamAbort = null;
     }
 
+    // A fresh SSE subscription starts a new readiness epoch.
+    // Clear per-channel idle notifications so the first post-reconnect idle
+    // event is forwarded back to the DO and queued prompts can drain.
+    for (const channel of this.channels.values()) {
+      channel.idleNotified = false;
+    }
+
     this.eventStreamActive = true;
     const abort = new AbortController();
     this.eventStreamAbort = abort;
