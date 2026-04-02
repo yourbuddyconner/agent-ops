@@ -241,6 +241,8 @@ export class SessionAgentDO {
   /** Debounce timer for flushing messages to D1 during active turns. */
   private d1FlushTimer: ReturnType<typeof setTimeout> | null = null;
 
+  private disconnectRevertTimer: ReturnType<typeof setTimeout> | null = null;
+
   private channelRouter = new ChannelRouter({
     resolveToken: async (channelType, userId) => {
       if (channelType === 'slack') {
@@ -759,6 +761,13 @@ export class SessionAgentDO {
       this.emitEvent('runner_connect', { durationMs: Date.now() - runningStart });
     }
 
+    // Cancel disconnect grace timer — runner reconnected in time
+    if (this.disconnectRevertTimer) {
+      clearTimeout(this.disconnectRevertTimer);
+      this.disconnectRevertTimer = null;
+      console.log(`[SessionAgentDO] Runner reconnected within grace period — processing entry preserved`);
+    }
+
     // Mark runner as not-yet-ready via RunnerLink
     this.runnerLink.onConnect();
     this.runnerLink.connectedAt = Date.now();
@@ -827,14 +836,22 @@ export class SessionAgentDO {
 
     if (isRunner) {
       console.log(`[SessionAgentDO] Runner disconnected: code=${code} reason="${reason || 'unknown'}"`);
-      // Revert any processing prompt back to queued so it can be retried
-      this.promptQueue.revertProcessingToQueued();
-      this.promptQueue.runnerBusy = false;
-      // Track idle-queued timing if items remain after revert
-      if (this.promptQueue.length > 0 && !this.promptQueue.idleQueuedSince) {
-        this.promptQueue.idleQueuedSince = Date.now();
-        this.rescheduleIdleAlarm();
-      }
+      // Defer revert — if runner reconnects within grace period, processing entry stays intact
+      if (this.disconnectRevertTimer) clearTimeout(this.disconnectRevertTimer);
+      this.disconnectRevertTimer = setTimeout(() => {
+        this.disconnectRevertTimer = null;
+        // Only revert if runner is still disconnected
+        if (!this.runnerLink.isConnected) {
+          console.log(`[SessionAgentDO] Disconnect grace expired — reverting processing→queued`);
+          this.promptQueue.revertProcessingToQueued();
+          this.promptQueue.runnerBusy = false;
+          if (this.promptQueue.length > 0 && !this.promptQueue.idleQueuedSince) {
+            this.promptQueue.idleQueuedSince = Date.now();
+            this.rescheduleIdleAlarm();
+          }
+        }
+      }, 5_000);
+
       this.runnerLink.onDisconnect();
 
       // Start grace period — if runner doesn't reconnect within 60s, terminate
