@@ -1330,8 +1330,17 @@ export class PromptHandler {
   async handlePrompt(messageId: string, content: string, model?: string, author?: { authorId?: string; gitName?: string; gitEmail?: string; authorName?: string; authorEmail?: string }, modelPreferences?: string[], attachments?: PromptAttachment[], channelType?: string, channelId?: string, opencodeSessionId?: string, continuationContext?: string, threadId?: string, replyChannelType?: string, replyChannelId?: string): Promise<void> {
     console.log(`[PromptHandler] Handling prompt ${messageId}: "${content.slice(0, 80)}"${model ? ` (model: ${model})` : ''}${author?.authorName ? ` (by: ${author.authorName})` : ''}${modelPreferences?.length ? ` (prefs: ${modelPreferences.length})` : ''}${attachments?.length ? ` (attachments: ${attachments.length})` : ''}${channelType ? ` (channel: ${channelType})` : ''}${continuationContext ? ' (with continuation context)' : ''}`);
 
-    // Resolve per-channel session
+    // Dedup: if this exact messageId is already being processed by a sync prompt, skip it.
+    // This handles the case where the DO re-dispatches after a transient disconnect
+    // while the original sync HTTP call to OpenCode is still in flight.
     const channel = this.getOrCreateChannel(channelType, channelId);
+    if (channel.activeMessageId === messageId && channel.syncPromptInFlight) {
+      console.log(`[PromptHandler] Ignoring duplicate prompt ${messageId} — sync prompt already in flight`);
+      this.agentClient.sendComplete(messageId);
+      return;
+    }
+
+    // Resolve per-channel session
     this.activeChannel = channel;
     // Store the orchestrator threadId so it flows through to message.create
     channel.promptThreadId = threadId ?? undefined;
