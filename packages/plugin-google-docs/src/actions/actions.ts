@@ -309,6 +309,17 @@ const listComments: ActionDefinition = {
   }),
 };
 
+const createComment: ActionDefinition = {
+  id: 'docs.create_comment',
+  name: 'Create Comment',
+  description: 'Create an unanchored comment on a Google Doc',
+  riskLevel: 'medium',
+  params: z.object({
+    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
+    content: z.string().describe('Comment text'),
+  }),
+};
+
 const updateDocumentRuntimeParams = z.object({
   documentId: z.string(),
   operationsToon: z.string().optional(),
@@ -334,6 +345,7 @@ const allActions: ActionDefinition[] = [
   deleteSection,
   updateDocument,
   listComments,
+  createComment,
 ];
 
 // ─── Action Execution ────────────────────────────────────────────────────────
@@ -724,6 +736,27 @@ async function executeAction(
         } while (pageToken);
 
         return { success: true, data: { comments: allComments } };
+      }
+
+      case 'docs.create_comment': {
+        const { documentId, content } = createComment.params.parse(params);
+        const normalizedDocumentId = normalizeDocumentId(documentId);
+
+        const qs = new URLSearchParams({
+          fields: 'id,content,author(displayName,emailAddress)',
+        });
+        const res = await driveFetch(
+          `/files/${encodeURIComponent(normalizedDocumentId)}/comments?${qs}`,
+          token,
+          {
+            method: 'POST',
+            body: JSON.stringify({ content }),
+          },
+        );
+        if (!res.ok) return await apiError(res, 'Drive');
+
+        const comment = await res.json();
+        return { success: true, data: comment };
       }
 
       default:

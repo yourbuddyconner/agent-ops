@@ -137,3 +137,37 @@ describe('docs.list_comments', () => {
     expect(url).toContain('/files/abc123/comments');
   });
 });
+
+describe('docs.create_comment', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it('creates an unanchored comment', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okResponse({
+        id: 'c-new',
+        content: 'Needs revision',
+        author: { displayName: 'Agent', emailAddress: 'agent@example.com' },
+      }),
+    );
+
+    const result = await googleDocsActions.execute(
+      'docs.create_comment',
+      { documentId: 'doc-123', content: 'Needs revision' },
+      makeCtx(),
+    );
+
+    expect(result.success).toBe(true);
+    const data = result.data as { id: string; content: string };
+    expect(data.id).toBe('c-new');
+    expect(data.content).toBe('Needs revision');
+
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('/files/doc-123/comments');
+    expect(opts.method).toBe('POST');
+    const body = JSON.parse(opts.body);
+    expect(body.content).toBe('Needs revision');
+  });
+});
+
