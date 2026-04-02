@@ -2194,8 +2194,9 @@ export class SessionAgentDO {
       },
 
       'complete': async (msg) => {
-        console.log(`[SessionAgentDO] Complete received: queueLength=${this.promptQueue.length} runnerBusy=${this.promptQueue.runnerBusy}`);
-        await this.handlePromptComplete();
+        const completedMessageId = (msg as { messageId?: string }).messageId;
+        console.log(`[SessionAgentDO] Complete received: messageId=${completedMessageId || 'unscoped'} queueLength=${this.promptQueue.length} runnerBusy=${this.promptQueue.runnerBusy}`);
+        await this.handlePromptComplete(completedMessageId);
         this.ctx.waitUntil(this.flushMetrics());
       },
 
@@ -3375,7 +3376,7 @@ export class SessionAgentDO {
   }
 
 
-  private async handlePromptComplete() {
+  private async handlePromptComplete(messageId?: string) {
     try {
       this.promptQueue.clearDispatchTimers();
 
@@ -3396,7 +3397,7 @@ export class SessionAgentDO {
       this.emitAuditEvent('agent.turn_complete', 'Agent turn completed');
 
       // Mark processing → completed, then prune
-      const processingCount = this.promptQueue.markCompleted();
+      const processingCount = this.promptQueue.markCompletedById(messageId);
 
       const queuedAfterPrune = this.promptQueue.length;
       console.log(`[SessionAgentDO] handlePromptComplete: marked ${processingCount} processing→completed, queuedRemaining=${queuedAfterPrune}`);
