@@ -984,6 +984,45 @@ function popFormatting(
 // ---------------------------------------------------------------------------
 
 function finalizeFormatting(context: ConversionContext): void {
+  // Style reset pass: clear inherited fontSize/weightedFontFamily so
+  // named styles (HEADING_1, NORMAL_TEXT, etc.) control the appearance.
+  // Without this, inserted text inherits character-level styling from
+  // the text before the insertion point, causing font size scrambling.
+
+  // Reset for heading paragraphs
+  for (const paraRange of context.paragraphRanges) {
+    const range: Record<string, unknown> = {
+      startIndex: paraRange.startIndex,
+      endIndex: paraRange.endIndex,
+    };
+    if (context.tabId) range.tabId = context.tabId;
+
+    context.formatRequests.push({
+      updateTextStyle: {
+        range,
+        textStyle: {},
+        fields: 'fontSize,weightedFontFamily',
+      },
+    });
+  }
+
+  // Reset for normal paragraphs
+  for (const normalRange of context.normalParagraphRanges) {
+    const range: Record<string, unknown> = {
+      startIndex: normalRange.startIndex,
+      endIndex: normalRange.endIndex,
+    };
+    if (context.tabId) range.tabId = context.tabId;
+
+    context.formatRequests.push({
+      updateTextStyle: {
+        range,
+        textStyle: {},
+        fields: 'fontSize,weightedFontFamily',
+      },
+    });
+  }
+
   // Character-level formatting (bold, italic, strikethrough, code, links)
   for (const range of context.textRanges) {
     if (

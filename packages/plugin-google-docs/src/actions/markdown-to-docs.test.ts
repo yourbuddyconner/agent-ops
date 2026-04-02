@@ -63,13 +63,12 @@ describe('convertMarkdownToRequests', () => {
     });
     expect(textFound).toBe(true);
 
-    const textStyleReq = findRequest(result, 'updateTextStyle');
-    expect(textStyleReq).toBeDefined();
-
-    const textStyle = textStyleReq!.updateTextStyle as {
-      textStyle: { bold?: boolean };
-    };
-    expect(textStyle.textStyle.bold).toBe(true);
+    const textStyleReqs = findAllRequests(result, 'updateTextStyle');
+    const boldReq = textStyleReqs.find((r) => {
+      const ts = (r.updateTextStyle as { textStyle: { bold?: boolean } }).textStyle;
+      return ts.bold === true;
+    });
+    expect(boldReq).toBeDefined();
   });
 
   it('uses custom startIndex when provided', () => {
@@ -91,5 +90,65 @@ describe('convertMarkdownToRequests', () => {
   it('returns empty array for whitespace-only string', () => {
     const result = convertMarkdownToRequests('   \n  ');
     expect(result).toEqual([]);
+  });
+});
+
+describe('style reset on insert', () => {
+  it('emits updateTextStyle reset for heading paragraphs', () => {
+    const result = convertMarkdownToRequests('# My Heading');
+
+    const paraStyleReqs = findAllRequests(result, 'updateParagraphStyle');
+    expect(paraStyleReqs.length).toBeGreaterThan(0);
+
+    const headingParaStyle = paraStyleReqs.find((r) => {
+      const ps = (r.updateParagraphStyle as { paragraphStyle: { namedStyleType?: string } })
+        .paragraphStyle;
+      return ps.namedStyleType === 'HEADING_1';
+    });
+    expect(headingParaStyle).toBeDefined();
+
+    const textStyleReqs = findAllRequests(result, 'updateTextStyle');
+    const resetReq = textStyleReqs.find((r) => {
+      const ts = r.updateTextStyle as {
+        fields: string;
+        textStyle: Record<string, unknown>;
+      };
+      return (
+        ts.fields === 'fontSize,weightedFontFamily' &&
+        Object.keys(ts.textStyle).length === 0
+      );
+    });
+    expect(resetReq).toBeDefined();
+  });
+
+  it('emits updateTextStyle reset for normal paragraphs', () => {
+    const result = convertMarkdownToRequests('Just a paragraph of text.');
+
+    const textStyleReqs = findAllRequests(result, 'updateTextStyle');
+    const resetReq = textStyleReqs.find((r) => {
+      const ts = r.updateTextStyle as {
+        fields: string;
+        textStyle: Record<string, unknown>;
+      };
+      return (
+        ts.fields === 'fontSize,weightedFontFamily' &&
+        Object.keys(ts.textStyle).length === 0
+      );
+    });
+    expect(resetReq).toBeDefined();
+  });
+
+  it('emits reset with tabId when tabId is provided', () => {
+    const result = convertMarkdownToRequests('# Heading', { tabId: 'tab-1' });
+
+    const textStyleReqs = findAllRequests(result, 'updateTextStyle');
+    const resetReq = textStyleReqs.find((r) => {
+      const ts = r.updateTextStyle as {
+        fields: string;
+        range: { tabId?: string };
+      };
+      return ts.fields === 'fontSize,weightedFontFamily' && ts.range.tabId === 'tab-1';
+    });
+    expect(resetReq).toBeDefined();
   });
 });
