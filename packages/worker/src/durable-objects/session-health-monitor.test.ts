@@ -70,6 +70,19 @@ describe('SessionHealthMonitor', () => {
       const result = monitor.check(baseSnapshot({ now, runnerBusy: true, runnerConnected: false, processingCount: 1, lastDispatchedAt: now - 60 * 1000 }));
       expect(result.actions).toHaveLength(0);
     });
+
+    it('does not fire during disconnect grace period', () => {
+      const now = Date.now();
+      const result = monitor.check(baseSnapshot({
+        now,
+        runnerBusy: true,
+        runnerConnected: false,
+        processingCount: 1,
+        lastDispatchedAt: now - 6 * 60 * 1000,
+        runnerDisconnectedAt: now - 3_000,
+      }));
+      expect(result.actions).toHaveLength(0);
+    });
   });
 
   describe('stuck queue (busy, 0 processing)', () => {

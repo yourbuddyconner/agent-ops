@@ -84,6 +84,8 @@ export class SessionHealthMonitor {
     if (!s.runnerBusy) return;
     if (s.processingCount === 0) return;
     if (s.runnerConnected) return;
+    // Don't revert during disconnect grace period — runner may reconnect
+    if (s.runnerDisconnectedAt && (s.now - s.runnerDisconnectedAt) < 5_000) return;
     if (!s.lastDispatchedAt) return;
     const elapsed = s.now - s.lastDispatchedAt;
     if (elapsed < STUCK_PROCESSING_TIMEOUT_MS) return;
