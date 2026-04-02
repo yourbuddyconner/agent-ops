@@ -118,7 +118,14 @@ function createMockSql(): SqlStorage & { queue: Map<string, QueueRow>; state: Ma
       if (q.startsWith('SELECT') && q.includes('FROM prompt_queue')) {
         let rows = Array.from(queue.values());
 
-        if (q.includes("status = 'queued'")) {
+        if (q.includes('WHERE id = ?')) {
+          rows = rows.filter((r) => r.id === (params[0] as string));
+          if (q.includes("AND status = 'processing'")) {
+            rows = rows.filter((r) => r.status === 'processing');
+          } else if (q.includes("AND status = 'queued'")) {
+            rows = rows.filter((r) => r.status === 'queued');
+          }
+        } else if (q.includes("status = 'queued'")) {
           rows = rows.filter((r) => r.status === 'queued');
         } else if (q.includes("status = 'processing'")) {
           rows = rows.filter((r) => r.status === 'processing');
@@ -176,6 +183,10 @@ function createMockSql(): SqlStorage & { queue: Map<string, QueueRow>; state: Ma
           for (const [id, row] of queue) {
             if (row.status === 'queued') queue.delete(id);
           }
+        } else if (q.includes('WHERE id = ?') && q.includes("status = 'completed'")) {
+          const targetId = params[0] as string;
+          const row = queue.get(targetId);
+          if (row && row.status === 'completed') queue.delete(targetId);
         } else if (q.includes("status = 'completed'")) {
           for (const [id, row] of queue) {
             if (row.status === 'completed') queue.delete(id);
@@ -596,6 +607,35 @@ describe('PromptQueue', () => {
       pq.idleQueuedSince = 1711921234000;
       pq.idleQueuedSince = 0;
       expect(pq.idleQueuedSince).toBe(0);
+    });
+  });
+
+  describe('markCompletedById', () => {
+    it('completes only the specified entry', () => {
+      pq.enqueue({ id: 'a', content: 'first', status: 'processing' });
+      pq.enqueue({ id: 'b', content: 'second', status: 'processing' });
+
+      const count = pq.markCompletedById('a');
+
+      expect(count).toBe(1);
+      // 'b' should still be processing
+      expect(pq.processingCount).toBe(1);
+    });
+
+    it('returns 0 when id is not processing', () => {
+      pq.enqueue({ id: 'a', content: 'first' }); // status: queued (default)
+      const count = pq.markCompletedById('a');
+      expect(count).toBe(0);
+    });
+
+    it('falls back to markCompleted when id is undefined', () => {
+      pq.enqueue({ id: 'a', content: 'first', status: 'processing' });
+      pq.enqueue({ id: 'b', content: 'second', status: 'processing' });
+
+      const count = pq.markCompletedById(undefined);
+
+      expect(count).toBe(2);
+      expect(pq.processingCount).toBe(0);
     });
   });
 

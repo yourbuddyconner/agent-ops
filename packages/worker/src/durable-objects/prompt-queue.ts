@@ -218,6 +218,22 @@ export class PromptQueue {
     return processingCount;
   }
 
+  markCompletedById(id: string | undefined): number {
+    if (!id) return this.markCompleted();
+
+    const countRow = this.sql
+      .exec("SELECT COUNT(*) AS count FROM prompt_queue WHERE id = ? AND status = 'processing'", id)
+      .toArray();
+    const count = (countRow[0]?.count as number) ?? 0;
+
+    if (count > 0) {
+      this.sql.exec("UPDATE prompt_queue SET status = 'completed' WHERE id = ? AND status = 'processing'", id);
+      this.sql.exec("DELETE FROM prompt_queue WHERE id = ? AND status = 'completed'", id);
+    }
+
+    return count;
+  }
+
   /** Revert processing entries back to queued. Optionally scope to a single entry by id. */
   revertProcessingToQueued(id?: string): void {
     if (id) {
