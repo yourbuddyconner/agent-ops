@@ -497,7 +497,9 @@ async function executeAction(
         if (markdown && markdown.trim()) {
           const requests = convertMarkdownToRequests(markdown);
           if (requests.length > 0) {
-            const batchResult = await executeBatchUpdate(newDoc.documentId, token, requests);
+            const batchResult = await executeBatchUpdate(newDoc.documentId, token, requests, {
+              preserveOrder: true,
+            });
             if (!batchResult.success) {
               return { success: false, error: batchResult.error || 'Failed to insert content' };
             }
@@ -561,7 +563,9 @@ async function executeAction(
         requests.push(...insertRequests);
 
         // 4. Execute batch update
-        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests);
+        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests, {
+          preserveOrder: true,
+        });
         if (!batchResult.success) {
           return { success: false, error: batchResult.error || 'Failed to replace document content' };
         }
@@ -583,7 +587,9 @@ async function executeAction(
         const requests = convertMarkdownToRequests(markdown, { startIndex: endIndex - 1 });
 
         // 3. Execute batch update
-        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests);
+        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests, {
+          preserveOrder: true,
+        });
         if (!batchResult.success) {
           return { success: false, error: batchResult.error || 'Failed to append content' };
         }
@@ -622,7 +628,9 @@ async function executeAction(
         requests.push(...insertRequests);
 
         // 5. Execute batch update
-        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests);
+        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests, {
+          preserveOrder: true,
+        });
         if (!batchResult.success) {
           return { success: false, error: batchResult.error || 'Failed to replace section' };
         }
@@ -652,7 +660,9 @@ async function executeAction(
         const requests = convertMarkdownToRequests(markdown, { startIndex: insertIndex });
 
         // 5. Execute batch update
-        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests);
+        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests, {
+          preserveOrder: true,
+        });
         if (!batchResult.success) {
           return { success: false, error: batchResult.error || 'Failed to insert section' };
         }
