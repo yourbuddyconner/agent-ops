@@ -61,6 +61,40 @@ export async function apiError(res: Response, api: string): Promise<{ success: f
 }
 
 /**
+ * Extract the primary index from a request for sorting.
+ * Deletes use startIndex, inserts use index, format requests use startIndex from range.
+ * Returns -1 if no index found.
+ */
+function extractRequestIndex(req: DocsRequest): number {
+  const key = Object.keys(req)[0];
+  const value = req[key] as Record<string, unknown>;
+
+  if (key === 'deleteContentRange') {
+    const range = value.range as { startIndex?: number } | undefined;
+    return range?.startIndex ?? -1;
+  }
+
+  // Insert types use location.index
+  if ('location' in value) {
+    const location = value.location as { index?: number } | undefined;
+    return location?.index ?? -1;
+  }
+
+  // Format types use range.startIndex
+  if ('range' in value) {
+    const range = value.range as { startIndex?: number } | undefined;
+    return range?.startIndex ?? -1;
+  }
+
+  return -1;
+}
+
+/** Sort requests by descending index (highest first = "write backwards"). */
+function sortByReverseIndex(requests: DocsRequest[]): DocsRequest[] {
+  return [...requests].sort((a, b) => extractRequestIndex(b) - extractRequestIndex(a));
+}
+
+/**
  * Execute batchUpdate requests in three phases: delete → insert → format.
  * Splits large batches into chunks of MAX_BATCH_SIZE requests max.
  * Returns success/error result.
@@ -107,8 +141,12 @@ export async function executeBatchUpdate(
     }
   }
 
-  // Execute phases in order: delete → insert → format
-  const phases = [deleteRequests, insertRequests, formatRequests];
+  // Sort each phase by reverse index ("write backwards" per Google's recommendation)
+  const phases = [
+    sortByReverseIndex(deleteRequests),
+    sortByReverseIndex(insertRequests),
+    sortByReverseIndex(formatRequests),
+  ];
 
   for (const phaseRequests of phases) {
     // Split each phase into chunks of MAX_BATCH_SIZE
