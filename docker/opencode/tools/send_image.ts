@@ -96,7 +96,7 @@ export default tool({
         const buffer = await res.arrayBuffer()
         const base64 = Buffer.from(buffer).toString("base64")
 
-        await fetch("http://localhost:9000/api/image", {
+        const gatewayRes = await fetch("http://localhost:9000/api/image", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -106,7 +106,11 @@ export default tool({
           }),
         })
 
-        return `Image sent to chat.`
+        if (!gatewayRes.ok) {
+          console.error(`[send_image] Gateway POST failed: HTTP ${gatewayRes.status}`)
+        }
+
+        return source
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         return `Failed to fetch image from ${source}: ${msg}`
@@ -126,7 +130,7 @@ export default tool({
       const mime = decoded?.mimeType || getMimeType(resolvedSource)
       const base64 = payload.toString("base64")
 
-      await fetch("http://localhost:9000/api/image", {
+      const gatewayRes = await fetch("http://localhost:9000/api/image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -136,7 +140,11 @@ export default tool({
         }),
       })
 
-      return `Image sent to chat.`
+      if (!gatewayRes.ok) {
+        console.error(`[send_image] Gateway POST failed: HTTP ${gatewayRes.status}`)
+      }
+
+      return `data:${mime};base64,${base64}`
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       return `Failed to read image file ${resolvedSource}: ${msg}`

@@ -65,9 +65,11 @@ export function ImageCard({ tool }: { tool: ToolCallData }) {
 function extractImageData(result: unknown): string | null {
   if (!result) return null;
 
-  // Result is already a data URI
   if (typeof result === 'string') {
     if (result.startsWith('data:image/')) {
+      return result;
+    }
+    if (result.startsWith('http://') || result.startsWith('https://')) {
       return result;
     }
     // Result is raw base64 - assume PNG

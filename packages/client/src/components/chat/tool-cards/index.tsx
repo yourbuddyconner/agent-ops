@@ -18,6 +18,7 @@ const SpawnSessionCard = lazy(() => import('./spawn-session-card').then((m) => (
 const SendMessageCard = lazy(() => import('./session-message-card').then((m) => ({ default: m.SendMessageCard })));
 const ReadMessagesCard = lazy(() => import('./session-message-card').then((m) => ({ default: m.ReadMessagesCard })));
 const TaskCard = lazy(() => import('./task-card').then((m) => ({ default: m.TaskCard })));
+const ImageCard = lazy(() => import('./image-card').then((m) => ({ default: m.ImageCard })));
 const GenericCard = lazy(() => import('./generic-card').then((m) => ({ default: m.GenericCard })));
 const ReadCard = lazy(() => import('./read-card').then((m) => ({ default: m.ReadCard })));
 const EditCard = lazy(() => import('./edit-card').then((m) => ({ default: m.EditCard })));
@@ -141,6 +142,10 @@ function resolveToolCard(tool: ToolCallData) {
     case 'subagent':
       return <TaskCard tool={tool} />;
 
+    case 'send_image':
+    case 'screenshot':
+      return <ImageCard tool={tool} />;
+
     case 'spawn_session':
       return <SpawnSessionCard tool={tool} />;
 
@@ -197,6 +202,10 @@ function resolveToolCard(tool: ToolCallData) {
     case 'task':
     case 'subagent':
       return <TaskCard tool={tool} />;
+    case 'send_image':
+    case 'sendimage':
+    case 'screenshot':
+      return <ImageCard tool={tool} />;
     case 'spawn_session':
     case 'spawnsession':
       return <SpawnSessionCard tool={tool} />;
