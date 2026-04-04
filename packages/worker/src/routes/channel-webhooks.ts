@@ -281,11 +281,26 @@ channelWebhooksRouter.post('/:channelType/webhook/:userId', async (c) => {
       );
       console.log(`[Channel:${channelType}] Bound session response: status=${resp.status}`);
       if (resp.ok) return c.json({ ok: true });
+      if (resp.status === 409) {
+        // 409 = session terminated/archived. The DO rejected without processing.
+        // Stale binding eviction (lines 214-222) usually catches this, but there's
+        // a narrow race between D1 status and DO state. Safe to fall through to
+        // orchestrator since the message was NOT processed by the bound session.
+        console.warn(`[Channel:${channelType}] Bound session returned 409 (terminated), falling through to orchestrator`);
+      } else {
+        // Other non-OK (400, 500, etc.): the DO received the request and may have
+        // partially processed it. Do NOT also dispatch to orchestrator — that causes
+        // duplicate responses. Log and return.
+        console.warn(`[Channel:${channelType}] Bound session rejected prompt (status=${resp.status}), not falling through to orchestrator`);
+        return c.json({ ok: true });
+      }
     } catch (err) {
-      console.error(`[Channel:${channelType}] Failed to route to session ${binding.sessionId}:`, err);
+      // Fetch-level failure (DO unreachable, network error). The message was NOT delivered.
+      // Safe to fall through to orchestrator as a degraded path.
+      console.error(`[Channel:${channelType}] Failed to route to session ${binding.sessionId}, falling through to orchestrator:`, err);
     }
 
-    // Bound session failed — re-resolve thread for the orchestrator session before fallthrough
+    // Bound session failed with 409 or network error — re-resolve thread for the orchestrator session before fallthrough
     if (channelType === 'telegram' && orchestratorThreadId) {
       const orchSession = await db.getOrchestratorSession(c.env.DB, userId);
       if (orchSession && orchSession.id !== binding.sessionId) {
