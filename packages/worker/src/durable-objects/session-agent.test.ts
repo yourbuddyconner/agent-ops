@@ -440,25 +440,7 @@ describe('SessionAgentDO', () => {
     expect(initMessage.data).not.toHaveProperty('auditLog');
   });
 
-  it('keeps assistant turns on the current orchestrator thread after the processing row is gone', async () => {
-    const { agent, broadcasts } = await createTestAgent();
-    (agent as any).sessionState.set('currentThreadId', 'thread-keep-visible');
-
-    await (agent as any).runnerHandlers['message.create']({
-      type: 'message.create',
-      turnId: 'turn-1',
-    });
-
-    const created = broadcasts.find((message) => message.type === 'message');
-    expect(created).toBeTruthy();
-    expect(created?.data).toMatchObject({
-      id: 'turn-1',
-      role: 'assistant',
-      threadId: 'thread-keep-visible',
-    });
-  });
-
-  it('persists currentThreadId from a direct threaded prompt for later assistant turns', async () => {
+  it('tags assistant messages with the thread from the processing prompt queue entry', async () => {
     const runnerSocket = { send: vi.fn() };
     const { agent, broadcasts } = await createTestAgent({ sockets: [runnerSocket] });
 
@@ -472,9 +454,7 @@ describe('SessionAgentDO', () => {
       'thread-direct',
     );
 
-    expect((agent as any).sessionState.currentThreadId).toBe('thread-direct');
-
-    await (agent as any).handlePromptComplete();
+    // Thread ID comes from the processing queue entry, not sessionState
     await (agent as any).runnerHandlers['message.create']({
       type: 'message.create',
       turnId: 'turn-direct',
@@ -596,7 +576,7 @@ describe('SessionAgentDO', () => {
     expect(sent.opencodeSessionId).toBeUndefined();
   });
 
-  it('persists currentThreadId from a queued threaded prompt for later assistant turns', async () => {
+  it('tags assistant messages with the thread from a dispatched queued prompt', async () => {
     const runnerSocket = { send: vi.fn() };
     const { agent, broadcasts } = await createTestAgent({ sockets: [runnerSocket] });
 
@@ -612,9 +592,8 @@ describe('SessionAgentDO', () => {
 
     const dispatched = await (agent as any).sendNextQueuedPrompt();
     expect(dispatched).toBe(true);
-    expect((agent as any).sessionState.currentThreadId).toBe('thread-queued');
 
-    await (agent as any).handlePromptComplete();
+    // Thread ID resolved from the processing queue entry
     await (agent as any).runnerHandlers['message.create']({
       type: 'message.create',
       turnId: 'turn-queued',
@@ -632,7 +611,16 @@ describe('SessionAgentDO', () => {
 
   it('preserves threadId through tool updates and finalize once the turn is created', async () => {
     const { agent, broadcasts } = await createTestAgent();
-    (agent as any).sessionState.set('currentThreadId', 'thread-parts');
+    // Simulate a processing entry with a thread_id so message.create can resolve it
+    (agent as any).promptQueue.enqueue({
+      id: 'prompt-parts',
+      content: 'threaded work',
+      status: 'processing',
+      channelType: 'thread',
+      channelId: 'thread-parts',
+      channelKey: 'thread:thread-parts',
+      threadId: 'thread-parts',
+    });
 
     await (agent as any).runnerHandlers['message.create']({
       type: 'message.create',
