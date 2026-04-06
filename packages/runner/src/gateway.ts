@@ -534,8 +534,19 @@ export interface SpawnChildParams {
 }
 
 export interface MessageEntry {
+  id?: string;
+  sessionId?: string;
   role: string;
   content: string;
+  parts?: unknown;
+  authorId?: string;
+  authorEmail?: string;
+  authorName?: string;
+  authorAvatarUrl?: string;
+  channelType?: string;
+  channelId?: string;
+  opencodeSessionId?: string;
+  threadId?: string;
   createdAt: string;
 }
 

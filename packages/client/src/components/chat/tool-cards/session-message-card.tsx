@@ -1,3 +1,4 @@
+import { decode as decodeToon } from '@toon-format/toon';
 import { ToolCardShell, ToolCardSection, ToolCodeBlock } from './tool-card-shell';
 import { MessageIcon } from './icons';
 import type { ToolCallData } from './types';
@@ -54,6 +55,7 @@ export function ReadMessagesCard({ tool }: { tool: ToolCallData }) {
       icon={<MessageIcon className="h-3.5 w-3.5" />}
       label="read_messages"
       status={tool.status}
+      defaultExpanded={Boolean(messages) || (tool.status === 'completed' && typeof tool.result === 'string')}
       summary={
         targetId ? (
           <span className="text-neutral-500 dark:text-neutral-400">
@@ -65,21 +67,28 @@ export function ReadMessagesCard({ tool }: { tool: ToolCallData }) {
     >
       {messages && messages.length > 0 && (
         <ToolCardSection label={`${messages.length} messages`}>
-          <div className="max-h-[200px] space-y-1.5 overflow-auto">
+          <div className="max-h-[240px] space-y-2 overflow-auto">
             {messages.map((msg, i) => (
-              <div key={i} className="flex items-start gap-2 font-mono text-[11px]">
-                <span className={`shrink-0 rounded px-1 py-0.5 text-[9px] font-semibold uppercase ${
-                  msg.role === 'assistant'
-                    ? 'bg-accent/10 text-accent'
-                    : msg.role === 'user'
-                      ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
-                      : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
-                }`}>
-                  {msg.role}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-neutral-600 dark:text-neutral-400">
-                  {msg.content.length > 120 ? msg.content.slice(0, 120) + '...' : msg.content}
-                </span>
+              <div key={msg.id || i} className="rounded border border-neutral-100 px-2 py-1.5 dark:border-neutral-800">
+                <div className="mb-1 flex items-start gap-2 font-mono text-[11px]">
+                  <span className={`shrink-0 rounded px-1 py-0.5 text-[9px] font-semibold uppercase ${
+                    msg.role === 'assistant'
+                      ? 'bg-accent/10 text-accent'
+                      : msg.role === 'user'
+                        ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+                        : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
+                  }`}>
+                    {msg.role}
+                  </span>
+                  <span className="min-w-0 flex-1 break-all text-neutral-600 dark:text-neutral-400">
+                    {msg.content}
+                  </span>
+                </div>
+                {msg.parts !== undefined && (
+                  <ToolCodeBlock maxHeight="160px" className="border-t border-neutral-100 pt-1 text-[10px] dark:border-neutral-800">
+                    {JSON.stringify(msg.parts, null, 2)}
+                  </ToolCodeBlock>
+                )}
               </div>
             ))}
           </div>
@@ -96,8 +105,8 @@ export function ReadMessagesCard({ tool }: { tool: ToolCallData }) {
 
       {!messages && tool.status === 'completed' && typeof tool.result === 'string' && (
         <ToolCardSection label="result">
-          <ToolCodeBlock maxHeight="200px">
-            {tool.result.length > 2000 ? tool.result.slice(0, 2000) + '\n... (truncated)' : tool.result}
+          <ToolCodeBlock maxHeight="320px">
+            {tool.result}
           </ToolCodeBlock>
         </ToolCardSection>
       )}
@@ -105,13 +114,46 @@ export function ReadMessagesCard({ tool }: { tool: ToolCallData }) {
   );
 }
 
-function parseMessages(result: unknown): Array<{ role: string; content: string; createdAt: string }> | null {
+type ReadMessageResult = {
+  id?: string;
+  sessionId?: string;
+  role: string;
+  content: string;
+  parts?: unknown;
+  authorId?: string;
+  authorEmail?: string;
+  authorName?: string;
+  authorAvatarUrl?: string;
+  channelType?: string;
+  channelId?: string;
+  opencodeSessionId?: string;
+  threadId?: string;
+  createdAt: string;
+};
+
+export function parseMessages(result: unknown): ReadMessageResult[] | null {
+  if (Array.isArray(result)) return isReadMessageArray(result) ? result : null;
   if (typeof result !== 'string') return null;
   try {
     const parsed = JSON.parse(result);
-    if (Array.isArray(parsed)) return parsed;
+    if (isReadMessageArray(parsed)) return parsed;
   } catch {
-    // Not JSON
+    try {
+      const parsed = decodeToon(result);
+      if (isReadMessageArray(parsed)) return parsed;
+    } catch {
+      // Not a structured message payload
+    }
   }
   return null;
+}
+
+function isReadMessageArray(value: unknown): value is ReadMessageResult[] {
+  return Array.isArray(value) && value.every((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const row = item as Record<string, unknown>;
+    return typeof row.role === 'string'
+      && typeof row.content === 'string'
+      && typeof row.createdAt === 'string';
+  });
 }

@@ -20,7 +20,22 @@ export async function fetchMessagesFromDO(
   targetSessionId: string,
   limit: number,
   after?: string,
-): Promise<Array<{ role: string; content: string; createdAt: string }>> {
+): Promise<Array<{
+  id?: string;
+  sessionId?: string;
+  role: string;
+  content: string;
+  parts?: unknown;
+  authorId?: string;
+  authorEmail?: string;
+  authorName?: string;
+  authorAvatarUrl?: string;
+  channelType?: string;
+  channelId?: string;
+  opencodeSessionId?: string;
+  threadId?: string;
+  createdAt: string;
+}>> {
   const doId = env.SESSIONS.idFromName(targetSessionId);
   const targetDO = env.SESSIONS.get(doId);
 
@@ -32,7 +47,24 @@ export async function fetchMessagesFromDO(
     throw new Error(`Target DO returned ${res.status}: ${await res.text()}`);
   }
 
-  const data = await res.json() as { messages: Array<{ role: string; content: string; createdAt: string }> };
+  const data = await res.json() as {
+    messages: Array<{
+      id?: string;
+      sessionId?: string;
+      role: string;
+      content: string;
+      parts?: unknown;
+      authorId?: string;
+      authorEmail?: string;
+      authorName?: string;
+      authorAvatarUrl?: string;
+      channelType?: string;
+      channelId?: string;
+      opencodeSessionId?: string;
+      threadId?: string;
+      createdAt: string;
+    }>;
+  };
   return data.messages;
 }
 
@@ -255,7 +287,22 @@ export async function sendSessionMessage(
 // ─── getSessionMessages ───────────────────────────────────────────────────────
 
 export type GetSessionMessagesResult =
-  | { messages: Array<{ role: string; content: string; createdAt: string }>; error?: undefined }
+  | { messages: Array<{
+      id?: string;
+      sessionId?: string;
+      role: string;
+      content: string;
+      parts?: unknown;
+      authorId?: string;
+      authorEmail?: string;
+      authorName?: string;
+      authorAvatarUrl?: string;
+      channelType?: string;
+      channelId?: string;
+      opencodeSessionId?: string;
+      threadId?: string;
+      createdAt: string;
+    }>; error?: undefined }
   | { error: string; messages?: undefined };
 
 export async function getSessionMessages(
@@ -281,7 +328,22 @@ export async function getSessionMessages(
 
 export type ForwardMessagesResult =
   | {
-      messages: Array<{ role: string; content: string; createdAt: string }>;
+      messages: Array<{
+        id?: string;
+        sessionId?: string;
+        role: string;
+        content: string;
+        parts?: unknown;
+        authorId?: string;
+        authorEmail?: string;
+        authorName?: string;
+        authorAvatarUrl?: string;
+        channelType?: string;
+        channelId?: string;
+        opencodeSessionId?: string;
+        threadId?: string;
+        createdAt: string;
+      }>;
       sessionTitle: string;
       sourceSessionId: string;
       error?: undefined;

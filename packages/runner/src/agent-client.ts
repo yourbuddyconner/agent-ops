@@ -415,7 +415,22 @@ export class AgentClient {
     targetSessionId: string,
     limit?: number,
     after?: string,
-  ): Promise<{ messages: Array<{ role: string; content: string; createdAt: string }> }> {
+  ): Promise<{ messages: Array<{
+      id?: string;
+      sessionId?: string;
+      role: string;
+      content: string;
+      parts?: unknown;
+      authorId?: string;
+      authorEmail?: string;
+      authorName?: string;
+      authorAvatarUrl?: string;
+      channelType?: string;
+      channelId?: string;
+      opencodeSessionId?: string;
+      threadId?: string;
+      createdAt: string;
+    }> }> {
     const requestId = crypto.randomUUID();
     return this.createPendingRequest(requestId, MESSAGE_OP_TIMEOUT_MS, () => {
       this.send({ type: "session-messages", requestId, targetSessionId, limit, after });

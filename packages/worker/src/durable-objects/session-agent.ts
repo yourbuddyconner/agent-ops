@@ -61,6 +61,27 @@ function buildThreadContinuationContext(rows: Array<{ role?: unknown; content?: 
     .join('\n');
 }
 
+export function buildForwardedParts(
+  originalParts: unknown,
+  metadata: {
+    forwarded: true;
+    sourceSessionId: string;
+    sourceSessionTitle: string;
+    originalRole: string;
+    originalCreatedAt: string;
+    originalMessageId?: string;
+    originalSessionId?: string;
+  },
+): unknown {
+  if (Array.isArray(originalParts)) {
+    return [...originalParts, metadata];
+  }
+  if (originalParts && typeof originalParts === 'object') {
+    return { ...(originalParts as Record<string, unknown>), ...metadata };
+  }
+  return metadata;
+}
+
 /** Messages sent by browser clients to the DO */
 interface ClientMessage {
   type: 'prompt' | 'answer' | 'ping' | 'abort' | 'revert' | 'diff' | 'review' | 'command' | 'approve-action' | 'deny-action';
@@ -2576,11 +2597,7 @@ export class SessionAgentDO {
             this.runnerLink.send({
               type: 'session-messages-result',
               requestId,
-              messages: result.messages!.map((m) => ({
-                role: m.role,
-                content: m.content,
-                createdAt: m.createdAt,
-              })),
+              messages: result.messages!,
             });
           }
         } catch (err) {
@@ -2841,7 +2858,8 @@ export class SessionAgentDO {
           }
 
           const messages = result.messages!;
-          const { sessionTitle, sourceSessionId } = result;
+          const sessionTitle = result.sessionTitle!;
+          const sourceSessionId = result.sourceSessionId!;
 
           if (messages.length === 0) {
             this.runnerLink.send({ type: 'forward-messages-result', requestId, count: 0, sourceSessionId });
@@ -2851,13 +2869,17 @@ export class SessionAgentDO {
           // Insert each message into our own messages table with forwarded metadata
           for (const msg of messages) {
             const newId = crypto.randomUUID();
-            const parts = JSON.stringify({
+            const forwardedMetadata = {
               forwarded: true,
               sourceSessionId,
               sourceSessionTitle: sessionTitle,
               originalRole: msg.role,
               originalCreatedAt: msg.createdAt,
-            });
+              originalMessageId: msg.id,
+              originalSessionId: msg.sessionId,
+            } as const;
+            const forwardedParts = buildForwardedParts(msg.parts, forwardedMetadata);
+            const parts = JSON.stringify(forwardedParts);
 
             // Store all forwarded messages as 'assistant' role for consistent left-aligned rendering
             this.messageStore.writeMessage({
@@ -2873,13 +2895,7 @@ export class SessionAgentDO {
                 id: newId,
                 role: 'assistant',
                 content: msg.content,
-                parts: {
-                  forwarded: true,
-                  sourceSessionId,
-                  sourceSessionTitle: sessionTitle,
-                  originalRole: msg.role,
-                  originalCreatedAt: msg.createdAt,
-                },
+                parts: forwardedParts,
                 createdAt: Math.floor(Date.now() / 1000),
               },
             });
@@ -4244,7 +4260,18 @@ export class SessionAgentDO {
     const threadId = url.searchParams.get('threadId');
     const sessionId = this.sessionState.sessionId;
 
-    const afterCreatedAt = after != null ? parseInt(after, 10) : undefined;
+    let afterCreatedAt: number | undefined;
+    if (after != null) {
+      const numericAfter = Number(after);
+      if (Number.isFinite(numericAfter)) {
+        afterCreatedAt = numericAfter;
+      } else {
+        const parsedMs = Date.parse(after);
+        if (Number.isFinite(parsedMs)) {
+          afterCreatedAt = Math.floor(parsedMs / 1000);
+        }
+      }
+    }
     const rows = this.messageStore.getMessages({
       limit,
       ...(afterCreatedAt !== undefined ? { afterCreatedAt } : {}),

@@ -131,7 +131,22 @@ export type DOToRunnerMessage =
   | {
       type: 'session-messages-result';
       requestId: string;
-      messages?: Array<{ role: string; content: string; createdAt: string }>;
+      messages?: Array<{
+        id?: string;
+        sessionId?: string;
+        role: string;
+        content: string;
+        parts?: unknown;
+        authorId?: string;
+        authorEmail?: string;
+        authorName?: string;
+        authorAvatarUrl?: string;
+        channelType?: string;
+        channelId?: string;
+        opencodeSessionId?: string;
+        threadId?: string;
+        createdAt: string;
+      }>;
       error?: string;
     }
   | {

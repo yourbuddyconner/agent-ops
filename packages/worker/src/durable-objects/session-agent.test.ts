@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionAgentDO } from './session-agent.js';
+import { SessionAgentDO, buildForwardedParts } from './session-agent.js';
 
 interface QueueRow {
   id: string;
@@ -693,5 +693,43 @@ describe('SessionAgentDO', () => {
     });
     // The web turn must NOT have the Telegram threadId
     expect((created?.data as Record<string, unknown> | undefined)?.threadId).toBeUndefined();
+  });
+
+  it('preserves original array parts when building forwarded message parts', () => {
+    expect(buildForwardedParts(
+      [{ type: 'text', text: 'full forwarded text' }],
+      {
+        forwarded: true,
+        sourceSessionId: 'child-1',
+        sourceSessionTitle: 'child-1',
+        originalRole: 'assistant',
+        originalCreatedAt: '2026-04-06T12:00:00.000Z',
+        originalMessageId: 'child-msg-1',
+        originalSessionId: 'child-1',
+      },
+    )).toEqual([
+      { type: 'text', text: 'full forwarded text' },
+      {
+        forwarded: true,
+        sourceSessionId: 'child-1',
+        sourceSessionTitle: 'child-1',
+        originalRole: 'assistant',
+        originalCreatedAt: '2026-04-06T12:00:00.000Z',
+        originalMessageId: 'child-msg-1',
+        originalSessionId: 'child-1',
+      },
+    ]);
+  });
+
+  it('accepts ISO timestamps for the /messages after cursor', async () => {
+    const { agent } = await createTestAgent();
+    const getMessages = vi.spyOn((agent as any).messageStore, 'getMessages').mockReturnValue([]);
+    const after = '2026-04-06T12:00:00.000Z';
+
+    await agent.fetch(new Request(`http://do/messages?after=${encodeURIComponent(after)}`));
+
+    expect(getMessages).toHaveBeenCalledWith(expect.objectContaining({
+      afterCreatedAt: 1775476800,
+    }))
   });
 });
