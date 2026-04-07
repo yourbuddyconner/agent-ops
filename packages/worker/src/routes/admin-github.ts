@@ -9,6 +9,7 @@ import {
 } from '../lib/db/service-configs.js';
 import type { GitHubServiceConfig, GitHubServiceMetadata } from '../services/github-config.js';
 import { storeCredential } from '../services/credentials.js';
+import { mintGitHubAppJWT } from '../services/github-app-jwt.js';
 import * as db from '../lib/db.js';
 
 export const adminGitHubRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -177,38 +178,9 @@ adminGitHubRouter.post('/app/verify', async (c) => {
   }
 
   // Mint a JWT from App credentials
-  const now = Math.floor(Date.now() / 1000);
-  const b64url = (s: string) => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-  const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-  const payload = b64url(JSON.stringify({
-    iat: now - 60,
-    exp: now + (10 * 60),
-    iss: existing.config.appId,
-  }));
-
-  // Import private key and sign
   let appJwt: string;
   try {
-    const pemBody = existing.config.appPrivateKey
-      .replace(/-----BEGIN RSA PRIVATE KEY-----/, '')
-      .replace(/-----END RSA PRIVATE KEY-----/, '')
-      .replace(/\s/g, '');
-    const keyData = Uint8Array.from(atob(pemBody), (ch) => ch.charCodeAt(0));
-    const key = await crypto.subtle.importKey(
-      'pkcs8',
-      keyData,
-      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-      false,
-      ['sign'],
-    );
-    const signature = await crypto.subtle.sign(
-      'RSASSA-PKCS1-v1_5',
-      key,
-      new TextEncoder().encode(`${header}.${payload}`),
-    );
-    const sig = btoa(String.fromCharCode(...new Uint8Array(signature)))
-      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-    appJwt = `${header}.${payload}.${sig}`;
+    appJwt = await mintGitHubAppJWT(existing.config.appId!, existing.config.appPrivateKey!);
   } catch {
     return c.json({ error: 'Failed to sign JWT with private key — check that the key is valid' }, 400);
   }
