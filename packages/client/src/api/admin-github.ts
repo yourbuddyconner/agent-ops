@@ -14,14 +14,19 @@ export interface AdminGitHubConfig {
   oauth: {
     configured: boolean;
     clientId?: string;
+    viaApp?: boolean;
   } | null;
   app: {
     configured: boolean;
     appId?: string;
     appSlug?: string;
+    appName?: string;
+    appOwner?: string;
+    appOwnerType?: string;
     installationId?: string;
     accessibleOwners?: string[];
     accessibleOwnersRefreshedAt?: string;
+    repositoryCount?: number;
   } | null;
   configuredBy?: string;
   updatedAt?: string;
