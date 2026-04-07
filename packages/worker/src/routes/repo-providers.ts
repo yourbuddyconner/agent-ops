@@ -122,12 +122,12 @@ repoProviderCallbackRouter.get('/github-oauth/callback', async (c) => {
   const frontendUrl = c.env.FRONTEND_URL || 'http://localhost:5173';
 
   if (!code || !stateParam) {
-    return c.redirect(`${frontendUrl}/settings?tab=github&error=missing_params`);
+    return c.redirect(`${frontendUrl}/settings/admin?error=missing_params`);
   }
 
   const payload = await verifyJWT(stateParam, c.env.ENCRYPTION_KEY);
   if (!payload || !payload.sub || (payload as any).purpose !== 'repo-link') {
-    return c.redirect(`${frontendUrl}/settings?tab=github&error=invalid_state`);
+    return c.redirect(`${frontendUrl}/settings/admin?error=invalid_state`);
   }
   const userId = payload.sub as string;
 
@@ -135,7 +135,7 @@ repoProviderCallbackRouter.get('/github-oauth/callback', async (c) => {
   const appDb = getDb(c.env.DB);
   const ghConfig = await getGitHubConfig(c.env, appDb);
   if (!ghConfig) {
-    return c.redirect(`${frontendUrl}/settings?tab=github&error=github_not_configured`);
+    return c.redirect(`${frontendUrl}/settings/admin?error=github_not_configured`);
   }
 
   const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
@@ -150,7 +150,7 @@ repoProviderCallbackRouter.get('/github-oauth/callback', async (c) => {
 
   const tokenData = (await tokenRes.json()) as { access_token?: string; error?: string };
   if (!tokenData.access_token) {
-    return c.redirect(`${frontendUrl}/settings?tab=github&error=token_exchange_failed`);
+    return c.redirect(`${frontendUrl}/settings/admin?error=token_exchange_failed`);
   }
 
   // Store as user-level oauth2 credential for the 'github' provider
@@ -160,7 +160,7 @@ repoProviderCallbackRouter.get('/github-oauth/callback', async (c) => {
     credentialType: 'oauth2',
   });
 
-  return c.redirect(`${frontendUrl}/settings?tab=github&linked=true`);
+  return c.redirect(`${frontendUrl}/settings/admin?linked=true`);
 });
 
 // GitHub App installation callback (no auth middleware)
@@ -174,23 +174,23 @@ repoProviderCallbackRouter.get('/:provider/install/callback', async (c) => {
   // Only GitHub App installations are supported — reject other provider IDs
   // to prevent storing GitHub App credentials under arbitrary provider names
   if (providerId !== 'github') {
-    return c.redirect(`${frontendUrl}/settings?tab=github&error=unsupported_provider`);
+    return c.redirect(`${frontendUrl}/settings/admin?error=unsupported_provider`);
   }
 
   if (!installationId || !stateParam) {
-    return c.redirect(`${frontendUrl}/settings?tab=github&error=missing_params`);
+    return c.redirect(`${frontendUrl}/settings/admin?error=missing_params`);
   }
 
   // Verify signed state JWT — this is how we identify the user without session auth
   const payload = await verifyJWT(stateParam, c.env.ENCRYPTION_KEY);
   if (!payload || !payload.sub) {
-    return c.redirect(`${frontendUrl}/settings?tab=github&error=invalid_state`);
+    return c.redirect(`${frontendUrl}/settings/admin?error=invalid_state`);
   }
   const userId = payload.sub as string;
 
   const orgId = (payload as any).orgId;
   if (!orgId) {
-    return c.redirect(`${frontendUrl}/settings?tab=github&error=missing_org`);
+    return c.redirect(`${frontendUrl}/settings/admin?error=missing_org`);
   }
   const ownerType = 'org' as const;
   const ownerId = orgId;
@@ -199,10 +199,10 @@ repoProviderCallbackRouter.get('/:provider/install/callback', async (c) => {
   const appDb = getDb(c.env.DB);
   const ghConfig = await getGitHubConfig(c.env, appDb);
   if (!ghConfig?.appId || !ghConfig?.appPrivateKey) {
-    return c.redirect(`${frontendUrl}/settings?tab=github&error=app_not_configured`);
+    return c.redirect(`${frontendUrl}/settings/admin?error=app_not_configured`);
   }
 
-  // Store the installation credential and update service metadata
+  // Store the installation credential and refresh metadata (accessible owners)
   if (setupAction === 'install') {
     await storeCredential(c.env, ownerType, ownerId, providerId, {
       installation_id: installationId,
@@ -213,14 +213,54 @@ repoProviderCallbackRouter.get('/:provider/install/callback', async (c) => {
       metadata: { installationId },
     });
 
-    // Update service metadata so the UI knows the app is installed
+    // Mint an app JWT and fetch accessible owners so sandbox credential
+    // resolution works immediately without a manual refresh
+    const { mintGitHubAppJWT } = await import('../services/github-app-jwt.js');
     const { getServiceMetadata } = await import('../lib/db/service-configs.js');
-    const existingMeta = await getServiceMetadata<Record<string, unknown>>(appDb, 'github').catch(() => ({}));
+    const existingMeta = await getServiceMetadata<Record<string, unknown>>(appDb, 'github').catch(() => ({})) || {};
+
+    let accessibleOwners: string[] = [];
+    let repositoryCount = 0;
+    try {
+      const appJwt = await mintGitHubAppJWT(ghConfig.appId, ghConfig.appPrivateKey);
+      const tokenRes = await fetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${appJwt}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'valet-app',
+        },
+      });
+      if (tokenRes.ok) {
+        const tokenData = await tokenRes.json() as { token: string };
+        const reposRes = await fetch('https://api.github.com/installation/repositories?per_page=100', {
+          headers: {
+            Authorization: `Bearer ${tokenData.token}`,
+            Accept: 'application/vnd.github+json',
+            'User-Agent': 'valet-app',
+          },
+        });
+        if (reposRes.ok) {
+          const reposData = await reposRes.json() as {
+            total_count: number;
+            repositories: Array<{ owner: { login: string } }>;
+          };
+          accessibleOwners = [...new Set(reposData.repositories.map((r) => r.owner.login))];
+          repositoryCount = reposData.total_count;
+        }
+      }
+    } catch {
+      // Non-fatal — admin can hit Refresh later
+    }
+
     await updateServiceMetadata(appDb, 'github', {
       ...existingMeta,
       appInstallationId: installationId,
+      accessibleOwners,
+      accessibleOwnersRefreshedAt: new Date().toISOString(),
+      repositoryCount,
     });
   }
 
-  return c.redirect(`${frontendUrl}/settings?tab=github&installed=true`);
+  return c.redirect(`${frontendUrl}/settings/admin?installed=true`);
 });

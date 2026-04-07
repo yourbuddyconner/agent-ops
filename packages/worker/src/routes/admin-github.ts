@@ -319,25 +319,22 @@ githubAppSetupCallbackRouter.get('/app/setup', async (c) => {
   const frontendUrl = (c.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
   if (!code || !stateParam) {
-    return c.redirect(`${frontendUrl}/settings?tab=github&error=missing_params`);
+    return c.redirect(`${frontendUrl}/settings/admin?error=missing_params`);
   }
 
   // Verify state JWT
   const payload = await verifyJWT(stateParam, c.env.ENCRYPTION_KEY);
   if (!payload || !payload.sub || (payload as any).purpose !== 'app-manifest') {
-    return c.redirect(`${frontendUrl}/settings?tab=github&error=invalid_state`);
+    return c.redirect(`${frontendUrl}/settings/admin?error=invalid_state`);
   }
 
   // Check jti for replay protection
   const appDb = getDb(c.env.DB);
   const nonceStore = await getServiceMetadata<{ jti: string; exp: number }>(appDb, 'github_manifest_nonce').catch(() => null);
   if (!nonceStore || nonceStore.jti !== (payload as any).jti) {
-    return c.redirect(`${frontendUrl}/settings?tab=github&error=invalid_or_replayed_state`);
+    return c.redirect(`${frontendUrl}/settings/admin?error=invalid_or_replayed_state`);
   }
-  // Consume the nonce
-  await updateServiceMetadata(appDb, 'github_manifest_nonce', { jti: '', exp: 0 });
-
-  // Exchange code for app credentials
+  // Exchange code for app credentials (nonce consumed after success to allow retry on failure)
   const conversionRes = await fetch(`https://api.github.com/app-manifests/${code}/conversions`, {
     method: 'POST',
     headers: {
@@ -349,8 +346,12 @@ githubAppSetupCallbackRouter.get('/app/setup', async (c) => {
   if (!conversionRes.ok) {
     const errText = await conversionRes.text();
     console.error('GitHub manifest conversion failed:', conversionRes.status, errText);
-    return c.redirect(`${frontendUrl}/settings?tab=github&error=conversion_failed`);
+    // Don't consume nonce — allow retry (GitHub code is one-time, but a fresh manifest flow will work)
+    return c.redirect(`${frontendUrl}/settings/admin?error=conversion_failed`);
   }
+
+  // Consume the nonce after successful conversion
+  await updateServiceMetadata(appDb, 'github_manifest_nonce', { jti: '', exp: 0 });
 
   const appData = await conversionRes.json() as {
     id: number;
@@ -382,5 +383,5 @@ githubAppSetupCallbackRouter.get('/app/setup', async (c) => {
   const userId = payload.sub as string;
   await setServiceConfig(appDb, c.env.ENCRYPTION_KEY, 'github', config, metadata, userId);
 
-  return c.redirect(`${frontendUrl}/settings?tab=github&created=true`);
+  return c.redirect(`${frontendUrl}/settings/admin?created=true`);
 });
