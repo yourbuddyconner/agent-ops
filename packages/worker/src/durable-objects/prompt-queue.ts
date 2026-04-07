@@ -53,6 +53,7 @@ export interface QueueEntry {
   authorId: string | null;
   authorEmail: string | null;
   authorName: string | null;
+  authorAvatarUrl: string | null;
   channelType: string | null;
   channelId: string | null;
   channelKey: string | null;
@@ -187,7 +188,7 @@ export class PromptQueue {
   dequeueNext(): QueueEntry | null {
     const rows = this.sql
       .exec(
-        "SELECT id, content, attachments, model, author_id, author_email, author_name, channel_type, channel_id, channel_key, queue_type, workflow_execution_id, workflow_payload, thread_id, continuation_context, context_prefix, reply_channel_type, reply_channel_id, child_session_id, child_status FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1",
+        "SELECT id, content, attachments, model, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key, queue_type, workflow_execution_id, workflow_payload, thread_id, continuation_context, context_prefix, reply_channel_type, reply_channel_id, child_session_id, child_status FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1",
       )
       .toArray();
 
@@ -522,6 +523,7 @@ export class PromptQueue {
       authorId: (row.author_id as string) || null,
       authorEmail: (row.author_email as string) || null,
       authorName: (row.author_name as string) || null,
+      authorAvatarUrl: (row.author_avatar_url as string) || null,
       channelType: (row.channel_type as string) || null,
       channelId: (row.channel_id as string) || null,
       channelKey: (row.channel_key as string) || null,
