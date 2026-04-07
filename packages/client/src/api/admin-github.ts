@@ -43,6 +43,24 @@ export function useAdminGitHubConfig() {
   });
 }
 
+// POST /api/admin/github/app/manifest
+export function useCreateGitHubAppManifest() {
+  return useMutation({
+    mutationFn: (data: { githubOrg: string }) =>
+      api.post<{ url: string; manifest: Record<string, unknown> }>('/admin/github/app/manifest', data),
+  });
+}
+
+// POST /api/admin/github/app/refresh
+export function useRefreshGitHubApp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ installationId: string; accessibleOwners: string[]; repositoryCount: number }>('/admin/github/app/refresh'),
+    onSuccess: () => qc.invalidateQueries({ queryKey: adminGitHubKeys.config }),
+  });
+}
+
 // PUT /api/admin/github/oauth
 export function useSetGitHubOAuth() {
   const qc = useQueryClient();
@@ -53,40 +71,11 @@ export function useSetGitHubOAuth() {
   });
 }
 
-// PUT /api/admin/github/app
-export function useSetGitHubApp() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (data: { appId: string; appPrivateKey: string; appSlug?: string; appWebhookSecret?: string }) =>
-      api.put<{ success: boolean }>('/admin/github/app', data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: adminGitHubKeys.config }),
-  });
-}
-
-// DELETE /api/admin/github/oauth
-export function useDeleteGitHubOAuth() {
+// DELETE /api/admin/github/oauth (also deletes app config)
+export function useDeleteGitHubConfig() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => api.delete<{ success: boolean }>('/admin/github/oauth'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: adminGitHubKeys.config }),
-  });
-}
-
-// DELETE /api/admin/github/app
-export function useDeleteGitHubApp() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.delete<{ success: boolean }>('/admin/github/app'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: adminGitHubKeys.config }),
-  });
-}
-
-// POST /api/admin/github/app/verify
-export function useVerifyGitHubApp() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () =>
-      api.post<{ success: boolean; installationId: string; accessibleOwners: string[]; repositoryCount: number }>('/admin/github/app/verify'),
     onSuccess: () => qc.invalidateQueries({ queryKey: adminGitHubKeys.config }),
   });
 }
