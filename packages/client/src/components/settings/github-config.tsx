@@ -3,10 +3,9 @@ import { Button } from '@/components/ui/button';
 import {
   useAdminGitHubConfig,
   useSetGitHubOAuth,
-  useDeleteGitHubOAuth,
-  useSetGitHubApp,
-  useDeleteGitHubApp,
-  useVerifyGitHubApp,
+  useCreateGitHubAppManifest,
+  useRefreshGitHubApp,
+  useDeleteGitHubConfig,
 } from '@/api/admin-github';
 
 const inputClass =
@@ -28,13 +27,13 @@ export function GitHubConfigSection() {
     <Section title="GitHub">
       <div className="space-y-6">
         <p className="text-sm text-neutral-500 dark:text-neutral-400">
-          Configure GitHub integration for your organization. An OAuth App enables user authentication, and a GitHub App enables repository access for the agent.
+          Configure GitHub integration for your organization. A GitHub App provides read-only repository access for the agent. OAuth enables users to link their personal GitHub accounts.
         </p>
 
         {config?.source === 'env' && (
           <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-700 dark:bg-amber-900/20">
             <p className="text-sm text-amber-800 dark:text-amber-300">
-              GitHub is configured via environment variables. To manage in-app, set OAuth credentials below.
+              GitHub is configured via environment variables.
             </p>
           </div>
         )}
@@ -46,8 +45,8 @@ export function GitHubConfigSection() {
           </div>
         ) : (
           <>
-            <OAuthPanel config={config} />
             <AppPanel config={config} />
+            <OAuthPanel config={config} />
           </>
         )}
       </div>
@@ -55,79 +54,297 @@ export function GitHubConfigSection() {
   );
 }
 
+// ─── GitHub App Panel ───────────────────────────────────────────────────
+
+function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>['data'] }) {
+  const createManifest = useCreateGitHubAppManifest();
+  const refreshApp = useRefreshGitHubApp();
+  const deleteConfig = useDeleteGitHubConfig();
+  const [githubOrg, setGithubOrg] = React.useState('');
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const formRef = React.useRef<HTMLFormElement>(null);
+
+  const app = config?.app;
+  const isConfigured = app?.configured;
+  const isInstalled = !!app?.installationId;
+
+  function handleCreateApp(e: React.FormEvent) {
+    e.preventDefault();
+    if (!githubOrg.trim()) return;
+    createManifest.mutate(
+      { githubOrg: githubOrg.trim() },
+      {
+        onSuccess: (data) => {
+          // Submit hidden form to GitHub
+          const form = formRef.current;
+          if (form) {
+            const input = form.querySelector<HTMLInputElement>('input[name="manifest"]');
+            if (input) input.value = JSON.stringify(data.manifest);
+            form.action = data.url;
+            form.submit();
+          }
+        },
+      },
+    );
+  }
+
+  function handleDelete() {
+    deleteConfig.mutate(undefined, {
+      onSuccess: () => setConfirmDelete(false),
+    });
+  }
+
+  // State 1: Not configured
+  if (!isConfigured) {
+    return (
+      <div className="space-y-3">
+        <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">GitHub App</h3>
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
+          Create a GitHub App to give the agent read-only access to your repositories.
+        </p>
+        <form onSubmit={handleCreateApp} className="space-y-3">
+          <div>
+            <label className="block text-sm text-neutral-600 dark:text-neutral-400">GitHub Organization</label>
+            <input
+              type="text"
+              className={inputClass}
+              value={githubOrg}
+              onChange={(e) => setGithubOrg(e.target.value)}
+              placeholder="acme-corp"
+            />
+            <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+              The GitHub organization where the app will be created and installed.
+            </p>
+          </div>
+          <Button type="submit" disabled={createManifest.isPending || !githubOrg.trim()}>
+            {createManifest.isPending ? 'Preparing...' : 'Create GitHub App'}
+          </Button>
+          {createManifest.isError && (
+            <p className="text-sm text-red-600 dark:text-red-400">Failed to create manifest. Try again.</p>
+          )}
+        </form>
+        {/* Hidden form for GitHub manifest POST */}
+        <form ref={formRef} method="post" className="hidden">
+          <input type="hidden" name="manifest" />
+        </form>
+      </div>
+    );
+  }
+
+  // State 2: App created, not installed
+  if (!isInstalled) {
+    return (
+      <div className="space-y-3">
+        <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">GitHub App</h3>
+        <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 dark:border-green-700 dark:bg-green-900/20">
+          <p className="text-sm font-medium text-green-800 dark:text-green-300">
+            {app.appName || app.appSlug || 'GitHub App'} created
+          </p>
+          <p className="mt-1 text-xs text-green-700 dark:text-green-400">
+            Now install the app on your GitHub organization to grant repository access.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <InstallButton />
+          {app.appOwner && app.appSlug && (
+            <a
+              href={`https://github.com/organizations/${app.appOwner}/settings/apps/${app.appSlug}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-neutral-500 underline hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+            >
+              App settings
+            </a>
+          )}
+          <DeleteButton confirmDelete={confirmDelete} setConfirmDelete={setConfirmDelete} onDelete={handleDelete} isPending={deleteConfig.isPending} />
+        </div>
+      </div>
+    );
+  }
+
+  // State 3: App created + installed
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">GitHub App</h3>
+      <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 dark:border-neutral-700 dark:bg-neutral-800/50">
+        <div className="flex items-start justify-between">
+          <div>
+            <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
+              {app.appName || app.appSlug || `App ${app.appId}`}
+            </p>
+            <p className="text-xs text-green-600 dark:text-green-400">
+              Installed · {app.repositoryCount ?? '?'} repositories
+            </p>
+            {app.accessibleOwners && app.accessibleOwners.length > 0 && (
+              <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                Owners: {app.accessibleOwners.join(', ')}
+              </p>
+            )}
+          </div>
+          <Button
+            variant="secondary"
+            onClick={() => refreshApp.mutate()}
+            disabled={refreshApp.isPending}
+          >
+            {refreshApp.isPending ? 'Refreshing...' : 'Refresh'}
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 text-sm">
+        {app.appOwner && app.installationId && (
+          <a
+            href={`https://github.com/organizations/${app.appOwner}/settings/installations/${app.installationId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-neutral-500 underline hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+          >
+            Manage repositories
+          </a>
+        )}
+        {app.appOwner && app.appSlug && (
+          <a
+            href={`https://github.com/organizations/${app.appOwner}/settings/apps/${app.appSlug}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-neutral-500 underline hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+          >
+            App settings
+          </a>
+        )}
+        <DeleteButton confirmDelete={confirmDelete} setConfirmDelete={setConfirmDelete} onDelete={handleDelete} isPending={deleteConfig.isPending} />
+      </div>
+
+      {refreshApp.isError && (
+        <p className="text-sm text-red-600 dark:text-red-400">Failed to refresh. Check that the app is still installed.</p>
+      )}
+    </div>
+  );
+}
+
+function InstallButton() {
+  const [loading, setLoading] = React.useState(false);
+
+  async function handleInstall() {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/repo-providers/github/install?level=org', {
+        credentials: 'include',
+      });
+      const data = await res.json() as { url?: string; error?: string };
+      if (data.url) {
+        window.location.href = data.url;
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Button onClick={handleInstall} disabled={loading}>
+      {loading ? 'Redirecting...' : 'Install on GitHub'}
+    </Button>
+  );
+}
+
+function DeleteButton({
+  confirmDelete,
+  setConfirmDelete,
+  onDelete,
+  isPending,
+}: {
+  confirmDelete: boolean;
+  setConfirmDelete: (v: boolean) => void;
+  onDelete: () => void;
+  isPending: boolean;
+}) {
+  if (confirmDelete) {
+    return (
+      <span className="flex items-center gap-2">
+        <span className="text-xs text-red-600 dark:text-red-400">Remove GitHub App config?</span>
+        <Button variant="secondary" onClick={onDelete} disabled={isPending}>
+          {isPending ? 'Removing...' : 'Confirm'}
+        </Button>
+        <Button variant="secondary" onClick={() => setConfirmDelete(false)}>
+          Cancel
+        </Button>
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => setConfirmDelete(true)}
+      className="text-sm text-red-500 underline hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+    >
+      Delete
+    </button>
+  );
+}
+
 // ─── OAuth App Panel ────────────────────────────────────────────────────
 
 function OAuthPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>['data'] }) {
   const setOAuth = useSetGitHubOAuth();
-  const deleteOAuth = useDeleteGitHubOAuth();
   const [editing, setEditing] = React.useState(false);
   const [clientId, setClientId] = React.useState('');
   const [clientSecret, setClientSecret] = React.useState('');
-  const [confirmRemove, setConfirmRemove] = React.useState(false);
 
   const isConfigured = config?.oauth?.configured;
+  const viaApp = config?.oauth?.viaApp;
 
-  function handleSave(e: React.FormEvent) {
-    e.preventDefault();
-    if (!clientId.trim() || !clientSecret.trim()) return;
-    setOAuth.mutate(
-      { clientId: clientId.trim(), clientSecret: clientSecret.trim() },
-      {
-        onSuccess: () => {
-          setClientId('');
-          setClientSecret('');
-          setEditing(false);
-        },
-      }
+  // OAuth managed by the GitHub App — read-only
+  if (isConfigured && viaApp) {
+    return (
+      <div className="space-y-3">
+        <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">OAuth</h3>
+        <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 dark:border-neutral-700 dark:bg-neutral-800/50">
+          <p className="text-sm text-neutral-600 dark:text-neutral-400">
+            OAuth credentials are managed by the GitHub App. Client ID: {config.oauth?.clientId || '***'}
+          </p>
+        </div>
+      </div>
     );
   }
 
-  function handleRemove() {
-    deleteOAuth.mutate(undefined, {
-      onSuccess: () => setConfirmRemove(false),
-    });
-  }
-
+  // Standalone OAuth (no app, or env var fallback)
   return (
     <div className="space-y-3">
-      <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">OAuth App</h3>
+      <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">OAuth</h3>
+      <p className="text-sm text-neutral-500 dark:text-neutral-400">
+        OAuth allows users to link their personal GitHub accounts for commit attribution.
+      </p>
 
       {isConfigured && !editing ? (
-        <div className="space-y-3">
-          <div className="flex items-center gap-3 rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 dark:border-neutral-700 dark:bg-neutral-800/50">
-            <div className="flex-1">
-              <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                Client ID: {config.oauth?.clientId || '***'}
-              </p>
-              <p className="text-xs text-green-600 dark:text-green-400">Configured</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="secondary" onClick={() => setEditing(true)}>
-                Update
-              </Button>
-              {confirmRemove ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-red-600 dark:text-red-400">Confirm?</span>
-                  <Button variant="secondary" onClick={handleRemove} disabled={deleteOAuth.isPending}>
-                    {deleteOAuth.isPending ? 'Removing...' : 'Remove'}
-                  </Button>
-                  <Button variant="secondary" onClick={() => setConfirmRemove(false)}>
-                    Cancel
-                  </Button>
-                </div>
-              ) : (
-                <Button variant="secondary" onClick={() => setConfirmRemove(true)}>
-                  Remove
-                </Button>
-              )}
-            </div>
+        <div className="flex items-center gap-3 rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 dark:border-neutral-700 dark:bg-neutral-800/50">
+          <div className="flex-1">
+            <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
+              Client ID: {config.oauth?.clientId || '***'}
+            </p>
+            <p className="text-xs text-green-600 dark:text-green-400">Configured</p>
           </div>
-          {deleteOAuth.isError && (
-            <p className="text-sm text-red-600 dark:text-red-400">Failed to remove OAuth configuration.</p>
-          )}
+          <Button variant="secondary" onClick={() => setEditing(true)}>
+            Update
+          </Button>
         </div>
       ) : (
-        <form onSubmit={handleSave} className="space-y-3">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!clientId.trim() || !clientSecret.trim()) return;
+            setOAuth.mutate(
+              { clientId: clientId.trim(), clientSecret: clientSecret.trim() },
+              {
+                onSuccess: () => {
+                  setClientId('');
+                  setClientSecret('');
+                  setEditing(false);
+                },
+              },
+            );
+          }}
+          className="space-y-3"
+        >
           <div>
             <label className="block text-sm text-neutral-600 dark:text-neutral-400">Client ID</label>
             <input
@@ -168,220 +385,6 @@ function OAuthPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig
           </div>
           {setOAuth.isError && (
             <p className="text-sm text-red-600 dark:text-red-400">Failed to save OAuth configuration.</p>
-          )}
-        </form>
-      )}
-    </div>
-  );
-}
-
-// ─── GitHub App Panel ───────────────────────────────────────────────────
-
-function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>['data'] }) {
-  const setApp = useSetGitHubApp();
-  const deleteApp = useDeleteGitHubApp();
-  const verifyApp = useVerifyGitHubApp();
-  const [editing, setEditing] = React.useState(false);
-  const [appId, setAppId] = React.useState('');
-  const [appPrivateKey, setAppPrivateKey] = React.useState('');
-  const [appSlug, setAppSlug] = React.useState('');
-  const [webhookSecret, setWebhookSecret] = React.useState('');
-  const [confirmRemove, setConfirmRemove] = React.useState(false);
-  const [verifyResult, setVerifyResult] = React.useState<{
-    installationId: string;
-    accessibleOwners: string[];
-    repositoryCount: number;
-  } | null>(null);
-
-  const isConfigured = config?.app?.configured;
-  const oauthConfigured = config?.oauth?.configured;
-
-  if (!oauthConfigured && !isConfigured) {
-    return (
-      <div className="space-y-3">
-        <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">GitHub App</h3>
-        <p className="text-sm text-neutral-400 dark:text-neutral-500">
-          Configure an OAuth App first to enable GitHub App settings.
-        </p>
-      </div>
-    );
-  }
-
-  function handleSave(e: React.FormEvent) {
-    e.preventDefault();
-    if (!appId.trim() || !appPrivateKey.trim()) return;
-    setApp.mutate(
-      {
-        appId: appId.trim(),
-        appPrivateKey: appPrivateKey.trim(),
-        appSlug: appSlug.trim() || undefined,
-        appWebhookSecret: webhookSecret.trim() || undefined,
-      },
-      {
-        onSuccess: () => {
-          setAppId('');
-          setAppPrivateKey('');
-          setAppSlug('');
-          setWebhookSecret('');
-          setEditing(false);
-        },
-      }
-    );
-  }
-
-  function handleRemove() {
-    deleteApp.mutate(undefined, {
-      onSuccess: () => setConfirmRemove(false),
-    });
-  }
-
-  function handleVerify() {
-    verifyApp.mutate(undefined, {
-      onSuccess: (data) => {
-        setVerifyResult({
-          installationId: data.installationId,
-          accessibleOwners: data.accessibleOwners,
-          repositoryCount: data.repositoryCount,
-        });
-      },
-    });
-  }
-
-  return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">GitHub App</h3>
-
-      {isConfigured && !editing ? (
-        <div className="space-y-3">
-          <div className="flex items-center gap-3 rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 dark:border-neutral-700 dark:bg-neutral-800/50">
-            <div className="flex-1">
-              <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                App ID: {config.app?.appId || '***'}
-                {config.app?.appSlug && <span className="ml-2 text-neutral-500">({config.app.appSlug})</span>}
-              </p>
-              <p className="text-xs text-green-600 dark:text-green-400">
-                Configured
-                {config.app?.installationId && ` · Installation: ${config.app.installationId}`}
-              </p>
-              {config.app?.accessibleOwners && config.app.accessibleOwners.length > 0 && (
-                <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-                  Owners: {config.app.accessibleOwners.join(', ')}
-                </p>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="secondary" onClick={handleVerify} disabled={verifyApp.isPending}>
-                {verifyApp.isPending ? 'Verifying...' : 'Verify'}
-              </Button>
-              <Button variant="secondary" onClick={() => setEditing(true)}>
-                Update
-              </Button>
-              {confirmRemove ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-red-600 dark:text-red-400">Confirm?</span>
-                  <Button variant="secondary" onClick={handleRemove} disabled={deleteApp.isPending}>
-                    {deleteApp.isPending ? 'Removing...' : 'Remove'}
-                  </Button>
-                  <Button variant="secondary" onClick={() => setConfirmRemove(false)}>
-                    Cancel
-                  </Button>
-                </div>
-              ) : (
-                <Button variant="secondary" onClick={() => setConfirmRemove(true)}>
-                  Remove
-                </Button>
-              )}
-            </div>
-          </div>
-
-          {verifyResult && (
-            <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 dark:border-green-700 dark:bg-green-900/20">
-              <p className="text-sm font-medium text-green-800 dark:text-green-300">Verification successful</p>
-              <p className="mt-1 text-xs text-green-700 dark:text-green-400">
-                Installation ID: {verifyResult.installationId} · {verifyResult.repositoryCount} repositories
-              </p>
-              {verifyResult.accessibleOwners.length > 0 && (
-                <p className="text-xs text-green-700 dark:text-green-400">
-                  Accessible owners: {verifyResult.accessibleOwners.join(', ')}
-                </p>
-              )}
-            </div>
-          )}
-
-          {verifyApp.isError && (
-            <p className="text-sm text-red-600 dark:text-red-400">Failed to verify GitHub App installation.</p>
-          )}
-          {deleteApp.isError && (
-            <p className="text-sm text-red-600 dark:text-red-400">Failed to remove GitHub App configuration.</p>
-          )}
-        </div>
-      ) : (
-        <form onSubmit={handleSave} className="space-y-3">
-          <div>
-            <label className="block text-sm text-neutral-600 dark:text-neutral-400">App ID</label>
-            <input
-              type="text"
-              className={inputClass}
-              value={appId}
-              onChange={(e) => setAppId(e.target.value)}
-              placeholder="123456"
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-neutral-600 dark:text-neutral-400">Private Key</label>
-            <textarea
-              className={inputClass + ' min-h-[100px] resize-y'}
-              value={appPrivateKey}
-              onChange={(e) => setAppPrivateKey(e.target.value)}
-              placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;..."
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-neutral-600 dark:text-neutral-400">
-              App Slug <span className="text-neutral-400">(optional)</span>
-            </label>
-            <input
-              type="text"
-              className={inputClass}
-              value={appSlug}
-              onChange={(e) => setAppSlug(e.target.value)}
-              placeholder="my-github-app"
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-neutral-600 dark:text-neutral-400">
-              Webhook Secret <span className="text-neutral-400">(optional)</span>
-            </label>
-            <input
-              type="password"
-              className={inputClass}
-              value={webhookSecret}
-              onChange={(e) => setWebhookSecret(e.target.value)}
-              placeholder="whsec_..."
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <Button type="submit" disabled={setApp.isPending || !appId.trim() || !appPrivateKey.trim()}>
-              {setApp.isPending ? 'Saving...' : 'Save'}
-            </Button>
-            {editing && (
-              <Button
-                variant="secondary"
-                type="button"
-                onClick={() => {
-                  setEditing(false);
-                  setAppId('');
-                  setAppPrivateKey('');
-                  setAppSlug('');
-                  setWebhookSecret('');
-                }}
-              >
-                Cancel
-              </Button>
-            )}
-          </div>
-          {setApp.isError && (
-            <p className="text-sm text-red-600 dark:text-red-400">Failed to save GitHub App configuration.</p>
           )}
         </form>
       )}
