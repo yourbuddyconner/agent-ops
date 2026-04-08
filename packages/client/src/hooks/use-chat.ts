@@ -112,6 +112,7 @@ interface ChatState {
   agentStatusChannelType?: string;
   agentStatusChannelId?: string;
   integrationAuthErrors: IntegrationAuthError[];
+  pendingFollowup: { messageId: string; content: string; attachments?: unknown; threadId?: string } | null;
 }
 
 interface WebSocketInitMessage {
@@ -372,7 +373,9 @@ type WebSocketChatMessage =
   | { type: 'thread.updated'; threadId: string; sessionId: string }
   | { type: 'pong' }
   | { type: 'user.joined'; userId: string }
-  | { type: 'user.left'; userId: string };
+  | { type: 'user.left'; userId: string }
+  | { type: 'queue.state'; data?: { pending?: { messageId: string; content: string; attachments?: unknown; threadId?: string } | null } }
+  | { type: 'queue.withdrawn'; data?: { content?: string } };
 
 
 function createInitialState(): ChatState {
@@ -397,6 +400,7 @@ function createInitialState(): ChatState {
     reviewLoading: false,
     reviewDiffFiles: null,
     integrationAuthErrors: [],
+    pendingFollowup: null,
   };
 }
 
@@ -621,6 +625,7 @@ export function useChat(sessionId: string) {
             reviewLoading: false,
             reviewDiffFiles: null,
             integrationAuthErrors: [],
+            pendingFollowup: message.data?.pendingPrompt as ChatState['pendingFollowup'] ?? null,
           };
         });
         if (initModels.length > 0) {
@@ -1125,6 +1130,22 @@ export function useChat(sessionId: string) {
         break;
       }
 
+      case 'queue.state': {
+        setState((prev) => ({
+          ...prev,
+          pendingFollowup: (message as any).data?.pending ?? null,
+        }));
+        break;
+      }
+
+      case 'queue.withdrawn': {
+        setState((prev) => ({
+          ...prev,
+          pendingFollowup: null,
+        }));
+        break;
+      }
+
       case 'user.joined':
       case 'user.left': {
         const userMsg = msg as { connectedUsers?: Array<string | ConnectedUser> };
@@ -1400,6 +1421,21 @@ export function useChat(sessionId: string) {
     }));
   }, []);
 
+  const queueWithdraw = useCallback(() => {
+    if (!isConnected) return;
+    send({ type: 'queue.withdraw' } as any);
+  }, [isConnected, send]);
+
+  const queuePromote = useCallback(() => {
+    if (!isConnected) return;
+    send({ type: 'queue.promote' } as any);
+  }, [isConnected, send]);
+
+  const queueReplace = useCallback((content: string, model?: string, attachments?: PromptAttachment[], threadId?: string) => {
+    if (!isConnected) return;
+    send({ type: 'queue.replace', content, ...(model ? { model } : {}), ...(attachments?.length ? { attachments } : {}), ...(threadId ? { threadId } : {}) } as any);
+  }, [isConnected, send]);
+
   // Load messages for a specific thread (fetches from D1 fallback if DO has none).
   // Used when switching to a past thread whose messages were purged from the DO
   // after an orchestrator restart.
@@ -1506,5 +1542,9 @@ export function useChat(sessionId: string) {
       }
     }, [isConnected, send]),
     loadThreadMessages,
+    pendingFollowup: state.pendingFollowup,
+    queueWithdraw,
+    queuePromote,
+    queueReplace,
   };
 }
