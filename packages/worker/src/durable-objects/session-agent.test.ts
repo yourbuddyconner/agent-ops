@@ -1146,4 +1146,127 @@ describe('SessionAgentDO', () => {
 
     expect((agent as any).promptQueue.length).toBe(0);
   });
+
+  it('full steer lifecycle: followup → promote → dispatch', async () => {
+    const runnerSocket = { send: vi.fn() };
+    const { agent, broadcasts } = await createTestAgent({ sockets: [runnerSocket] });
+
+    // Dispatch initial prompt (makes runner busy)
+    await (agent as any).handlePrompt(
+      'initial work',
+      undefined,
+      { id: 'user-1', email: 'u@test.com' },
+      undefined,
+      'web', 'default', 'thread-1',
+    );
+
+    // Runner is now busy
+    expect((agent as any).promptQueue.runnerBusy).toBe(true);
+
+    const writeMessageSpy = vi.spyOn((agent as any).messageStore, 'writeMessage');
+
+    // Queue a followup (should not write to message store)
+    await (agent as any).handlePrompt(
+      'followup work',
+      undefined,
+      { id: 'user-1', email: 'u@test.com' },
+      undefined,
+      'web', 'default', 'thread-1',
+    );
+
+    // Followup should be in queue but NOT in message store
+    expect((agent as any).promptQueue.length).toBe(1);
+    expect(writeMessageSpy).not.toHaveBeenCalled();
+
+    // queue.state should have been broadcast with the pending item
+    const queueStateBroadcast = broadcasts.find(
+      (b) => b.type === 'queue.state' && (b.data as any)?.pending?.content === 'followup work'
+    );
+    expect(queueStateBroadcast).toBeTruthy();
+
+    // Promote the followup
+    await (agent as any).handleClientMessage({ send: vi.fn() }, { type: 'queue.promote' });
+
+    // Should have sent abort
+    const abortSent = runnerSocket.send.mock.calls.some(
+      (call: unknown[]) => JSON.parse(call[0] as string).type === 'abort'
+    );
+    expect(abortSent).toBe(true);
+  });
+
+  it('channel steer: abort does not clear queue, single-slot replaces pending with new content', async () => {
+    const runnerSocket = { send: vi.fn() };
+    const { agent, broadcasts } = await createTestAgent({ sockets: [runnerSocket] });
+
+    // Make runner busy
+    (agent as any).promptQueue.runnerBusy = true;
+
+    // Queue a web followup
+    (agent as any).promptQueue.enqueue({
+      id: 'web-followup',
+      content: 'web user work',
+      status: 'queued',
+      channelType: 'web',
+      channelId: 'default',
+      channelKey: 'web:default',
+    });
+
+    // Channel steer arrives — abort is sent but does NOT clear queue;
+    // single-slot enforcement replaces the pending web prompt with the channel steer
+    await (agent as any).handleInterruptPrompt(
+      'telegram urgent',
+      undefined,
+      { id: 'user-1', email: 'u@test.com' },
+      undefined,
+      'telegram',
+      'chat-123',
+      'thread-telegram',
+    );
+
+    // Abort should have been sent to the runner
+    const abortSent = runnerSocket.send.mock.calls.some(
+      (call: unknown[]) => JSON.parse(call[0] as string).type === 'abort'
+    );
+    expect(abortSent).toBe(true);
+
+    // Queue still has exactly one item (the telegram steer replaced the web followup)
+    expect((agent as any).promptQueue.length).toBe(1);
+
+    // The pending item is now the telegram urgent prompt
+    const remaining = (agent as any).promptQueue.peekQueued();
+    expect(remaining).toBeTruthy();
+    expect(remaining.content).toBe('telegram urgent');
+
+    // The web followup was broadcast as withdrawn (via single-slot enforcement)
+    const withdrawn = broadcasts.find((b) => b.type === 'queue.withdrawn');
+    expect(withdrawn).toBeTruthy();
+    expect((withdrawn as any).data.content).toBe('web user work');
+  });
+
+  it('withdraw → re-send flow preserves content', async () => {
+    const runnerSocket = { send: vi.fn() };
+    const { agent, broadcasts } = await createTestAgent({ sockets: [runnerSocket] });
+
+    (agent as any).promptQueue.runnerBusy = true;
+
+    // Queue a followup
+    await (agent as any).handlePrompt(
+      'original content',
+      undefined,
+      { id: 'user-1', email: 'u@test.com' },
+      undefined,
+      'web', 'default', undefined,
+    );
+
+    // Withdraw it
+    await (agent as any).handleClientMessage({ send: vi.fn() }, { type: 'queue.withdraw' });
+
+    // Should have broadcast the content
+    const withdrawn = broadcasts.find((b) => b.type === 'queue.withdrawn');
+    expect(withdrawn).toBeTruthy();
+    expect((withdrawn as any).data.content).toBe('original content');
+
+    // Queue should be empty
+    expect((agent as any).promptQueue.length).toBe(0);
+  });
 });
