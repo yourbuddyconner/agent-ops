@@ -21,8 +21,48 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+/** Read and clear callback result params from the URL (e.g. ?created=true, ?error=...) */
+function useCallbackResult() {
+  const [result, setResult] = React.useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('created')) {
+      setResult({ type: 'success', message: 'GitHub App created successfully. Now install it on your organization.' });
+    } else if (params.has('installed')) {
+      setResult({ type: 'success', message: 'GitHub App installed successfully.' });
+    } else if (params.has('linked')) {
+      setResult({ type: 'success', message: 'GitHub account linked successfully.' });
+    } else if (params.has('error')) {
+      const code = params.get('error');
+      const messages: Record<string, string> = {
+        missing_params: 'GitHub redirect was missing required parameters.',
+        invalid_state: 'Invalid or expired session. Please try again.',
+        invalid_or_replayed_state: 'This setup link has already been used. Please start again.',
+        conversion_failed: 'Failed to exchange credentials with GitHub. The app may have been created — check your GitHub settings.',
+        app_not_configured: 'GitHub App is not configured. Please set it up first.',
+        unsupported_provider: 'Unsupported provider.',
+        github_not_configured: 'GitHub OAuth is not configured.',
+        token_exchange_failed: 'Failed to exchange OAuth token with GitHub.',
+        missing_org: 'Organization context is missing. Please try again.',
+      };
+      setResult({ type: 'error', message: messages[code || ''] || `GitHub setup failed: ${code}` });
+    }
+
+    // Clear params from URL without triggering navigation
+    if (params.has('created') || params.has('installed') || params.has('linked') || params.has('error')) {
+      const url = new URL(window.location.href);
+      url.search = '';
+      window.history.replaceState({}, '', url.toString());
+    }
+  }, []);
+
+  return { result, dismiss: () => setResult(null) };
+}
+
 export function GitHubConfigSection() {
-  const { data: config, isLoading } = useAdminGitHubConfig();
+  const { data: config, isLoading, isError } = useAdminGitHubConfig();
+  const { result: callbackResult, dismiss: dismissResult } = useCallbackResult();
 
   return (
     <Section title="GitHub">
@@ -30,6 +70,35 @@ export function GitHubConfigSection() {
         <p className="text-sm text-neutral-500 dark:text-neutral-400">
           Configure GitHub integration for your organization. A GitHub App provides read-only repository access for the agent. OAuth enables users to link their personal GitHub accounts.
         </p>
+
+        {callbackResult && (
+          <div
+            className={`rounded-md border px-4 py-3 ${
+              callbackResult.type === 'success'
+                ? 'border-green-200 bg-green-50 dark:border-green-700 dark:bg-green-900/20'
+                : 'border-red-200 bg-red-50 dark:border-red-700 dark:bg-red-900/20'
+            }`}
+          >
+            <div className="flex items-start justify-between">
+              <p
+                className={`text-sm ${
+                  callbackResult.type === 'success'
+                    ? 'text-green-800 dark:text-green-300'
+                    : 'text-red-800 dark:text-red-300'
+                }`}
+              >
+                {callbackResult.message}
+              </p>
+              <button
+                type="button"
+                onClick={dismissResult}
+                className="ml-4 text-sm text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
 
         {config?.source === 'env' && (
           <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-700 dark:bg-amber-900/20">
@@ -43,6 +112,12 @@ export function GitHubConfigSection() {
           <div className="space-y-4">
             <div className="h-12 animate-pulse rounded-md bg-neutral-100 dark:bg-neutral-700" />
             <div className="h-12 animate-pulse rounded-md bg-neutral-100 dark:bg-neutral-700" />
+          </div>
+        ) : isError ? (
+          <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 dark:border-red-700 dark:bg-red-900/20">
+            <p className="text-sm text-red-800 dark:text-red-300">
+              Failed to load GitHub configuration. Please try refreshing the page.
+            </p>
           </div>
         ) : (
           <>
@@ -157,7 +232,7 @@ function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>[
               App settings
             </a>
           )}
-          <DeleteButton confirmDelete={confirmDelete} setConfirmDelete={setConfirmDelete} onDelete={handleDelete} isPending={deleteConfig.isPending} />
+          <DeleteButton confirmDelete={confirmDelete} setConfirmDelete={setConfirmDelete} onDelete={handleDelete} isPending={deleteConfig.isPending} isError={deleteConfig.isError} />
         </div>
       </div>
     );
@@ -213,7 +288,7 @@ function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>[
             App settings
           </a>
         )}
-        <DeleteButton confirmDelete={confirmDelete} setConfirmDelete={setConfirmDelete} onDelete={handleDelete} isPending={deleteConfig.isPending} />
+        <DeleteButton confirmDelete={confirmDelete} setConfirmDelete={setConfirmDelete} onDelete={handleDelete} isPending={deleteConfig.isPending} isError={deleteConfig.isError} />
       </div>
 
       {refreshApp.isError && (
@@ -225,23 +300,32 @@ function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>[
 
 function InstallButton() {
   const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
 
   async function handleInstall() {
     setLoading(true);
+    setError(null);
     try {
       const data = await api.get<{ url?: string; error?: string }>('/repo-providers/github/install?level=org');
       if (data.url) {
         window.location.href = data.url;
+      } else {
+        setError(data.error || 'Failed to get installation URL.');
       }
+    } catch {
+      setError('Failed to start installation. Please try again.');
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <Button onClick={handleInstall} disabled={loading}>
-      {loading ? 'Redirecting...' : 'Install on GitHub'}
-    </Button>
+    <div>
+      <Button onClick={handleInstall} disabled={loading}>
+        {loading ? 'Redirecting...' : 'Install on GitHub'}
+      </Button>
+      {error && <p className="mt-1 text-sm text-red-600 dark:text-red-400">{error}</p>}
+    </div>
   );
 }
 
@@ -250,11 +334,13 @@ function DeleteButton({
   setConfirmDelete,
   onDelete,
   isPending,
+  isError,
 }: {
   confirmDelete: boolean;
   setConfirmDelete: (v: boolean) => void;
   onDelete: () => void;
   isPending: boolean;
+  isError: boolean;
 }) {
   if (confirmDelete) {
     return (
@@ -266,6 +352,7 @@ function DeleteButton({
         <Button variant="secondary" onClick={() => setConfirmDelete(false)}>
           Cancel
         </Button>
+        {isError && <span className="text-xs text-red-600 dark:text-red-400">Failed to remove.</span>}
       </span>
     );
   }
