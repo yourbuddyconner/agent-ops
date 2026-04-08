@@ -46,7 +46,11 @@ export function useAdminGitHubConfig() {
 // POST /api/admin/github/app/manifest
 export function useCreateGitHubAppManifest() {
   return useMutation({
-    mutationFn: (data: { githubOrg: string }) =>
+    mutationFn: (data: {
+      githubOrg: string;
+      permissions?: Record<string, string>;
+      events?: string[];
+    }) =>
       api.post<{ url: string; manifest: Record<string, unknown> }>('/admin/github/app/manifest', data),
   });
 }

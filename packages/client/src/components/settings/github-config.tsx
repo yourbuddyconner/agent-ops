@@ -132,12 +132,46 @@ export function GitHubConfigSection() {
 
 // ─── GitHub App Panel ───────────────────────────────────────────────────
 
+// Available GitHub App permissions with human-readable labels
+const AVAILABLE_PERMISSIONS: { key: string; label: string; levels: string[] }[] = [
+  { key: 'contents', label: 'Repository contents', levels: ['read', 'write'] },
+  { key: 'metadata', label: 'Metadata', levels: ['read'] },
+  { key: 'pull_requests', label: 'Pull requests', levels: ['read', 'write'] },
+  { key: 'issues', label: 'Issues', levels: ['read', 'write'] },
+  { key: 'actions', label: 'Actions', levels: ['read', 'write'] },
+  { key: 'checks', label: 'Checks', levels: ['read', 'write'] },
+  { key: 'deployments', label: 'Deployments', levels: ['read', 'write'] },
+  { key: 'environments', label: 'Environments', levels: ['read', 'write'] },
+  { key: 'pages', label: 'Pages', levels: ['read', 'write'] },
+  { key: 'workflows', label: 'Workflows', levels: ['write'] },
+  { key: 'members', label: 'Organization members', levels: ['read'] },
+  { key: 'administration', label: 'Administration', levels: ['read', 'write'] },
+];
+
+const AVAILABLE_EVENTS = [
+  'push', 'pull_request', 'issues', 'issue_comment',
+  'create', 'delete', 'release', 'workflow_run',
+  'check_run', 'check_suite', 'status',
+];
+
+const DEFAULT_PERMISSIONS: Record<string, string> = {
+  contents: 'write',
+  metadata: 'read',
+  pull_requests: 'write',
+  issues: 'write',
+};
+
+const DEFAULT_EVENTS = ['push', 'pull_request'];
+
 function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>['data'] }) {
   const createManifest = useCreateGitHubAppManifest();
   const refreshApp = useRefreshGitHubApp();
   const deleteConfig = useDeleteGitHubConfig();
   const [githubOrg, setGithubOrg] = React.useState('');
   const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const [showAdvanced, setShowAdvanced] = React.useState(false);
+  const [permissions, setPermissions] = React.useState<Record<string, string>>(DEFAULT_PERMISSIONS);
+  const [events, setEvents] = React.useState<string[]>(DEFAULT_EVENTS);
   const formRef = React.useRef<HTMLFormElement>(null);
 
   const app = config?.app;
@@ -148,7 +182,10 @@ function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>[
     e.preventDefault();
     if (!githubOrg.trim()) return;
     createManifest.mutate(
-      { githubOrg: githubOrg.trim() },
+      {
+        githubOrg: githubOrg.trim(),
+        ...(showAdvanced ? { permissions, events } : {}),
+      },
       {
         onSuccess: (data) => {
           // Submit hidden form to GitHub
@@ -192,6 +229,70 @@ function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>[
               The GitHub organization where the app will be created and installed.
             </p>
           </div>
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="text-xs text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+          >
+            {showAdvanced ? '▾ Hide permissions' : '▸ Configure permissions'}
+          </button>
+          {showAdvanced && (
+            <div className="space-y-3 rounded-md border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-800/50">
+              <div>
+                <p className="mb-2 text-xs font-medium text-neutral-600 dark:text-neutral-400">Permissions</p>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {AVAILABLE_PERMISSIONS.map((perm) => {
+                    const current = permissions[perm.key];
+                    return (
+                      <label key={perm.key} className="flex items-center gap-2 text-xs text-neutral-700 dark:text-neutral-300">
+                        <select
+                          value={current || ''}
+                          onChange={(e) => {
+                            setPermissions((prev) => {
+                              const next = { ...prev };
+                              if (e.target.value) {
+                                next[perm.key] = e.target.value;
+                              } else {
+                                delete next[perm.key];
+                              }
+                              return next;
+                            });
+                          }}
+                          className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-xs dark:border-neutral-600 dark:bg-neutral-800"
+                        >
+                          <option value="">none</option>
+                          {perm.levels.map((level) => (
+                            <option key={level} value={level}>{level}</option>
+                          ))}
+                        </select>
+                        {perm.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+              <div>
+                <p className="mb-2 text-xs font-medium text-neutral-600 dark:text-neutral-400">Events</p>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {AVAILABLE_EVENTS.map((event) => (
+                    <label key={event} className="flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-300">
+                      <input
+                        type="checkbox"
+                        checked={events.includes(event)}
+                        onChange={(e) => {
+                          setEvents((prev) =>
+                            e.target.checked ? [...prev, event] : prev.filter((ev) => ev !== event)
+                          );
+                        }}
+                        className="rounded border-neutral-300 dark:border-neutral-600"
+                      />
+                      {event}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
           <Button type="submit" disabled={createManifest.isPending || !githubOrg.trim()}>
             {createManifest.isPending ? 'Preparing...' : 'Create GitHub App'}
           </Button>

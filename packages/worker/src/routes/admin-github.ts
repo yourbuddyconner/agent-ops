@@ -89,7 +89,11 @@ adminGitHubRouter.get('/', async (c) => {
  */
 adminGitHubRouter.post('/app/manifest', async (c) => {
   const user = c.get('user');
-  const body = await c.req.json<{ githubOrg: string }>();
+  const body = await c.req.json<{
+    githubOrg: string;
+    permissions?: Record<string, string>;
+    events?: string[];
+  }>();
 
   if (!body.githubOrg?.trim()) {
     return c.json({ error: 'githubOrg is required' }, 400);
@@ -126,6 +130,22 @@ adminGitHubRouter.post('/app/manifest', async (c) => {
   await setServiceConfig(c.get('db'), c.env.ENCRYPTION_KEY, 'github_manifest_nonce', {}, { jti, exp: now + 600 }, user.id);
 
   const githubOrg = body.githubOrg.trim();
+
+  // Default permissions — can be overridden by the caller
+  const defaultPermissions: Record<string, string> = {
+    contents: 'write',
+    metadata: 'read',
+    pull_requests: 'write',
+    issues: 'write',
+  };
+  const defaultEvents = ['push', 'pull_request'];
+
+  // Merge caller-provided permissions/events with defaults
+  const permissions = body.permissions
+    ? { ...defaultPermissions, ...body.permissions }
+    : defaultPermissions;
+  const events = body.events || defaultEvents;
+
   const manifest = {
     name: `Valet (${orgName})`,
     url: frontendUrl,
@@ -140,13 +160,8 @@ adminGitHubRouter.post('/app/manifest', async (c) => {
     ],
     setup_url: `${workerUrl}/repo-providers/github/install/callback`,
     public: false,
-    default_permissions: {
-      contents: 'write',
-      metadata: 'read',
-      pull_requests: 'write',
-      issues: 'write',
-    },
-    default_events: ['push', 'pull_request'],
+    default_permissions: permissions,
+    default_events: events,
   };
 
   const url = `https://github.com/organizations/${encodeURIComponent(githubOrg)}/settings/apps/new?state=${encodeURIComponent(state)}`;
