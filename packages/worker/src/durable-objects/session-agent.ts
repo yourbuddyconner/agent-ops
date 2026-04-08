@@ -452,7 +452,7 @@ export class SessionAgentDO {
         }
 
         // HTTP-based prompt submission (alternative to WebSocket)
-        const body = await request.json() as { content?: string; contextPrefix?: string; model?: string; attachments?: PromptAttachment[]; interrupt?: boolean; queueMode?: string; channelType?: string; channelId?: string; threadId?: string; authorName?: string; authorEmail?: string; authorId?: string; replyTo?: { channelType: string; channelId: string } };
+        const body = await request.json() as { content?: string; contextPrefix?: string; model?: string; attachments?: PromptAttachment[]; interrupt?: boolean; queueMode?: string; channelType?: string; channelId?: string; threadId?: string; authorName?: string; authorEmail?: string; authorId?: string; authorAvatarUrl?: string; replyTo?: { channelType: string; channelId: string } };
         const content = body.content ?? '';
         const { attachments, rejectedTypes } = sanitizePromptAttachments(body.attachments);
         if (rejectedTypes.length > 0) {
@@ -471,6 +471,7 @@ export class SessionAgentDO {
           id: body.authorId || '',
           email: body.authorEmail || '',
           name: body.authorName,
+          avatarUrl: body.authorAvatarUrl,
         } : undefined;
 
         switch (effectiveMode) {
@@ -4368,6 +4369,18 @@ export class SessionAgentDO {
     const queueOwnerDetails = queueOwnerId ? await this.getUserDetails(queueOwnerId) : undefined;
     const queueModelPrefs = await this.resolveModelPreferences(queueOwnerDetails);
     const queueChannelKey = this.channelKeyFrom(queueChannelType, queueChannelId);
+
+    // Hydrate thread resume context for deferred prompts (mirrors handlePrompt's hydration)
+    if (queueThreadId) {
+      const inMemoryOcSessionId = this.getChannelOcSessionId(queueChannelKey);
+      if (!inMemoryOcSessionId) {
+        const hydrated = await this.hydrateThreadResumeContext(queueThreadId);
+        if (hydrated.opencodeSessionId) {
+          this.setChannelOcSessionId(queueChannelKey, hydrated.opencodeSessionId);
+        }
+      }
+    }
+
     const queueOcSessionId = this.getChannelOcSessionId(queueChannelKey);
 
     // Agent sees contextPrefix + content; stored messages only have the user's actual message
