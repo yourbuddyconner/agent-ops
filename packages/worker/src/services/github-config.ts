@@ -15,6 +15,10 @@ export interface GitHubServiceMetadata {
   appInstallationId?: string;
   accessibleOwners?: string[];
   accessibleOwnersRefreshedAt?: string;
+  appOwner?: string;
+  appOwnerType?: string;
+  appName?: string;
+  repositoryCount?: number;
 }
 
 export interface GitHubConfig {

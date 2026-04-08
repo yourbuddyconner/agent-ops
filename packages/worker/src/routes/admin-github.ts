@@ -9,7 +9,21 @@ import {
 } from '../lib/db/service-configs.js';
 import type { GitHubServiceConfig, GitHubServiceMetadata } from '../services/github-config.js';
 import { storeCredential } from '../services/credentials.js';
+import * as credentialDb from '../lib/db/credentials.js';
+import { mintGitHubAppJWT } from '../services/github-app-jwt.js';
+import { signJWT, verifyJWT } from '../lib/jwt.js';
+import { getDb } from '../lib/drizzle.js';
+import { getServiceMetadata } from '../lib/db/service-configs.js';
 import * as db from '../lib/db.js';
+
+interface ManifestJWTPayload {
+  sub: string;
+  purpose: 'app-manifest';
+  orgId?: string;
+  jti: string;
+  exp: number;
+  iat: number;
+}
 
 export const adminGitHubRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -40,25 +54,103 @@ adminGitHubRouter.get('/', async (c) => {
     });
   }
 
+  const hasApp = !!svc.config.appId;
+  // viaApp indicates credentials are managed by the manifest-created App.
+  // If OAuth creds were manually set before app creation, they are overwritten
+  // during manifest flow, so this flag is always accurate post-manifest.
   return c.json({
     source: 'database',
     oauth: {
       configured: true,
       clientId: svc.config.oauthClientId,
+      viaApp: hasApp,
     },
-    app: svc.config.appId
+    app: hasApp
       ? {
           configured: true,
           appId: svc.config.appId,
           appSlug: svc.config.appSlug,
+          appName: svc.metadata.appName,
+          appOwner: svc.metadata.appOwner,
+          appOwnerType: svc.metadata.appOwnerType,
           installationId: svc.metadata.appInstallationId,
           accessibleOwners: svc.metadata.accessibleOwners,
           accessibleOwnersRefreshedAt: svc.metadata.accessibleOwnersRefreshedAt,
+          repositoryCount: svc.metadata.repositoryCount,
         }
       : null,
     configuredBy: svc.configuredBy,
     updatedAt: svc.updatedAt,
   });
+});
+
+/**
+ * POST /api/admin/github/app/manifest — Generate manifest + form URL for GitHub App creation
+ */
+adminGitHubRouter.post('/app/manifest', async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json<{ githubOrg: string }>();
+
+  if (!body.githubOrg?.trim()) {
+    return c.json({ error: 'githubOrg is required' }, 400);
+  }
+
+  if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(body.githubOrg.trim())) {
+    return c.json({ error: 'Invalid GitHub organization name' }, 400);
+  }
+
+  // Check if app is already configured
+  const existing = await getServiceConfig<GitHubServiceConfig, GitHubServiceMetadata>(
+    c.get('db'), c.env.ENCRYPTION_KEY, 'github',
+  ).catch(() => null);
+
+  if (existing?.config.appId) {
+    return c.json({ error: 'GitHub App is already configured. Delete it first to create a new one.' }, 400);
+  }
+
+  const orgSettings = await db.getOrgSettings(c.get('db'));
+  const orgName = orgSettings?.name || 'Valet';
+  const frontendUrl = (c.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+  const workerUrl = (c.env.API_PUBLIC_URL || new URL(c.req.url).origin).replace(/\/$/, '');
+
+  // Signed state JWT with jti for replay protection
+  const now = Math.floor(Date.now() / 1000);
+  const jti = crypto.randomUUID();
+  const state = await signJWT(
+    // signJWT expects SandboxJWTPayload but this is a manifest-flow JWT with different fields
+    { sub: user.id, purpose: 'app-manifest', jti, iat: now, exp: now + 10 * 60 } as any,
+    c.env.ENCRYPTION_KEY,
+  );
+
+  // Store jti for one-time consumption (10 min TTL) — use setServiceConfig (upsert) since the row may not exist yet
+  await setServiceConfig(c.get('db'), c.env.ENCRYPTION_KEY, 'github_manifest_nonce', {}, { jti, exp: now + 600 }, user.id);
+
+  const githubOrg = body.githubOrg.trim();
+  const manifest = {
+    name: `Valet (${orgName})`,
+    url: frontendUrl,
+    hook_attributes: {
+      url: `${workerUrl}/api/webhooks/github`,
+      active: true,
+    },
+    redirect_url: `${workerUrl}/github/app/setup`,
+    callback_urls: [
+      `${workerUrl}/auth/github/callback`,
+      `${frontendUrl}/auth/github/repo-callback`,
+    ],
+    setup_url: `${workerUrl}/repo-providers/github/install/callback`,
+    setup_events_enabled: true,
+    public: false,
+    default_permissions: {
+      contents: 'read',
+      metadata: 'read',
+    },
+    default_events: ['push', 'pull_request'],
+  };
+
+  const url = `https://github.com/organizations/${encodeURIComponent(githubOrg)}/settings/apps/new?state=${encodeURIComponent(state)}`;
+
+  return c.json({ url, manifest });
 });
 
 /**
@@ -96,78 +188,24 @@ adminGitHubRouter.put('/oauth', async (c) => {
 });
 
 /**
- * PUT /api/admin/github/app — Set GitHub App credentials
- */
-adminGitHubRouter.put('/app', async (c) => {
-  const user = c.get('user');
-  const body = await c.req.json<{
-    appId: string;
-    appPrivateKey: string;
-    appSlug?: string;
-    appWebhookSecret?: string;
-  }>();
-
-  if (!body.appId || !body.appPrivateKey) {
-    return c.json({ error: 'appId and appPrivateKey are required' }, 400);
-  }
-
-  // Read existing config to preserve OAuth fields
-  const existing = await getServiceConfig<GitHubServiceConfig, GitHubServiceMetadata>(
-    c.get('db'), c.env.ENCRYPTION_KEY, 'github',
-  );
-
-  if (!existing?.config.oauthClientId) {
-    return c.json({ error: 'OAuth must be configured before adding App credentials' }, 400);
-  }
-
-  const config: GitHubServiceConfig = {
-    oauthClientId: existing.config.oauthClientId,
-    oauthClientSecret: existing.config.oauthClientSecret,
-    appId: body.appId,
-    appPrivateKey: body.appPrivateKey,
-    appSlug: body.appSlug,
-    appWebhookSecret: body.appWebhookSecret,
-  };
-
-  await setServiceConfig(c.get('db'), c.env.ENCRYPTION_KEY, 'github', config, existing.metadata || {}, user.id);
-  return c.json({ success: true });
-});
-
-/**
- * DELETE /api/admin/github/oauth — Remove OAuth config (removes entire GitHub config)
+ * DELETE /api/admin/github/oauth — Remove entire GitHub config + org credential
  */
 adminGitHubRouter.delete('/oauth', async (c) => {
-  await deleteServiceConfig(c.get('db'), 'github');
-  return c.json({ success: true });
-});
-
-/**
- * DELETE /api/admin/github/app — Remove just the App credentials, keep OAuth
- */
-adminGitHubRouter.delete('/app', async (c) => {
-  const user = c.get('user');
-  const existing = await getServiceConfig<GitHubServiceConfig, GitHubServiceMetadata>(
-    c.get('db'), c.env.ENCRYPTION_KEY, 'github',
-  );
-
-  if (!existing) {
-    return c.json({ error: 'GitHub is not configured' }, 404);
+  // Remove the org app_install credential so resolveRepoCredential stops using it
+  const orgSettings = await db.getOrgSettings(c.get('db'));
+  if (orgSettings?.id) {
+    await credentialDb.deleteCredential(c.get('db'), 'org', orgSettings.id, 'github', 'app_install');
   }
-
-  const config: GitHubServiceConfig = {
-    oauthClientId: existing.config.oauthClientId,
-    oauthClientSecret: existing.config.oauthClientSecret,
-    // App fields removed
-  };
-
-  await setServiceConfig(c.get('db'), c.env.ENCRYPTION_KEY, 'github', config, {}, user.id);
+  await deleteServiceConfig(c.get('db'), 'github');
+  // Clean up manifest nonce
+  await setServiceConfig(c.get('db'), c.env.ENCRYPTION_KEY, 'github_manifest_nonce', {}, { jti: '', exp: 0 }, '');
   return c.json({ success: true });
 });
 
 /**
- * POST /api/admin/github/app/verify — Test App config, store installation and accessible owners
+ * POST /api/admin/github/app/refresh — Re-sync installation metadata from GitHub
  */
-adminGitHubRouter.post('/app/verify', async (c) => {
+adminGitHubRouter.post('/app/refresh', async (c) => {
   const existing = await getServiceConfig<GitHubServiceConfig, GitHubServiceMetadata>(
     c.get('db'), c.env.ENCRYPTION_KEY, 'github',
   );
@@ -176,48 +214,19 @@ adminGitHubRouter.post('/app/verify', async (c) => {
     return c.json({ error: 'GitHub App not configured' }, 400);
   }
 
-  // Mint a JWT from App credentials
-  const now = Math.floor(Date.now() / 1000);
-  const b64url = (s: string) => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-  const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-  const payload = b64url(JSON.stringify({
-    iat: now - 60,
-    exp: now + (10 * 60),
-    iss: existing.config.appId,
-  }));
-
-  // Import private key and sign
   let appJwt: string;
   try {
-    const pemBody = existing.config.appPrivateKey
-      .replace(/-----BEGIN RSA PRIVATE KEY-----/, '')
-      .replace(/-----END RSA PRIVATE KEY-----/, '')
-      .replace(/\s/g, '');
-    const keyData = Uint8Array.from(atob(pemBody), (ch) => ch.charCodeAt(0));
-    const key = await crypto.subtle.importKey(
-      'pkcs8',
-      keyData,
-      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-      false,
-      ['sign'],
-    );
-    const signature = await crypto.subtle.sign(
-      'RSASSA-PKCS1-v1_5',
-      key,
-      new TextEncoder().encode(`${header}.${payload}`),
-    );
-    const sig = btoa(String.fromCharCode(...new Uint8Array(signature)))
-      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-    appJwt = `${header}.${payload}.${sig}`;
+    appJwt = await mintGitHubAppJWT(existing.config.appId, existing.config.appPrivateKey);
   } catch {
     return c.json({ error: 'Failed to sign JWT with private key — check that the key is valid' }, 400);
   }
 
-  // Get installations
+  // List installations
   const installsRes = await fetch('https://api.github.com/app/installations', {
     headers: {
       Authorization: `Bearer ${appJwt}`,
       Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent': 'valet-app',
     },
   });
@@ -228,12 +237,27 @@ adminGitHubRouter.post('/app/verify', async (c) => {
   }
 
   const installations = await installsRes.json() as Array<{ id: number; account?: { login?: string } }>;
-  if (installations.length === 0) {
-    return c.json({ error: 'No installations found for this GitHub App' }, 400);
+
+  // Enforce single-installation model
+  let installation: (typeof installations)[0];
+  const storedId = existing.metadata.appInstallationId;
+
+  if (storedId) {
+    const match = installations.find((i) => String(i.id) === storedId);
+    if (!match) {
+      return c.json({ error: `Stored installation ${storedId} not found. It may have been removed from GitHub.` }, 400);
+    }
+    installation = match;
+  } else if (installations.length === 1) {
+    installation = installations[0];
+  } else if (installations.length === 0) {
+    return c.json({ error: 'No installations found. Install the app on a GitHub organization first.' }, 400);
+  } else {
+    return c.json({
+      error: `Found ${installations.length} installations but expected exactly one. Remove extra installations on GitHub and retry.`,
+    }, 400);
   }
 
-  // Use first installation
-  const installation = installations[0];
   const installationId = String(installation.id);
 
   // Get installation access token to list repositories
@@ -242,6 +266,7 @@ adminGitHubRouter.post('/app/verify', async (c) => {
     headers: {
       Authorization: `Bearer ${appJwt}`,
       Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent': 'valet-app',
     },
   });
@@ -252,38 +277,45 @@ adminGitHubRouter.post('/app/verify', async (c) => {
 
   const tokenData = await tokenRes.json() as { token: string };
 
-  // List accessible repositories to get owner set
+  // List accessible repositories
   const reposRes = await fetch('https://api.github.com/installation/repositories?per_page=100', {
     headers: {
       Authorization: `Bearer ${tokenData.token}`,
       Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent': 'valet-app',
     },
   });
 
+  if (!reposRes.ok) {
+    return c.json({ error: 'Failed to list installation repositories' }, 400);
+  }
+
   const reposData = await reposRes.json() as {
+    total_count: number;
     repositories: Array<{ owner: { login: string } }>;
   };
 
   const accessibleOwners = [...new Set(reposData.repositories.map((r) => r.owner.login))];
 
-  // Update metadata with installation info
+  // Update metadata
   const metadata: GitHubServiceMetadata = {
     ...existing.metadata,
     appInstallationId: installationId,
     accessibleOwners,
     accessibleOwnersRefreshedAt: new Date().toISOString(),
+    repositoryCount: reposData.total_count,
   };
 
   await updateServiceMetadata(c.get('db'), 'github', metadata);
 
-  // Store org-level app_install credential so resolveRepoCredential can find it
+  // Update org-level app_install credential
   const orgSettings = await db.getOrgSettings(c.get('db'));
   if (orgSettings?.id) {
     await storeCredential(c.env, 'org', orgSettings.id, 'github', {
       installation_id: installationId,
-      app_id: existing.config.appId!,
-      private_key: existing.config.appPrivateKey!,
+      app_id: existing.config.appId,
+      private_key: existing.config.appPrivateKey,
     }, {
       credentialType: 'app_install',
       metadata: { installationId },
@@ -291,9 +323,94 @@ adminGitHubRouter.post('/app/verify', async (c) => {
   }
 
   return c.json({
-    success: true,
     installationId,
     accessibleOwners,
-    repositoryCount: reposData.repositories.length,
+    repositoryCount: reposData.total_count,
   });
+});
+
+/**
+ * GitHub App manifest callback — mounted outside /api/* (no auth middleware).
+ * User identity is derived from the signed state JWT.
+ */
+export const githubAppSetupCallbackRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+githubAppSetupCallbackRouter.get('/app/setup', async (c) => {
+  const code = c.req.query('code');
+  const stateParam = c.req.query('state');
+  const frontendUrl = (c.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+
+  if (!code || !stateParam) {
+    return c.redirect(`${frontendUrl}/settings/admin?error=missing_params`);
+  }
+
+  // Verify state JWT
+  const payload = await verifyJWT(stateParam, c.env.ENCRYPTION_KEY);
+  const manifestPayload = payload as unknown as ManifestJWTPayload;
+  if (!payload || !payload.sub || manifestPayload.purpose !== 'app-manifest') {
+    return c.redirect(`${frontendUrl}/settings/admin?error=invalid_state`);
+  }
+
+  // Check jti for replay protection
+  const appDb = getDb(c.env.DB);
+  const nonceStore = await getServiceMetadata<{ jti: string; exp: number }>(appDb, 'github_manifest_nonce').catch(() => null);
+  if (!nonceStore || nonceStore.jti !== manifestPayload.jti) {
+    return c.redirect(`${frontendUrl}/settings/admin?error=invalid_or_replayed_state`);
+  }
+  if (nonceStore.exp && Date.now() / 1000 > nonceStore.exp) {
+    // Nonce expired — user took too long
+    return c.redirect(`${frontendUrl}/settings/admin?error=${encodeURIComponent('Manifest flow expired. Please try again.')}`);
+  }
+  // Exchange code for app credentials
+  const conversionRes = await fetch(`https://api.github.com/app-manifests/${code}/conversions`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'valet-app',
+    },
+  });
+
+  if (!conversionRes.ok) {
+    const errText = await conversionRes.text();
+    console.error('GitHub manifest conversion failed:', conversionRes.status, errText);
+    // Don't consume nonce — GitHub's code is one-time use so retry won't work,
+    // but leaving the nonce unconsumed is harmless and avoids masking the real error.
+    return c.redirect(`${frontendUrl}/settings/admin?error=conversion_failed`);
+  }
+
+  // Consume the nonce after successful conversion
+  await updateServiceMetadata(appDb, 'github_manifest_nonce', { jti: '', exp: 0 });
+
+  const appData = await conversionRes.json() as {
+    id: number;
+    slug: string;
+    name: string;
+    client_id: string;
+    client_secret: string;
+    pem: string;
+    webhook_secret: string;
+    owner: { login: string; type: string };
+  };
+
+  // Store everything in org_service_configs
+  const config: GitHubServiceConfig = {
+    oauthClientId: appData.client_id,
+    oauthClientSecret: appData.client_secret,
+    appId: String(appData.id),
+    appPrivateKey: appData.pem,
+    appSlug: appData.slug,
+    appWebhookSecret: appData.webhook_secret,
+  };
+
+  const metadata: GitHubServiceMetadata = {
+    appOwner: appData.owner.login,
+    appOwnerType: appData.owner.type,
+    appName: appData.name,
+  };
+
+  const userId = payload.sub as string;
+  await setServiceConfig(appDb, c.env.ENCRYPTION_KEY, 'github', config, metadata, userId);
+
+  return c.redirect(`${frontendUrl}/settings/admin?created=true`);
 });
