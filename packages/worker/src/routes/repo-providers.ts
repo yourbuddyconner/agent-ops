@@ -219,8 +219,16 @@ repoProviderCallbackRouter.get('/:provider/install/callback', async (c) => {
     const { getServiceMetadata } = await import('../lib/db/service-configs.js');
     const existingMeta = await getServiceMetadata<Record<string, unknown>>(appDb, 'github').catch(() => ({})) || {};
 
-    let accessibleOwners: string[] = [];
-    let repositoryCount = 0;
+    // Always record the installation ID so the UI shows installed state
+    const metaUpdate: Record<string, unknown> = {
+      ...existingMeta,
+      appInstallationId: installationId,
+    };
+
+    // Try to populate accessible owners so sandbox credential resolution
+    // works immediately. On failure, only write the installation ID —
+    // don't write empty accessibleOwners since that would cause
+    // resolveRepoCredential to reject all repos until manual refresh.
     try {
       const appJwt = await mintGitHubAppJWT(ghConfig.appId, ghConfig.appPrivateKey);
       const tokenRes = await fetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
@@ -245,21 +253,16 @@ repoProviderCallbackRouter.get('/:provider/install/callback', async (c) => {
             total_count: number;
             repositories: Array<{ owner: { login: string } }>;
           };
-          accessibleOwners = [...new Set(reposData.repositories.map((r) => r.owner.login))];
-          repositoryCount = reposData.total_count;
+          metaUpdate.accessibleOwners = [...new Set(reposData.repositories.map((r) => r.owner.login))];
+          metaUpdate.accessibleOwnersRefreshedAt = new Date().toISOString();
+          metaUpdate.repositoryCount = reposData.total_count;
         }
       }
     } catch {
-      // Non-fatal — admin can hit Refresh later
+      // Non-fatal — admin can hit Refresh later to populate accessible owners
     }
 
-    await updateServiceMetadata(appDb, 'github', {
-      ...existingMeta,
-      appInstallationId: installationId,
-      accessibleOwners,
-      accessibleOwnersRefreshedAt: new Date().toISOString(),
-      repositoryCount,
-    });
+    await updateServiceMetadata(appDb, 'github', metaUpdate);
   }
 
   return c.redirect(`${frontendUrl}/settings/admin?installed=true`);

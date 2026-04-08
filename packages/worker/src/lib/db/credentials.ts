@@ -194,7 +194,13 @@ export async function resolveRepoCredential(
       // If repoOwner is provided, verify the installation covers it
       if (repoOwner) {
         const meta = await getServiceMetadata<GitHubServiceMetadata>(db, 'github');
-        if (meta?.accessibleOwners?.includes(repoOwner)) {
+        // If accessibleOwners hasn't been populated yet (e.g., install callback
+        // API call failed), allow the credential as a fallback rather than
+        // blocking all repo access until manual refresh
+        if (!meta?.accessibleOwners) {
+          return { credential: orgInstall, credentialType: 'app_install' };
+        }
+        if (meta.accessibleOwners.includes(repoOwner)) {
           return { credential: orgInstall, credentialType: 'app_install' };
         }
         // Installation doesn't cover this owner
