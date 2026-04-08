@@ -814,4 +814,112 @@ describe('SessionAgentDO', () => {
     expect(peeked.id).toBe('peek-test');
     expect((agent as any).promptQueue.length).toBe(1); // still there
   });
+
+  it('does not write user message to message store when prompt is queued (runner busy)', async () => {
+    const runnerSocket = { send: vi.fn() };
+    const { agent, broadcasts } = await createTestAgent({ sockets: [runnerSocket] });
+
+    // Make runner busy
+    (agent as any).promptQueue.runnerBusy = true;
+
+    const writeMessageSpy = vi.spyOn((agent as any).messageStore, 'writeMessage');
+
+    await (agent as any).handlePrompt(
+      'queued message',
+      undefined,
+      { id: 'user-1', email: 'u@test.com', name: 'User' },
+      undefined,
+      'web',
+      'default',
+      undefined,
+    );
+
+    // The message should NOT have been written to the message store
+    expect(writeMessageSpy).not.toHaveBeenCalled();
+
+    // The message broadcast should NOT have been sent
+    const userMsgBroadcast = broadcasts.find(
+      (b) => b.type === 'message' && (b.data as any)?.role === 'user' && (b.data as any)?.content === 'queued message'
+    );
+    expect(userMsgBroadcast).toBeUndefined();
+
+    // But the queue entry SHOULD exist
+    expect((agent as any).promptQueue.length).toBe(1);
+  });
+
+  it('writes user message to message store when prompt dispatches directly (runner idle)', async () => {
+    const runnerSocket = { send: vi.fn() };
+    const { agent } = await createTestAgent({ sockets: [runnerSocket] });
+
+    const writeMessageSpy = vi.spyOn((agent as any).messageStore, 'writeMessage');
+
+    await (agent as any).handlePrompt(
+      'direct message',
+      undefined,
+      { id: 'user-1', email: 'u@test.com', name: 'User' },
+      undefined,
+      'web',
+      'default',
+      undefined,
+    );
+
+    // The message SHOULD have been written to the message store
+    expect(writeMessageSpy).toHaveBeenCalledOnce();
+    expect(writeMessageSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'user', content: 'direct message' }),
+    );
+  });
+
+  it('single-slot enforcement: new followup replaces existing pending', async () => {
+    const runnerSocket = { send: vi.fn() };
+    const { agent, broadcasts } = await createTestAgent({ sockets: [runnerSocket] });
+
+    (agent as any).promptQueue.runnerBusy = true;
+
+    // Queue first followup
+    await (agent as any).handlePrompt(
+      'first followup',
+      undefined, undefined, undefined,
+      'web', 'default', undefined,
+    );
+
+    expect((agent as any).promptQueue.length).toBe(1);
+
+    // Queue second followup — should replace the first
+    await (agent as any).handlePrompt(
+      'second followup',
+      undefined, undefined, undefined,
+      'web', 'default', undefined,
+    );
+
+    expect((agent as any).promptQueue.length).toBe(1);
+
+    // First should have been withdrawn
+    const withdrawn = broadcasts.find((b) => b.type === 'queue.withdrawn');
+    expect(withdrawn).toBeTruthy();
+    expect((withdrawn as any).data.content).toBe('first followup');
+
+    // Queue should contain only the second
+    const pending = (agent as any).promptQueue.peekQueued();
+    expect(pending.content).toBe('second followup');
+  });
+
+  it('broadcasts queue.state with pending item after enqueue', async () => {
+    const runnerSocket = { send: vi.fn() };
+    const { agent, broadcasts } = await createTestAgent({ sockets: [runnerSocket] });
+
+    (agent as any).promptQueue.runnerBusy = true;
+
+    await (agent as any).handlePrompt(
+      'queue state test',
+      undefined, undefined, undefined,
+      'web', 'default', 'thread-qs',
+    );
+
+    const queueState = broadcasts.find((b) => b.type === 'queue.state');
+    expect(queueState).toBeTruthy();
+    expect((queueState as any).data.pending).toBeTruthy();
+    expect((queueState as any).data.pending.content).toBe('queue state test');
+    expect((queueState as any).data.pending.threadId).toBe('thread-qs');
+  });
 });

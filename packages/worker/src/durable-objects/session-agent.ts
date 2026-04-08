@@ -105,7 +105,7 @@ interface ClientMessage {
 
 /** Messages sent from DO to clients */
 interface ClientOutbound {
-  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'interactive_prompt' | 'interactive_prompt_resolved' | 'interactive_prompt_expired' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'review-result' | 'command-result' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'audit_log' | 'model-switched' | 'toast' | 'integration-auth-required' | 'thread.created' | 'thread.updated';
+  type: 'message' | 'message.updated' | 'messages.removed' | 'stream' | 'chunk' | 'interactive_prompt' | 'interactive_prompt_resolved' | 'interactive_prompt_expired' | 'status' | 'pong' | 'error' | 'user.joined' | 'user.left' | 'agentStatus' | 'models' | 'diff' | 'review-result' | 'command-result' | 'git-state' | 'pr-created' | 'files-changed' | 'child-session' | 'title' | 'audit_log' | 'model-switched' | 'toast' | 'integration-auth-required' | 'thread.created' | 'thread.updated' | 'queue.state' | 'queue.withdrawn';
   [key: string]: unknown;
 }
 
@@ -1476,8 +1476,89 @@ export class SessionAgentDO {
     const serializedAttachmentParts = attachmentParts.length > 0 ? JSON.stringify(attachmentParts) : null;
     const serializedQueuedAttachments = normalizedAttachments.length > 0 ? JSON.stringify(normalizedAttachments) : null;
 
-    // Store user message with author info and channel metadata
     const messageId = crypto.randomUUID();
+
+    // Check if runner is busy / ready
+    const runnerBusy = this.promptQueue.runnerBusy;
+    const runnerConnected = this.runnerLink.isConnected;
+    const runnerReady = this.runnerLink.isReady;
+    const status = this.sessionState.status;
+    const sandboxId = this.sessionState.sandboxId;
+    const queuedCount = this.promptQueue.length;
+
+    // Resolve the effective reply target early so it can be persisted in prompt_queue.
+    // Prefer explicit replyTo from the prompt envelope (set by plugin routes).
+    // Fall back to the original channel before thread normalization (legacy path).
+    // Thread origin recovery (web UI steering) happens at dispatch time, not here.
+    const effectiveReplyTo = replyTo
+      ?? (replyChannelType && replyChannelId && replyChannelType !== 'web' && replyChannelType !== 'thread'
+        ? { channelType: replyChannelType, channelId: replyChannelId }
+        : null);
+
+    console.log(
+      `[SessionAgentDO] handlePrompt: channel=${channelKey} runnerConnected=${runnerConnected} runnerReady=${runnerReady} runnerBusy=${runnerBusy} status=${status} sandboxId=${sandboxId || 'none'} queued=${queuedCount}`
+    );
+
+    if (!runnerConnected || !runnerReady || runnerBusy) {
+      // ─── Enqueue path: defer message write to dispatch time ──────────
+      const reason = runnerBusy ? 'runner busy' : (!runnerConnected ? 'no runner connected' : 'runner not ready');
+      console.log(`[SessionAgentDO] handlePrompt: QUEUING (${reason}) channel=${channelKey} messageId=${messageId}`);
+
+      // Single-slot enforcement: withdraw existing pending user prompt
+      const existingPending = this.promptQueue.withdrawQueued();
+      if (existingPending) {
+        this.broadcastToClients({
+          type: 'queue.withdrawn',
+          data: {
+            messageId: existingPending.id,
+            content: existingPending.content,
+            attachments: existingPending.attachments ? JSON.parse(existingPending.attachments) : undefined,
+            threadId: existingPending.threadId,
+          },
+        });
+        this.emitAuditEvent('user.queue_withdraw', `Replaced pending prompt ${existingPending.id}`);
+      }
+
+      // Enqueue WITHOUT writing to message store — write happens at dispatch time
+      this.promptQueue.enqueue({
+        id: messageId, content, attachments: serializedQueuedAttachments, model,
+        authorId: author?.id, authorEmail: author?.email, authorName: author?.name, authorAvatarUrl: author?.avatarUrl,
+        channelType, channelId, channelKey, threadId, continuationContext, contextPrefix,
+        replyChannelType: effectiveReplyTo?.channelType, replyChannelId: effectiveReplyTo?.channelId,
+      });
+      this.promptQueue.stampPromptReceived();
+      this.emitAuditEvent(
+        'prompt.queued',
+        `Queued: ${reason} (status=${status || 'unknown'}, sandbox=${sandboxId ? 'yes' : 'no'}, queued=${this.promptQueue.length})`,
+        author?.id
+      );
+
+      // Runner not busy — arm idle-queue watchdog
+      if (!runnerBusy && !this.promptQueue.idleQueuedSince) {
+        this.promptQueue.idleQueuedSince = Date.now();
+        this.rescheduleIdleAlarm();
+      }
+
+      // Broadcast queue.state instead of user message
+      this.broadcastToClients({
+        type: 'queue.state',
+        data: {
+          pending: {
+            messageId,
+            content,
+            attachments: normalizedAttachments.length > 0 ? normalizedAttachments : undefined,
+            threadId,
+          },
+        },
+      });
+      this.broadcastToClients({
+        type: 'status',
+        data: { promptQueued: true, queuePosition: this.promptQueue.length, queueReason: runnerBusy ? 'busy' : 'waking' },
+      });
+      return;
+    }
+
+    // ─── Direct dispatch path: write message immediately ─────────────
     this.messageStore.writeMessage({
       id: messageId,
       role: 'user',
@@ -1523,77 +1604,6 @@ export class SessionAgentDO {
         : `[${normalizedAttachments.length} image attachment(s)]`,
       author?.id
     );
-
-    // Check if runner is busy / ready
-    const runnerBusy = this.promptQueue.runnerBusy;
-    const runnerConnected = this.runnerLink.isConnected;
-    const runnerReady = this.runnerLink.isReady;
-    const status = this.sessionState.status;
-    const sandboxId = this.sessionState.sandboxId;
-    const queuedCount = this.promptQueue.length;
-
-    // Resolve the effective reply target early so it can be persisted in prompt_queue.
-    // Prefer explicit replyTo from the prompt envelope (set by plugin routes).
-    // Fall back to the original channel before thread normalization (legacy path).
-    // Thread origin recovery (web UI steering) happens at dispatch time, not here.
-    const effectiveReplyTo = replyTo
-      ?? (replyChannelType && replyChannelId && replyChannelType !== 'web' && replyChannelType !== 'thread'
-        ? { channelType: replyChannelType, channelId: replyChannelId }
-        : null);
-
-    console.log(
-      `[SessionAgentDO] handlePrompt: channel=${channelKey} runnerConnected=${runnerConnected} runnerReady=${runnerReady} runnerBusy=${runnerBusy} status=${status} sandboxId=${sandboxId || 'none'} queued=${queuedCount}`
-    );
-
-    if (!runnerConnected || !runnerReady) {
-      // No runner connected or runner still initializing (OpenCode not healthy yet)
-      // — queue the prompt with author info + channel metadata
-      const reason = !runnerConnected ? 'no runner connected' : 'runner not ready';
-      this.promptQueue.enqueue({
-        id: messageId, content, attachments: serializedQueuedAttachments, model,
-        authorId: author?.id, authorEmail: author?.email, authorName: author?.name, authorAvatarUrl: author?.avatarUrl,
-        channelType, channelId, channelKey, threadId, continuationContext, contextPrefix,
-        replyChannelType: effectiveReplyTo?.channelType, replyChannelId: effectiveReplyTo?.channelId,
-      });
-      this.promptQueue.stampPromptReceived();
-      this.emitAuditEvent(
-        'prompt.queued',
-        `Queued: ${reason} (status=${status || 'unknown'}, sandbox=${sandboxId ? 'yes' : 'no'}, queued=${this.promptQueue.length})`,
-        author?.id
-      );
-      // Runner not busy — arm idle-queue watchdog
-      if (!runnerBusy && !this.promptQueue.idleQueuedSince) {
-        this.promptQueue.idleQueuedSince = Date.now();
-        this.rescheduleIdleAlarm();
-      }
-      this.broadcastToClients({
-        type: 'status',
-        data: { promptQueued: true, queuePosition: this.promptQueue.length, queueReason: 'waking' },
-      });
-      return;
-    }
-
-    if (runnerBusy) {
-      // Runner is processing another prompt — queue with author info + channel metadata
-      console.log(`[SessionAgentDO] handlePrompt: QUEUING (runnerBusy=true) channel=${channelKey} messageId=${messageId}`);
-      this.promptQueue.enqueue({
-        id: messageId, content, attachments: serializedQueuedAttachments, model,
-        authorId: author?.id, authorEmail: author?.email, authorName: author?.name, authorAvatarUrl: author?.avatarUrl,
-        channelType, channelId, channelKey, threadId, continuationContext, contextPrefix,
-        replyChannelType: effectiveReplyTo?.channelType, replyChannelId: effectiveReplyTo?.channelId,
-      });
-      this.promptQueue.stampPromptReceived();
-      this.emitAuditEvent(
-        'prompt.queued',
-        `Queued: runner busy (status=${status || 'unknown'}, sandbox=${sandboxId ? 'yes' : 'no'}, queued=${this.promptQueue.length})`,
-        author?.id
-      );
-      this.broadcastToClients({
-        type: 'status',
-        data: { promptQueued: true, queuePosition: this.promptQueue.length, queueReason: 'busy' },
-      });
-      return;
-    }
 
     console.log(`[SessionAgentDO] handlePrompt: DISPATCHING DIRECTLY channel=${channelKey} messageId=${messageId}`);
     this.promptQueue.stampPromptReceived();
