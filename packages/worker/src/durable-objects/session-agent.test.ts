@@ -1100,4 +1100,50 @@ describe('SessionAgentDO', () => {
     );
     expect(abortSent).toBe(true);
   });
+
+  it('init payload includes pendingPrompt when a followup is queued', async () => {
+    const { agent } = await createTestAgent();
+
+    (agent as any).promptQueue.enqueue({
+      id: 'init-pending',
+      content: 'queued before connect',
+      status: 'queued',
+      channelType: 'web',
+      channelId: 'default',
+      channelKey: 'web:default',
+      threadId: 'thread-init',
+    });
+
+    const pending = (agent as any).promptQueue.peekQueued();
+    expect(pending).toBeTruthy();
+    expect(pending.id).toBe('init-pending');
+    expect(pending.content).toBe('queued before connect');
+    expect(pending.threadId).toBe('thread-init');
+    // Queue entry should still exist (peek, not withdraw)
+    expect((agent as any).promptQueue.length).toBe(1);
+  });
+
+  it('handleClearQueue broadcasts queue.withdrawn for pending user prompt', async () => {
+    const { agent, broadcasts } = await createTestAgent();
+
+    (agent as any).promptQueue.enqueue({
+      id: 'clear-pending',
+      content: 'will be cleared',
+      status: 'queued',
+      channelType: 'web',
+      channelId: 'default',
+      channelKey: 'web:default',
+    });
+
+    await (agent as any).handleClearQueue();
+
+    const withdrawn = broadcasts.find((b) => b.type === 'queue.withdrawn');
+    expect(withdrawn).toBeTruthy();
+    expect((withdrawn as any).data.content).toBe('will be cleared');
+
+    const queueState = broadcasts.find((b) => b.type === 'queue.state');
+    expect((queueState as any)?.data?.pending).toBeNull();
+
+    expect((agent as any).promptQueue.length).toBe(0);
+  });
 });

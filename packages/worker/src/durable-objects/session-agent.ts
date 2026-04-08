@@ -591,6 +591,14 @@ export class SessionAgentDO {
 
     // Keep the websocket handshake lightweight. The transcript comes from the
     // REST history endpoint; richer session metadata is streamed after open.
+    const pendingEntry = this.promptQueue.peekQueued();
+    const pendingPrompt = pendingEntry ? {
+      messageId: pendingEntry.id,
+      content: pendingEntry.content,
+      attachments: pendingEntry.attachments ? JSON.parse(pendingEntry.attachments) : undefined,
+      threadId: pendingEntry.threadId || undefined,
+    } : null;
+
     const initPayload = JSON.stringify({
       type: 'init',
       session: {
@@ -606,6 +614,7 @@ export class SessionAgentDO {
         promptsQueued: this.promptQueue.length,
         connectedClients: this.getClientSockets().length + 1,
         connectedUsers,
+        pendingPrompt,
       },
     });
 
@@ -4455,14 +4464,35 @@ export class SessionAgentDO {
 
 
   private async handleClearQueue(): Promise<Response> {
+    // Withdraw pending user prompt and broadcast
+    const pending = this.promptQueue.withdrawQueued();
+    if (pending) {
+      this.broadcastToClients({
+        type: 'queue.withdrawn',
+        data: {
+          messageId: pending.id,
+          content: pending.content,
+          attachments: pending.attachments ? JSON.parse(pending.attachments) : undefined,
+          threadId: pending.threadId,
+        },
+      });
+    }
+
+    // Clear remaining queued entries (workflow events, child events)
     const cleared = this.promptQueue.clearQueued();
 
     this.broadcastToClients({
-      type: 'status',
-      data: { queueCleared: true, cleared },
+      type: 'queue.state',
+      data: { pending: null },
     });
 
-    return Response.json({ success: true, cleared });
+    // Keep legacy broadcast for backwards compatibility
+    this.broadcastToClients({
+      type: 'status',
+      data: { queueCleared: true, cleared: cleared + (pending ? 1 : 0) },
+    });
+
+    return Response.json({ success: true, cleared: cleared + (pending ? 1 : 0) });
   }
 
   private async handleFlushMetrics(): Promise<Response> {
