@@ -1518,6 +1518,7 @@ export class SessionAgentDO {
     continuationContext?: string,
     contextPrefix?: string,
     replyTo?: { channelType: string; channelId: string },
+    skipSingleSlot?: boolean,
   ) {
     // ─── Thread-reply capture for pending questions ─────────────────────
     // If there's a pending question and this message came from a channel
@@ -1607,18 +1608,21 @@ export class SessionAgentDO {
       console.log(`[SessionAgentDO] handlePrompt: QUEUING (${reason}) channel=${channelKey} messageId=${messageId}`);
 
       // Single-slot enforcement: withdraw existing pending user prompt
-      const existingPending = this.promptQueue.withdrawQueued();
-      if (existingPending) {
-        this.broadcastToClients({
-          type: 'queue.withdrawn',
-          data: {
-            messageId: existingPending.id,
-            content: existingPending.content,
-            attachments: existingPending.attachments ? JSON.parse(existingPending.attachments) : undefined,
-            threadId: existingPending.threadId,
-          },
-        });
-        this.emitAuditEvent('user.queue_withdraw', `Replaced pending prompt ${existingPending.id}`);
+      // Skipped for steer prompts so the existing pending followup is preserved
+      if (!skipSingleSlot) {
+        const existingPending = this.promptQueue.withdrawQueued();
+        if (existingPending) {
+          this.broadcastToClients({
+            type: 'queue.withdrawn',
+            data: {
+              messageId: existingPending.id,
+              content: existingPending.content,
+              attachments: existingPending.attachments ? JSON.parse(existingPending.attachments) : undefined,
+              threadId: existingPending.threadId,
+            },
+          });
+          this.emitAuditEvent('user.queue_withdraw', `Replaced pending prompt ${existingPending.id}`);
+        }
       }
 
       // Enqueue WITHOUT writing to message store — write happens at dispatch time
@@ -1841,7 +1845,7 @@ export class SessionAgentDO {
     }
     // Queue the new prompt — when the runner confirms abort, handlePromptComplete
     // will drain the queue and send this prompt to the runner
-    await this.handlePrompt(content, model, author, attachments, channelType, channelId, threadId, undefined, contextPrefix);
+    await this.handlePrompt(content, model, author, attachments, channelType, channelId, threadId, undefined, contextPrefix, undefined, true);
   }
 
   // ─── Collect Mode (Phase D) ──────────────────────────────────────────

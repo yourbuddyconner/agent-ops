@@ -1194,7 +1194,7 @@ describe('SessionAgentDO', () => {
     expect(abortSent).toBe(true);
   });
 
-  it('channel steer: abort does not clear queue, single-slot replaces pending with new content', async () => {
+  it('channel steer preserves the existing pending web followup', async () => {
     const runnerSocket = { send: vi.fn() };
     const { agent, broadcasts } = await createTestAgent({ sockets: [runnerSocket] });
 
@@ -1211,8 +1211,7 @@ describe('SessionAgentDO', () => {
       channelKey: 'web:default',
     });
 
-    // Channel steer arrives — abort is sent but does NOT clear queue;
-    // single-slot enforcement replaces the pending web prompt with the channel steer
+    // Channel steer arrives
     await (agent as any).handleInterruptPrompt(
       'telegram urgent',
       undefined,
@@ -1223,24 +1222,24 @@ describe('SessionAgentDO', () => {
       'thread-telegram',
     );
 
-    // Abort should have been sent to the runner
+    // Abort should have been sent
     const abortSent = runnerSocket.send.mock.calls.some(
       (call: unknown[]) => JSON.parse(call[0] as string).type === 'abort'
     );
     expect(abortSent).toBe(true);
 
-    // Queue still has exactly one item (the telegram steer replaced the web followup)
-    expect((agent as any).promptQueue.length).toBe(1);
+    // The web followup should NOT have been withdrawn — it should still be in the queue
+    const withdrawnBroadcast = broadcasts.find((b) => b.type === 'queue.withdrawn');
+    expect(withdrawnBroadcast).toBeUndefined();
 
-    // The pending item is now the telegram urgent prompt
-    const remaining = (agent as any).promptQueue.peekQueued();
-    expect(remaining).toBeTruthy();
-    expect(remaining.content).toBe('telegram urgent');
-
-    // The web followup was broadcast as withdrawn (via single-slot enforcement)
-    const withdrawn = broadcasts.find((b) => b.type === 'queue.withdrawn');
-    expect(withdrawn).toBeTruthy();
-    expect((withdrawn as any).data.content).toBe('web user work');
+    // Queue should have 2 items: the steer prompt + the original web followup
+    // (steer was enqueued because runnerBusy is still true during abort)
+    const allQueued = (agent as any).ctx.storage.sql
+      .exec("SELECT * FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC")
+      .toArray();
+    expect(allQueued.length).toBe(2);
+    expect(allQueued[0].content).toBe('web user work');
+    expect(allQueued[1].content).toBe('telegram urgent');
   });
 
   it('withdraw → re-send flow preserves content', async () => {
