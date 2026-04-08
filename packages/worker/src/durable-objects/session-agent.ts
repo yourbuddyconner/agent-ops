@@ -1631,6 +1631,7 @@ export class SessionAgentDO {
         authorId: author?.id, authorEmail: author?.email, authorName: author?.name, authorAvatarUrl: author?.avatarUrl,
         channelType, channelId, channelKey, threadId, continuationContext, contextPrefix,
         replyChannelType: effectiveReplyTo?.channelType, replyChannelId: effectiveReplyTo?.channelId,
+        priority: skipSingleSlot ? 1 : 0,
       });
       this.promptQueue.stampPromptReceived();
       this.emitAuditEvent(
@@ -4235,53 +4236,58 @@ export class SessionAgentDO {
     // Write + broadcast now at dispatch time. Uses INSERT OR IGNORE for
     // idempotency in case of crash recovery (revertProcessingToQueued).
     if (prompt.queueType === 'prompt' && !prompt.childSessionId) {
-      const queuedAttachments = prompt.attachments ? JSON.parse(prompt.attachments) : [];
-      const attachmentParts = attachmentPartsForMessage(queuedAttachments);
+      // Check if message was already written (e.g., direct dispatch then revert-to-queued)
+      const alreadyWritten = this.messageStore.hasMessage(prompt.id);
 
-      this.messageStore.writeMessage({
-        id: prompt.id,
-        role: 'user',
-        content: prompt.content,
-        parts: attachmentParts.length > 0 ? JSON.stringify(attachmentParts) : null,
-        author: prompt.authorId ? {
-          id: prompt.authorId,
-          email: prompt.authorEmail || undefined,
-          name: prompt.authorName || undefined,
-          avatarUrl: prompt.authorAvatarUrl || undefined,
-        } : undefined,
-        channelType: prompt.channelType || undefined,
-        channelId: prompt.channelId || undefined,
-        threadId: prompt.threadId || undefined,
-      });
+      if (!alreadyWritten) {
+        const queuedAttachments = prompt.attachments ? JSON.parse(prompt.attachments) : [];
+        const attachmentParts = attachmentPartsForMessage(queuedAttachments);
 
-      // Thread bookkeeping (deferred from enqueue time)
-      if (prompt.threadId) {
-        this.ctx.waitUntil(incrementThreadMessageCount(this.env.DB, prompt.threadId));
-        this.broadcastToClients({ type: 'thread.created', threadId: prompt.threadId });
-      }
-
-      // Broadcast user message to clients (message enters the chat at this point)
-      this.broadcastToClients({
-        type: 'message',
-        data: {
+        this.messageStore.writeMessage({
           id: prompt.id,
           role: 'user',
           content: prompt.content,
-          parts: attachmentParts.length > 0 ? attachmentParts : undefined,
-          authorId: prompt.authorId,
-          authorEmail: prompt.authorEmail,
-          authorName: prompt.authorName,
-          authorAvatarUrl: prompt.authorAvatarUrl,
-          channelType: prompt.channelType,
-          channelId: prompt.channelId,
-          threadId: prompt.threadId,
-          createdAt: Math.floor(Date.now() / 1000),
-        },
-      });
+          parts: attachmentParts.length > 0 ? JSON.stringify(attachmentParts) : null,
+          author: prompt.authorId ? {
+            id: prompt.authorId,
+            email: prompt.authorEmail || undefined,
+            name: prompt.authorName || undefined,
+            avatarUrl: prompt.authorAvatarUrl || undefined,
+          } : undefined,
+          channelType: prompt.channelType || undefined,
+          channelId: prompt.channelId || undefined,
+          threadId: prompt.threadId || undefined,
+        });
 
-      this.emitAuditEvent('user.prompt', prompt.content?.slice(0, 120) || '[empty]', prompt.authorId || undefined);
+        // Thread bookkeeping (deferred from enqueue time)
+        if (prompt.threadId) {
+          this.ctx.waitUntil(incrementThreadMessageCount(this.env.DB, prompt.threadId));
+          this.broadcastToClients({ type: 'thread.created', threadId: prompt.threadId });
+        }
 
-      // Broadcast queue.state to clear the pending card
+        // Broadcast user message to clients (message enters the chat at this point)
+        this.broadcastToClients({
+          type: 'message',
+          data: {
+            id: prompt.id,
+            role: 'user',
+            content: prompt.content,
+            parts: attachmentParts.length > 0 ? attachmentParts : undefined,
+            authorId: prompt.authorId,
+            authorEmail: prompt.authorEmail,
+            authorName: prompt.authorName,
+            authorAvatarUrl: prompt.authorAvatarUrl,
+            channelType: prompt.channelType,
+            channelId: prompt.channelId,
+            threadId: prompt.threadId,
+            createdAt: Math.floor(Date.now() / 1000),
+          },
+        });
+
+        this.emitAuditEvent('user.prompt', prompt.content?.slice(0, 120) || '[empty]', prompt.authorId || undefined);
+      }
+
+      // Always broadcast queue.state to clear the pending card
       this.broadcastToClients({
         type: 'queue.state',
         data: { pending: null },

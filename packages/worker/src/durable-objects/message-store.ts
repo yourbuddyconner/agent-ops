@@ -467,6 +467,12 @@ export class MessageStore {
     };
   }
 
+  /** Check if a message with the given ID exists. */
+  hasMessage(id: string): boolean {
+    const rows = this.sql.exec("SELECT 1 FROM messages WHERE id = ? LIMIT 1", id).toArray();
+    return rows.length > 0;
+  }
+
   /** Read a single message by ID. */
   getMessage(id: string): MessageRow | null {
     const rows = this.sql.exec<MessageSqlRow>(

@@ -40,6 +40,7 @@ export interface EnqueueParams {
   replyChannelId?: string | null;
   childSessionId?: string | null;
   childStatus?: string | null;
+  priority?: number;
 }
 
 export interface QueueEntry {
@@ -64,6 +65,7 @@ export interface QueueEntry {
   replyChannelId: string | null;
   childSessionId: string | null;
   childStatus: string | null;
+  priority: number;
 }
 
 export interface CollectBufferEntry {
@@ -137,6 +139,7 @@ export class PromptQueue {
     try { this.sql.exec('ALTER TABLE prompt_queue ADD COLUMN reply_channel_id TEXT'); } catch { /* already exists */ }
     try { this.sql.exec('ALTER TABLE prompt_queue ADD COLUMN child_session_id TEXT'); } catch { /* already exists */ }
     try { this.sql.exec('ALTER TABLE prompt_queue ADD COLUMN child_status TEXT'); } catch { /* already exists */ }
+    try { this.sql.exec('ALTER TABLE prompt_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
   }
 
   // ─── Core Queue Operations ───────────────────────────────────────────────
@@ -158,7 +161,7 @@ export class PromptQueue {
     }
 
     this.sql.exec(
-      "INSERT INTO prompt_queue (id, content, attachments, model, status, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key, thread_id, continuation_context, context_prefix, reply_channel_type, reply_channel_id, child_session_id, child_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO prompt_queue (id, content, attachments, model, status, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key, thread_id, continuation_context, context_prefix, reply_channel_type, reply_channel_id, child_session_id, child_status, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       params.id,
       params.content,
       params.attachments || null,
@@ -178,6 +181,7 @@ export class PromptQueue {
       params.replyChannelId || null,
       params.childSessionId || null,
       params.childStatus || null,
+      params.priority ?? 0,
     );
   }
 
@@ -188,7 +192,7 @@ export class PromptQueue {
   dequeueNext(): QueueEntry | null {
     const rows = this.sql
       .exec(
-        "SELECT id, content, attachments, model, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key, queue_type, workflow_execution_id, workflow_payload, thread_id, continuation_context, context_prefix, reply_channel_type, reply_channel_id, child_session_id, child_status FROM prompt_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1",
+        "SELECT id, content, attachments, model, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key, queue_type, workflow_execution_id, workflow_payload, thread_id, continuation_context, context_prefix, reply_channel_type, reply_channel_id, child_session_id, child_status, priority FROM prompt_queue WHERE status = 'queued' ORDER BY priority DESC, created_at ASC LIMIT 1",
       )
       .toArray();
 
@@ -269,7 +273,7 @@ export class PromptQueue {
   }
 
   private static readonly USER_PROMPT_QUERY =
-    "SELECT id, content, attachments, model, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key, queue_type, workflow_execution_id, workflow_payload, thread_id, continuation_context, context_prefix, reply_channel_type, reply_channel_id, child_session_id, child_status FROM prompt_queue WHERE status = 'queued' AND queue_type = 'prompt' AND child_session_id IS NULL ORDER BY created_at ASC LIMIT 1";
+    "SELECT id, content, attachments, model, author_id, author_email, author_name, author_avatar_url, channel_type, channel_id, channel_key, queue_type, workflow_execution_id, workflow_payload, thread_id, continuation_context, context_prefix, reply_channel_type, reply_channel_id, child_session_id, child_status, priority FROM prompt_queue WHERE status = 'queued' AND queue_type = 'prompt' AND child_session_id IS NULL ORDER BY priority DESC, created_at ASC LIMIT 1";
 
   /** Read the single queued user-prompt entry without removing it. Returns null if none. */
   peekQueued(): QueueEntry | null {
@@ -553,6 +557,7 @@ export class PromptQueue {
       replyChannelId: (row.reply_channel_id as string) || null,
       childSessionId: (row.child_session_id as string) || null,
       childStatus: (row.child_status as string) || null,
+      priority: typeof row.priority === 'number' ? row.priority : 0,
     };
   }
 }

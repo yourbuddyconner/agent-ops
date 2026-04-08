@@ -24,6 +24,7 @@ interface QueueRow {
   reply_channel_id: string | null;
   child_session_id: string | null;
   child_status: string | null;
+  priority: number;
   created_at: number;
 }
 
@@ -54,16 +55,19 @@ function createMockSql(): SqlStorage & {
   queue: Map<string, QueueRow>;
   state: Map<string, string>;
   interactivePrompts: Map<string, InteractivePromptRow>;
+  messages: Map<string, Record<string, unknown>>;
 } {
   const queue = new Map<string, QueueRow>();
   const state = new Map<string, string>();
   const interactivePrompts = new Map<string, InteractivePromptRow>();
+  const messages = new Map<string, Record<string, unknown>>();
   insertCounter = 0;
 
   return {
     queue,
     state,
     interactivePrompts,
+    messages,
     exec(query: string, ...params: unknown[]) {
       const q = query.trim();
 
@@ -84,6 +88,18 @@ function createMockSql(): SqlStorage & {
 
       if (q.includes('SELECT MAX(seq) as max_seq FROM messages')) {
         return cursor([{ max_seq: null }]);
+      }
+
+      if (q.includes('SELECT 1 FROM messages WHERE id = ?')) {
+        return cursor(messages.has(String(params[0])) ? [{ 1: 1 }] : []);
+      }
+
+      if (q.startsWith('INSERT OR IGNORE INTO messages')) {
+        const id = String(params[0]);
+        if (!messages.has(id)) {
+          messages.set(id, { id, seq: params[1], role: params[2], content: params[3] });
+        }
+        return cursor([]);
       }
 
       if (q.includes("SELECT value FROM replication_state WHERE key = 'last_replicated_seq'")) {
@@ -120,6 +136,7 @@ function createMockSql(): SqlStorage & {
           reply_channel_id: (params[16] as string) || null,
           child_session_id: (params[17] as string) || null,
           child_status: (params[18] as string) || null,
+          priority: typeof params[19] === 'number' ? params[19] : 0,
           created_at: insertCounter,
         };
         queue.set(row.id, row);
@@ -150,6 +167,8 @@ function createMockSql(): SqlStorage & {
 
         if (q.includes('ORDER BY created_at DESC')) {
           rows.sort((a, b) => b.created_at - a.created_at);
+        } else if (q.includes('ORDER BY priority DESC, created_at ASC')) {
+          rows.sort((a, b) => b.priority - a.priority || a.created_at - b.created_at);
         } else if (q.includes('ORDER BY created_at ASC')) {
           rows.sort((a, b) => a.created_at - b.created_at);
         }
@@ -229,6 +248,7 @@ function createMockSql(): SqlStorage & {
     queue: Map<string, QueueRow>;
     state: Map<string, string>;
     interactivePrompts: Map<string, InteractivePromptRow>;
+    messages: Map<string, Record<string, unknown>>;
   };
 }
 
@@ -1267,5 +1287,80 @@ describe('SessionAgentDO', () => {
 
     // Queue should be empty
     expect((agent as any).promptQueue.length).toBe(0);
+  });
+
+  it('steer prompt dispatches before existing pending followup (priority ordering)', async () => {
+    const runnerSocket = { send: vi.fn() };
+    const { agent } = await createTestAgent({ sockets: [runnerSocket] });
+
+    (agent as any).promptQueue.runnerBusy = true;
+
+    // Enqueue a followup first (lower priority)
+    (agent as any).promptQueue.enqueue({
+      id: 'followup-first',
+      content: 'followup content',
+      status: 'queued',
+      channelType: 'web',
+      channelId: 'default',
+      channelKey: 'web:default',
+    });
+
+    // Enqueue a steer second (higher priority)
+    (agent as any).promptQueue.enqueue({
+      id: 'steer-second',
+      content: 'steer content',
+      status: 'queued',
+      channelType: 'telegram',
+      channelId: 'chat-123',
+      channelKey: 'telegram:chat-123',
+      priority: 1,
+    });
+
+    // dequeueNext should return the steer (priority 1) before the followup (priority 0)
+    const first = (agent as any).promptQueue.dequeueNext();
+    expect(first.id).toBe('steer-second');
+    expect(first.content).toBe('steer content');
+
+    const second = (agent as any).promptQueue.dequeueNext();
+    expect(second.id).toBe('followup-first');
+    expect(second.content).toBe('followup content');
+  });
+
+  it('does not duplicate broadcast when re-dispatching a reverted prompt', async () => {
+    const runnerSocket = { send: vi.fn() };
+    const { agent, broadcasts } = await createTestAgent({ sockets: [runnerSocket] });
+
+    // Simulate a directly-dispatched prompt that was already written to message store
+    (agent as any).messageStore.writeMessage({
+      id: 'already-written',
+      role: 'user',
+      content: 'already in store',
+    });
+
+    // Now simulate revert-to-queued: the prompt is back in the queue
+    (agent as any).promptQueue.enqueue({
+      id: 'already-written',
+      content: 'already in store',
+      status: 'queued',
+      channelType: 'web',
+      channelId: 'default',
+      channelKey: 'web:default',
+    });
+
+    // Clear broadcasts from setup
+    broadcasts.length = 0;
+
+    // Dispatch via sendNextQueuedPrompt
+    await (agent as any).sendNextQueuedPrompt();
+
+    // Should NOT have broadcast a user message (already written)
+    const userMsgBroadcast = broadcasts.find(
+      (b) => b.type === 'message' && (b.data as any)?.id === 'already-written' && (b.data as any)?.role === 'user'
+    );
+    expect(userMsgBroadcast).toBeUndefined();
+
+    // Should still broadcast queue.state to clear pending card
+    const queueState = broadcasts.find((b) => b.type === 'queue.state');
+    expect(queueState?.data).toEqual({ pending: null });
   });
 });
