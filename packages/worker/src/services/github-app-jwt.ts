@@ -13,8 +13,8 @@ export async function mintGitHubAppJWT(appId: string, privateKeyPem: string): Pr
   );
 
   const pemBody = privateKeyPem
-    .replace(/-----BEGIN RSA PRIVATE KEY-----/, '')
-    .replace(/-----END RSA PRIVATE KEY-----/, '')
+    .replace(/-----BEGIN (RSA )?PRIVATE KEY-----/, '')
+    .replace(/-----END (RSA )?PRIVATE KEY-----/, '')
     .replace(/\s/g, '');
   const keyData = Uint8Array.from(atob(pemBody), (ch) => ch.charCodeAt(0));
   const key = await crypto.subtle.importKey(

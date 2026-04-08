@@ -7,7 +7,8 @@ import { getDb } from '../lib/drizzle.js';
 import * as credentialDb from '../lib/db/credentials.js';
 import * as db from '../lib/db.js';
 import { getGitHubConfig } from '../services/github-config.js';
-import { updateServiceMetadata } from '../lib/db/service-configs.js';
+import { updateServiceMetadata, getServiceMetadata } from '../lib/db/service-configs.js';
+import { mintGitHubAppJWT } from '../services/github-app-jwt.js';
 import { adminMiddleware } from '../middleware/admin.js';
 
 export const repoProviderRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -203,6 +204,9 @@ repoProviderCallbackRouter.get('/:provider/install/callback', async (c) => {
   }
 
   // Store the installation credential and refresh metadata (accessible owners)
+  // Note: credential and metadata writes are not transactional. If the worker
+  // crashes between storeCredential and updateServiceMetadata, the refresh
+  // button will reconcile the state.
   if (setupAction === 'install') {
     await storeCredential(c.env, ownerType, ownerId, providerId, {
       installation_id: installationId,
@@ -215,8 +219,6 @@ repoProviderCallbackRouter.get('/:provider/install/callback', async (c) => {
 
     // Mint an app JWT and fetch accessible owners so sandbox credential
     // resolution works immediately without a manual refresh
-    const { mintGitHubAppJWT } = await import('../services/github-app-jwt.js');
-    const { getServiceMetadata } = await import('../lib/db/service-configs.js');
     const existingMeta = await getServiceMetadata<Record<string, unknown>>(appDb, 'github').catch(() => ({})) || {};
 
     // Always record the installation ID so the UI shows installed state
@@ -236,6 +238,7 @@ repoProviderCallbackRouter.get('/:provider/install/callback', async (c) => {
         headers: {
           Authorization: `Bearer ${appJwt}`,
           Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
           'User-Agent': 'valet-app',
         },
       });
@@ -245,7 +248,8 @@ repoProviderCallbackRouter.get('/:provider/install/callback', async (c) => {
           headers: {
             Authorization: `Bearer ${tokenData.token}`,
             Accept: 'application/vnd.github+json',
-            'User-Agent': 'valet-app',
+            'X-GitHub-Api-Version': '2022-11-28',
+          'User-Agent': 'valet-app',
           },
         });
         if (reposRes.ok) {

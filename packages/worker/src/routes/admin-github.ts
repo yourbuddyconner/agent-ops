@@ -16,6 +16,15 @@ import { getDb } from '../lib/drizzle.js';
 import { getServiceMetadata } from '../lib/db/service-configs.js';
 import * as db from '../lib/db.js';
 
+interface ManifestJWTPayload {
+  sub: string;
+  purpose: 'app-manifest';
+  orgId?: string;
+  jti: string;
+  exp: number;
+  iat: number;
+}
+
 export const adminGitHubRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 adminGitHubRouter.use('*', adminMiddleware);
@@ -46,6 +55,9 @@ adminGitHubRouter.get('/', async (c) => {
   }
 
   const hasApp = !!svc.config.appId;
+  // viaApp indicates credentials are managed by the manifest-created App.
+  // If OAuth creds were manually set before app creation, they are overwritten
+  // during manifest flow, so this flag is always accurate post-manifest.
   return c.json({
     source: 'database',
     oauth: {
@@ -83,6 +95,10 @@ adminGitHubRouter.post('/app/manifest', async (c) => {
     return c.json({ error: 'githubOrg is required' }, 400);
   }
 
+  if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(body.githubOrg.trim())) {
+    return c.json({ error: 'Invalid GitHub organization name' }, 400);
+  }
+
   // Check if app is already configured
   const existing = await getServiceConfig<GitHubServiceConfig, GitHubServiceMetadata>(
     c.get('db'), c.env.ENCRYPTION_KEY, 'github',
@@ -101,6 +117,7 @@ adminGitHubRouter.post('/app/manifest', async (c) => {
   const now = Math.floor(Date.now() / 1000);
   const jti = crypto.randomUUID();
   const state = await signJWT(
+    // signJWT expects SandboxJWTPayload but this is a manifest-flow JWT with different fields
     { sub: user.id, purpose: 'app-manifest', jti, iat: now, exp: now + 10 * 60 } as any,
     c.env.ENCRYPTION_KEY,
   );
@@ -180,6 +197,8 @@ adminGitHubRouter.delete('/oauth', async (c) => {
     await credentialDb.deleteCredential(c.get('db'), 'org', orgSettings.id, 'github', 'app_install');
   }
   await deleteServiceConfig(c.get('db'), 'github');
+  // Clean up manifest nonce
+  await setServiceConfig(c.get('db'), c.env.ENCRYPTION_KEY, 'github_manifest_nonce', {}, { jti: '', exp: 0 }, '');
   return c.json({ success: true });
 });
 
@@ -207,6 +226,7 @@ adminGitHubRouter.post('/app/refresh', async (c) => {
     headers: {
       Authorization: `Bearer ${appJwt}`,
       Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent': 'valet-app',
     },
   });
@@ -246,6 +266,7 @@ adminGitHubRouter.post('/app/refresh', async (c) => {
     headers: {
       Authorization: `Bearer ${appJwt}`,
       Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent': 'valet-app',
     },
   });
@@ -261,6 +282,7 @@ adminGitHubRouter.post('/app/refresh', async (c) => {
     headers: {
       Authorization: `Bearer ${tokenData.token}`,
       Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent': 'valet-app',
     },
   });
@@ -324,21 +346,27 @@ githubAppSetupCallbackRouter.get('/app/setup', async (c) => {
 
   // Verify state JWT
   const payload = await verifyJWT(stateParam, c.env.ENCRYPTION_KEY);
-  if (!payload || !payload.sub || (payload as any).purpose !== 'app-manifest') {
+  const manifestPayload = payload as unknown as ManifestJWTPayload;
+  if (!payload || !payload.sub || manifestPayload.purpose !== 'app-manifest') {
     return c.redirect(`${frontendUrl}/settings/admin?error=invalid_state`);
   }
 
   // Check jti for replay protection
   const appDb = getDb(c.env.DB);
   const nonceStore = await getServiceMetadata<{ jti: string; exp: number }>(appDb, 'github_manifest_nonce').catch(() => null);
-  if (!nonceStore || nonceStore.jti !== (payload as any).jti) {
+  if (!nonceStore || nonceStore.jti !== manifestPayload.jti) {
     return c.redirect(`${frontendUrl}/settings/admin?error=invalid_or_replayed_state`);
   }
-  // Exchange code for app credentials (nonce consumed after success to allow retry on failure)
+  if (nonceStore.exp && Date.now() / 1000 > nonceStore.exp) {
+    // Nonce expired — user took too long
+    return c.redirect(`${frontendUrl}/settings/admin?error=${encodeURIComponent('Manifest flow expired. Please try again.')}`);
+  }
+  // Exchange code for app credentials
   const conversionRes = await fetch(`https://api.github.com/app-manifests/${code}/conversions`, {
     method: 'POST',
     headers: {
       Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent': 'valet-app',
     },
   });
@@ -346,7 +374,8 @@ githubAppSetupCallbackRouter.get('/app/setup', async (c) => {
   if (!conversionRes.ok) {
     const errText = await conversionRes.text();
     console.error('GitHub manifest conversion failed:', conversionRes.status, errText);
-    // Don't consume nonce — allow retry (GitHub code is one-time, but a fresh manifest flow will work)
+    // Don't consume nonce — GitHub's code is one-time use so retry won't work,
+    // but leaving the nonce unconsumed is harmless and avoids masking the real error.
     return c.redirect(`${frontendUrl}/settings/admin?error=conversion_failed`);
   }
 
