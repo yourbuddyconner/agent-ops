@@ -12,18 +12,20 @@ const getRepository: ActionDefinition = {
   params: z.object({
     owner: z.string().describe('Repository owner'),
     repo: z.string().describe('Repository name'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
 const listRepos: ActionDefinition = {
   id: 'github.list_repos',
   name: 'List Repositories',
-  description: 'List repositories for the authenticated user',
+  description: 'List repositories. Use source=personal for your repos, source=org for org-accessible repos. Defaults to org if available.',
   riskLevel: 'low',
   params: z.object({
     sort: z.enum(['created', 'updated', 'pushed', 'full_name']).optional().describe('Sort field'),
     perPage: z.number().int().min(1).max(100).optional().describe('Results per page'),
     page: z.number().int().min(1).optional().describe('Page number'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -36,6 +38,7 @@ const getIssue: ActionDefinition = {
     owner: z.string(),
     repo: z.string(),
     issueNumber: z.number().int(),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -49,6 +52,7 @@ const createIssue: ActionDefinition = {
     repo: z.string(),
     title: z.string(),
     body: z.string().optional(),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -61,6 +65,7 @@ const getPullRequest: ActionDefinition = {
     owner: z.string(),
     repo: z.string(),
     pullNumber: z.number().int(),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -74,6 +79,7 @@ const createComment: ActionDefinition = {
     repo: z.string(),
     issueNumber: z.number().int(),
     body: z.string(),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -87,6 +93,7 @@ const listPullRequests: ActionDefinition = {
     repo: z.string().describe('Repository name'),
     state: z.enum(['open', 'closed', 'all']).optional().describe('PR state filter (default: open)'),
     limit: z.number().int().min(1).max(100).optional().describe('Max results (default: 30, max 100)'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -101,6 +108,7 @@ const inspectPullRequest: ActionDefinition = {
     pullNumber: z.number().int().describe('Pull request number'),
     filesLimit: z.number().int().min(1).max(300).optional().describe('Max files to return (default: 100)'),
     commentsLimit: z.number().int().min(1).max(300).optional().describe('Max review comments (default: 100)'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -117,6 +125,7 @@ const updatePullRequest: ActionDefinition = {
     body: z.string().optional().describe('New body (markdown)'),
     state: z.enum(['open', 'closed']).optional().describe('Set PR state'),
     labels: z.array(z.string()).optional().describe('Labels to set (replaces existing)'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -132,6 +141,7 @@ const createRepository: ActionDefinition = {
     autoInit: z.boolean().optional().describe('Initialize with a README (default: false)'),
     gitignoreTemplate: z.string().optional().describe('Gitignore template (e.g. "Node", "Python")'),
     licenseTemplate: z.string().optional().describe('License keyword (e.g. "mit", "apache-2.0")'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -149,6 +159,7 @@ const listIssues: ActionDefinition = {
     sort: z.enum(['created', 'updated', 'comments']).optional().describe('Sort field'),
     direction: z.enum(['asc', 'desc']).optional().describe('Sort direction'),
     limit: z.number().int().min(1).max(100).optional().describe('Max results (default: 30)'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -166,6 +177,7 @@ const updateIssue: ActionDefinition = {
     state: z.enum(['open', 'closed']).optional().describe('Set issue state'),
     labels: z.array(z.string()).optional().describe('Labels to set (replaces existing)'),
     assignees: z.array(z.string()).optional().describe('Assignee usernames (replaces existing)'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -182,6 +194,7 @@ const createPullRequest: ActionDefinition = {
     base: z.string().describe('Branch to merge into'),
     body: z.string().optional().describe('PR description (markdown)'),
     draft: z.boolean().optional().describe('Create as draft PR'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -197,6 +210,7 @@ const mergePullRequest: ActionDefinition = {
     mergeMethod: z.enum(['merge', 'squash', 'rebase']).optional().describe('Merge method (default: merge)'),
     commitTitle: z.string().optional().describe('Custom merge commit title'),
     commitMessage: z.string().optional().describe('Custom merge commit message'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -210,6 +224,7 @@ const createBranch: ActionDefinition = {
     repo: z.string().describe('Repository name'),
     branch: z.string().describe('New branch name'),
     fromRef: z.string().optional().describe('Source ref — branch, tag, or SHA (default: repo default branch)'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -222,6 +237,7 @@ const deleteBranch: ActionDefinition = {
     owner: z.string().describe('Repository owner'),
     repo: z.string().describe('Repository name'),
     branch: z.string().describe('Branch name to delete'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -237,6 +253,7 @@ const listCommits: ActionDefinition = {
     path: z.string().optional().describe('Only commits containing this file path'),
     author: z.string().optional().describe('GitHub username or email to filter by'),
     limit: z.number().int().min(1).max(100).optional().describe('Max results (default: 30)'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -248,6 +265,7 @@ const searchCode: ActionDefinition = {
   params: z.object({
     q: z.string().describe('Search query (supports GitHub code search qualifiers like "repo:", "language:", "path:")'),
     limit: z.number().int().min(1).max(100).optional().describe('Max results (default: 30)'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -261,6 +279,7 @@ const searchIssues: ActionDefinition = {
     sort: z.enum(['created', 'updated', 'comments']).optional().describe('Sort field'),
     order: z.enum(['asc', 'desc']).optional().describe('Sort order'),
     limit: z.number().int().min(1).max(100).optional().describe('Max results (default: 30)'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -279,6 +298,7 @@ const createRelease: ActionDefinition = {
     draft: z.boolean().optional().describe('Create as draft release'),
     prerelease: z.boolean().optional().describe('Mark as pre-release'),
     generateReleaseNotes: z.boolean().optional().describe('Auto-generate release notes'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -292,6 +312,7 @@ const forkRepository: ActionDefinition = {
     repo: z.string().describe('Repository name'),
     organization: z.string().optional().describe('Organization to fork to (default: authenticated user)'),
     name: z.string().optional().describe('Custom name for the fork'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -307,6 +328,7 @@ const listWorkflowRuns: ActionDefinition = {
     status: z.enum(['completed', 'action_required', 'cancelled', 'failure', 'neutral', 'skipped', 'stale', 'success', 'timed_out', 'in_progress', 'queued', 'requested', 'waiting', 'pending']).optional().describe('Filter by status'),
     event: z.string().optional().describe('Filter by event type (e.g. "push", "pull_request")'),
     limit: z.number().int().min(1).max(100).optional().describe('Max results (default: 30)'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
@@ -320,6 +342,7 @@ const readRepoFile: ActionDefinition = {
     repo: z.string().describe('Repository name'),
     path: z.string().describe('File path in the repository'),
     ref: z.string().optional().describe('Git ref (branch, tag, or commit SHA)'),
+    source: z.enum(['personal', 'org']).optional().describe('Credential source: personal OAuth or org GitHub App. Auto-resolved if omitted.'),
   }),
 };
 
