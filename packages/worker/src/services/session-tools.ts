@@ -202,7 +202,7 @@ export async function listTools(
           forceRefresh: false,
         });
         if (credResult.ok) {
-          credentialCache?.set('user', userId, service, credResult);
+          credentialCache?.set('user', userId, service, credResult, credResult.credential.credentialType);
         }
       }
 
@@ -214,7 +214,7 @@ export async function listTools(
             forceRefresh: true,
           });
           if (credResult.ok) {
-            credentialCache?.set('user', userId, service, credResult);
+            credentialCache?.set('user', userId, service, credResult, credResult.credential.credentialType);
           }
         }
       }
@@ -245,7 +245,7 @@ export async function listTools(
         forceRefresh: true,
       });
       if (refreshed.ok && refreshed.credential.refreshed) {
-        credentialCache?.set('user', userId, service, refreshed);
+        credentialCache?.set('user', userId, service, refreshed, refreshed.credential.credentialType);
         credCtx = { credentials: { access_token: refreshed.credential.accessToken } };
         actions = await actionSource.listActions(credCtx);
       }
@@ -257,13 +257,15 @@ export async function listTools(
     for (const action of actions) {
       const compositeId = `${service}:${action.id}`;
       discoveredRiskLevels.set(compositeId, action.riskLevel);
-      mcpCacheEntries.push({
-        service,
-        actionId: action.id,
-        name: action.name,
-        description: action.description,
-        riskLevel: action.riskLevel,
-      });
+      if (isMcpSource) {
+        mcpCacheEntries.push({
+          service,
+          actionId: action.id,
+          name: action.name,
+          description: action.description,
+          riskLevel: action.riskLevel,
+        });
+      }
     }
 
     for (const action of actions) {
@@ -531,8 +533,8 @@ export async function executeAction(
       }
     }
 
-    // Last resort: force-refresh original credential
-    if (!actionResult.success) {
+    // Last resort: force-refresh original credential (only when no explicit source — otherwise the caller chose)
+    if (!actionResult.success && !explicitSource) {
       console.log(`[session-tools] Tool "${toolId}" fallthrough failed or skipped, force-refreshing original credential`);
       const refreshed = await integrationRegistry.resolveCredentials(service, env, userId, {
         credentialSources,

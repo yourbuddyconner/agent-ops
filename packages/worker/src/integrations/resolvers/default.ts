@@ -28,8 +28,5 @@ export const defaultCredentialResolver: CredentialResolver = (
 
   const ownerType = source.scope === 'org' ? 'org' : 'user';
   const ownerId = source.scope === 'org' ? 'default' : userId;
-  const effectiveOptions = source.scope === 'org' && service === 'github'
-    ? { forceRefresh, credentialType: 'app_install' }
-    : { forceRefresh };
-  return getCredential(env, ownerType, ownerId, service, effectiveOptions);
+  return getCredential(env, ownerType, ownerId, service, { forceRefresh });
 };

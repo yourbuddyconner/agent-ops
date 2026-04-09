@@ -258,9 +258,7 @@ export class SessionAgentDO {
       const { getServiceMetadata } = await import('../lib/db/service-configs.js');
       const meta = await getServiceMetadata<any>(this.appDb, 'github');
       const owners = meta?.accessibleOwners as string[] | undefined;
-      if (owners) {
-        this.accessibleOwnersCache = { owners, expiresAt: Date.now() + SessionAgentDO.ACCESSIBLE_OWNERS_CACHE_TTL_MS };
-      }
+      this.accessibleOwnersCache = { owners: owners ?? [], expiresAt: Date.now() + SessionAgentDO.ACCESSIBLE_OWNERS_CACHE_TTL_MS };
       return owners;
     } catch {
       return undefined;
