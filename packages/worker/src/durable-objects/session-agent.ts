@@ -8,7 +8,7 @@ import { getSlackBotToken } from '../services/slack.js';
 import { buildOrchestratorPersonaFiles } from '../lib/orchestrator-persona.js';
 import { assembleCustomProviders, assembleBuiltInProviderModelConfigs, assembleRepoEnv } from '../lib/env-assembly.js';
 import { resolveAvailableModels } from '../services/model-catalog.js';
-import { integrationRegistry } from '../integrations/registry.js';
+import { integrationRegistry, type CredentialSourceInfo } from '../integrations/registry.js';
 import { updateIntegrationStatus } from '../lib/db/integrations.js';
 import { approveInvocation, denyInvocation } from '../services/actions.js';
 import { updateInvocationStatus } from '../lib/db/actions.js';
@@ -224,6 +224,10 @@ export class SessionAgentDO {
   private disabledPluginServicesCache: { services: Set<string>; expiresAt: number } | null = null;
   private static readonly DISABLED_PLUGINS_CACHE_TTL_MS = 60 * 1000; // 1 minute
 
+  /** In-memory cache of accessible GitHub owners (org installs) to avoid D1 query on every action. */
+  private accessibleOwnersCache: { owners: string[]; expiresAt: number } | null = null;
+  private static readonly ACCESSIBLE_OWNERS_CACHE_TTL_MS = 60 * 1000; // 1 minute
+
   private getCachedCredential(ownerType: string, ownerId: string, service: string, credentialType?: string): CredentialResult | null {
     const key = `${ownerType}:${ownerId}:${service}:${credentialType || '*'}`;
     const entry = this.credentialCache.get(key);
@@ -244,6 +248,23 @@ export class SessionAgentDO {
 
   private invalidateCachedCredential(ownerType: string, ownerId: string, service: string, credentialType?: string): void {
     this.credentialCache.delete(`${ownerType}:${ownerId}:${service}:${credentialType || '*'}`);
+  }
+
+  private async getAccessibleOwners(): Promise<string[] | undefined> {
+    if (this.accessibleOwnersCache && Date.now() < this.accessibleOwnersCache.expiresAt) {
+      return this.accessibleOwnersCache.owners;
+    }
+    try {
+      const { getServiceMetadata } = await import('../lib/db/service-configs.js');
+      const meta = await getServiceMetadata<any>(this.appDb, 'github');
+      const owners = meta?.accessibleOwners as string[] | undefined;
+      if (owners) {
+        this.accessibleOwnersCache = { owners, expiresAt: Date.now() + SessionAgentDO.ACCESSIBLE_OWNERS_CACHE_TTL_MS };
+      }
+      return owners;
+    } catch {
+      return undefined;
+    }
   }
 
   private messageStore!: MessageStore;
@@ -5417,7 +5438,7 @@ export class SessionAgentDO {
       // Update the disabled plugin services cache from the policy resolution
       this.disabledPluginServicesCache = policyResult.disabledPluginServicesCache;
 
-      const { outcome, invocationId, riskLevel, service, actionId, isOrgScoped, actionSource } = policyResult;
+      const { outcome, invocationId, riskLevel, service, actionId, credentialSources, actionSource } = policyResult;
 
       // ─── Deny ──────────────────────────────────────────────────────────
       if (outcome === 'denied') {
@@ -5445,7 +5466,7 @@ export class SessionAgentDO {
           actionId,
           params,
           riskLevel,
-          isOrgScoped,
+          credentialSources,
           invocationId: invocationId,
           summary,
         };
@@ -5532,7 +5553,7 @@ export class SessionAgentDO {
       }
 
       // ─── Allow — execute immediately ───────────────────────────────────
-      await this.executeActionAndSend(requestId, toolId, service, actionId, params, isOrgScoped, userId, actionSource, invocationId);
+      await this.executeActionAndSend(requestId, toolId, service, actionId, params, credentialSources, userId, actionSource, invocationId);
     } catch (err) {
       this.runnerLink.send({
         type: 'call-tool-result',
@@ -5552,18 +5573,19 @@ export class SessionAgentDO {
     service: string,
     actionId: string,
     params: Record<string, unknown>,
-    isOrgScoped: boolean,
+    credentialSources: CredentialSourceInfo[],
     userId: string,
     actionSource: ReturnType<typeof integrationRegistry.getActions>,
     invocationId: string,
   ) {
     const spawnRequest = this.sessionState.spawnRequest;
     const spawnEnvVars = spawnRequest?.envVars as Record<string, string> | undefined;
+    const accessibleOwners = service === 'github' ? await this.getAccessibleOwners() : undefined;
 
     const result = await executeActionSvc(
       this.appDb, this.env, userId, toolId, service, actionId, params,
-      isOrgScoped, actionSource, invocationId,
-      { credentialCache: this.credentialCacheAdapter, spawnEnvVars },
+      credentialSources, actionSource, invocationId,
+      { credentialCache: this.credentialCacheAdapter, spawnEnvVars, accessibleOwners },
     );
 
     // Emit tool_exec timing event
@@ -5631,7 +5653,12 @@ export class SessionAgentDO {
       const service = context.service || '';
       const actionId = context.actionId || '';
       const params = context.params || {};
-      const isOrgScoped = !!context.isOrgScoped;
+      // Backward compat: approvals created before multi-credential routing stored isOrgScoped: boolean.
+      // integrationId is empty because the old format didn't track it — resolvers use scope, not integrationId.
+      let credentialSources: CredentialSourceInfo[] = context.credentialSources as CredentialSourceInfo[] ?? [];
+      if (credentialSources.length === 0 && 'isOrgScoped' in context) {
+        credentialSources = [{ scope: context.isOrgScoped ? 'org' : 'user', integrationId: '', userId }];
+      }
 
       if (resolution.actionId === 'approve') {
         if (!userId) {
@@ -5652,7 +5679,7 @@ export class SessionAgentDO {
 
         const actionSource = integrationRegistry.getActions(service);
         if (requestId) {
-          await this.executeActionAndSend(requestId, toolId, service, actionId, params, isOrgScoped, userId, actionSource, promptId);
+          await this.executeActionAndSend(requestId, toolId, service, actionId, params, credentialSources, userId, actionSource, promptId);
         }
 
         // Broadcast approval to clients
