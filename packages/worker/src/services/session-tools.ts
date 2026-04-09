@@ -429,6 +429,8 @@ export interface ExecuteActionOpts {
   credentialCache: CredentialCache;
   /** Spawn request env vars, used to detect orchestrator sessions */
   spawnEnvVars?: Record<string, string>;
+  /** Pre-fetched accessible owners for GitHub App (avoids D1 in resolver) */
+  accessibleOwners?: string[];
 }
 
 /**
@@ -443,7 +445,7 @@ export async function executeAction(
   service: string,
   actionId: string,
   params: Record<string, unknown>,
-  isOrgScoped: boolean,
+  credentialSources: CredentialSourceInfo[],
   actionSource: ReturnType<typeof integrationRegistry.getActions>,
   invocationId: string,
   opts: ExecuteActionOpts,
@@ -453,35 +455,27 @@ export async function executeAction(
     return { success: false, error: `No integration package found for service "${service}".`, analyticsEvents: [], durationMs: 0 };
   }
 
-  // Resolve credentials based on integration scope
   const provider = integrationRegistry.getProvider(service);
   let credentials: Record<string, string>;
+
   if (provider?.authType === 'none') {
-    // No-auth services (e.g. DeepWiki) don't need credentials
     credentials = {};
   } else {
-    const scope = isOrgScoped ? 'org' as const : 'user' as const;
-    let credResult = opts.credentialCache.get('user', userId, service)
-      || await integrationRegistry.resolveCredentials(service, env, userId, scope);
-    if (credResult.ok) {
-      opts.credentialCache.set('user', userId, service, credResult);
-    }
+    const credResult = await integrationRegistry.resolveCredentials(service, env, userId, {
+      credentialSources,
+      params,
+      forceRefresh: false,
+      accessibleOwners: opts.accessibleOwners,
+    });
+
     if (!credResult.ok) {
-      const scopeLabel = isOrgScoped ? `org-scoped "${service}"` : `"${service}"`;
       await markFailed(appDb, invocationId, `No credentials: ${credResult.error.message}`);
-      return { success: false, error: `No credentials found for ${scopeLabel}: ${credResult.error.message}. Connect it in Settings > Integrations.`, analyticsEvents: [], durationMs: 0 };
-    }
-    // Map resolved credential to the format actions expect
-    const token = credResult.credential.accessToken;
-    credentials = credResult.credential.credentialType === 'bot_token'
-      ? { bot_token: token } as Record<string, string>
-      : { access_token: token };
-    // Pass credential type so actions can branch on app_install vs oauth2
-    if (credResult.credential.credentialType) {
-      credentials._credential_type = credResult.credential.credentialType;
+      return { success: false, error: `No credentials found for "${service}": ${credResult.error.message}. Connect it in Settings > Integrations.`, analyticsEvents: [], durationMs: 0 };
     }
 
-    // For Slack: inject the session owner's Slack user ID so dm_owner works
+    credentials = buildCredentials(credResult);
+
+    // Inject service-specific extras
     if (service === 'slack') {
       const identityLinks = await getUserIdentityLinks(appDb, userId);
       const slackLink = identityLinks.find((l) => l.provider === 'slack');
@@ -489,20 +483,14 @@ export async function executeAction(
     }
   }
 
-  // Resolve caller identity for orchestrator sessions (used by Slack for username/avatar override)
   let callerIdentity: { name: string; avatar?: string } | undefined;
   try {
     if (opts.spawnEnvVars?.IS_ORCHESTRATOR === 'true') {
       const identity = await getOrchestratorIdentity(appDb, userId);
-      if (identity) {
-        callerIdentity = { name: identity.name, avatar: identity.avatar };
-      }
+      if (identity) callerIdentity = { name: identity.name, avatar: identity.avatar };
     }
-  } catch {
-    // Non-critical — proceed without identity
-  }
+  } catch { /* non-critical */ }
 
-  // Create analytics collector for this action execution
   const collectedEvents: Array<{ eventType: string; durationMs?: number; properties?: Record<string, unknown> }> = [];
   const actionAnalytics = {
     emit: (eventType: string, data?: { durationMs?: number; properties?: Record<string, unknown> }) => {
@@ -510,38 +498,62 @@ export async function executeAction(
     },
   };
 
-  // Execute the action with timing for tool_exec event
   const toolExecStart = Date.now();
   let actionResult = await actionSource.execute(actionId, params, { credentials, userId, callerIdentity, analytics: actionAnalytics });
 
-  // If auth error, retry once with force-refreshed credentials (skip no-auth and bot_token services which have nothing to refresh)
-  if (provider?.authType !== 'none' && provider?.authType !== 'bot_token' && !actionResult.success && actionResult.error && /\b(401|403|unauthorized|invalid.credentials|token.*expired|token.*revoked)\b/i.test(actionResult.error)) {
-    const scope = isOrgScoped ? 'org' as const : 'user' as const;
-    console.log(`[session-tools] Tool "${toolId}" returned auth error, retrying with refreshed credentials`);
-    opts.credentialCache.invalidate('user', userId, service);
-    const refreshedCred = await integrationRegistry.resolveCredentials(service, env, userId, scope, { forceRefresh: true });
-    if (refreshedCred.ok) {
-      opts.credentialCache.set('user', userId, service, refreshedCred);
-      const refreshedToken = refreshedCred.credential.accessToken;
-      const refreshedCredentials: Record<string, string> = refreshedCred.credential.credentialType === 'bot_token'
-        ? { bot_token: refreshedToken }
-        : { access_token: refreshedToken };
-      // Re-inject service-specific credential extras (e.g. owner_slack_user_id)
-      if (service === 'slack' && credentials.owner_slack_user_id) {
-        refreshedCredentials.owner_slack_user_id = credentials.owner_slack_user_id;
-      }
-      actionResult = await actionSource.execute(actionId, params, {
-        credentials: refreshedCredentials,
-        userId,
-        callerIdentity,
-        analytics: actionAnalytics,
+  // Auth failure retry — multi-credential fallthrough then force-refresh
+  const isAuthError = !actionResult.success && actionResult.error &&
+    /\b(401|403|unauthorized|invalid.credentials|token.*expired|token.*revoked)\b/i.test(actionResult.error);
+  const explicitSource = params?.source as string | undefined;
+
+  if (provider?.authType !== 'none' && provider?.authType !== 'bot_token' && isAuthError) {
+    const usedScope = credentials._credential_type === 'app_install' ? 'org' : 'user';
+
+    // Only attempt fallthrough if source wasn't explicitly specified
+    if (!explicitSource) {
+      console.log(`[session-tools] Tool "${toolId}" auth error with ${usedScope} credential, trying fallthrough`);
+      const fallthroughResult = await integrationRegistry.resolveCredentials(service, env, userId, {
+        credentialSources,
+        params,
+        forceRefresh: false,
+        skipScope: usedScope as 'user' | 'org',
+        accessibleOwners: opts.accessibleOwners,
       });
+
+      if (fallthroughResult.ok) {
+        const ftCredentials = buildCredentials(fallthroughResult);
+        if (service === 'slack' && credentials.owner_slack_user_id) {
+          ftCredentials.owner_slack_user_id = credentials.owner_slack_user_id;
+        }
+        actionResult = await actionSource.execute(actionId, params, {
+          credentials: ftCredentials, userId, callerIdentity, analytics: actionAnalytics,
+        });
+      }
+    }
+
+    // Last resort: force-refresh original credential
+    if (!actionResult.success) {
+      console.log(`[session-tools] Tool "${toolId}" fallthrough failed or skipped, force-refreshing original credential`);
+      const refreshed = await integrationRegistry.resolveCredentials(service, env, userId, {
+        credentialSources,
+        params,
+        forceRefresh: true,
+        accessibleOwners: opts.accessibleOwners,
+      });
+      if (refreshed.ok) {
+        const refreshedCredentials = buildCredentials(refreshed);
+        if (service === 'slack' && credentials.owner_slack_user_id) {
+          refreshedCredentials.owner_slack_user_id = credentials.owner_slack_user_id;
+        }
+        actionResult = await actionSource.execute(actionId, params, {
+          credentials: refreshedCredentials, userId, callerIdentity, analytics: actionAnalytics,
+        });
+      }
     }
   }
 
   const durationMs = Date.now() - toolExecStart;
 
-  // Record result in D1
   if (!actionResult.success) {
     await markFailed(appDb, invocationId, actionResult.error || 'Action failed');
   } else {
@@ -555,4 +567,16 @@ export async function executeAction(
     analyticsEvents: collectedEvents,
     durationMs,
   };
+}
+
+/** Build the credentials object from a successful CredentialResult. */
+function buildCredentials(credResult: CredentialResult & { ok: true }): Record<string, string> {
+  const token = credResult.credential.accessToken;
+  const credentials: Record<string, string> = credResult.credential.credentialType === 'bot_token'
+    ? { bot_token: token }
+    : { access_token: token };
+  if (credResult.credential.credentialType) {
+    credentials._credential_type = credResult.credential.credentialType;
+  }
+  return credentials;
 }
