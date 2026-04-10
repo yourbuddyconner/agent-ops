@@ -51,7 +51,6 @@ All code in this plan that constructs or consumes `CredentialResult` must use th
 | `packages/worker/src/lib/schema/github-installations.ts` | Drizzle schema |
 | `packages/worker/src/lib/db/github-installations.ts` | Query helpers (upsert, findByLogin, findByUser, reconcile) |
 | `packages/worker/migrations/0006_create_github_installations.sql` | DDL for the new table |
-| `packages/worker/scripts/migrate-github-service-config.ts` | Data migration script (rewrite encrypted config blob + seed installations) |
 | `packages/worker/src/services/github-app.test.ts` | Tests for token minting and KV cache |
 | `packages/worker/src/integrations/resolvers/github.test.ts` | Tests for the new resolver chain |
 | `packages/worker/src/services/github-installations.test.ts` | Tests for discovery/reconciliation |
@@ -3493,99 +3492,11 @@ git commit -m "feat(client): update user GitHub integration UI with installation
 
 ---
 
-## Phase 8: Migration + cleanup
+## Phase 8: Cleanup & deployment
 
-### Task 25: Add data migration admin endpoint
+**Note on data migration**: there is no data migration. The existing GitHub state (service config, credentials, identity links) is simply dropped and re-set up from scratch after deploy. The project is small enough that asking the admin to re-run the manifest flow and users to reconnect is cheaper than writing migration code. The danger-zone "Remove App configuration" button (already covered in Task 13) handles the wipe; the admin clicks it, then re-runs "Create GitHub App". Users reconnect via the integrations page on next use.
 
-**Files:**
-- Modify: `packages/worker/src/routes/admin-github.ts`
-
-The data migration is implemented as a one-shot admin endpoint rather than a standalone script. Running Node scripts against Cloudflare Worker bindings (D1, KV, `ENCRYPTION_KEY`) is awkward — the admin endpoint has native access to all of these and can be called with a single `curl` from the authenticated admin's machine.
-
-- [ ] **Step 1: Add `POST /api/admin/github/migrate` endpoint**
-
-Add to `routes/admin-github.ts`:
-
-```typescript
-import { and, eq } from 'drizzle-orm';
-import { credentials } from '../lib/schema/credentials.js';
-import { loadGitHubApp } from '../services/github-app.js';
-import { refreshAllInstallations } from '../services/github-installations.js';
-import { getServiceConfig, setServiceConfig } from '../lib/db/service-configs.js';
-
-adminGithubRouter.post('/migrate', async (c) => {
-  const db = c.get('db');
-
-  // 1. Load existing config (includes classic OAuth fields if present)
-  const svc = await getServiceConfig<any, any>(db, c.env.ENCRYPTION_KEY, 'github');
-  if (!svc) return c.json({ error: 'No github config found' }, 404);
-
-  // 2. Strip classic OAuth fields from config JSON
-  const newConfig = { ...svc.config };
-  delete newConfig.oauthClientId;
-  delete newConfig.oauthClientSecret;
-
-  if (!newConfig.appId || !newConfig.appOauthClientId) {
-    return c.json({ error: 'Config is missing App fields. Recreate the App via the manifest flow.' }, 400);
-  }
-
-  // 3. Rewrite metadata: drop obsolete fields, add new toggles (preserve existing toggle values if already set)
-  const newMetadata = {
-    appOwner: svc.metadata?.appOwner,
-    appOwnerType: svc.metadata?.appOwnerType,
-    appName: svc.metadata?.appName,
-    allowPersonalInstallations: svc.metadata?.allowPersonalInstallations ?? true,
-    allowAnonymousGitHubAccess: svc.metadata?.allowAnonymousGitHubAccess ?? true,
-  };
-
-  // 4. Write rewritten config back (decrypt-rewrite-encrypt atomic via setServiceConfig)
-  await setServiceConfig(db, c.env.ENCRYPTION_KEY, 'github', {
-    config: newConfig,
-    metadata: newMetadata,
-  });
-
-  // 5. Delete all stored app_install credentials — installation tokens are now minted on-demand
-  await db.delete(credentials).where(
-    and(
-      eq(credentials.provider, 'github'),
-      eq(credentials.credentialType, 'app_install'),
-    ),
-  );
-
-  // 6. Seed github_installations by calling GitHub API
-  const app = await loadGitHubApp(c.env, db);
-  if (!app) {
-    return c.json({ error: 'Failed to instantiate GitHub App after config rewrite. Check logs.' }, 500);
-  }
-  const { count } = await refreshAllInstallations(app, db);
-
-  return c.json({
-    migrated: true,
-    installationsSeeded: count,
-    classicOauthStripped: true,
-  });
-});
-```
-
-**Critical: use `and(eq(...), eq(...))` for the delete — do NOT chain `.where().where()`.** Drizzle's second `.where()` replaces the first rather than AND-ing them, which would delete all GitHub credentials including user tokens.
-
-- [ ] **Step 2: Typecheck**
-
-```bash
-cd packages/worker && pnpm typecheck
-```
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add packages/worker/src/routes/admin-github.ts
-git commit -m "feat(admin-github): add /migrate endpoint for unified-auth data migration
-
-One-shot endpoint that rewrites github service config to drop classic
-OAuth fields, deletes stored app_install credentials, and seeds
-github_installations from GET /app/installations. Called by the admin
-after deploying the unified-auth worker."
-```
+**Task 25 has been removed** — no migration endpoint is needed.
 
 ---
 
@@ -3691,27 +3602,63 @@ wrangler kv:namespace create GITHUB_TOKEN_CACHE
 
 Copy the ID into `wrangler.toml` (replacing the local placeholder).
 
-- [ ] **Step 3: Apply migrations to production**
+- [ ] **Step 3: Wipe existing GitHub state in production D1**
+
+Since we're not writing a migration, drop the existing GitHub state directly. From the project root, run:
+
+```bash
+cd packages/worker
+
+# Drop the github service config (contains the old App + classic OAuth fields)
+wrangler d1 execute $D1_DATABASE_NAME --remote \
+  --command "DELETE FROM org_service_configs WHERE service = 'github';"
+
+# Drop all GitHub credentials (oauth2 and app_install rows)
+wrangler d1 execute $D1_DATABASE_NAME --remote \
+  --command "DELETE FROM credentials WHERE provider = 'github';"
+
+# Drop any identity links pointing to GitHub
+wrangler d1 execute $D1_DATABASE_NAME --remote \
+  --command "DELETE FROM user_identity_links WHERE provider = 'github';"
+
+# Clear github_id / github_username on users so they can re-link cleanly
+wrangler d1 execute $D1_DATABASE_NAME --remote \
+  --command "UPDATE users SET github_id = NULL, github_username = NULL;"
+
+# Clear any existing integration rows for github
+wrangler d1 execute $D1_DATABASE_NAME --remote \
+  --command "DELETE FROM integrations WHERE service = 'github';"
+```
+
+The `github_installations` table is new (added by migration 0006) and starts empty — no action needed.
+
+- [ ] **Step 4: Apply migrations to production**
 
 ```bash
 make deploy-migrate
 ```
 
-- [ ] **Step 4: Deploy worker + client**
+This applies migration 0006 (create `github_installations`). All other schema is unchanged.
+
+- [ ] **Step 5: Deploy worker + client**
 
 ```bash
 make deploy
 ```
 
-- [ ] **Step 5: Run the data migration via admin endpoint**
+- [ ] **Step 6: Re-setup the GitHub App (admin)**
 
-Call `POST /api/admin/github/migrate` as an authenticated admin. Verify the response includes `installationsSeeded` count > 0 (assuming org installation exists).
+Log into the deployed frontend as an admin:
+1. Navigate to Settings → Integrations → GitHub
+2. Click "Create GitHub App" → walk through the manifest flow → completes App creation
+3. Click "Refresh installations" → verify installations appear
+4. (If desired) install the App on additional GitHub orgs via the GitHub UI → click "Refresh installations" again to pick them up
 
-- [ ] **Step 6: Smoke test production**
+- [ ] **Step 7: Smoke test production**
 
 Same steps as Task 27 but against production URLs.
 
-- [ ] **Step 7: Commit the wrangler.toml KV ID update**
+- [ ] **Step 8: Commit the wrangler.toml KV ID update**
 
 ```bash
 git add packages/worker/wrangler.toml
@@ -3734,7 +3681,7 @@ After all tasks complete, verify:
 - [ ] No `source` parameter on GitHub actions: `grep -n "source.*personal.*org" packages/plugin-github/src/actions/actions.ts` (should be empty)
 - [ ] No reads of `ctx.env.GITHUB_CLIENT_*` in any route: `grep -rn "env\.GITHUB_CLIENT" packages/worker/src` (should be empty)
 - [ ] No `storeCredential(... 'app_install')`: `grep -rn "storeCredential.*app_install\|credentialType: 'app_install'" packages/worker/src` (only the Task 10 resolver's in-memory construction should match)
-- [ ] `github_installations` table populated after production migration
+- [ ] `github_installations` table populated after admin re-runs "Refresh installations" post-deploy
 - [ ] GitHub login works with App OAuth credentials (test end-to-end)
 - [ ] GitHub integration connect works with App OAuth credentials (test end-to-end)
 - [ ] Personal installation flow works end-to-end (Install on personal account → callback → reconciliation)
@@ -3747,7 +3694,9 @@ After all tasks complete, verify:
 
 If production deployment reveals critical bugs:
 
-1. **Bad data migration**: the admin endpoint preserves the original config in memory but writes the new shape. If it fails mid-way, the config may be in an inconsistent state. Recovery: re-create the App via the manifest flow.
-2. **Credential resolver broken**: existing sessions holding stored oauth2 tokens will continue working for the token TTL. Revert the worker deploy to the previous version; the rewritten data stays but the old code can read it (classic OAuth fields are gone but the old code's env var fallback still works for login at least).
-3. **Webhook handler broken**: webhooks will fail verification. Revert the webhooks.ts file only and redeploy.
-4. **Full revert**: `git revert` the merge commit and redeploy. The `github_installations` table can stay (unused).
+1. **Credential resolver broken / GitHub actions failing**: revert the worker deploy to the previous release tag. The wiped state (empty `org_service_configs`, no credentials) is not restored by revert — the old code will show "GitHub not configured" on the admin page, and the admin must re-create the classic OAuth App + old-style GitHub App setup under the previous worker. Only revert if the unified-auth path is unrecoverable; the re-setup cost is real but bounded.
+2. **Webhook handler broken**: webhooks will fail verification. This is isolated — revert only `packages/worker/src/routes/webhooks.ts` and redeploy, leaving everything else in place.
+3. **Admin app creation flow broken**: the admin cannot re-setup GitHub. Revert the worker. Files involved: `routes/admin-github.ts`, `services/github-app.ts`, `services/github-config.ts`.
+4. **Full revert**: `git revert` the merge commit and redeploy. The `github_installations` table remains (unused, harmless). The admin must then re-set up under the previous worker's (old) flow.
+
+Because there is no data migration, rollback is straightforward: revert code, the empty DB state can be re-populated by the admin using whichever worker version is running.

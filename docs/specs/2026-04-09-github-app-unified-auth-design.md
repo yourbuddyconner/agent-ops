@@ -600,33 +600,28 @@ The table schema is unchanged — `encrypted_config` is a single TEXT blob conta
 
 ### Migration
 
-Single-shot replacement with graceful degradation for in-flight user sessions. No user-facing notice — users who encounter failures naturally navigate to the integrations page and reconnect.
+**No data migration**. The existing GitHub state (service config, credentials, identity links, user `github_id`/`github_username`) is wiped and re-set up from scratch after the new worker deploys. The project is small enough that asking the admin to re-run the manifest flow and users to reconnect is cheaper than writing migration code.
 
 **Deployment steps**:
 
-1. Add KV namespace for installation token cache (`wrangler kv:namespace create GITHUB_TOKEN_CACHE`)
-2. Apply migration `NNNN_create_github_installations.sql`
-3. Run data migration `NNNN_rewrite_github_service_config.ts` (as a deploy-time script):
-   - Decrypts the `github` row in `org_service_configs`
-   - Removes classic OAuth fields from the config JSON
-   - Updates metadata JSON (removes obsolete fields, adds new toggles with defaults)
-   - Re-encrypts and writes back
-   - Deletes all `github/app_install` rows from `credentials`
-   - **Seeds `github_installations`**: authenticates as the App (using the appId + private key from the just-rewritten config), paginates `GET /app/installations`, and upserts each installation. This ensures the table is populated before the new worker code goes live — no gap where resolution fails for anonymous access.
-4. Deploy worker with new code (old endpoints removed, new endpoints live)
-5. Deploy client with new UI
+1. Add KV namespace for installation token cache (`wrangler kv:namespace create GITHUB_TOKEN_CACHE`) and copy the ID into `wrangler.toml`
+2. Wipe existing GitHub state in production D1 via `wrangler d1 execute`:
+   - `DELETE FROM org_service_configs WHERE service = 'github';`
+   - `DELETE FROM credentials WHERE provider = 'github';`
+   - `DELETE FROM user_identity_links WHERE provider = 'github';`
+   - `UPDATE users SET github_id = NULL, github_username = NULL;`
+   - `DELETE FROM integrations WHERE service = 'github';`
+3. Apply migration for the new `github_installations` table
+4. Deploy worker + client
+5. Admin logs in, goes to Settings → Integrations → GitHub, and runs "Create GitHub App" (the manifest flow) to recreate the App under the new unified-auth configuration
+6. Admin clicks "Refresh installations" to populate `github_installations` (if the App has existing installations on GitHub that weren't removed, they'll reappear; otherwise admin installs fresh on the target org(s))
+7. Users reconnect via the integrations page on next use
 
-The admin can still click "Refresh installations" at any time, but it is not required as a deployment step — the data migration seeds the table automatically.
+**In-flight sessions**: any sessions holding old GitHub tokens will find them invalid as soon as they try an API call (the tokens are still valid against GitHub's side, but the resolver will return "GitHub not connected" because the credential rows are gone). Users see the error and reconnect. There's a brief window where some users get friction; this is acceptable for the project's scale.
 
-**What happens to in-flight sessions with stored user tokens**:
+**What users lose**: existing connections. They reconnect in one click via the new integrations page.
 
-Existing `github/oauth2` credential rows are preserved. The access token itself continues to work against GitHub's API for its remaining TTL (classic OAuth tokens have no expiration unless revoked; App-issued tokens have an 8-hour expiry). Sessions using these tokens keep working.
-
-When the credential service next tries to refresh one of these tokens, `app.oauth.refreshToken({ refreshToken })` will fail — either because the token has no refresh token (classic OAuth didn't use them by default) or because the refresh token is invalid against the App's OAuth client. On failure, the credential row is deleted and the integration is marked `status='error'`. The user's next interaction surfaces "GitHub connection expired, please reconnect".
-
-This means **no active work is interrupted** — sessions finish with their current tokens. New sessions and refreshes will prompt reconnection.
-
-**Existing App configuration** (appId, appPrivateKey, appSlug, appWebhookSecret, appOauthClientId, appOauthClientSecret) migrates cleanly — all these fields are kept. Only the classic OAuth fields are dropped.
+**What admins lose**: nothing structural — the App itself on GitHub persists (since we don't delete it from GitHub). The admin can either recreate a fresh App via the manifest flow, or manually paste the existing App's credentials into the config if that's easier (supported by the existing admin UI).
 
 ## Edge cases
 
