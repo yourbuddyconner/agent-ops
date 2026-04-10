@@ -80,14 +80,13 @@ The admin chooses which at setup time (existing code already supports a `githubO
 
 These match the existing manifest defaults. No change.
 
-**Request user authorization during installation**: The manifest sets `request_oauth_on_install: false`. GitHub's docs don't explicitly specify whether the install-flow `state` parameter round-trips into the auto-triggered OAuth leg, so rather than rely on undocumented behavior, Valet initiates the OAuth flow itself after the install callback, using its own signed state. See the [Installation tracking](#installation-tracking) section for the full post-install reconciliation flow.
+**Request user authorization during installation**: The manifest sets `request_oauth_on_install: false`. We don't depend on a post-install OAuth flow — linking happens via the `installation.created` webhook and/or OAuth reconciliation when the user later connects their account. See the [Installation tracking](#installation-tracking) section.
 
 **Callback URLs** (in the manifest's `callback_urls` array):
 
-- `{workerUrl}/auth/github/callback` — the single canonical GitHub OAuth callback. Already exists and already has branching logic for login vs link purposes (see [GitHub login & identity integration](#github-login--identity-integration)).
-- `{workerUrl}/repo-providers/github/install/callback` — the existing install callback path used post-install for repo-provider reconciliation (kept for continuity).
+- `{workerUrl}/auth/github/callback` — the single canonical GitHub OAuth callback, handled by `github-auth.ts` with branching logic for login vs link purposes (see [GitHub login & identity integration](#github-login--identity-integration)).
 
-Both URLs are declared so the same App can service both flows. GitHub allows up to 10 callback URLs per App.
+Only one callback URL is needed. There is no separate install callback — installation linking happens via the `installation.created` webhook.
 
 **Config storage**: The App configuration is stored in `org_service_configs` (existing table). The table schema is:
 
@@ -216,12 +215,7 @@ This single instance provides:
 
 #### Cloudflare Worker runtime compatibility
 
-Workers run in `workerd` (V8 isolate) with `nodejs_compat` flag. Not all npm packages work. Before adoption, the implementation must verify:
-
-1. `octokit`, `@octokit/auth-app`, `@octokit/oauth-app`, `@octokit/webhooks` bundle and run under `workerd` with `nodejs_compat`. The risk area is `@octokit/auth-app`, which historically used `jsonwebtoken` (depends on Node `crypto`). Recent versions use `universal-github-app-jwt` which works in Web Crypto; this must be confirmed at the versions we pin.
-2. Fetch overrides work — Octokit must use the Workers `fetch` (not Node's).
-
-**Fallback plan**: if any package is incompatible, keep the existing hand-rolled JWT signer (`services/github-app-jwt.ts`, uses `crypto.subtle`) and use Octokit's `customAuthentication` hook to supply externally-signed JWTs (the library supports this via the `createJwt` callback). Only the JWT minting is at risk — the REST client, OAuth client, and webhooks package are pure fetch + Web Crypto and should work.
+Workers run in `workerd` (V8 isolate) with `nodejs_compat` flag. Octokit's recent versions use `universal-github-app-jwt` (Web Crypto-based) instead of `jsonwebtoken` (Node-only), so the JWT signing path should work under `workerd`. We verify this by writing and running the Task 4 tests against a real `App` instance early in implementation. If the initial bundle fails, we diagnose and fix then — not before.
 
 **Token refresh via Octokit**: `app.oauth.refreshToken({ refreshToken })` works because the `App` class's internal wiring of `OAuthApp` hardcodes `clientType: 'github-app'` when the `oauth` option is provided (verified in `@octokit/app` source: `new OAuthApp({ ...options.oauth, clientType: "github-app", Octokit })`). Refresh support is enabled automatically — no standalone `OAuthApp` instance required.
 
@@ -247,7 +241,7 @@ A `getOrMintInstallationToken(app, db, encryptionKey, installationRow)` helper w
 
 **API calls**: The GitHub plugin replaces its `githubFetch` wrapper with Octokit REST methods. For user-token calls, construct `new Octokit({ auth: userToken })`; for installation-token calls, use `app.getInstallationOctokit(id)`. Pagination via `octokit.paginate(...)` replaces manual page loops. See [rate limits for the REST API](https://docs.github.com/en/rest/overview/rate-limits-for-the-rest-api).
 
-**Throttle plugin**: `@octokit/plugin-throttling` is not included by default in the `octokit` meta-package. We add it explicitly if we want backoff/retry. **Decision**: opt in to the throttle plugin with a conservative `onRateLimit` handler that retries once after `retry-after`. Backoff delays inside a Worker request must stay under the CPU time budget (30s on paid plans); we cap the total wait at 5 seconds.
+**No throttle plugin**: `@octokit/plugin-throttling` is not used. At the project's scale, rate-limit hits are rare, and silent backoff inside a Worker request eats CPU budget. When a rate limit does hit, a clean error message is better than opaque retry. If rate-limit pressure emerges later, we can add throttling as a focused change.
 
 ### Installation tracking
 
@@ -292,16 +286,14 @@ CREATE INDEX idx_github_installations_linked_user
 
 3. **User OAuth flow** — when a user completes the OAuth flow (login or link), the worker fetches their GitHub profile (`GET /user`) to get `account_id`, then calls [`GET /user/installations`](https://docs.github.com/en/rest/apps/installations#list-app-installations-accessible-to-the-user-access-token) with the new user token. Any installation returned that has `account_type === 'User'` and matches the user's GitHub `account_id` gets `linked_user_id` set to that Valet user. This reconciles orphaned personal installations into linked installations.
 
-**Post-install callback flow**: when a user clicks "Install on your personal GitHub account" from the Valet integrations page, Valet first generates a signed state JWT (`{ purpose: 'github-install', sub: valetUserId, exp: +10min }`) and redirects the browser to `https://github.com/apps/{appSlug}/installations/new?state={jwt}`. GitHub carries `state` through the install flow and redirects to the App's `setup_url` (`{workerUrl}/repo-providers/github/install/callback`) with `installation_id`, `setup_action`, and `state` query parameters. This callback is unauthenticated from a cookie perspective (GitHub initiates the redirect, so third-party cookies may be blocked); it identifies the Valet user via the signed state JWT:
+**Post-install flow**: when a user clicks "Install on your personal GitHub account", Valet simply opens `https://github.com/apps/{appSlug}/installations/new` in a new tab. The user completes the install on GitHub. Linking happens automatically via two existing paths:
 
-1. Verify the signed `state` JWT; extract `sub` (Valet user ID) and `purpose` (`'github-install'`)
-2. Fetch the installation from GitHub via the App JWT (`GET /app/installations/{installation_id}`)
-3. Upsert a `github_installations` row, setting `linked_user_id` to the Valet user from `state.sub` (cross-check that `installation.account.id` matches the Valet user's `users.githubId`, error if mismatch — someone is trying to install on a GitHub account they haven't linked to Valet)
-4. Redirect to `/settings/integrations?github=installed`
+1. **Webhook-driven auto-link**: the `installation.created` webhook fires and runs `handleInstallationWebhook`, which matches `installation.account.id` against `users.github_id` and sets `linked_user_id` if a Valet user already has that GitHub account linked.
+2. **OAuth reconciliation**: if the user connects their GitHub account via OAuth later, `reconcileUserInstallations` runs and links any matching orphaned personal installations.
 
-**`request_oauth_on_install` caveat**: if the manifest sets `request_oauth_on_install: true`, GitHub initiates a fresh OAuth authorize flow **after** the install completes. GitHub's docs do not explicitly specify whether the install `state` parameter round-trips into that subsequent OAuth leg, which makes the user-linkage semantics of the auto-triggered flow non-deterministic from our perspective. **Decision**: set `request_oauth_on_install: false` in the manifest. Rather than rely on undocumented behavior, Valet initiates the OAuth link flow itself after the install callback returns (if the user isn't already linked), using the signed state mechanism it fully controls. This gives us deterministic state handling at the cost of one extra redirect. If a smoke test during implementation shows that state *does* round-trip, we can revisit this decision.
+No state parameter is needed through the install flow. No post-install callback logic is needed. The existing `/repo-providers/github/install/callback` endpoint is deleted entirely — the webhook path is sufficient.
 
-The existing `repo-providers.ts` install callback currently takes an `orgId` from the state JWT and stores an org-scoped `app_install` credential. Under the new design, `orgId` is dropped from the state (single-tenant assumption holds), and `storeCredential(app_install)` is replaced by `upsertGitHubInstallation`. The obsolete metadata backfills (`accessibleOwners`, `repositoryCount`) are also removed — the `github_installations` table is the new source of truth.
+**`request_oauth_on_install` setting**: set to `false` in the manifest. There's no benefit to enabling it given that we don't depend on a post-install callback.
 
 ### User OAuth flow
 
@@ -327,7 +319,7 @@ Connecting GitHub on the integrations page uses the App's built-in OAuth client.
 
 **Refresh token expiry**: If the 6-month refresh token itself is expired, `refreshToken()` fails. The credential service deletes the credential row and marks the integration `status='error'`. The agent surfaces "GitHub connection expired, please reconnect" when a GitHub action is attempted. No automated re-auth.
 
-**Duplicate GitHub account detection**: When a user connects GitHub and the returned `github_user_id` is already stored on a *different* Valet user's record (`users.githubId`), the callback rejects the link with an explicit error. The `users` table has `CREATE UNIQUE INDEX idx_users_github_id ON users(github_id)`, but that only enforces uniqueness on writes — the callback must perform an explicit lookup and error out cleanly with a user-facing message before attempting the write. This avoids silent overwrites or 500 errors from the unique constraint.
+**Duplicate GitHub account detection**: If a user connects a GitHub account already linked to a different Valet user, the `users.github_id` unique constraint (`CREATE UNIQUE INDEX idx_users_github_id ON users(github_id)`) will error on write. The callback catches the constraint error and redirects to `/integrations?github=error&reason=account_already_linked`. No explicit pre-SELECT needed — one query instead of two.
 
 **Disconnect**: The user clicks "Disconnect" on the integrations page. Worker calls `app.oauth.deleteToken({ token })` to revoke on GitHub, then deletes the credential row, clears `users.githubId` / `users.githubUsername`, and deletes the identity link. Does NOT uninstall the App from any GitHub accounts — installations persist independently of user-token links.
 
@@ -434,19 +426,15 @@ This keeps the sandbox cloning path working without requiring a broader refactor
 
 ### Attribution injection
 
-When `ctx.attribution` is present, the action is executing under a bot token but should be attributed to the initiating Valet user. The `attribution` object carries the user's name and email, which actions use to inject identity into any user-facing content:
+When `ctx.attribution` is present, the action is executing under a bot token but should be attributed to the initiating Valet user. Three injection points cover the most-used actions:
 
 - **Commits**: `Co-Authored-By: {name} <{email}>` trailer appended to commit message body
-- **Pull requests**: body is appended with `\n\n---\n> Created on behalf of {name} <{email}>`
-- **Issues**: same pattern as PRs
-- **Issue/PR comments**: body is prepended with `*On behalf of {name} <{email}>:*\n\n`
-- **Review comments**: same prepend as comments
-- **Commit comments**: same prepend as comments
-- **Any other action that produces user-visible text**: follows the same pattern; actions without user-visible content (reading data, listing repos, etc.) don't inject anything
+- **Pull request body**: appended with `\n\n---\n> Created on behalf of {name} <{email}>`
+- **Issue body**: same suffix pattern as PRs
 
-Attribution is always included verbatim — both the display name and the email. This makes audit trails unambiguous even when display names collide.
+Other actions (comments, review comments, commit comments, etc.) do not inject attribution in this iteration. If a specific case becomes important, we add it as a one-line change. Attribution is always included verbatim — both the display name and the email.
 
-Attribution cannot be forged by the agent: `ctx.attribution` is set by the credential resolver from the authenticated Valet user's profile, not from agent input. The agent cannot inject arbitrary attribution.
+Attribution cannot be forged by the agent: `ctx.attribution` is set by the credential resolver from the authenticated Valet user's profile, not from agent input.
 
 ### Webhooks
 
@@ -466,9 +454,8 @@ A single webhook endpoint handles all GitHub App events:
 - `installation.deleted` → mark row as `status='removed'` (soft delete, preserves audit trail)
 - `installation.suspend` → `status='suspended'`
 - `installation.unsuspend` → `status='active'`
-- `installation.new_permissions_accepted` → update `permissions` field
-- `installation_repositories.added` / `installation_repositories.removed` → no-op for now (we don't track per-repo access)
-- `installation_target.renamed` → look up the row by the installation ID from the payload (`payload.installation.id`) and update `account_login` to the new login. `account_id` is the stable identifier and does not change on rename.
+
+Other installation events (`installation.new_permissions_accepted`, `installation_repositories.*`, `installation_target.renamed`) are NOT handled. Rationale: permissions changes and per-repo adds/removes don't affect our resolution logic, and account renames are rare — if one happens, `account_login` goes stale and the admin runs "Refresh installations" to fix.
 
 **Session state** (preserved from current handler):
 
@@ -485,11 +472,9 @@ The webhook handler includes a catch-all for unhandled events with an explicit T
 
 ```typescript
 app.webhooks.onAny(async ({ id, name, payload }) => {
-  // Already handled above: installation.*, pull_request, push.
-  const handled = new Set([
-    'installation', 'installation_repositories', 'installation_target',
-    'pull_request', 'push',
-  ]);
+  // Already handled above: installation (created/deleted/suspend/unsuspend),
+  // pull_request, push.
+  const handled = new Set(['installation', 'pull_request', 'push']);
   if (handled.has(name)) return;
   // TODO(event-routing): Route workflow-trigger events (issues, issue_comment,
   // release, workflow_run, etc.) to the correct orchestrator. Requires building
@@ -513,13 +498,12 @@ Admin settings page at `/settings/integrations/github`:
   - Toggle: `Allow personal installations`
   - Toggle: `Allow anonymous GitHub access`
 
-**Refresh rate limit**: the "Refresh installations" admin action is rate-limited to 1 call per minute (best-effort, module-level timestamp). Simple guard, short decision.
+**No refresh rate limit**: the "Refresh installations" admin action is not rate-limited. It's an admin-only action; they're not going to abuse it.
 
 **Installations section**
 
 - **Organization installations** (always expanded): table with columns `Account`, `Repos`, `Status`, `Created`, `Actions`. Actions column has a link to GitHub App settings for that installation.
-- **Personal installations** (collapsible, collapsed by default, header shows count): table with columns `GitHub login`, `Linked Valet user`, `Repos`, `Status`, `Created`.
-- **Orphaned installations** (collapsible, only shown if count > 0): personal installations where `linked_user_id` is NULL. Useful for admin debugging.
+- **Personal installations** (collapsible, collapsed by default, header shows count): table with columns `GitHub login`, `Linked Valet user`, `Repos`, `Status`, `Created`. Rows with no linked Valet user are still shown (they're rare and self-resolve via reconciliation on next login).
 
 **Danger zone**
 
@@ -537,7 +521,7 @@ GitHub card on `/settings/integrations`:
 **Not connected state**
 
 - "Connect GitHub" button → redirects to `app.oauth.getWebFlowAuthorizationUrl()` URL
-- If `allowPersonalInstallations === true`: also shows "Install on personal GitHub account" link → Valet generates a signed `github-install` state JWT and redirects to `https://github.com/apps/{appSlug}/installations/new?state={jwt}` in a new tab (see [Installation tracking](#installation-tracking) for the full post-install flow).
+- If `allowPersonalInstallations === true`: also shows "Install on personal GitHub account" link → direct anchor to `https://github.com/apps/{appSlug}/installations/new` in a new tab. No state parameter. The `installation.created` webhook auto-links the install by matching `account.id` to `users.github_id`.
 - If `allowAnonymousGitHubAccess === true`: info banner "GitHub is available via shared access — connecting your account enables better attribution"
 - If `allowAnonymousGitHubAccess === false` and user has no connection: banner "GitHub connection required for agent sessions"
 
@@ -577,7 +561,7 @@ The table schema is unchanged — `encrypted_config` is a single TEXT blob conta
 | `packages/worker/src/routes/oauth.ts` | No functional change — the GitHub-specific router takes precedence via mount order in `index.ts`. The generic `:provider` handler remains for Google and other providers. |
 | `packages/worker/src/index.ts` | Mount `githubAuthRouter` at `/auth/github` **before** mounting `oauthRouter` at `/auth`, so Hono's route-matching catches GitHub first. |
 | `packages/worker/src/routes/webhooks.ts` | Rewrite the `/webhooks/github` handler: use Octokit `verifyAndReceive`, add installation lifecycle handlers, preserve existing PR/push session state handlers, add catch-all with TODO |
-| `packages/worker/src/routes/repo-providers.ts` | Update post-install callback at `/repo-providers/github/install/callback`: verify signed state JWT (`purpose: 'github-install'`, `sub` = Valet user ID); drop the `orgId` field from the state payload (no longer needed); replace `storeCredential(app_install)` with `upsertGitHubInstallation`; remove `accessibleOwners` and `repositoryCount` metadata backfill (obsolete — `github_installations` is the new source of truth); cross-check that `installation.account.id` matches `users.githubId` for the Valet user |
+| `packages/worker/src/routes/repo-providers.ts` | **Delete** the `/github/install/callback` handler entirely. Installation linking now happens via the `installation.created` webhook (auto-links by matching `account.id` to `users.github_id`) and via `reconcileUserInstallations` at OAuth time. No callback needed. |
 | `packages/worker/src/integrations/resolvers/github.ts` | Rewrite: new resolution chain (user → installation → fail), returns plain `CredentialResult` with optional `attribution` |
 | `packages/worker/src/integrations/registry.ts` | Revert `CredentialSourceInfo` plumbing added by multi-credential routing design; `CredentialResolverContext` simplifies back to `{ params?, forceRefresh? }` |
 | `packages/worker/src/integrations/resolvers/default.ts` | Revert to match simplified contract |
@@ -632,7 +616,7 @@ The table schema is unchanged — `encrypted_config` is a single TEXT blob conta
 
 - **User connects GitHub before any App installation exists for their account**: they get a user token with no accessible installations. `GET /user/installations` returns empty. Agent can only access public repos via any available org installation token (if anonymous access is enabled). UI prompts the user to install the App on their personal account.
 
-- **User's GitHub login changes**: `installation_target.renamed` webhook fires. We update `account_login` on the matching row (looked up by `github_installation_id`). `account_id` and `linked_user_id` are unaffected. User access tokens are unaffected.
+- **User's or org's GitHub login changes**: we don't listen for `installation_target.renamed`, so `account_login` goes stale. The resolver's owner lookup breaks until the admin runs "Refresh installations" (which re-fetches `GET /app/installations` and updates the row). Rare event; acceptable degradation.
 
 - **User is removed from an org**: `installation_repositories.removed` fires for repos in that org. Their user token still works for other accessible repos. No Valet-side action needed.
 
@@ -644,11 +628,11 @@ The table schema is unchanged — `encrypted_config` is a single TEXT blob conta
 
 - **Personal install where the user's GitHub account_id doesn't match any Valet user**: row is created with `linked_user_id = NULL`, appears in the "Orphaned installations" section on admin page. If a user later connects that GitHub account via OAuth, the reconciliation step links it.
 
-- **Two Valet users try to link the same GitHub account**: `users.github_id` has a unique index, but the unique constraint only errors on write — we want a user-friendly error. On the OAuth callback, before storing credentials, look up whether another user has `github_id` matching the incoming `account_id`. If yes, return an error ("This GitHub account is already linked to another Valet user") and abort the link. The `credentials` table does **not** enforce GitHub-account uniqueness — it's scoped per Valet user — so the check must be done explicitly against `users.github_id`.
+- **Two Valet users try to link the same GitHub account**: `users.github_id` has a unique index. The write fails with a constraint violation, the callback catches it and redirects with a `reason=account_already_linked` query parameter that the integrations page displays.
 
 - **Anonymous access disabled, user without linked GitHub attempts an action**: credential resolver returns error; agent surfaces "GitHub account not connected" to the user.
 
-- **Installation token rate limit exceeded**: GitHub returns 403 with `x-ratelimit-remaining: 0`. Octokit's throttle plugin retries once with backoff (capped at 5s wait). If retries exhaust, the action fails with a clear rate-limit error. See [rate limits for the REST API](https://docs.github.com/en/rest/overview/rate-limits-for-the-rest-api).
+- **Installation token rate limit exceeded**: GitHub returns 403 with `x-ratelimit-remaining: 0`. The action fails with a clear rate-limit error (no automatic backoff — see [rate limits for the REST API](https://docs.github.com/en/rest/overview/rate-limits-for-the-rest-api)). At the project's current scale this is unlikely; if it starts happening, we add `@octokit/plugin-throttling` as a focused follow-up.
 
 - **Refresh token expired (6 months)**: refresh call fails. Credential row deleted, integration marked `error`. User must reconnect.
 
@@ -668,8 +652,6 @@ The table schema is unchanged — `encrypted_config` is a single TEXT blob conta
 
 - **OAuth state parameter**: the OAuth authorize URL includes a self-contained signed JWT state parameter with the Valet user ID, purpose, a random nonce, and short TTL (5 minutes). The callback verifies the signature to prevent CSRF and replay. No server-side nonce store is needed; signature + TTL is sufficient.
 
-- **PKCE**: enabled on the OAuth flow per [GitHub's recommendation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app). Octokit supports PKCE parameters via `getWebFlowAuthorizationUrl` if we pass `code_challenge` / `code_challenge_method`.
-
 - **Token scoping**: user access tokens are always scoped to the intersection of the App's permissions and the user's GitHub permissions. There's no way for the agent to exceed this scope, even if the agent attempts to use a token outside its granted permissions.
 
 - **Attribution cannot be forged by the user (agent)**: the `attribution` object is set by the credential resolver from the authenticated Valet user's profile, not from agent input. The agent cannot inject arbitrary attribution.
@@ -685,7 +667,7 @@ The table schema is unchanged — `encrypted_config` is a single TEXT blob conta
 None. All previously-open questions resolved:
 
 - **OAuth state JWT TTL**: 5 minutes for login flows (matches `oauth.ts::createStateJWT`), 10 minutes for link flows (matches current `github-me.ts` behavior). No change to either.
-- **Refresh installations rate limit**: 1 per minute per worker instance
+- **Refresh installations rate limit**: none (admin-only action, no abuse vector)
 - **Scheduled installation sync**: not added. Webhooks + manual refresh suffice.
 - **Post-install OAuth continuity**: `request_oauth_on_install` is disabled; Valet initiates OAuth itself with its own signed state.
 - **Danger zone token revocation**: local delete only; do not per-user `deleteToken`.
@@ -722,7 +704,6 @@ None. All previously-open questions resolved:
 - [octokit.js](https://github.com/octokit/octokit.js) — meta SDK
 - [@octokit/auth-app](https://github.com/octokit/auth-app.js) — App JWT + installation token + user token exchange
 - [@octokit/oauth-app](https://github.com/octokit/oauth-app.js) — OAuth URL generation, token lifecycle, middleware
-- [@octokit/plugin-throttling](https://github.com/octokit/plugin-throttling.js) — rate limit handling
 
 ### Internal documents
 

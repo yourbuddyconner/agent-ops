@@ -70,7 +70,7 @@ All code in this plan that constructs or consumes `CredentialResult` must use th
 | `packages/worker/src/routes/admin-github.ts` | Remove classic-OAuth endpoints; add installations list endpoint; add toggles; remove single-install enforcement |
 | `packages/worker/src/routes/github-me.ts` | `POST /link` uses App OAuth via Octokit; remove `githubMeCallbackRouter` entirely (moved to `github-auth.ts`) |
 | `packages/worker/src/routes/webhooks.ts` | Rewrite `POST /github` with Octokit `verifyAndReceive`, installation lifecycle handlers; preserve PR/push session state handlers |
-| `packages/worker/src/routes/repo-providers.ts` | Install callback: verify signed state JWT, upsert installation, drop classic-OAuth path |
+| `packages/worker/src/routes/repo-providers.ts` | Delete the `/github/install/callback` handler entirely — linking happens via webhook and OAuth reconciliation |
 | `packages/worker/src/index.ts` | Mount `githubAuthRouter` at `/auth/github` before `oauthRouter` |
 | `packages/plugin-github/src/identity.ts` | Stub: `configKeys = []`, `handleCallback` throws |
 | `packages/plugin-github/src/actions/actions.ts` | Remove `source` param from all actions; use `ctx.attribution`; switch `list_repos` by attribution presence; inject attribution in commit/PR/issue/comment bodies |
@@ -82,7 +82,7 @@ All code in this plan that constructs or consumes `CredentialResult` must use th
 | `packages/plugin-github/skills/github.md` | Rewrite to reflect unified model, no `source` param, attribution behavior |
 | `packages/sdk/src/integrations/index.ts` (or equivalent) | Add optional `attribution?: { name, email }` to `ActionContext` |
 | `packages/worker/src/env.ts` | Remove `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` |
-| `packages/worker/package.json` | Add `octokit`, `@octokit/plugin-throttling` |
+| `packages/worker/package.json` | Add `octokit` |
 | `packages/plugin-github/package.json` | Add `octokit` |
 | `packages/client/src/api/admin-github.ts` | Drop classic OAuth endpoints; add installations list + toggle mutations |
 | `packages/client/src/api/me-github.ts` (or equivalent) | Update: remove scopes; show installations |
@@ -105,7 +105,7 @@ All code in this plan that constructs or consumes `CredentialResult` must use th
 
 ```bash
 cd packages/worker
-pnpm add octokit @octokit/plugin-throttling
+pnpm add octokit
 ```
 
 - [ ] **Step 2: Add octokit to plugin-github**
@@ -1087,9 +1087,6 @@ import { users } from '../lib/schema/users.js';
 import {
   upsertGithubInstallation,
   updateGithubInstallationStatus,
-  updateGithubInstallationAccountLogin,
-  linkGithubInstallationToUser,
-  getGithubInstallationById,
 } from '../lib/db/github-installations.js';
 
 /**
@@ -1172,7 +1169,7 @@ export async function reconcileUserInstallations(
 }
 
 export interface InstallationWebhookPayload {
-  action: 'created' | 'deleted' | 'suspend' | 'unsuspend' | 'new_permissions_accepted';
+  action: 'created' | 'deleted' | 'suspend' | 'unsuspend';
   installation: {
     id: number;
     account: { login: string; id: number; type: 'Organization' | 'User' };
@@ -1182,7 +1179,9 @@ export interface InstallationWebhookPayload {
 }
 
 /**
- * Handle `installation.*` webhook events.
+ * Handle `installation.*` webhook events (created/deleted/suspend/unsuspend only).
+ * Other installation.* actions and installation_target/installation_repositories
+ * are not handled per spec decision — see webhook section.
  */
 export async function handleInstallationWebhook(
   db: AppDb,
@@ -1228,36 +1227,6 @@ export async function handleInstallationWebhook(
     await updateGithubInstallationStatus(db, installationId, 'active');
     return;
   }
-
-  if (action === 'new_permissions_accepted') {
-    // Update permissions field only; preserve other fields
-    const existing = await getGithubInstallationById(db, installationId);
-    if (existing) {
-      await upsertGithubInstallation(db, {
-        githubInstallationId: installationId,
-        accountLogin: installation.account.login,
-        accountId: String(installation.account.id),
-        accountType: installation.account.type,
-        repositorySelection: installation.repository_selection,
-        permissions: installation.permissions,
-      });
-    }
-    return;
-  }
-}
-
-/**
- * Handle `installation_target.renamed` — updates account_login.
- */
-export async function handleInstallationRenamedWebhook(
-  db: AppDb,
-  payload: { installation: { id: number }; account: { login: string } },
-): Promise<void> {
-  await updateGithubInstallationAccountLogin(
-    db,
-    String(payload.installation.id),
-    payload.account.login,
-  );
 }
 ```
 
@@ -2116,13 +2085,12 @@ Return exactly this shape (used by Task 14 hooks and Task 23 UI):
   },
   installations: {
     organizations: GithubInstallation[],
-    personal: GithubInstallation[],  // only those with linked_user_id
-    orphaned: GithubInstallation[],   // personal installs with linked_user_id IS NULL
+    personal: GithubInstallation[],  // includes both linked and unlinked personal installs
   },
 }
 ```
 
-Populate `installations` via `listGithubInstallationsByAccountType(db, 'Organization')` + splitting `listGithubInstallationsByAccountType(db, 'User')` based on `linkedUserId`.
+Populate `installations` via `listGithubInstallationsByAccountType(db, 'Organization')` and `listGithubInstallationsByAccountType(db, 'User')`. No splitting by `linkedUserId` — the UI shows all personal installs in one table and leaves the "linked user" column empty for unlinked rows.
 
 **Important for Task 23 alignment**: `settings` is a nested object. The client UI component (Task 23) reads `config?.settings?.allowPersonalInstallations` — this shape MUST match. Do not flatten `allowPersonalInstallations` to the top level.
 
@@ -2167,21 +2135,7 @@ const { count } = await refreshAllInstallations(app, db);
 return c.json({ refreshed: true, installationCount: count });
 ```
 
-Rate-limit to 1 per minute. In a Cloudflare Worker, module-level `let` is not guaranteed to persist across requests (new isolates may be spawned), so this is best-effort. For a single-tenant admin action at small scale that's acceptable — the worst case is an admin getting 2 refreshes through in a single minute instead of 1.
-
-```typescript
-// Best-effort in-memory rate limit. Not a strict guarantee across isolates,
-// but adequate for a single-tenant admin action.
-const REFRESH_RATE_LIMIT_MS = 60_000;
-let lastRefreshAt = 0;
-
-// In the handler:
-const now = Date.now();
-if (now - lastRefreshAt < REFRESH_RATE_LIMIT_MS) {
-  return c.json({ error: 'rate_limited', retryAfter: Math.ceil((REFRESH_RATE_LIMIT_MS - (now - lastRefreshAt)) / 1000) }, 429);
-}
-lastRefreshAt = now;
-```
+No rate limiting on this endpoint. It's admin-only; no abuse vector to defend against.
 
 - [ ] **Step 6: Add new endpoints**
 
@@ -2464,13 +2418,6 @@ githubAuthRouter.get('/callback', async (c) => {
   if ((payload as any).purpose === 'github-link') {
     const valetUserId = (payload as any).sub as string;
 
-    // Check for account collision with a different Valet user
-    const existingUser = await appDb.select({ id: users.id })
-      .from(users).where(eq(users.githubId, githubId)).get();
-    if (existingUser && existingUser.id !== valetUserId) {
-      return c.redirect(`${frontendUrl}/integrations?github=error&reason=account_already_linked`);
-    }
-
     // Store credential
     await storeCredential(c.env, 'user', valetUserId, 'github', {
       access_token: authentication.token,
@@ -2481,13 +2428,24 @@ githubAuthRouter.get('/callback', async (c) => {
       metadata: { github_login: githubLogin, github_user_id: githubId },
     });
 
-    // Update user record
-    await db.updateUserGitHub(appDb, valetUserId, {
-      githubId,
-      githubUsername: githubLogin,
-      name: profile.name ?? undefined,
-      avatarUrl: profile.avatar_url,
-    });
+    // Update user record. The users.github_id unique index will error if this
+    // GitHub account is already linked to a different Valet user — catch and
+    // redirect with a clear error. No pre-SELECT needed.
+    try {
+      await db.updateUserGitHub(appDb, valetUserId, {
+        githubId,
+        githubUsername: githubLogin,
+        name: profile.name ?? undefined,
+        avatarUrl: profile.avatar_url,
+      });
+    } catch (err) {
+      // SQLite unique constraint violation
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/UNIQUE constraint failed.*github_id/i.test(msg)) {
+        return c.redirect(`${frontendUrl}/integrations?github=error&reason=account_already_linked`);
+      }
+      throw err;
+    }
 
     // Create/update identity link
     await db.deleteIdentityLinkByExternalId(appDb, 'github', githubId);
@@ -2761,10 +2719,7 @@ Replace the `POST /github` handler with:
 
 ```typescript
 import { loadGitHubApp } from '../services/github-app.js';
-import {
-  handleInstallationWebhook,
-  handleInstallationRenamedWebhook,
-} from '../services/github-installations.js';
+import { handleInstallationWebhook } from '../services/github-installations.js';
 
 webhooksRouter.post('/github', async (c) => {
   const event = c.req.header('X-GitHub-Event');
@@ -2805,13 +2760,11 @@ webhooksRouter.post('/github', async (c) => {
   console.log(`GitHub webhook: ${event}.${payload.action ?? ''} (${deliveryId})`);
 
   try {
-    // Installation lifecycle
-    if (event === 'installation') {
+    // Installation lifecycle: created, deleted, suspend, unsuspend
+    // (Other installation.* actions and installation_target/installation_repositories
+    // are not handled — see spec rationale.)
+    if (event === 'installation' && ['created', 'deleted', 'suspend', 'unsuspend'].includes(payload.action)) {
       await handleInstallationWebhook(db, payload);
-    } else if (event === 'installation_target' && payload.action === 'renamed') {
-      await handleInstallationRenamedWebhook(db, payload);
-    } else if (event === 'installation_repositories') {
-      // No-op for now; spec says we don't track per-repo access
     }
 
     // Session state handlers — MUST be preserved from the previous implementation
@@ -2827,10 +2780,7 @@ webhooksRouter.post('/github', async (c) => {
     // orchestrator (based on installation.account.id matching a linked_user_id in
     // github_installations) or an org orchestrator, then dispatches through the
     // orchestrator mailbox. Tracked separately.
-    const handled = new Set([
-      'installation', 'installation_repositories', 'installation_target',
-      'pull_request', 'push',
-    ]);
+    const handled = new Set(['installation', 'pull_request', 'push']);
     if (!handled.has(event)) {
       console.log(`[github webhook] unhandled event: ${event}.${payload.action ?? ''}`);
     }
@@ -2889,83 +2839,23 @@ git commit -m "refactor(webhooks): rewrite GitHub handler with Octokit verificat
 **Files:**
 - Modify: `packages/worker/src/routes/repo-providers.ts`
 
-- [ ] **Step 1: Read the current install callback**
+The post-install callback is being **deleted entirely**. Installation linking happens via the `installation.created` webhook and OAuth-time reconciliation — no callback needed. If `repo-providers.ts` has no other GitHub-specific routes after this deletion, the whole file might simplify significantly.
+
+- [ ] **Step 1: Locate the install callback**
 
 ```bash
-grep -n "install/callback\|install_id\|installation_id" packages/worker/src/routes/repo-providers.ts
+grep -n "install/callback\|installation_id\|storeCredential.*app_install\|accessibleOwners" packages/worker/src/routes/repo-providers.ts
 ```
 
-- [ ] **Step 2: Rewrite the install callback**
+- [ ] **Step 2: Delete the `/github/install/callback` route handler**
 
-The current handler:
-- Takes `orgId` from a state JWT
-- Calls `storeCredential('org', orgId, 'github', { credentialType: 'app_install' })`
-- Stores `accessibleOwners` / `repositoryCount` in metadata
+Remove the entire `repoProvidersRouter.get('/github/install/callback', ...)` handler, including:
+- The `orgId` state JWT verification
+- The `storeCredential('org', orgId, 'github', { credentialType: 'app_install' })` call
+- Any `accessibleOwners` / `repositoryCount` metadata writes
+- Related imports that become unused
 
-New behavior:
-- State JWT purpose `'github-install'`, `sub` = Valet user ID
-- Fetches the installation via `app.octokit.request('GET /app/installations/{id}')`
-- Calls `upsertGithubInstallation` with `linkedUserId = valetUserId` if `account.id` matches `users.githubId`
-- Does NOT store credentials
-- Does NOT write metadata backfill
-
-```typescript
-import { loadGitHubApp } from '../services/github-app.js';
-import { upsertGithubInstallation } from '../lib/db/github-installations.js';
-import { verifyJWT } from '../lib/jwt.js';
-
-repoProvidersRouter.get('/github/install/callback', async (c) => {
-  const frontendUrl = c.env.FRONTEND_URL || 'http://localhost:5173';
-  const installationId = c.req.query('installation_id');
-  const stateParam = c.req.query('state');
-
-  if (!installationId) {
-    return c.redirect(`${frontendUrl}/integrations?github=error&reason=missing_installation_id`);
-  }
-
-  // Optional: if state is provided, verify and extract the Valet user ID for linking
-  let valetUserId: string | undefined;
-  if (stateParam) {
-    const payload = await verifyJWT(stateParam, c.env.ENCRYPTION_KEY);
-    if (payload && (payload as any).purpose === 'github-install') {
-      valetUserId = (payload as any).sub as string;
-    }
-  }
-
-  const db = getDb(c.env.DB);
-  const app = await loadGitHubApp(c.env, db);
-  if (!app) {
-    return c.redirect(`${frontendUrl}/integrations?github=error&reason=app_not_configured`);
-  }
-
-  // Fetch the installation
-  const { data: inst } = await app.octokit.request(
-    'GET /app/installations/{installation_id}',
-    { installation_id: Number(installationId) },
-  );
-
-  // Cross-check: if state claims a Valet user, their github_id must match
-  if (valetUserId) {
-    const user = await db.select({ githubId: users.githubId })
-      .from(users).where(eq(users.id, valetUserId)).get();
-    if (user?.githubId && String(inst.account.id) !== user.githubId) {
-      return c.redirect(`${frontendUrl}/integrations?github=error&reason=account_mismatch`);
-    }
-  }
-
-  await upsertGithubInstallation(db, {
-    githubInstallationId: String(inst.id),
-    accountLogin: inst.account.login,
-    accountId: String(inst.account.id),
-    accountType: inst.account.type as 'Organization' | 'User',
-    repositorySelection: inst.repository_selection as 'all' | 'selected',
-    permissions: inst.permissions as Record<string, unknown>,
-    linkedUserId: valetUserId,
-  });
-
-  return c.redirect(`${frontendUrl}/integrations?github=installed`);
-});
-```
+If the file becomes empty or has only unrelated repo-provider routes, that's fine — leave the unrelated routes alone.
 
 - [ ] **Step 3: Typecheck**
 
@@ -2977,7 +2867,12 @@ cd packages/worker && pnpm typecheck
 
 ```bash
 git add packages/worker/src/routes/repo-providers.ts
-git commit -m "refactor(repo-providers): update github install callback for installations table"
+git commit -m "refactor(repo-providers): delete github install callback
+
+Installation linking now happens via the installation.created webhook
+(handleInstallationWebhook auto-links by matching account.id to
+users.github_id) and via reconcileUserInstallations at OAuth time.
+The dedicated install callback is redundant."
 ```
 
 ---
@@ -3057,29 +2952,28 @@ function getOctokit(ctx: ActionContext): Octokit {
 
 /**
  * Whether this action is running under a bot (installation) token.
- * Per the spec, the discriminator is the presence of attribution — when the
- * credential resolver returns a bot token, it attaches attribution from the
- * initiating Valet user. User tokens never have attribution.
+ * The discriminator is the presence of attribution — when the credential
+ * resolver returns a bot token, it attaches attribution from the initiating
+ * Valet user. User tokens never have attribution.
  */
 function isBotToken(ctx: ActionContext): boolean {
   return !!ctx.attribution;
 }
 
+/** Suffix for PR/issue bodies when acting under a bot token. */
 function attributionSuffix(ctx: ActionContext): string {
   if (!ctx.attribution) return '';
   return `\n\n---\n> Created on behalf of ${ctx.attribution.name} <${ctx.attribution.email}>`;
 }
 
-function attributionCommentPrefix(ctx: ActionContext): string {
-  if (!ctx.attribution) return '';
-  return `*On behalf of ${ctx.attribution.name} <${ctx.attribution.email}>:*\n\n`;
-}
-
+/** Trailer for commit messages when acting under a bot token. */
 function attributionCommitTrailer(ctx: ActionContext): string {
   if (!ctx.attribution) return '';
   return `\n\nCo-Authored-By: ${ctx.attribution.name} <${ctx.attribution.email}>`;
 }
 ```
+
+**Note on scope**: per the spec, we inject attribution into **commits, PR bodies, and issue bodies only**. Comments, review comments, and commit comments are not attributed in this iteration — if a specific case becomes important, we add it as a one-line change.
 
 - [ ] **Step 3: Rewrite `executeAction` case by case**
 
@@ -3126,23 +3020,20 @@ case 'github.create_issue': {
 }
 
 case 'github.create_comment': {
+  // Comments do NOT inject attribution in this iteration.
   const { owner, repo, issueNumber, body } = createComment.params.parse(params);
   const octokit = getOctokit(ctx);
-  const finalBody = attributionCommentPrefix(ctx) + body;
   const { data } = await octokit.request(
     'POST /repos/{owner}/{repo}/issues/{issue_number}/comments',
-    { owner, repo, issue_number: issueNumber, body: finalBody },
+    { owner, repo, issue_number: issueNumber, body },
   );
   return { success: true, data };
 }
 ```
 
-Repeat for every action. Ensure attribution is applied to:
-- `create_issue`, `update_issue`
-- `create_pull_request`, `update_pull_request`
-- `create_comment`, `create_review_comment`
-- Any commit creation action
-- Any other action producing user-visible text
+Attribution scope (match the spec):
+- **Inject**: `create_issue`/`update_issue` body, `create_pull_request`/`update_pull_request` body, commit message trailers
+- **Do not inject**: comments, review comments, commit comments, any other action
 
 - [ ] **Step 4: Delete `api.ts`**
 
@@ -3326,18 +3217,9 @@ const { data: installations } = useGitHubInstallations();
     <InstallationTable rows={installations?.personal ?? []} showUser />
   </CollapsibleContent>
 </Collapsible>
-
-{(installations?.orphaned.length ?? 0) > 0 && (
-  <Collapsible>
-    <CollapsibleTrigger>
-      Orphaned installations ({installations.orphaned.length})
-    </CollapsibleTrigger>
-    <CollapsibleContent>
-      <InstallationTable rows={installations.orphaned} />
-    </CollapsibleContent>
-  </Collapsible>
-)}
 ```
+
+Personal installations with no linked Valet user are shown in the same table (the `showUser` column will be empty for them). These rows are rare and self-resolve via reconciliation on the user's next login.
 
 - [ ] **Step 4: Add settings toggles**
 
@@ -3393,38 +3275,18 @@ Show the list of installations accessible to the user (from the updated `GET /ap
 When `allowPersonalInstallations === true` and the user does not yet have a personal installation:
 
 ```tsx
-<button onClick={async () => {
-  // Get install URL with signed state from backend
-  const res = await apiClient.post('/me/github/install-url');
-  window.open(res.data.url, '_blank');
-}}>
+<a
+  href={`https://github.com/apps/${config.appSlug}/installations/new`}
+  target="_blank"
+  rel="noopener noreferrer"
+>
   Install on personal account
-</button>
+</a>
 ```
 
-This requires a new backend endpoint: `POST /api/me/github/install-url` that generates a signed state JWT and returns `https://github.com/apps/{appSlug}/installations/new?state={jwt}`.
+No state parameter, no backend endpoint, no post-install callback — the `installation.created` webhook auto-links the install to the user (by matching `account.id` to `users.github_id`) when it arrives. The user goes directly to GitHub, installs the App, and the link shows up on their next view of the integrations page.
 
-- [ ] **Step 4: Add the `install-url` endpoint to github-me.ts**
-
-```typescript
-githubMeRouter.post('/install-url', async (c) => {
-  const user = c.get('user');
-  const config = await getGitHubConfig(c.env, c.get('db'));
-  if (!config) return c.json({ error: 'GitHub App not configured' }, 400);
-
-  const now = Math.floor(Date.now() / 1000);
-  const state = await signJWT(
-    { sub: user.id, purpose: 'github-install', iat: now, exp: now + 10 * 60 } as any,
-    c.env.ENCRYPTION_KEY,
-  );
-
-  return c.json({
-    url: `https://github.com/apps/${config.appSlug}/installations/new?state=${encodeURIComponent(state)}`,
-  });
-});
-```
-
-- [ ] **Step 5: Update the "not connected" banner states**
+- [ ] **Step 4: Update the "not connected" banner states**
 
 Based on `allowAnonymousGitHubAccess`, show either:
 - "GitHub is available via shared access — connecting your account enables better attribution"
@@ -3432,14 +3294,14 @@ Based on `allowAnonymousGitHubAccess`, show either:
 
 Fetch the toggle value from a new API endpoint or include it in `GET /api/me/github`.
 
-- [ ] **Step 6: Typecheck**
+- [ ] **Step 5: Typecheck**
 
 ```bash
 cd packages/client && pnpm typecheck
 cd packages/worker && pnpm typecheck
 ```
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add packages/client/src packages/worker/src/routes/github-me.ts
@@ -3624,9 +3486,8 @@ After all tasks complete, verify:
 - [ ] `github_installations` table populated after admin re-runs "Refresh installations" post-deploy
 - [ ] GitHub login works with App OAuth credentials (test end-to-end)
 - [ ] GitHub integration connect works with App OAuth credentials (test end-to-end)
-- [ ] Personal installation flow works end-to-end (Install on personal account → callback → reconciliation)
-- [ ] Attribution appears in commits/PRs/issues/comments when using bot token (manual verification by creating an issue as a non-linked user)
-- [ ] Rate limit on "Refresh installations" admin action is respected (call twice in quick succession, second should 429)
+- [ ] Personal installation flow works end-to-end (Install on personal account → webhook/reconciliation links it)
+- [ ] Attribution appears in commits and PR/issue bodies when using bot token (manual verification by creating an issue as a non-linked user)
 
 ---
 
