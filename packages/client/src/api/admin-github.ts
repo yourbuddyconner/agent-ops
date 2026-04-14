@@ -4,32 +4,43 @@ import { api } from './client';
 // ─── Query Keys ─────────────────────────────────────────────────────────
 
 export const adminGitHubKeys = {
-  config: ['admin', 'github'] as const,
+  config: () => ['admin-github', 'config'] as const,
+  installations: () => ['admin-github', 'installations'] as const,
 };
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
+export interface GithubInstallation {
+  id: string;
+  githubInstallationId: string;
+  accountLogin: string;
+  accountId: string;
+  accountType: 'Organization' | 'User';
+  linkedUserId: string | null;
+  status: string;
+  repositorySelection: string;
+  permissions: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AdminGitHubConfig {
-  source: 'database' | 'env' | 'none';
-  oauth: {
-    configured: boolean;
-    clientId?: string;
-    viaApp?: boolean;
-  } | null;
+  appStatus: 'not_configured' | 'configured';
   app: {
-    configured: boolean;
-    appId?: string;
-    appSlug?: string;
-    appName?: string;
-    appOwner?: string;
-    appOwnerType?: string;
-    installationId?: string;
-    accessibleOwners?: string[];
-    accessibleOwnersRefreshedAt?: string;
-    repositoryCount?: number;
+    appId: string;
+    appSlug: string;
+    appOwner: string;
+    appOwnerType: string;
+    appName: string;
   } | null;
-  configuredBy?: string;
-  updatedAt?: string;
+  settings: {
+    allowPersonalInstallations: boolean;
+    allowAnonymousGitHubAccess: boolean;
+  };
+  installations: {
+    organizations: GithubInstallation[];
+    personal: GithubInstallation[];
+  };
 }
 
 // ─── Hooks ──────────────────────────────────────────────────────────────
@@ -37,7 +48,7 @@ export interface AdminGitHubConfig {
 // GET /api/admin/github
 export function useAdminGitHubConfig() {
   return useQuery({
-    queryKey: adminGitHubKeys.config,
+    queryKey: adminGitHubKeys.config(),
     queryFn: () => api.get<AdminGitHubConfig>('/admin/github'),
     staleTime: 60_000,
   });
@@ -60,26 +71,43 @@ export function useRefreshGitHubApp() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () =>
-      api.post<{ installationId: string; accessibleOwners: string[]; repositoryCount: number }>('/admin/github/app/refresh'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: adminGitHubKeys.config }),
+      api.post<{ refreshed: true; installationCount: number }>('/admin/github/app/refresh'),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: adminGitHubKeys.config() });
+      qc.invalidateQueries({ queryKey: adminGitHubKeys.installations() });
+    },
   });
 }
 
-// PUT /api/admin/github/oauth
-export function useSetGitHubOAuth() {
+// PUT /api/admin/github/settings
+export function useUpdateGitHubSettings() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { clientId: string; clientSecret: string }) =>
-      api.put<{ success: boolean }>('/admin/github/oauth', data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: adminGitHubKeys.config }),
+    mutationFn: (settings: { allowPersonalInstallations?: boolean; allowAnonymousGitHubAccess?: boolean }) =>
+      api.put<{ success: boolean }>('/admin/github/settings', settings),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: adminGitHubKeys.config() });
+    },
   });
 }
 
-// DELETE /api/admin/github/oauth (also deletes app config)
+// GET /api/admin/github/installations
+export function useGitHubInstallations() {
+  return useQuery({
+    queryKey: adminGitHubKeys.installations(),
+    queryFn: () =>
+      api.get<{ organizations: GithubInstallation[]; personal: GithubInstallation[] }>('/admin/github/installations'),
+  });
+}
+
+// DELETE /api/admin/github (danger zone — removes entire GitHub App config)
 export function useDeleteGitHubConfig() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.delete<{ success: boolean }>('/admin/github/oauth'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: adminGitHubKeys.config }),
+    mutationFn: () => api.delete<{ success: boolean }>('/admin/github'),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: adminGitHubKeys.config() });
+      qc.invalidateQueries({ queryKey: adminGitHubKeys.installations() });
+    },
   });
 }
