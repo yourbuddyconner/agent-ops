@@ -8,14 +8,16 @@ import {
   updateServiceMetadata,
 } from '../lib/db/service-configs.js';
 import type { GitHubServiceConfig, GitHubServiceMetadata } from '../services/github-config.js';
-import { storeCredential } from '../services/credentials.js';
-import * as credentialDb from '../lib/db/credentials.js';
-import { mintGitHubAppJWT } from '../services/github-app-jwt.js';
+import { getGitHubMetadata } from '../services/github-config.js';
+import { loadGitHubApp } from '../services/github-app.js';
+import { refreshAllInstallations } from '../services/github-installations.js';
+import { listGithubInstallationsByAccountType } from '../lib/db/github-installations.js';
+import { deleteCredentialsByProvider } from '../lib/db/credentials.js';
 import { signJWT, verifyJWT } from '../lib/jwt.js';
 import { getDb } from '../lib/drizzle.js';
-import { getServiceMetadata } from '../lib/db/service-configs.js';
 import * as db from '../lib/db.js';
-import { deleteOrgIntegrationByService } from '../lib/db/integrations.js';
+import { getServiceMetadata } from '../lib/db/service-configs.js';
+import { githubInstallations } from '../lib/schema/github-installations.js';
 
 interface ManifestJWTPayload {
   sub: string;
@@ -43,45 +45,42 @@ adminGitHubRouter.get('/', async (c) => {
     // Table may not exist yet if migration hasn't been applied
   }
 
-  if (!svc) {
-    // Check env var fallback
-    const hasEnvVars = !!c.env.GITHUB_CLIENT_ID;
+  if (!svc || !svc.config.appId) {
     return c.json({
-      source: hasEnvVars ? 'env' : 'none',
-      oauth: hasEnvVars ? { configured: true, clientId: c.env.GITHUB_CLIENT_ID } : null,
-      app: c.env.GITHUB_APP_ID
-        ? { configured: true, appId: c.env.GITHUB_APP_ID, appSlug: c.env.GITHUB_APP_SLUG }
-        : null,
+      appStatus: 'not_configured' as const,
+      app: null,
+      settings: {
+        allowPersonalInstallations: true,
+        allowAnonymousGitHubAccess: true,
+      },
+      installations: {
+        organizations: [],
+        personal: [],
+      },
     });
   }
 
-  const hasApp = !!svc.config.appId;
-  // Check if the OAuth credentials are the classic (separate) ones or the App's
-  const hasClassicOAuth = !!svc.config.oauthClientId && svc.config.oauthClientId !== svc.config.appOauthClientId;
+  const appDb = c.get('db');
+  const orgs = await listGithubInstallationsByAccountType(appDb, 'Organization');
+  const personal = await listGithubInstallationsByAccountType(appDb, 'User');
+
   return c.json({
-    source: 'database',
-    oauth: {
-      configured: true,
-      clientId: svc.config.oauthClientId,
-      viaApp: hasApp && !hasClassicOAuth,
-      hasClassicOAuth,
+    appStatus: 'configured' as const,
+    app: {
+      appId: svc.config.appId,
+      appSlug: svc.config.appSlug,
+      appOwner: svc.metadata.appOwner,
+      appOwnerType: svc.metadata.appOwnerType,
+      appName: svc.metadata.appName,
     },
-    app: hasApp
-      ? {
-          configured: true,
-          appId: svc.config.appId,
-          appSlug: svc.config.appSlug,
-          appName: svc.metadata.appName,
-          appOwner: svc.metadata.appOwner,
-          appOwnerType: svc.metadata.appOwnerType,
-          installationId: svc.metadata.appInstallationId,
-          accessibleOwners: svc.metadata.accessibleOwners,
-          accessibleOwnersRefreshedAt: svc.metadata.accessibleOwnersRefreshedAt,
-          repositoryCount: svc.metadata.repositoryCount,
-        }
-      : null,
-    configuredBy: svc.configuredBy,
-    updatedAt: svc.updatedAt,
+    settings: {
+      allowPersonalInstallations: svc.metadata.allowPersonalInstallations ?? true,
+      allowAnonymousGitHubAccess: svc.metadata.allowAnonymousGitHubAccess ?? true,
+    },
+    installations: {
+      organizations: orgs,
+      personal,
+    },
   });
 });
 
@@ -162,7 +161,8 @@ adminGitHubRouter.post('/app/manifest', async (c) => {
       `${frontendUrl}/auth/github/repo-callback`,
     ],
     setup_url: `${workerUrl}/repo-providers/github/install/callback`,
-    public: false,
+    request_oauth_on_install: false,
+    public: true,
     default_permissions: permissions,
     default_events: events,
   };
@@ -173,183 +173,59 @@ adminGitHubRouter.post('/app/manifest', async (c) => {
 });
 
 /**
- * PUT /api/admin/github/oauth — Set OAuth App credentials
- */
-adminGitHubRouter.put('/oauth', async (c) => {
-  const user = c.get('user');
-  const body = await c.req.json<{ clientId: string; clientSecret: string }>();
-
-  if (!body.clientId || !body.clientSecret) {
-    return c.json({ error: 'clientId and clientSecret are required' }, 400);
-  }
-
-  // Read existing config to preserve app fields
-  const existing = await getServiceConfig<GitHubServiceConfig, GitHubServiceMetadata>(
-    c.get('db'), c.env.ENCRYPTION_KEY, 'github',
-  );
-
-  const config: GitHubServiceConfig = {
-    oauthClientId: body.clientId,
-    oauthClientSecret: body.clientSecret,
-    // Preserve existing app config if any
-    ...(existing?.config.appId && {
-      appId: existing.config.appId,
-      appPrivateKey: existing.config.appPrivateKey,
-      appSlug: existing.config.appSlug,
-      appWebhookSecret: existing.config.appWebhookSecret,
-      appOauthClientId: existing.config.appOauthClientId,
-      appOauthClientSecret: existing.config.appOauthClientSecret,
-    }),
-  };
-
-  const metadata: GitHubServiceMetadata = existing?.metadata || {};
-
-  await setServiceConfig(c.get('db'), c.env.ENCRYPTION_KEY, 'github', config, metadata, user.id);
-  return c.json({ success: true });
-});
-
-/**
- * DELETE /api/admin/github/oauth — Remove entire GitHub config + org credential
- */
-adminGitHubRouter.delete('/oauth', async (c) => {
-  // Remove the org app_install credential so resolveRepoCredential stops using it
-  const orgSettings = await db.getOrgSettings(c.get('db'));
-  if (orgSettings?.id) {
-    await credentialDb.deleteCredential(c.get('db'), 'org', orgSettings.id, 'github', 'app_install');
-  }
-  // Remove org integration record so listTools stops showing GitHub tools
-  await deleteOrgIntegrationByService(c.get('db'), 'github').catch(() => {});
-  await deleteServiceConfig(c.get('db'), 'github');
-  // Clean up manifest nonce
-  await deleteServiceConfig(c.get('db'), 'github_manifest_nonce').catch(() => {});
-  return c.json({ success: true });
-});
-
-/**
- * POST /api/admin/github/app/refresh — Re-sync installation metadata from GitHub
+ * POST /api/admin/github/app/refresh — Re-sync installations from GitHub
  */
 adminGitHubRouter.post('/app/refresh', async (c) => {
-  const existing = await getServiceConfig<GitHubServiceConfig, GitHubServiceMetadata>(
-    c.get('db'), c.env.ENCRYPTION_KEY, 'github',
-  );
+  const appDb = c.get('db');
+  const app = await loadGitHubApp(c.env, appDb);
+  if (!app) return c.json({ error: 'App not configured' }, 400);
 
-  if (!existing?.config.appId || !existing?.config.appPrivateKey) {
-    return c.json({ error: 'GitHub App not configured' }, 400);
-  }
+  const { count } = await refreshAllInstallations(app, appDb);
+  return c.json({ refreshed: true, installationCount: count });
+});
 
-  let appJwt: string;
-  try {
-    appJwt = await mintGitHubAppJWT(existing.config.appId, existing.config.appPrivateKey);
-  } catch {
-    return c.json({ error: 'Failed to sign JWT with private key — check that the key is valid' }, 400);
-  }
+/**
+ * PUT /api/admin/github/settings — Update GitHub App settings
+ */
+adminGitHubRouter.put('/settings', async (c) => {
+  const body = await c.req.json<{ allowPersonalInstallations?: boolean; allowAnonymousGitHubAccess?: boolean }>();
+  const meta = await getGitHubMetadata(c.get('db')) ?? {};
+  const updated = { ...meta };
+  if (body.allowPersonalInstallations !== undefined) updated.allowPersonalInstallations = body.allowPersonalInstallations;
+  if (body.allowAnonymousGitHubAccess !== undefined) updated.allowAnonymousGitHubAccess = body.allowAnonymousGitHubAccess;
+  await updateServiceMetadata(c.get('db'), 'github', updated);
+  return c.json({ success: true, settings: updated });
+});
 
-  // List installations
-  const installsRes = await fetch('https://api.github.com/app/installations', {
-    headers: {
-      Authorization: `Bearer ${appJwt}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'valet-app',
-    },
-  });
+/**
+ * GET /api/admin/github/installations — List installations by type
+ */
+adminGitHubRouter.get('/installations', async (c) => {
+  const appDb = c.get('db');
+  const orgs = await listGithubInstallationsByAccountType(appDb, 'Organization');
+  const personal = await listGithubInstallationsByAccountType(appDb, 'User');
+  return c.json({ organizations: orgs, personal });
+});
 
-  if (!installsRes.ok) {
-    const errBody = await installsRes.text();
-    return c.json({ error: `GitHub API error: ${installsRes.status} ${errBody}` }, 400);
-  }
+/**
+ * DELETE /api/admin/github — Danger zone: remove entire GitHub config
+ */
+adminGitHubRouter.delete('/', async (c) => {
+  const appDb = c.get('db');
 
-  const installations = await installsRes.json() as Array<{ id: number; account?: { login?: string } }>;
+  // Delete all github_installations rows
+  await appDb.delete(githubInstallations);
 
-  // Enforce single-installation model
-  let installation: (typeof installations)[0];
-  const storedId = existing.metadata.appInstallationId;
+  // Delete all github credentials from the credentials table
+  await deleteCredentialsByProvider(appDb, 'github');
 
-  if (storedId) {
-    const match = installations.find((i) => String(i.id) === storedId);
-    if (!match) {
-      return c.json({ error: `Stored installation ${storedId} not found. It may have been removed from GitHub.` }, 400);
-    }
-    installation = match;
-  } else if (installations.length === 1) {
-    installation = installations[0];
-  } else if (installations.length === 0) {
-    return c.json({ error: 'No installations found. Install the app on a GitHub organization first.' }, 400);
-  } else {
-    return c.json({
-      error: `Found ${installations.length} installations but expected exactly one. Remove extra installations on GitHub and retry.`,
-    }, 400);
-  }
+  // Delete the service config row
+  await deleteServiceConfig(appDb, 'github');
 
-  const installationId = String(installation.id);
+  // Clean up manifest nonce
+  await deleteServiceConfig(appDb, 'github_manifest_nonce').catch(() => {});
 
-  // Get installation access token to list repositories
-  const tokenRes = await fetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${appJwt}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'valet-app',
-    },
-  });
-
-  if (!tokenRes.ok) {
-    return c.json({ error: 'Failed to create installation access token' }, 400);
-  }
-
-  const tokenData = await tokenRes.json() as { token: string };
-
-  // List accessible repositories
-  const reposRes = await fetch('https://api.github.com/installation/repositories?per_page=100', {
-    headers: {
-      Authorization: `Bearer ${tokenData.token}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'valet-app',
-    },
-  });
-
-  if (!reposRes.ok) {
-    return c.json({ error: 'Failed to list installation repositories' }, 400);
-  }
-
-  const reposData = await reposRes.json() as {
-    total_count: number;
-    repositories: Array<{ owner: { login: string } }>;
-  };
-
-  const accessibleOwners = [...new Set(reposData.repositories.map((r) => r.owner.login))];
-
-  // Update metadata
-  const metadata: GitHubServiceMetadata = {
-    ...existing.metadata,
-    appInstallationId: installationId,
-    accessibleOwners,
-    accessibleOwnersRefreshedAt: new Date().toISOString(),
-    repositoryCount: reposData.total_count,
-  };
-
-  await updateServiceMetadata(c.get('db'), 'github', metadata);
-
-  // Update org-level app_install credential
-  const orgSettings = await db.getOrgSettings(c.get('db'));
-  if (orgSettings?.id) {
-    await storeCredential(c.env, 'org', orgSettings.id, 'github', {
-      installation_id: installationId,
-      app_id: existing.config.appId,
-      private_key: existing.config.appPrivateKey,
-    }, {
-      credentialType: 'app_install',
-      metadata: { installationId },
-    });
-  }
-
-  return c.json({
-    installationId,
-    accessibleOwners,
-    repositoryCount: reposData.total_count,
-  });
+  return c.json({ success: true });
 });
 
 /**
@@ -416,15 +292,7 @@ githubAppSetupCallbackRouter.get('/app/setup', async (c) => {
     owner: { login: string; type: string };
   };
 
-  // Store App credentials separately — don't overwrite classic OAuth if configured
-  const existing = await getServiceConfig<GitHubServiceConfig, GitHubServiceMetadata>(
-    appDb, c.env.ENCRYPTION_KEY, 'github',
-  ).catch(() => null);
-
   const config: GitHubServiceConfig = {
-    // Preserve existing classic OAuth credentials; fall back to App OAuth for first-time setup
-    oauthClientId: existing?.config.oauthClientId || appData.client_id,
-    oauthClientSecret: existing?.config.oauthClientSecret || appData.client_secret,
     appOauthClientId: appData.client_id,
     appOauthClientSecret: appData.client_secret,
     appId: String(appData.id),
@@ -437,6 +305,8 @@ githubAppSetupCallbackRouter.get('/app/setup', async (c) => {
     appOwner: appData.owner.login,
     appOwnerType: appData.owner.type,
     appName: appData.name,
+    allowPersonalInstallations: true,
+    allowAnonymousGitHubAccess: true,
   };
 
   const userId = payload.sub as string;
