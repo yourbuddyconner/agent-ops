@@ -2,12 +2,12 @@ import * as React from 'react';
 import { Button } from '@/components/ui/button';
 import {
   useAdminGitHubConfig,
-  useSetGitHubOAuth,
   useCreateGitHubAppManifest,
   useRefreshGitHubApp,
   useDeleteGitHubConfig,
+  useUpdateGitHubSettings,
+  type GithubInstallation,
 } from '@/api/admin-github';
-import { api } from '@/api/client';
 
 const inputClass =
   'mt-1 block w-full max-w-md rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-400 dark:focus:ring-neutral-400';
@@ -68,7 +68,7 @@ export function GitHubConfigSection() {
     <Section title="GitHub">
       <div className="space-y-6">
         <p className="text-sm text-neutral-500 dark:text-neutral-400">
-          Configure GitHub integration for your organization. A GitHub App provides read-only repository access for the agent. OAuth enables users to link their personal GitHub accounts.
+          Configure GitHub integration for your organization. A GitHub App provides repository access for the agent and OAuth for user account linking.
         </p>
 
         {callbackResult && (
@@ -100,14 +100,6 @@ export function GitHubConfigSection() {
           </div>
         )}
 
-        {config?.source === 'env' && (
-          <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-700 dark:bg-amber-900/20">
-            <p className="text-sm text-amber-800 dark:text-amber-300">
-              GitHub is configured via environment variables.
-            </p>
-          </div>
-        )}
-
         {isLoading ? (
           <div className="space-y-4">
             <div className="h-12 animate-pulse rounded-md bg-neutral-100 dark:bg-neutral-700" />
@@ -119,18 +111,22 @@ export function GitHubConfigSection() {
               Failed to load GitHub configuration. Please try refreshing the page.
             </p>
           </div>
-        ) : (
+        ) : config?.appStatus === 'configured' ? (
           <>
-            <AppPanel config={config} />
-            <OAuthPanel config={config} />
+            <AppConfigured config={config} />
+            <SettingsPanel config={config} />
+            <InstallationsPanel config={config} />
+            <DangerZone />
           </>
+        ) : (
+          <AppSetupForm />
         )}
       </div>
     </Section>
   );
 }
 
-// ─── GitHub App Panel ───────────────────────────────────────────────────
+// ─── GitHub App Setup (not configured) ─────────────────────────────────────
 
 // Available GitHub App permissions with human-readable labels
 const AVAILABLE_PERMISSIONS: { key: string; label: string; levels: string[] }[] = [
@@ -165,20 +161,13 @@ const DEFAULT_PERMISSIONS: Record<string, string> = {
 
 const DEFAULT_EVENTS = ['push', 'pull_request'];
 
-function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>['data'] }) {
+function AppSetupForm() {
   const createManifest = useCreateGitHubAppManifest();
-  const refreshApp = useRefreshGitHubApp();
-  const deleteConfig = useDeleteGitHubConfig();
   const [githubOrg, setGithubOrg] = React.useState('');
-  const [confirmDelete, setConfirmDelete] = React.useState(false);
   const [showAdvanced, setShowAdvanced] = React.useState(false);
   const [permissions, setPermissions] = React.useState<Record<string, string>>(DEFAULT_PERMISSIONS);
   const [events, setEvents] = React.useState<string[]>(DEFAULT_EVENTS);
   const formRef = React.useRef<HTMLFormElement>(null);
-
-  const app = config?.app;
-  const isConfigured = app?.configured;
-  const isInstalled = !!app?.installationId;
 
   function handleCreateApp(e: React.FormEvent) {
     e.preventDefault();
@@ -190,7 +179,6 @@ function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>[
       },
       {
         onSuccess: (data) => {
-          // Submit hidden form to GitHub
           const form = formRef.current;
           if (form) {
             const input = form.querySelector<HTMLInputElement>('input[name="manifest"]');
@@ -203,145 +191,112 @@ function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>[
     );
   }
 
-  function handleDelete() {
-    deleteConfig.mutate(undefined, {
-      onSuccess: () => setConfirmDelete(false),
-    });
-  }
-
-  // State 1: Not configured
-  if (!isConfigured) {
-    return (
-      <div className="space-y-3">
-        <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">GitHub App</h3>
-        <p className="text-sm text-neutral-500 dark:text-neutral-400">
-          Create a GitHub App to give the agent read-only access to your repositories.
-        </p>
-        <form onSubmit={handleCreateApp} className="space-y-3">
-          <div>
-            <label className="block text-sm text-neutral-600 dark:text-neutral-400">GitHub Organization</label>
-            <input
-              type="text"
-              className={inputClass}
-              value={githubOrg}
-              onChange={(e) => setGithubOrg(e.target.value)}
-              placeholder="acme-corp"
-            />
-            <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
-              The GitHub organization where the app will be created and installed.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowAdvanced(!showAdvanced)}
-            className="text-xs text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
-          >
-            {showAdvanced ? '▾ Hide permissions' : '▸ Configure permissions'}
-          </button>
-          {showAdvanced && (
-            <div className="space-y-3 rounded-md border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-800/50">
-              <div>
-                <p className="mb-2 text-xs font-medium text-neutral-600 dark:text-neutral-400">Permissions</p>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {AVAILABLE_PERMISSIONS.map((perm) => {
-                    const current = permissions[perm.key];
-                    return (
-                      <label key={perm.key} className="flex items-center gap-2 text-xs text-neutral-700 dark:text-neutral-300">
-                        <select
-                          value={current || ''}
-                          onChange={(e) => {
-                            setPermissions((prev) => {
-                              const next = { ...prev };
-                              if (e.target.value) {
-                                next[perm.key] = e.target.value;
-                              } else {
-                                delete next[perm.key];
-                              }
-                              return next;
-                            });
-                          }}
-                          className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-xs dark:border-neutral-600 dark:bg-neutral-800"
-                        >
-                          <option value="">none</option>
-                          {perm.levels.map((level) => (
-                            <option key={level} value={level}>{level}</option>
-                          ))}
-                        </select>
-                        {perm.label}
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-              <div>
-                <p className="mb-2 text-xs font-medium text-neutral-600 dark:text-neutral-400">Events</p>
-                <div className="grid grid-cols-3 gap-1.5">
-                  {AVAILABLE_EVENTS.map((event) => (
-                    <label key={event} className="flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-300">
-                      <input
-                        type="checkbox"
-                        checked={events.includes(event)}
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">GitHub App</h3>
+      <p className="text-sm text-neutral-500 dark:text-neutral-400">
+        Create a GitHub App to give the agent access to your repositories and enable user account linking.
+      </p>
+      <form onSubmit={handleCreateApp} className="space-y-3">
+        <div>
+          <label className="block text-sm text-neutral-600 dark:text-neutral-400">GitHub Organization</label>
+          <input
+            type="text"
+            className={inputClass}
+            value={githubOrg}
+            onChange={(e) => setGithubOrg(e.target.value)}
+            placeholder="acme-corp"
+          />
+          <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+            The GitHub organization where the app will be created and installed.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowAdvanced(!showAdvanced)}
+          className="text-xs text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+        >
+          {showAdvanced ? '\u25BE Hide permissions' : '\u25B8 Configure permissions'}
+        </button>
+        {showAdvanced && (
+          <div className="space-y-3 rounded-md border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-800/50">
+            <div>
+              <p className="mb-2 text-xs font-medium text-neutral-600 dark:text-neutral-400">Permissions</p>
+              <div className="grid grid-cols-2 gap-1.5">
+                {AVAILABLE_PERMISSIONS.map((perm) => {
+                  const current = permissions[perm.key];
+                  return (
+                    <label key={perm.key} className="flex items-center gap-2 text-xs text-neutral-700 dark:text-neutral-300">
+                      <select
+                        value={current || ''}
                         onChange={(e) => {
-                          setEvents((prev) =>
-                            e.target.checked ? [...prev, event] : prev.filter((ev) => ev !== event)
-                          );
+                          setPermissions((prev) => {
+                            const next = { ...prev };
+                            if (e.target.value) {
+                              next[perm.key] = e.target.value;
+                            } else {
+                              delete next[perm.key];
+                            }
+                            return next;
+                          });
                         }}
-                        className="rounded border-neutral-300 dark:border-neutral-600"
-                      />
-                      {event}
+                        className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-xs dark:border-neutral-600 dark:bg-neutral-800"
+                      >
+                        <option value="">none</option>
+                        {perm.levels.map((level) => (
+                          <option key={level} value={level}>{level}</option>
+                        ))}
+                      </select>
+                      {perm.label}
                     </label>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
             </div>
-          )}
-          <Button type="submit" disabled={createManifest.isPending || !githubOrg.trim()}>
-            {createManifest.isPending ? 'Preparing...' : 'Create GitHub App'}
-          </Button>
-          {createManifest.isError && (
-            <p className="text-sm text-red-600 dark:text-red-400">Failed to create manifest. Try again.</p>
-          )}
-        </form>
-        {/* Hidden form for GitHub manifest POST */}
-        <form ref={formRef} method="post" className="hidden">
-          <input type="hidden" name="manifest" />
-        </form>
-      </div>
-    );
-  }
+            <div>
+              <p className="mb-2 text-xs font-medium text-neutral-600 dark:text-neutral-400">Events</p>
+              <div className="grid grid-cols-3 gap-1.5">
+                {AVAILABLE_EVENTS.map((event) => (
+                  <label key={event} className="flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-300">
+                    <input
+                      type="checkbox"
+                      checked={events.includes(event)}
+                      onChange={(e) => {
+                        setEvents((prev) =>
+                          e.target.checked ? [...prev, event] : prev.filter((ev) => ev !== event)
+                        );
+                      }}
+                      className="rounded border-neutral-300 dark:border-neutral-600"
+                    />
+                    {event}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        <Button type="submit" disabled={createManifest.isPending || !githubOrg.trim()}>
+          {createManifest.isPending ? 'Preparing...' : 'Create GitHub App'}
+        </Button>
+        {createManifest.isError && (
+          <p className="text-sm text-red-600 dark:text-red-400">Failed to create manifest. Try again.</p>
+        )}
+      </form>
+      {/* Hidden form for GitHub manifest POST */}
+      <form ref={formRef} method="post" className="hidden">
+        <input type="hidden" name="manifest" />
+      </form>
+    </div>
+  );
+}
 
-  // State 2: App created, not installed
-  if (!isInstalled) {
-    return (
-      <div className="space-y-3">
-        <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">GitHub App</h3>
-        <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 dark:border-green-700 dark:bg-green-900/20">
-          <p className="text-sm font-medium text-green-800 dark:text-green-300">
-            {app.appName || app.appSlug || 'GitHub App'} created
-          </p>
-          <p className="mt-1 text-xs text-green-700 dark:text-green-400">
-            Now install the app on your GitHub organization to grant repository access.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <InstallButton />
-          {app.appOwner && app.appSlug && (
-            <a
-              href={`https://github.com/organizations/${app.appOwner}/settings/apps/${app.appSlug}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-sm text-neutral-500 underline hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
-            >
-              App settings
-            </a>
-          )}
-          <DeleteButton confirmDelete={confirmDelete} setConfirmDelete={setConfirmDelete} onDelete={handleDelete} isPending={deleteConfig.isPending} isError={deleteConfig.isError} />
-        </div>
-      </div>
-    );
-  }
+// ─── Configured App ────────────────────────────────────────────────────────
 
-  // State 3: App created + installed
+function AppConfigured({ config }: { config: NonNullable<ReturnType<typeof useAdminGitHubConfig>['data']> }) {
+  const refreshApp = useRefreshGitHubApp();
+  const app = config.app;
+  if (!app) return null;
+
   return (
     <div className="space-y-3">
       <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">GitHub App</h3>
@@ -351,12 +306,10 @@ function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>[
             <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
               {app.appName || app.appSlug || `App ${app.appId}`}
             </p>
-            <p className="text-xs text-green-600 dark:text-green-400">
-              Installed · {app.repositoryCount ?? '?'} repositories
-            </p>
-            {app.accessibleOwners && app.accessibleOwners.length > 0 && (
+            <p className="text-xs text-green-600 dark:text-green-400">Configured</p>
+            {app.appOwner && (
               <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-                Owners: {app.accessibleOwners.join(', ')}
+                Owner: {app.appOwner} ({app.appOwnerType})
               </p>
             )}
           </div>
@@ -371,16 +324,6 @@ function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>[
       </div>
 
       <div className="flex items-center gap-3 text-sm">
-        {app.appOwner && app.installationId && (
-          <a
-            href={`https://github.com/organizations/${app.appOwner}/settings/installations/${app.installationId}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-neutral-500 underline hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
-          >
-            Manage repositories
-          </a>
-        )}
         {app.appOwner && app.appSlug && (
           <a
             href={`https://github.com/organizations/${app.appOwner}/settings/apps/${app.appSlug}`}
@@ -391,7 +334,6 @@ function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>[
             App settings
           </a>
         )}
-        <DeleteButton confirmDelete={confirmDelete} setConfirmDelete={setConfirmDelete} onDelete={handleDelete} isPending={deleteConfig.isPending} isError={deleteConfig.isError} />
       </div>
 
       {refreshApp.isError && (
@@ -401,181 +343,211 @@ function AppPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>[
   );
 }
 
-function InstallButton() {
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+// ─── Settings Panel ────────────────────────────────────────────────────────
 
-  async function handleInstall() {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await api.get<{ url?: string; error?: string }>('/repo-providers/github/install?level=org');
-      if (data.url) {
-        window.location.href = data.url;
-      } else {
-        setError(data.error || 'Failed to get installation URL.');
-      }
-    } catch {
-      setError('Failed to start installation. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  }
+function SettingsPanel({ config }: { config: NonNullable<ReturnType<typeof useAdminGitHubConfig>['data']> }) {
+  const updateSettings = useUpdateGitHubSettings();
+  const settings = config.settings;
 
   return (
-    <div>
-      <Button onClick={handleInstall} disabled={loading}>
-        {loading ? 'Redirecting...' : 'Install on GitHub'}
-      </Button>
-      {error && <p className="mt-1 text-sm text-red-600 dark:text-red-400">{error}</p>}
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">Settings</h3>
+      <div className="space-y-4 rounded-md border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-700 dark:bg-neutral-800/50">
+        <ToggleRow
+          label="Allow personal installations"
+          description="Allow users to install the GitHub App on their personal accounts."
+          checked={settings.allowPersonalInstallations}
+          disabled={updateSettings.isPending}
+          onChange={(value) => updateSettings.mutate({ allowPersonalInstallations: value })}
+        />
+        <ToggleRow
+          label="Allow anonymous GitHub access"
+          description="Allow the agent to use the org installation for users who haven't linked their GitHub accounts."
+          checked={settings.allowAnonymousGitHubAccess}
+          disabled={updateSettings.isPending}
+          onChange={(value) => updateSettings.mutate({ allowAnonymousGitHubAccess: value })}
+        />
+      </div>
     </div>
   );
 }
 
-function DeleteButton({
-  confirmDelete,
-  setConfirmDelete,
-  onDelete,
-  isPending,
-  isError,
+function ToggleRow({
+  label,
+  description,
+  checked,
+  disabled,
+  onChange,
 }: {
-  confirmDelete: boolean;
-  setConfirmDelete: (v: boolean) => void;
-  onDelete: () => void;
-  isPending: boolean;
-  isError: boolean;
+  label: string;
+  description: string;
+  checked: boolean;
+  disabled: boolean;
+  onChange: (value: boolean) => void;
 }) {
-  if (confirmDelete) {
-    return (
-      <span className="flex items-center gap-2">
-        <span className="text-xs text-red-600 dark:text-red-400">Remove GitHub App config?</span>
-        <Button variant="secondary" onClick={onDelete} disabled={isPending}>
-          {isPending ? 'Removing...' : 'Confirm'}
-        </Button>
-        <Button variant="secondary" onClick={() => setConfirmDelete(false)}>
-          Cancel
-        </Button>
-        {isError && <span className="text-xs text-red-600 dark:text-red-400">Failed to remove.</span>}
-      </span>
-    );
-  }
   return (
-    <button
-      type="button"
-      onClick={() => setConfirmDelete(true)}
-      className="text-sm text-red-500 underline hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
-    >
-      Delete
-    </button>
+    <div className="flex items-start justify-between gap-4">
+      <div>
+        <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{label}</p>
+        <p className="text-xs text-neutral-500 dark:text-neutral-400">{description}</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
+        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+          checked ? 'bg-neutral-900 dark:bg-neutral-100' : 'bg-neutral-300 dark:bg-neutral-600'
+        }`}
+      >
+        <span
+          className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform dark:bg-neutral-900 ${
+            checked ? 'translate-x-4' : 'translate-x-0.5'
+          }`}
+        />
+      </button>
+    </div>
   );
 }
 
-// ─── OAuth App Panel ────────────────────────────────────────────────────
+// ─── Installations Panel ───────────────────────────────────────────────────
 
-function OAuthPanel({ config }: { config: ReturnType<typeof useAdminGitHubConfig>['data'] }) {
-  const setOAuth = useSetGitHubOAuth();
-  const [editing, setEditing] = React.useState(false);
-  const [clientId, setClientId] = React.useState('');
-  const [clientSecret, setClientSecret] = React.useState('');
+function InstallationsPanel({ config }: { config: NonNullable<ReturnType<typeof useAdminGitHubConfig>['data']> }) {
+  const [personalOpen, setPersonalOpen] = React.useState(false);
+  const { organizations, personal } = config.installations;
+  const appSlug = config.app?.appSlug;
 
-  const isConfigured = config?.oauth?.configured;
-  const viaApp = config?.oauth?.viaApp;
-
-  // OAuth managed by the GitHub App — read-only
-  if (isConfigured && viaApp) {
-    return (
-      <div className="space-y-3">
-        <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">OAuth</h3>
-        <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 dark:border-neutral-700 dark:bg-neutral-800/50">
-          <p className="text-sm text-neutral-600 dark:text-neutral-400">
-            OAuth credentials are managed by the GitHub App. Client ID: {config.oauth?.clientId || '***'}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  // Standalone OAuth (no app, or env var fallback)
   return (
     <div className="space-y-3">
-      <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">OAuth</h3>
-      <p className="text-sm text-neutral-500 dark:text-neutral-400">
-        OAuth allows users to link their personal GitHub accounts for commit attribution.
-      </p>
+      <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">Installations</h3>
 
-      {isConfigured && !editing ? (
-        <div className="flex items-center gap-3 rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 dark:border-neutral-700 dark:bg-neutral-800/50">
-          <div className="flex-1">
-            <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-              Client ID: {config.oauth?.clientId || '***'}
-            </p>
-            <p className="text-xs text-green-600 dark:text-green-400">Configured</p>
-          </div>
-          <Button variant="secondary" onClick={() => setEditing(true)}>
-            Update
-          </Button>
-        </div>
-      ) : (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!clientId.trim() || !clientSecret.trim()) return;
-            setOAuth.mutate(
-              { clientId: clientId.trim(), clientSecret: clientSecret.trim() },
-              {
-                onSuccess: () => {
-                  setClientId('');
-                  setClientSecret('');
-                  setEditing(false);
-                },
-              },
-            );
-          }}
-          className="space-y-3"
+      {/* Organization installations — always visible */}
+      <div>
+        <p className="mb-2 text-xs font-medium text-neutral-600 dark:text-neutral-400">Organizations</p>
+        {organizations.length === 0 ? (
+          <p className="text-xs text-neutral-400 dark:text-neutral-500">
+            No organization installations yet.
+            {appSlug && (
+              <>
+                {' '}
+                <a
+                  href={`https://github.com/apps/${appSlug}/installations/new`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-neutral-500 underline hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+                >
+                  Install now
+                </a>
+              </>
+            )}
+          </p>
+        ) : (
+          <InstallationTable installations={organizations} />
+        )}
+      </div>
+
+      {/* Personal installations — collapsible */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setPersonalOpen(!personalOpen)}
+          className="mb-2 flex items-center gap-1 text-xs font-medium text-neutral-600 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
         >
+          {personalOpen ? '\u25BE' : '\u25B8'} Personal ({personal.length})
+        </button>
+        {personalOpen && (
+          personal.length === 0 ? (
+            <p className="text-xs text-neutral-400 dark:text-neutral-500">No personal installations.</p>
+          ) : (
+            <InstallationTable installations={personal} />
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InstallationTable({ installations }: { installations: GithubInstallation[] }) {
+  return (
+    <div className="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-700">
+      <table className="w-full text-xs">
+        <thead className="bg-neutral-50 dark:bg-neutral-800/50">
+          <tr>
+            <th className="px-3 py-2 text-left font-medium text-neutral-600 dark:text-neutral-400">Account</th>
+            <th className="px-3 py-2 text-left font-medium text-neutral-600 dark:text-neutral-400">Type</th>
+            <th className="px-3 py-2 text-left font-medium text-neutral-600 dark:text-neutral-400">Status</th>
+            <th className="px-3 py-2 text-left font-medium text-neutral-600 dark:text-neutral-400">Created</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-neutral-200 dark:divide-neutral-700">
+          {installations.map((inst) => (
+            <tr key={inst.id} className="text-neutral-700 dark:text-neutral-300">
+              <td className="px-3 py-2 font-medium">{inst.accountLogin}</td>
+              <td className="px-3 py-2">{inst.accountType}</td>
+              <td className="px-3 py-2">
+                <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-xs ${
+                  inst.status === 'active'
+                    ? 'bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400'
+                    : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-400'
+                }`}>
+                  {inst.status}
+                </span>
+              </td>
+              <td className="px-3 py-2 text-neutral-500 dark:text-neutral-400">
+                {new Date(inst.createdAt).toLocaleDateString()}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── Danger Zone ───────────────────────────────────────────────────────────
+
+function DangerZone() {
+  const deleteConfig = useDeleteGitHubConfig();
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
+
+  function handleDelete() {
+    deleteConfig.mutate(undefined, {
+      onSuccess: () => setConfirmDelete(false),
+    });
+  }
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium text-red-600 dark:text-red-400">Danger Zone</h3>
+      <div className="rounded-md border border-red-200 bg-red-50/50 p-4 dark:border-red-800 dark:bg-red-900/10">
+        <div className="flex items-center justify-between">
           <div>
-            <label className="block text-sm text-neutral-600 dark:text-neutral-400">Client ID</label>
-            <input
-              type="text"
-              className={inputClass}
-              value={clientId}
-              onChange={(e) => setClientId(e.target.value)}
-              placeholder="Ov23li..."
-            />
+            <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">Remove App configuration</p>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              Deletes the GitHub App config, all installations, and all GitHub credentials. This cannot be undone.
+            </p>
           </div>
-          <div>
-            <label className="block text-sm text-neutral-600 dark:text-neutral-400">Client Secret</label>
-            <input
-              type="password"
-              className={inputClass}
-              value={clientSecret}
-              onChange={(e) => setClientSecret(e.target.value)}
-              placeholder="secret"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <Button type="submit" disabled={setOAuth.isPending || !clientId.trim() || !clientSecret.trim()}>
-              {setOAuth.isPending ? 'Saving...' : 'Save'}
-            </Button>
-            {editing && (
-              <Button
-                variant="secondary"
-                type="button"
-                onClick={() => {
-                  setEditing(false);
-                  setClientId('');
-                  setClientSecret('');
-                }}
-              >
+          {confirmDelete ? (
+            <span className="flex items-center gap-2">
+              <span className="text-xs text-red-600 dark:text-red-400">Are you sure?</span>
+              <Button variant="secondary" onClick={handleDelete} disabled={deleteConfig.isPending}>
+                {deleteConfig.isPending ? 'Removing...' : 'Confirm'}
+              </Button>
+              <Button variant="secondary" onClick={() => setConfirmDelete(false)}>
                 Cancel
               </Button>
-            )}
-          </div>
-          {setOAuth.isError && (
-            <p className="text-sm text-red-600 dark:text-red-400">Failed to save OAuth configuration.</p>
+            </span>
+          ) : (
+            <Button variant="secondary" onClick={() => setConfirmDelete(true)}>
+              Delete
+            </Button>
           )}
-        </form>
-      )}
+        </div>
+        {deleteConfig.isError && (
+          <p className="mt-2 text-xs text-red-600 dark:text-red-400">Failed to remove configuration.</p>
+        )}
+      </div>
     </div>
   );
 }

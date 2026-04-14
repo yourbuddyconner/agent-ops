@@ -9,8 +9,8 @@ export function GitHubCard() {
 
   if (!status) return null;
 
-  // State 1: GitHub not configured at all
-  if (!status.oauthConfigured) {
+  // State 1: GitHub App not configured at all
+  if (!status.configured) {
     return (
       <Card>
         <CardHeader className="pb-2">
@@ -24,42 +24,66 @@ export function GitHubCard() {
         </CardHeader>
         <CardContent>
           <p className="text-xs text-neutral-500 dark:text-neutral-400">
-            Ask your admin to configure GitHub OAuth in organization settings.
+            Ask your admin to configure the GitHub App in organization settings.
           </p>
         </CardContent>
       </Card>
     );
   }
 
-  const hasRepo = status.personal.scopes?.includes('repo') ?? false;
-
-  // State 5: Fully connected (identity + repo scope)
-  if (status.personal.linked && hasRepo) {
+  // State 2: Connected
+  if (status.personal.linked) {
     return (
       <Card>
         <CardHeader className="pb-2">
           <div className="flex items-center gap-3">
             <GitHubIcon />
-            <div>
-              <CardTitle className="text-base">GitHub</CardTitle>
-              <p className="text-xs text-green-600 dark:text-green-400">
-                Connected as {status.personal.githubUsername}
-              </p>
+            <div className="flex items-center gap-2">
+              <div>
+                <CardTitle className="text-base">GitHub</CardTitle>
+                <p className="text-xs text-green-600 dark:text-green-400">
+                  Connected as {status.personal.githubUsername}
+                </p>
+              </div>
+              {status.personal.avatarUrl && (
+                <img
+                  src={status.personal.avatarUrl}
+                  alt=""
+                  className="h-6 w-6 rounded-full"
+                />
+              )}
             </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
-          <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
-            <span className="text-green-600 dark:text-green-400">&#10003;</span> Actions & notifications
-          </div>
-          <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
-            <span className="text-green-600 dark:text-green-400">&#10003;</span> Commits as {status.personal.githubUsername}
-          </div>
-          {status.orgApp.installed && (
-            <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
-              <span className="text-green-600 dark:text-green-400">&#10003;</span> Org app covers {status.orgApp.accessibleOwners.join(', ')}
+          {/* Installations list */}
+          {status.installations.length > 0 && (
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                Installations
+              </p>
+              {status.installations.map((inst) => (
+                <div key={inst.id} className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+                  <span className="text-green-600 dark:text-green-400">&#10003;</span>
+                  <span>{inst.accountLogin}</span>
+                  <span className="text-neutral-400 dark:text-neutral-500">({inst.accountType})</span>
+                </div>
+              ))}
             </div>
           )}
+
+          {/* Install on personal account link */}
+          {status.settings.allowPersonalInstallations && status.appSlug && (
+            <a
+              href={`https://github.com/apps/${status.appSlug}/installations/new`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block text-xs text-neutral-500 underline hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+            >
+              Install on personal account
+            </a>
+          )}
+
           <div className="flex justify-end pt-1">
             <Button
               variant="secondary"
@@ -75,92 +99,7 @@ export function GitHubCard() {
     );
   }
 
-  // State 4: Connected but no repo scope
-  if (status.personal.linked && !hasRepo) {
-    return (
-      <Card>
-        <CardHeader className="pb-2">
-          <div className="flex items-center gap-3">
-            <GitHubIcon />
-            <div>
-              <CardTitle className="text-base">GitHub</CardTitle>
-              <p className="text-xs text-amber-600 dark:text-amber-400">
-                Linked as {status.personal.githubUsername} — repo access not enabled
-              </p>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
-            <span className="text-green-600 dark:text-green-400">&#10003;</span> Actions & notifications
-          </div>
-          <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
-            <span className="text-amber-600 dark:text-amber-400">!</span> Commits will be attributed to valet[bot]
-          </div>
-          <div className="flex items-center justify-between pt-1">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => linkGitHub.mutate({ scopes: ['repo', 'read:user', 'user:email'] })}
-              disabled={linkGitHub.isPending}
-            >
-              {linkGitHub.isPending ? 'Redirecting...' : 'Enable Repo Access'}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => disconnectGitHub.mutate()}
-              disabled={disconnectGitHub.isPending}
-            >
-              {disconnectGitHub.isPending ? 'Disconnecting...' : 'Disconnect'}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  // State 3: Org app only (not personally linked)
-  if (status.orgApp.installed && !status.personal.linked) {
-    return (
-      <Card>
-        <CardHeader className="pb-2">
-          <div className="flex items-center gap-3">
-            <GitHubIcon />
-            <div>
-              <CardTitle className="text-base">GitHub</CardTitle>
-              <p className="text-xs text-amber-600 dark:text-amber-400">Org app installed — personal account not linked</p>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <p className="text-xs text-neutral-500 dark:text-neutral-400">
-            The org app covers {status.orgApp.accessibleOwners.join(', ')}. Link your personal account to enable commits under your name.
-          </p>
-          <div className="flex gap-2 justify-end">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => linkGitHub.mutate({})}
-              disabled={linkGitHub.isPending}
-            >
-              {linkGitHub.isPending ? 'Redirecting...' : 'Link Identity'}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => linkGitHub.mutate({ scopes: ['repo'] })}
-              disabled={linkGitHub.isPending}
-            >
-              {linkGitHub.isPending ? 'Redirecting...' : 'Link with Repo Access'}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  // State 2: OAuth configured but not linked at all
+  // State 3: Not connected — show banner based on anonymous access setting
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -173,25 +112,24 @@ export function GitHubCard() {
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        <p className="text-xs text-neutral-500 dark:text-neutral-400">
-          Connect your GitHub account for actions, notifications, and commit attribution.
-        </p>
+        {status.settings.allowAnonymousGitHubAccess ? (
+          <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            GitHub is available via shared access — connecting your account enables better attribution.
+          </p>
+        ) : (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            GitHub connection required to use repository features.
+          </p>
+        )}
+
         <div className="flex gap-2 justify-end">
           <Button
-            variant="outline"
+            variant="secondary"
             size="sm"
             onClick={() => linkGitHub.mutate({})}
             disabled={linkGitHub.isPending}
           >
-            {linkGitHub.isPending ? 'Redirecting...' : 'Link Identity'}
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => linkGitHub.mutate({ scopes: ['repo'] })}
-            disabled={linkGitHub.isPending}
-          >
-            {linkGitHub.isPending ? 'Redirecting...' : 'Link with Repo Access'}
+            {linkGitHub.isPending ? 'Redirecting...' : 'Connect GitHub'}
           </Button>
         </div>
       </CardContent>

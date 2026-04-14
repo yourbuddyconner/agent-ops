@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
+import type { GithubInstallation } from './admin-github';
 
 // ─── Query Keys ─────────────────────────────────────────────────────────
 
@@ -10,10 +11,11 @@ export const githubKeys = {
 // ─── Types ──────────────────────────────────────────────────────────────
 
 export interface GitHubUserStatus {
-  oauthConfigured: boolean;
-  orgApp: {
-    installed: boolean;
-    accessibleOwners: string[];
+  configured: boolean;
+  appSlug: string | null;
+  settings: {
+    allowPersonalInstallations: boolean;
+    allowAnonymousGitHubAccess: boolean;
   };
   personal: {
     linked: boolean;
@@ -21,8 +23,8 @@ export interface GitHubUserStatus {
     githubId: string | null;
     email: string | null;
     avatarUrl: string | null;
-    scopes: string[] | null;
   };
+  installations: GithubInstallation[];
 }
 
 // ─── Hooks ──────────────────────────────────────────────────────────────

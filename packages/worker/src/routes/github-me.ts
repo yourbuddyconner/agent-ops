@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env, Variables } from '../env.js';
 import { signJWT } from '../lib/jwt.js';
+import { getGitHubConfig, getGitHubMetadata } from '../services/github-config.js';
 import { loadGitHubApp } from '../services/github-app.js';
 import { deleteCredential } from '../lib/db/credentials.js';
 import { listGithubInstallationsByUser } from '../lib/db/github-installations.js';
@@ -17,8 +18,9 @@ githubMeRouter.get('/', async (c) => {
   const user = c.get('user');
   const appDb = c.get('db');
 
-  // Check if the GitHub App is configured
-  const app = await loadGitHubApp(c.env, appDb);
+  // Check if the GitHub App is configured and load metadata
+  const ghConfig = await getGitHubConfig(c.env, appDb);
+  const metadata = ghConfig ? await getGitHubMetadata(appDb) : null;
 
   // Get user's GitHub identity link
   const identityLinks = await db.getUserIdentityLinks(appDb, user.id);
@@ -31,7 +33,12 @@ githubMeRouter.get('/', async (c) => {
   const userInstallations = await listGithubInstallationsByUser(appDb, user.id);
 
   return c.json({
-    configured: !!app,
+    configured: !!ghConfig,
+    appSlug: ghConfig?.appSlug ?? null,
+    settings: {
+      allowPersonalInstallations: metadata?.allowPersonalInstallations ?? true,
+      allowAnonymousGitHubAccess: metadata?.allowAnonymousGitHubAccess ?? true,
+    },
     personal: {
       linked: !!githubLink,
       githubUsername: userRecord?.githubUsername ?? githubLink?.externalName ?? null,

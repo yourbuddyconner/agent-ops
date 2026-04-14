@@ -63,8 +63,8 @@ export function IntegrationList() {
         status: slackStatus?.linked ? 'active' : 'pending',
       });
     }
-    // Always show GitHub card if OAuth is configured
-    if (githubStatus?.oauthConfigured) {
+    // Always show GitHub card if the GitHub App is configured
+    if (githubStatus?.configured) {
       items.push({
         key: 'github',
         type: 'github',
@@ -98,7 +98,7 @@ export function IntegrationList() {
     }
 
     return items;
-  }, [hasOnePassword, hasTelegram, hasSlackInstalled, slackStatus?.linked, githubStatus?.oauthConfigured, githubStatus?.personal.linked, data?.integrations, plugins]);
+  }, [hasOnePassword, hasTelegram, hasSlackInstalled, slackStatus?.linked, githubStatus?.configured, githubStatus?.personal.linked, data?.integrations, plugins]);
 
   const filteredItems = React.useMemo(() => {
     return allItems.filter((item) => {
