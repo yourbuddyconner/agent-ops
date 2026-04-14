@@ -1,18 +1,30 @@
+import { eq } from 'drizzle-orm';
 import { getCredential } from '../../services/credentials.js';
 import { getDb } from '../../lib/drizzle.js';
 import { getServiceMetadata } from '../../lib/db/service-configs.js';
+import {
+  getGithubInstallationByLogin,
+  listGithubInstallationsByAccountType,
+} from '../../lib/db/github-installations.js';
+import { loadGitHubApp, getOrMintInstallationToken } from '../../services/github-app.js';
+import { users } from '../../lib/schema/users.js';
 import type { CredentialResolver } from '../registry.js';
 import type { GitHubServiceMetadata } from '../../services/github-config.js';
+import type { GithubInstallation } from '../../lib/schema/github-installations.js';
 
 /**
- * GitHub credential resolver — supports multi-credential routing.
+ * GitHub credential resolver — unified App model.
  *
- * Resolution order:
- * 1. Explicit `source` param → use that scope directly
- * 2. `owner` param + accessibleOwners → prefer org if owner is covered
- * 3. Precedence: org → personal
+ * Resolution chain:
+ * 1. User has a linked GitHub account (stored oauth2 credential)? → return user token
+ * 2. Anonymous access allowed (metadata flag)? → if NO, fail with "not connected"
+ * 3. If repo `owner` is specified → strict match against `github_installations` by account_login.
+ *    No match → FAIL (do NOT fall through to "any installation")
+ * 4. If no repo owner specified → use any active org installation (prefer Organization over User)
+ * 5. No installation → fail
  *
- * Respects `skipScope` for fallthrough retries.
+ * Steps 3-4 mint an installation bot token via getOrMintInstallationToken (D1-cached)
+ * and attach user attribution (name + email from the users table).
  */
 export const githubCredentialResolver: CredentialResolver = async (
   service,
@@ -20,48 +32,119 @@ export const githubCredentialResolver: CredentialResolver = async (
   userId,
   context,
 ) => {
-  const { credentialSources, forceRefresh, skipScope, params } = context;
+  const { forceRefresh, params } = context;
 
-  const hasUser = credentialSources.some((s) => s.scope === 'user' && (!skipScope || skipScope !== 'user'));
-  const hasOrg = credentialSources.some((s) => s.scope === 'org' && (!skipScope || skipScope !== 'org'));
-
-  // 1. Explicit source override
-  const explicitSource = params?.source as 'personal' | 'org' | undefined;
-  if (explicitSource === 'personal') {
-    if (!hasUser) {
-      return { ok: false as const, error: { service, reason: 'not_found' as const, message: 'No personal GitHub credentials. Connect GitHub in Settings > Integrations.' } };
-    }
-    return getCredential(env, 'user', userId, service, { forceRefresh });
-  }
-  if (explicitSource === 'org') {
-    if (!hasOrg) {
-      return { ok: false as const, error: { service, reason: 'not_found' as const, message: 'No org GitHub App installed. Install the GitHub App in Settings > Admin.' } };
-    }
-    return getCredential(env, 'org', 'default', service, { forceRefresh, credentialType: 'app_install' });
+  // ── Step 1: Try user's personal OAuth token ────────────────────────────
+  const userResult = await getCredential(env, 'user', userId, service, { forceRefresh });
+  if (userResult.ok) {
+    return userResult;
   }
 
-  // 2. Owner-based inference
+  // ── Step 2: Check if anonymous (app-based) access is allowed ───────────
+  const db = getDb(env.DB);
+  const meta = await getServiceMetadata<GitHubServiceMetadata>(db, 'github').catch(() => null);
+  if (!meta?.allowAnonymousGitHubAccess) {
+    return {
+      ok: false as const,
+      error: {
+        service,
+        reason: 'not_found' as const,
+        message: 'GitHub not connected. Connect your GitHub account in Settings > Integrations.',
+      },
+    };
+  }
+
   const owner = params?.owner as string | undefined;
-  if (owner && hasOrg) {
-    // Use pre-fetched accessibleOwners from DO cache when available, fall back to D1
-    let owners = context.accessibleOwners;
-    if (!owners) {
-      const db = getDb(env.DB);
-      const meta = await getServiceMetadata<GitHubServiceMetadata>(db, 'github').catch(() => null);
-      owners = meta?.accessibleOwners;
+
+  // ── Step 3: Owner specified → strict match ─────────────────────────────
+  if (owner) {
+    const installation = await getGithubInstallationByLogin(db, owner);
+    if (!installation) {
+      return {
+        ok: false as const,
+        error: {
+          service,
+          reason: 'not_found' as const,
+          message: `No GitHub installation available for owner ${owner}`,
+        },
+      };
     }
-    if (owners?.includes(owner)) {
-      return getCredential(env, 'org', 'default', service, { forceRefresh, credentialType: 'app_install' });
-    }
+    return mintBotCredential(env, db, userId, installation);
   }
 
-  // 3. Precedence: org → personal
-  if (hasOrg) {
-    return getCredential(env, 'org', 'default', service, { forceRefresh, credentialType: 'app_install' });
-  }
-  if (hasUser) {
-    return getCredential(env, 'user', userId, service, { forceRefresh });
+  // ── Step 4: No owner → use any active installation (prefer Org) ────────
+  const orgInstalls = await listGithubInstallationsByAccountType(db, 'Organization');
+  if (orgInstalls.length > 0) {
+    return mintBotCredential(env, db, userId, orgInstalls[0]);
   }
 
-  return { ok: false as const, error: { service, reason: 'not_found' as const, message: 'No GitHub credentials found.' } };
+  const userInstalls = await listGithubInstallationsByAccountType(db, 'User');
+  if (userInstalls.length > 0) {
+    return mintBotCredential(env, db, userId, userInstalls[0]);
+  }
+
+  // ── Step 5: No installation → fail ─────────────────────────────────────
+  return {
+    ok: false as const,
+    error: {
+      service,
+      reason: 'not_found' as const,
+      message: 'No GitHub installation available',
+    },
+  };
 };
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+async function mintBotCredential(
+  env: { DB: unknown; ENCRYPTION_KEY: string },
+  db: ReturnType<typeof getDb>,
+  userId: string,
+  installation: GithubInstallation,
+) {
+  const app = await loadGitHubApp(env as any, db as any);
+  if (!app) {
+    return {
+      ok: false as const,
+      error: {
+        service: 'github',
+        reason: 'not_found' as const,
+        message: 'GitHub App is not configured. Ask an admin to set up the GitHub App in Settings.',
+      },
+    };
+  }
+
+  const { token, expiresAt } = await getOrMintInstallationToken(
+    app,
+    db as any,
+    env.ENCRYPTION_KEY,
+    {
+      id: installation.id,
+      githubInstallationId: installation.githubInstallationId,
+      cachedTokenEncrypted: installation.cachedTokenEncrypted,
+      cachedTokenExpiresAt: installation.cachedTokenExpiresAt,
+    },
+  );
+
+  // Fetch user record for attribution
+  const user = await db
+    .select({ name: users.name, email: users.email })
+    .from(users)
+    .where(eq(users.id, userId))
+    .get();
+
+  const attribution = user
+    ? { name: user.name || user.email, email: user.email }
+    : undefined;
+
+  return {
+    ok: true as const,
+    credential: {
+      accessToken: token,
+      expiresAt: new Date(expiresAt),
+      credentialType: 'app_install' as const,
+      refreshed: false,
+      attribution,
+    },
+  };
+}
