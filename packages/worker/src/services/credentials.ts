@@ -126,6 +126,78 @@ async function refreshGoogleToken(
   };
 }
 
+// ─── GitHub OAuth Refresh ───────────────────────────────────────────────────
+
+async function refreshGitHubToken(
+  env: Env,
+  ownerType: string,
+  ownerId: string,
+  provider: string,
+  data: CredentialData,
+): Promise<CredentialResult> {
+  if (!data.refresh_token) {
+    return {
+      ok: false,
+      error: { service: provider, reason: 'refresh_failed', message: 'No refresh token available' },
+    };
+  }
+
+  const { loadGitHubApp } = await import('./github-app.js');
+  const db = getDb(env.DB);
+  const app = await loadGitHubApp(env, db);
+  if (!app) {
+    return {
+      ok: false,
+      error: { service: provider, reason: 'refresh_failed', message: 'GitHub App not configured' },
+    };
+  }
+
+  try {
+    const { authentication } = await app.oauth.refreshToken({
+      refreshToken: data.refresh_token as string,
+    });
+
+    const newData: CredentialData = {
+      access_token: authentication.token,
+      refresh_token: authentication.refreshToken,
+    };
+    const expiresAt = authentication.expiresAt;
+    const encrypted = await encryptCredentialData(newData, env.ENCRYPTION_KEY);
+
+    await credentialDb.upsertCredential(db, {
+      id: crypto.randomUUID(),
+      ownerType,
+      ownerId,
+      provider,
+      credentialType: 'oauth2',
+      encryptedData: encrypted,
+      expiresAt,
+    });
+
+    return {
+      ok: true,
+      credential: {
+        accessToken: authentication.token,
+        refreshToken: authentication.refreshToken,
+        expiresAt: expiresAt ? new Date(expiresAt) : undefined,
+        credentialType: 'oauth2',
+        refreshed: true,
+      },
+    };
+  } catch (err) {
+    // Refresh failed — delete credential row so the user is forced to reconnect
+    await credentialDb.deleteCredential(db, ownerType, ownerId, provider, 'oauth2');
+    return {
+      ok: false,
+      error: {
+        service: provider,
+        reason: 'refresh_failed',
+        message: 'GitHub connection expired, please reconnect',
+      },
+    };
+  }
+}
+
 /** Try to resolve OAuthConfig from the provider's declared env key names. */
 function resolveOAuthConfigForProvider(provider: string, env: Env): OAuthConfig | null {
   const prov = integrationRegistry.getProvider(provider);
@@ -151,10 +223,7 @@ async function attemptRefresh(
     case 'google_calendar':
       return refreshGoogleToken(env, ownerType, ownerId, provider, data);
     case 'github':
-      return {
-        ok: false,
-        error: { service: provider, reason: 'refresh_failed', message: 'GitHub tokens do not support refresh' },
-      };
+      return refreshGitHubToken(env, ownerType, ownerId, provider, data);
   }
 
   // Generic path: use the provider's refreshOAuthTokens if available
@@ -278,13 +347,11 @@ export async function getCredential(
   ownerType: string,
   ownerId: string,
   provider: string,
-  options?: { forceRefresh?: boolean; credentialType?: string },
+  options?: { forceRefresh?: boolean },
 ): Promise<CredentialResult> {
   const db = getDb(env.DB);
-  // Default to 'oauth2' for providers that can have multiple credential types,
-  // so we don't accidentally return an app_install row for integration calls.
-  const effectiveType = options?.credentialType
-    ?? (provider === 'github' ? 'oauth2' : undefined);
+  // Default to 'oauth2' for GitHub as a safety net — only oauth2 rows exist now.
+  const effectiveType = provider === 'github' ? 'oauth2' : undefined;
   const row = await credentialDb.getCredentialRow(db, ownerType, ownerId, provider, effectiveType);
   if (!row) {
     return {
@@ -323,37 +390,6 @@ export async function getCredential(
   }
 
   const accessToken = extractAccessToken(data);
-  if (!accessToken && row.credentialType === 'app_install') {
-    // GitHub App install credentials store { installation_id, app_id, private_key }
-    // We need to mint a short-lived installation token via the GitHub API
-    const installationId = data.installation_id as string;
-    const appId = data.app_id as string;
-    const privateKey = data.private_key as string;
-    if (!installationId || !appId || !privateKey) {
-      return {
-        ok: false,
-        error: { service: provider, reason: 'not_found', message: `GitHub App install credential missing required fields (installation_id, app_id, private_key)` },
-      };
-    }
-    try {
-      const { mintGitHubInstallationToken } = await import('./github-app-jwt.js');
-      const { token } = await mintGitHubInstallationToken(installationId, appId, privateKey);
-      return {
-        ok: true,
-        credential: {
-          accessToken: token,
-          expiresAt: undefined,
-          credentialType: 'app_install' as CredentialType,
-          refreshed: false,
-        },
-      };
-    } catch (err) {
-      return {
-        ok: false,
-        error: { service: provider, reason: 'refresh_failed', message: `Failed to mint GitHub App installation token: ${err instanceof Error ? err.message : String(err)}` },
-      };
-    }
-  }
   if (!accessToken) {
     return {
       ok: false,
