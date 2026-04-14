@@ -192,7 +192,7 @@ export async function spawnChild(
     // Inject git credentials if the parent doesn't have them (e.g. orchestrator)
     if (!childSpawnRequest.envVars.GITHUB_TOKEN) {
       try {
-        const ghResult = await getCredential(env, 'user', userId, 'github', { credentialType: 'oauth2' });
+        const ghResult = await getCredential(env, 'user', userId, 'github');
         if (ghResult.ok) {
           childSpawnRequest.envVars.GITHUB_TOKEN = ghResult.credential.accessToken;
         }

@@ -1,7 +1,7 @@
 import type { Env } from '../env.js';
 import type { AppDb } from '../lib/drizzle.js';
 import type { CredentialResult } from '../services/credentials.js';
-import { integrationRegistry, type CredentialSourceInfo } from '../integrations/registry.js';
+import { integrationRegistry } from '../integrations/registry.js';
 import { getUserIntegrations, getOrgIntegrations } from '../lib/db/integrations.js';
 import { invokeAction, markExecuted, markFailed } from '../services/actions.js';
 import { getDisabledActionsIndex, isActionDisabled } from '../lib/db/disabled-actions.js';
@@ -46,9 +46,9 @@ export interface ListToolsResult {
 }
 
 export interface CredentialCache {
-  get(ownerType: string, ownerId: string, service: string, credentialType?: string): CredentialResult | null;
-  set(ownerType: string, ownerId: string, service: string, result: CredentialResult, credentialType?: string): void;
-  invalidate(ownerType: string, ownerId: string, service: string, credentialType?: string): void;
+  get(ownerType: string, ownerId: string, service: string): CredentialResult | null;
+  set(ownerType: string, ownerId: string, service: string, result: CredentialResult): void;
+  invalidate(ownerType: string, ownerId: string, service: string): void;
 }
 
 export interface ListToolsOpts {
@@ -192,17 +192,15 @@ export async function listTools(
     const isMcpSource = !!provider?.mcpServerUrl;
     if (isMcpSource && provider?.authType !== 'none') {
       const firstSource = sources[0];
-      const credentialSources = sources.map((s) => ({ scope: s.scope, integrationId: s.id, userId: s.userId }));
 
       // Check credential cache first
       let credResult = credentialCache?.get('user', userId, service) ?? null;
       if (!credResult) {
         credResult = await integrationRegistry.resolveCredentials(service, env, userId, {
-          credentialSources,
           forceRefresh: false,
         });
         if (credResult.ok) {
-          credentialCache?.set('user', userId, service, credResult, credResult.credential.credentialType);
+          credentialCache?.set('user', userId, service, credResult);
         }
       }
 
@@ -210,11 +208,10 @@ export async function listTools(
         // Try force-refresh for expired/refreshable credentials
         if (credResult.error.reason === 'expired' || credResult.error.reason === 'refresh_failed') {
           credResult = await integrationRegistry.resolveCredentials(service, env, userId, {
-            credentialSources,
             forceRefresh: true,
           });
           if (credResult.ok) {
-            credentialCache?.set('user', userId, service, credResult, credResult.credential.credentialType);
+            credentialCache?.set('user', userId, service, credResult);
           }
         }
       }
@@ -238,14 +235,12 @@ export async function listTools(
 
     // MCP sources may return [] when tokens are silently expired — force-refresh and retry
     if (actions.length === 0 && isMcpSource && credCtx && provider?.authType !== 'none') {
-      const credentialSources = sources.map((s) => ({ scope: s.scope, integrationId: s.id, userId: s.userId }));
       credentialCache?.invalidate('user', userId, service);
       const refreshed = await integrationRegistry.resolveCredentials(service, env, userId, {
-        credentialSources,
         forceRefresh: true,
       });
       if (refreshed.ok && refreshed.credential.refreshed) {
-        credentialCache?.set('user', userId, service, refreshed, refreshed.credential.credentialType);
+        credentialCache?.set('user', userId, service, refreshed);
         credCtx = { credentials: { access_token: refreshed.credential.accessToken } };
         actions = await actionSource.listActions(credCtx);
       }
@@ -319,7 +314,6 @@ export async function resolveActionPolicy(
 ): Promise<PolicyResult & {
   service: string;
   actionId: string;
-  credentialSources: CredentialSourceInfo[];
   actionSource: ReturnType<typeof integrationRegistry.getActions>;
   disabledPluginServicesCache: { services: Set<string>; expiresAt: number } | null;
 }> {
@@ -348,29 +342,18 @@ export async function resolveActionPolicy(
     throw new Error(`Action "${toolId}" is disabled by your organization.`);
   }
 
-  // Collect all active credential sources for this service
+  // Verify at least one active integration (or auto-enabled service) exists for this service
   const userIntegrations = await getUserIntegrations(appDb, userId);
   const orgIntegrations = await getOrgIntegrations(appDb);
-  const credentialSources: CredentialSourceInfo[] = [];
-  const seenIds = new Set<string>();
+  const hasActiveIntegration = [...userIntegrations, ...orgIntegrations].some(
+    (i) => i.service === service && i.status === 'active',
+  );
 
-  for (const i of [...userIntegrations, ...orgIntegrations]) {
-    if (i.service !== service || i.status !== 'active' || seenIds.has(i.id)) continue;
-    seenIds.add(i.id);
-    const scope = ('scope' in i ? i.scope : 'user') as 'user' | 'org';
-    credentialSources.push({ scope, integrationId: i.id, userId: i.userId });
-  }
-
-  // Fall back to auto-enabled plugins (no auth required)
-  if (credentialSources.length === 0) {
+  if (!hasActiveIntegration) {
     const autoServices = await getAutoEnabledServices(envDB);
-    if (autoServices.includes(service)) {
-      credentialSources.push({ scope: 'user', integrationId: `auto:${service}`, userId });
+    if (!autoServices.includes(service)) {
+      throw new Error(`Integration "${service}" is not active. Configure it in Settings > Integrations.`);
     }
-  }
-
-  if (credentialSources.length === 0) {
-    throw new Error(`Integration "${service}" is not active. Configure it in Settings > Integrations.`);
   }
 
   // Look up ActionSource
@@ -392,7 +375,6 @@ export async function resolveActionPolicy(
     let listCtx: { credentials: { access_token: string } } | undefined;
     if (fallbackProvider?.authType !== 'none') {
       const listCredResult = await integrationRegistry.resolveCredentials(service, env, userId, {
-        credentialSources,
         forceRefresh: false,
       });
       if (listCredResult.ok) {
@@ -419,7 +401,6 @@ export async function resolveActionPolicy(
     riskLevel,
     service,
     actionId,
-    credentialSources,
     actionSource,
     disabledPluginServicesCache,
   };
@@ -431,8 +412,6 @@ export interface ExecuteActionOpts {
   credentialCache: CredentialCache;
   /** Spawn request env vars, used to detect orchestrator sessions */
   spawnEnvVars?: Record<string, string>;
-  /** Pre-fetched accessible owners for GitHub App (avoids D1 in resolver) */
-  accessibleOwners?: string[];
 }
 
 /**
@@ -447,7 +426,6 @@ export async function executeAction(
   service: string,
   actionId: string,
   params: Record<string, unknown>,
-  credentialSources: CredentialSourceInfo[],
   actionSource: ReturnType<typeof integrationRegistry.getActions>,
   invocationId: string,
   opts: ExecuteActionOpts,
@@ -459,15 +437,14 @@ export async function executeAction(
 
   const provider = integrationRegistry.getProvider(service);
   let credentials: Record<string, string>;
+  let attribution: { name: string; email: string } | undefined;
 
   if (provider?.authType === 'none') {
     credentials = {};
   } else {
     const credResult = await integrationRegistry.resolveCredentials(service, env, userId, {
-      credentialSources,
       params,
       forceRefresh: false,
-      accessibleOwners: opts.accessibleOwners,
     });
 
     if (!credResult.ok) {
@@ -476,6 +453,7 @@ export async function executeAction(
     }
 
     credentials = buildCredentials(credResult);
+    attribution = credResult.credential.attribution;
 
     // Inject service-specific extras
     if (service === 'slack') {
@@ -501,58 +479,29 @@ export async function executeAction(
   };
 
   const toolExecStart = Date.now();
-  let actionResult = await actionSource.execute(actionId, params, { credentials, userId, callerIdentity, analytics: actionAnalytics });
+  let actionResult = await actionSource.execute(actionId, params, { credentials, userId, attribution, callerIdentity, analytics: actionAnalytics });
 
-  // Auth failure retry — multi-credential fallthrough then force-refresh
+  // Auth failure retry — force-refresh on 401 and retry once (simple token-expired retry)
   // Note: 403 is excluded — GitHub 403s are permission problems (missing App permissions),
   // not credential problems. Retrying with a different token won't help.
   const isAuthError = !actionResult.success && actionResult.error &&
     /\b(401|unauthorized|invalid.credentials|token.*expired|token.*revoked)\b/i.test(actionResult.error);
-  const explicitSource = params?.source as string | undefined;
 
   if (provider?.authType !== 'none' && provider?.authType !== 'bot_token' && isAuthError) {
-    const usedScope = credentials._credential_type === 'app_install' ? 'org' : 'user';
-
-    // Only attempt fallthrough if source wasn't explicitly specified
-    if (!explicitSource) {
-      console.log(`[session-tools] Tool "${toolId}" auth error with ${usedScope} credential, trying fallthrough`);
-      const fallthroughResult = await integrationRegistry.resolveCredentials(service, env, userId, {
-        credentialSources,
-        params,
-        forceRefresh: false,
-        skipScope: usedScope as 'user' | 'org',
-        accessibleOwners: opts.accessibleOwners,
-      });
-
-      if (fallthroughResult.ok) {
-        const ftCredentials = buildCredentials(fallthroughResult);
-        if (service === 'slack' && credentials.owner_slack_user_id) {
-          ftCredentials.owner_slack_user_id = credentials.owner_slack_user_id;
-        }
-        actionResult = await actionSource.execute(actionId, params, {
-          credentials: ftCredentials, userId, callerIdentity, analytics: actionAnalytics,
-        });
+    console.log(`[session-tools] Tool "${toolId}" auth error, force-refreshing credential`);
+    const refreshed = await integrationRegistry.resolveCredentials(service, env, userId, {
+      params,
+      forceRefresh: true,
+    });
+    if (refreshed.ok) {
+      const refreshedCredentials = buildCredentials(refreshed);
+      attribution = refreshed.credential.attribution;
+      if (service === 'slack' && credentials.owner_slack_user_id) {
+        refreshedCredentials.owner_slack_user_id = credentials.owner_slack_user_id;
       }
-    }
-
-    // Last resort: force-refresh original credential (only when no explicit source — otherwise the caller chose)
-    if (!actionResult.success && !explicitSource) {
-      console.log(`[session-tools] Tool "${toolId}" fallthrough failed or skipped, force-refreshing original credential`);
-      const refreshed = await integrationRegistry.resolveCredentials(service, env, userId, {
-        credentialSources,
-        params,
-        forceRefresh: true,
-        accessibleOwners: opts.accessibleOwners,
+      actionResult = await actionSource.execute(actionId, params, {
+        credentials: refreshedCredentials, userId, attribution, callerIdentity, analytics: actionAnalytics,
       });
-      if (refreshed.ok) {
-        const refreshedCredentials = buildCredentials(refreshed);
-        if (service === 'slack' && credentials.owner_slack_user_id) {
-          refreshedCredentials.owner_slack_user_id = credentials.owner_slack_user_id;
-        }
-        actionResult = await actionSource.execute(actionId, params, {
-          credentials: refreshedCredentials, userId, callerIdentity, analytics: actionAnalytics,
-        });
-      }
     }
   }
 

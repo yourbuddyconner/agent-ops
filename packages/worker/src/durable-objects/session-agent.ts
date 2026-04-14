@@ -8,7 +8,7 @@ import { getSlackBotToken } from '../services/slack.js';
 import { buildOrchestratorPersonaFiles } from '../lib/orchestrator-persona.js';
 import { assembleCustomProviders, assembleBuiltInProviderModelConfigs, assembleRepoEnv } from '../lib/env-assembly.js';
 import { resolveAvailableModels } from '../services/model-catalog.js';
-import { integrationRegistry, type CredentialSourceInfo } from '../integrations/registry.js';
+import { integrationRegistry } from '../integrations/registry.js';
 import { updateIntegrationStatus } from '../lib/db/integrations.js';
 import { approveInvocation, denyInvocation } from '../services/actions.js';
 import { updateInvocationStatus } from '../lib/db/actions.js';
@@ -216,7 +216,7 @@ export class SessionAgentDO {
   private discoveredToolRiskLevels = new Map<string, string>();
 
   /** In-memory credential cache to avoid repeated D1 lookups + PBKDF2 decryption.
-   *  Keyed by "ownerType:ownerId:service:credentialType", entries expire after CREDENTIAL_CACHE_TTL_MS. */
+   *  Keyed by "ownerType:ownerId:service", entries expire after CREDENTIAL_CACHE_TTL_MS. */
   private credentialCache = new Map<string, { result: CredentialResult; expiresAt: number }>();
   private static readonly CREDENTIAL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -224,12 +224,8 @@ export class SessionAgentDO {
   private disabledPluginServicesCache: { services: Set<string>; expiresAt: number } | null = null;
   private static readonly DISABLED_PLUGINS_CACHE_TTL_MS = 60 * 1000; // 1 minute
 
-  /** In-memory cache of accessible GitHub owners (org installs) to avoid D1 query on every action. */
-  private accessibleOwnersCache: { owners: string[]; expiresAt: number } | null = null;
-  private static readonly ACCESSIBLE_OWNERS_CACHE_TTL_MS = 60 * 1000; // 1 minute
-
-  private getCachedCredential(ownerType: string, ownerId: string, service: string, credentialType?: string): CredentialResult | null {
-    const key = `${ownerType}:${ownerId}:${service}:${credentialType || '*'}`;
+  private getCachedCredential(ownerType: string, ownerId: string, service: string): CredentialResult | null {
+    const key = `${ownerType}:${ownerId}:${service}`;
     const entry = this.credentialCache.get(key);
     if (!entry || Date.now() > entry.expiresAt) {
       if (entry) this.credentialCache.delete(key);
@@ -238,31 +234,16 @@ export class SessionAgentDO {
     return entry.result;
   }
 
-  private setCachedCredential(ownerType: string, ownerId: string, service: string, result: CredentialResult, credentialType?: string): void {
-    const key = `${ownerType}:${ownerId}:${service}:${credentialType || '*'}`;
+  private setCachedCredential(ownerType: string, ownerId: string, service: string, result: CredentialResult): void {
+    const key = `${ownerType}:${ownerId}:${service}`;
     this.credentialCache.set(key, {
       result,
       expiresAt: Date.now() + SessionAgentDO.CREDENTIAL_CACHE_TTL_MS,
     });
   }
 
-  private invalidateCachedCredential(ownerType: string, ownerId: string, service: string, credentialType?: string): void {
-    this.credentialCache.delete(`${ownerType}:${ownerId}:${service}:${credentialType || '*'}`);
-  }
-
-  private async getAccessibleOwners(): Promise<string[] | undefined> {
-    if (this.accessibleOwnersCache && Date.now() < this.accessibleOwnersCache.expiresAt) {
-      return this.accessibleOwnersCache.owners;
-    }
-    try {
-      const { getServiceMetadata } = await import('../lib/db/service-configs.js');
-      const meta = await getServiceMetadata<any>(this.appDb, 'github');
-      const owners = meta?.accessibleOwners as string[] | undefined;
-      this.accessibleOwnersCache = { owners: owners ?? [], expiresAt: Date.now() + SessionAgentDO.ACCESSIBLE_OWNERS_CACHE_TTL_MS };
-      return owners;
-    } catch {
-      return undefined;
-    }
+  private invalidateCachedCredential(ownerType: string, ownerId: string, service: string): void {
+    this.credentialCache.delete(`${ownerType}:${ownerId}:${service}`);
   }
 
   private messageStore!: MessageStore;
@@ -5341,9 +5322,9 @@ export class SessionAgentDO {
   /** Adapter exposing the DO's credential cache as a CredentialCache interface. */
   private get credentialCacheAdapter(): CredentialCache {
     return {
-      get: (ownerType, ownerId, service, credentialType?) => this.getCachedCredential(ownerType, ownerId, service, credentialType),
-      set: (ownerType, ownerId, service, result, credentialType?) => this.setCachedCredential(ownerType, ownerId, service, result, credentialType),
-      invalidate: (ownerType, ownerId, service, credentialType?) => this.invalidateCachedCredential(ownerType, ownerId, service, credentialType),
+      get: (ownerType, ownerId, service) => this.getCachedCredential(ownerType, ownerId, service),
+      set: (ownerType, ownerId, service, result) => this.setCachedCredential(ownerType, ownerId, service, result),
+      invalidate: (ownerType, ownerId, service) => this.invalidateCachedCredential(ownerType, ownerId, service),
     };
   }
 
@@ -5436,7 +5417,7 @@ export class SessionAgentDO {
       // Update the disabled plugin services cache from the policy resolution
       this.disabledPluginServicesCache = policyResult.disabledPluginServicesCache;
 
-      const { outcome, invocationId, riskLevel, service, actionId, credentialSources, actionSource } = policyResult;
+      const { outcome, invocationId, riskLevel, service, actionId, actionSource } = policyResult;
 
       // ─── Deny ──────────────────────────────────────────────────────────
       if (outcome === 'denied') {
@@ -5464,7 +5445,6 @@ export class SessionAgentDO {
           actionId,
           params,
           riskLevel,
-          credentialSources,
           invocationId: invocationId,
           summary,
         };
@@ -5551,7 +5531,7 @@ export class SessionAgentDO {
       }
 
       // ─── Allow — execute immediately ───────────────────────────────────
-      await this.executeActionAndSend(requestId, toolId, service, actionId, params, credentialSources, userId, actionSource, invocationId);
+      await this.executeActionAndSend(requestId, toolId, service, actionId, params, userId, actionSource, invocationId);
     } catch (err) {
       this.runnerLink.send({
         type: 'call-tool-result',
@@ -5571,19 +5551,17 @@ export class SessionAgentDO {
     service: string,
     actionId: string,
     params: Record<string, unknown>,
-    credentialSources: CredentialSourceInfo[],
     userId: string,
     actionSource: ReturnType<typeof integrationRegistry.getActions>,
     invocationId: string,
   ) {
     const spawnRequest = this.sessionState.spawnRequest;
     const spawnEnvVars = spawnRequest?.envVars as Record<string, string> | undefined;
-    const accessibleOwners = service === 'github' ? await this.getAccessibleOwners() : undefined;
 
     const result = await executeActionSvc(
       this.appDb, this.env, userId, toolId, service, actionId, params,
-      credentialSources, actionSource, invocationId,
-      { credentialCache: this.credentialCacheAdapter, spawnEnvVars, accessibleOwners },
+      actionSource, invocationId,
+      { credentialCache: this.credentialCacheAdapter, spawnEnvVars },
     );
 
     // Emit tool_exec timing event
@@ -5651,11 +5629,14 @@ export class SessionAgentDO {
       const service = context.service || '';
       const actionId = context.actionId || '';
       const params = context.params || {};
-      // Backward compat: approvals created before multi-credential routing stored isOrgScoped: boolean.
-      // integrationId is empty because the old format didn't track it — resolvers use scope, not integrationId.
-      let credentialSources: CredentialSourceInfo[] = context.credentialSources as CredentialSourceInfo[] ?? [];
-      if (credentialSources.length === 0 && 'isOrgScoped' in context) {
-        credentialSources = [{ scope: context.isOrgScoped ? 'org' : 'user', integrationId: '', userId }];
+
+      if ('credentialSources' in context || 'isOrgScoped' in context) {
+        // Approval was created before the unified-auth migration; context is stale.
+        // Credentials are now resolved fresh at execution time.
+        // Notify the user and skip this approval.
+        console.warn(`[session-agent] Stale approval context (pre-unified-auth), skipping`);
+        // TODO: send a message to the user explaining the action must be re-run
+        return;
       }
 
       if (resolution.actionId === 'approve') {
@@ -5677,7 +5658,7 @@ export class SessionAgentDO {
 
         const actionSource = integrationRegistry.getActions(service);
         if (requestId) {
-          await this.executeActionAndSend(requestId, toolId, service, actionId, params, credentialSources, userId, actionSource, promptId);
+          await this.executeActionAndSend(requestId, toolId, service, actionId, params, userId, actionSource, promptId);
         }
 
         // Broadcast approval to clients

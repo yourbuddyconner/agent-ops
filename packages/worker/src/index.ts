@@ -379,7 +379,7 @@ async function reconcileGitHubResources(env: Env): Promise<void> {
   const getTokenForUser = async (userId: string): Promise<string | null> => {
     if (tokenCache.has(userId)) return tokenCache.get(userId) ?? null;
     try {
-      const result = await getCredential(env, 'user', userId, 'github', { credentialType: 'oauth2' });
+      const result = await getCredential(env, 'user', userId, 'github');
       if (!result.ok) {
         tokenCache.set(userId, null);
         return null;
