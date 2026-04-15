@@ -3463,10 +3463,6 @@ export class PromptHandler {
   private handlePartUpdated(props: Record<string, unknown>, channel: ChannelSession): void {
     if (!channel.activeMessageId) return;
 
-    // After wait_for_event completes, suppress stale SSE events from the
-    // remainder of the OpenCode turn.
-    if (channel.waitForEventForced) return;
-
     // The part can be a tool part or a text part
     const part = props.part as Record<string, unknown> | undefined;
     if (!part) return;
@@ -3639,13 +3635,16 @@ export class PromptHandler {
 
       this.agentClient.sendToolUpdate(channel.turnId!, callID, toolName, "completed", state.input ?? undefined, toolResult ?? undefined);
 
-      // wait_for_event: end the turn and register the event subscription with the DO.
-      // The tool returns immediately so OpenCode will naturally stop after this.
+      // wait_for_event: register the event subscription with the DO. Do NOT force-
+      // finalize the turn — the LLM may continue with more tool calls or text
+      // after wait_for_event returns (the smoke test, for example, calls
+      // wait_for_event then proceeds with read_messages, terminate_session, etc.
+      // in the same turn). Force-finalizing here would set waitForEventForced=true
+      // and suppress all subsequent SSE events on this channel, dropping the rest
+      // of the agent's output silently. Let the natural session.idle event finalize
+      // when the LLM is genuinely done.
       if (toolName === "wait_for_event") {
-        console.log(`[PromptHandler] wait_for_event completed — finalizing turn and registering subscription`);
-        channel.waitForEventForced = true;
-
-        // Parse subscription args from the tool input
+        console.log(`[PromptHandler] wait_for_event completed — registering subscription, letting turn continue`);
         const input = state.input as Record<string, unknown> | undefined;
         this.agentClient.sendWaitSubscription({
           reason: (input?.reason as string) || undefined,
@@ -3653,28 +3652,15 @@ export class PromptHandler {
           notifyOn: (input?.notify_on as string) || undefined,
           statuses: (input?.statuses as string[]) || undefined,
         });
-
-        this.finalizeResponse(channel, true);
-        this.agentClient.sendComplete(channel.activeMessageId ?? undefined);
-        this.agentClient.sendAgentStatus("idle", undefined, channel.activeMessageId ?? undefined);
-        channel.idleNotified = true;
       }
 
     } else if (currentStatus === "error") {
-      // Suppress stale errors from wait_for_event — the turn was already finalized.
-      if (toolName === "wait_for_event" && channel.waitForEventForced) {
-        console.log(`[PromptHandler] Suppressing stale wait_for_event error`);
-        return;
-      }
       console.log(`[PromptHandler] Tool "${toolName}" error: ${state.error}`);
       this.agentClient.sendToolUpdate(channel.turnId!, callID, toolName, "error", state.input ?? undefined, undefined, state.error ?? undefined);
     }
   }
 
   private handleMessageUpdated(props: Record<string, unknown>, channel: ChannelSession): void {
-    // After wait_for_event completes, suppress stale SSE events.
-    if (channel.waitForEventForced) return;
-
     // OpenCode wraps the message in an "info" property: { info: { role, ... } }
     const info = (props.info ?? props) as Record<string, unknown>;
     const role = info.role as string | undefined;
@@ -3764,9 +3750,6 @@ export class PromptHandler {
   }
 
   private handleSessionStatus(props: Record<string, unknown>, channel: ChannelSession): void {
-    // After wait_for_event completes, suppress stale SSE events.
-    if (channel.waitForEventForced) return;
-
     // SessionStatus is an object: { type: "idle" | "busy" | "retry" }
     const rawStatus = props.status;
     let statusType: string | undefined;
