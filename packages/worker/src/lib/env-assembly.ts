@@ -232,7 +232,7 @@ export async function assembleRepoEnv(
 
   // 3. Pick the right provider based on credential type
   const providerId = resolved.credentialType === 'oauth2'
-    ? `${credentialProvider}-oauth`
+    ? `${credentialProvider}-user`
     : `${credentialProvider}-app`;
   const selectedProvider = repoProviderRegistry.get(providerId);
   if (!selectedProvider) {
