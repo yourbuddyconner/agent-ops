@@ -582,22 +582,45 @@ export function useChat(sessionId: string) {
             (a, b) => a.createdAt.getTime() - b.createdAt.getTime()
           );
 
-          // Reconstruct child session events from merged messages (covers both D1 and init)
+          // Reconstruct child session events from merged messages (covers both D1 and init).
+          // V1 (legacy): tool calls were stored as separate role='tool' messages with
+          //   parts = { toolName, args, result, ... }.
+          // V2 (current): tool calls are stored as 'tool-call' parts of role='assistant'
+          //   turn messages with parts being an array of { type, callId, toolName, args, result, ... }.
+          // Handle both shapes so child cards persist across refresh in either format.
           const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
           const restoredChildEvents: ChildSessionEvent[] = [];
+          const recordSpawn = (
+            toolName: unknown,
+            args: unknown,
+            result: unknown,
+            timestamp: number,
+          ) => {
+            if (toolName !== 'spawn_session' || typeof result !== 'string') return;
+            const match = result.match(/Child session spawned:\s*(\S+)/) || result.match(UUID_RE);
+            const childId = match ? (match[1] || match[0]) : null;
+            if (!childId) return;
+            const argsObj = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
+            restoredChildEvents.push({
+              childSessionId: childId,
+              title: (argsObj.title as string) || (argsObj.workspace as string) || undefined,
+              timestamp,
+            });
+          };
           for (const m of sortedMessages) {
-            if (m.role === 'tool' && m.parts && typeof m.parts === 'object') {
+            const ts = m.createdAt.getTime();
+            // V1 legacy format
+            if (m.role === 'tool' && m.parts && typeof m.parts === 'object' && !Array.isArray(m.parts)) {
               const p = m.parts as unknown as Record<string, unknown>;
-              if (typeof p.toolName === 'string' && p.toolName === 'spawn_session' && typeof p.result === 'string') {
-                const match = p.result.match(/Child session spawned:\s*(\S+)/) || p.result.match(UUID_RE);
-                const childId = match ? (match[1] || match[0]) : null;
-                if (childId) {
-                  const args = (p.args ?? {}) as Record<string, unknown>;
-                  restoredChildEvents.push({
-                    childSessionId: childId,
-                    title: (args.title as string) || (args.workspace as string) || undefined,
-                    timestamp: m.createdAt.getTime(),
-                  });
+              recordSpawn(p.toolName, p.args, p.result, ts);
+              continue;
+            }
+            // V2 turn format — scan assistant turn parts for tool-call parts
+            if (m.role === 'assistant' && Array.isArray(m.parts)) {
+              for (const part of m.parts as unknown as Record<string, unknown>[]) {
+                if (!part || typeof part !== 'object') continue;
+                if (part.type === 'tool-call') {
+                  recordSpawn(part.toolName, part.args, part.result, ts);
                 }
               }
             }
