@@ -20,6 +20,9 @@ export interface AgentResponse {
   messages: Message[];
   /** How long the agent took to respond (ms) */
   durationMs: number;
+  /** Session and thread IDs the prompt was dispatched to (useful for follow-up reads/writes) */
+  sessionId: string;
+  threadId: string;
 }
 
 export interface DispatchOptions {
@@ -92,6 +95,8 @@ export async function dispatchAndWait(
           json,
           messages: newMessages,
           durationMs: Date.now() - start,
+          sessionId,
+          threadId,
         };
       }
     }

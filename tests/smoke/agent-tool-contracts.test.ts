@@ -9,8 +9,9 @@
 
 import { describe, it, expect } from 'vitest';
 import { SmokeClient } from './client.js';
-import { dispatchAndWait, assertSmokeTestResult, type SmokeTestResult } from './agent.js';
+import { dispatchAndWait, assertSmokeTestResult, type SmokeTestResult, type AgentResponse } from './agent.js';
 import { ToolCallTrace } from './tool-trace.js';
+import { assertRefreshReproducesState } from './refresh-helper.js';
 
 const client = new SmokeClient();
 
@@ -71,9 +72,10 @@ For any failed check, set pass=false and put the literal tool output in detail. 
 describe('agent: tool contracts', () => {
   let result: SmokeTestResult;
   let trace: ToolCallTrace;
+  let response: AgentResponse;
 
   it('dispatches prompt and receives JSON response', async () => {
-    const response = await dispatchAndWait(client, PROMPT, { timeoutMs: 180_000 });
+    response = await dispatchAndWait(client, PROMPT, { timeoutMs: 180_000 });
 
     console.log(`Agent responded in ${response.durationMs}ms`);
     console.log(`Raw response (first 500 chars): ${response.raw.slice(0, 500)}`);
@@ -191,5 +193,9 @@ describe('agent: tool contracts', () => {
   it('trace: at least one mem_write succeeded with "Written:" (within-bounds path)', () => {
     // The within-bounds round-trip and deep-path writes should both produce "Written:".
     trace.expectResultMatches('mem_write', /^Written:/);
+  });
+
+  it('refresh round-trip: persisted state matches live response', async () => {
+    await assertRefreshReproducesState(client, response);
   });
 });

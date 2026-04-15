@@ -7,8 +7,9 @@
 
 import { describe, it, expect } from 'vitest';
 import { SmokeClient } from './client.js';
-import { dispatchAndWait, assertSmokeTestResult, type SmokeTestResult } from './agent.js';
+import { dispatchAndWait, assertSmokeTestResult, type SmokeTestResult, type AgentResponse } from './agent.js';
 import { ToolCallTrace } from './tool-trace.js';
+import { assertRefreshReproducesState } from './refresh-helper.js';
 
 const client = new SmokeClient();
 
@@ -52,10 +53,11 @@ For any failed check, set pass=false AND put the literal tool output in detail. 
 describe('agent: child session lifecycle', () => {
   let result: SmokeTestResult;
   let trace: ToolCallTrace;
+  let response: AgentResponse;
 
   it('dispatches prompt and receives JSON response', async () => {
     // Child session spawn + wait can take a while
-    const response = await dispatchAndWait(client, PROMPT, { timeoutMs: 180_000 });
+    response = await dispatchAndWait(client, PROMPT, { timeoutMs: 180_000 });
 
     console.log(`Agent responded in ${response.durationMs}ms`);
     console.log(`Raw response (first 500 chars): ${response.raw.slice(0, 500)}`);
@@ -132,4 +134,55 @@ describe('agent: child session lifecycle', () => {
   it('trace: no tool calls ended in error status', () => {
     trace.expectNoErrors();
   });
+
+  // ─── Stream hygiene assertions ──────────────────────────────────────────
+  // After the wait_for_event abort fix, the "operation was aborted" error
+  // should never appear in the broadcast stream — it's the expected outcome
+  // of yielding, suppressed at the runner. If it leaks back, this fails.
+
+  it('stream: no "operation was aborted" error message in the broadcast (yield-abort suppression works)', () => {
+    const offenders = response.messages.filter((m) => {
+      const text = typeof m.content === 'string' ? m.content : '';
+      return /operation was aborted/i.test(text);
+    });
+    expect(
+      offenders,
+      `${offenders.length} message(s) contain "operation was aborted":\n  ${offenders.map((m) => `[${m.role}] ${String(m.content).slice(0, 120)}`).join('\n  ')}`,
+    ).toEqual([]);
+  });
+
+  it('stream: no system error messages in the persisted history', () => {
+    const errors = response.messages.filter((m) => {
+      if (m.role !== 'system') return false;
+      const text = typeof m.content === 'string' ? m.content : '';
+      return /^Error:/i.test(text);
+    });
+    expect(
+      errors,
+      `${errors.length} system error message(s):\n  ${errors.map((m) => String(m.content).slice(0, 120)).join('\n  ')}`,
+    ).toEqual([]);
+  });
+
+  // ─── Refresh round-trip ──────────────────────────────────────────────────
+  it('refresh round-trip: persisted state matches live response', async () => {
+    await assertRefreshReproducesState(client, response);
+  });
+
+  // ─── Wait-then-user-prompt regression test ──────────────────────────────
+  // The wait subscription used to block subsequent user prompts indefinitely.
+  // After the smoke test's main flow completes, send a follow-up prompt on
+  // the SAME thread and assert it dispatches and gets a response within a
+  // reasonable timeout. If the queue-blocking regression returns, this hangs.
+
+  it('follow-up: a new prompt on the same thread dispatches after the wait flow completes', async () => {
+    // Use the same thread as the main test — exercises "wait subscription
+    // cleared on dispatch" path. If queue holds user prompts, this times out.
+    const followup = await dispatchAndWait(
+      client,
+      `Reply with ONLY this JSON object — no other text or markdown:\n\n{"smoke_test":"followup_ack","reply":"FOLLOWUP_OK"}`,
+      { threadId: response.threadId, timeoutMs: 60_000 },
+    );
+    expect(followup.json?.reply).toBe('FOLLOWUP_OK');
+    new ToolCallTrace(followup.messages).expectAllTerminal();
+  }, 90_000);
 });
