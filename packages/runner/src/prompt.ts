@@ -432,6 +432,10 @@ export class ChannelSession {
   pendingRetryAttachments: PromptAttachment[] = [];
   pendingRetryAuthor: PromptAuthor | undefined;
   waitForEventForced = false;
+  /** Set when wait_for_event triggered an OpenCode session abort to yield.
+   *  Used to suppress the "operation was aborted" assistant error that follows
+   *  the abort — it's the expected outcome of yielding, not a real failure. */
+  abortedForYield = false;
   failoverInProgress = false;
   syncPromptInFlight = false;
   retryPending = false;
@@ -475,6 +479,7 @@ export class ChannelSession {
     this.latestAssistantTextSnapshot = "";
     this.recentEventTrace = [];
     this.waitForEventForced = false;
+    this.abortedForYield = false;
     this.syncPromptInFlight = false;
     this.awaitingAssistantForAttempt = false;
     this.turnCreated = false;
@@ -3402,6 +3407,11 @@ export class PromptHandler {
       case "session.error": {
         const rawError = props.error ?? props.message ?? props.description;
         const errorMsg = openCodeErrorToMessage(rawError) ?? "Unknown agent error";
+        // Suppress abort errors from a yield (wait_for_event) — expected, not a failure.
+        if (eventChannel.abortedForYield && /aborted/i.test(errorMsg)) {
+          console.log(`[PromptHandler] Suppressing post-yield session.error: ${errorMsg}`);
+          break;
+        }
         console.error(`[PromptHandler] session.error: ${errorMsg}`);
         console.error(`[PromptHandler] session.error raw:`, JSON.stringify(props));
         // Record error — sync prompt response is authoritative for handling it
@@ -3651,6 +3661,7 @@ export class PromptHandler {
         });
         const ocSessionId = channel.opencodeSessionId;
         if (ocSessionId) {
+          channel.abortedForYield = true;
           fetch(`${this.opencodeUrl}/session/${ocSessionId}/abort`, { method: "POST" })
             .catch((err) => console.warn(`[PromptHandler] wait_for_event abort failed:`, err));
         }
@@ -3699,10 +3710,17 @@ export class PromptHandler {
         channel.latestAssistantTextSnapshot = snapshotText;
       }
       if (assistantError) {
-        channel.lastError = assistantError;
-        channel.recentEventTrace.push(`assistant.error:${assistantError.slice(0, 120)}`);
-        if (channel.recentEventTrace.length > 40) {
-          channel.recentEventTrace.shift();
+        // Suppress the "operation was aborted" error that follows a yield-abort
+        // from wait_for_event — the abort is the expected outcome of yielding,
+        // not a real failure to surface to the user.
+        if (channel.abortedForYield && /aborted/i.test(assistantError)) {
+          console.log(`[PromptHandler] Suppressing post-yield abort error: ${assistantError}`);
+        } else {
+          channel.lastError = assistantError;
+          channel.recentEventTrace.push(`assistant.error:${assistantError.slice(0, 120)}`);
+          if (channel.recentEventTrace.length > 40) {
+            channel.recentEventTrace.shift();
+          }
         }
       }
       channel.hasActivity = true;
