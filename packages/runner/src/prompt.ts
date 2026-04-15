@@ -1407,7 +1407,7 @@ export class PromptHandler {
       // If there's a pending response from a previous prompt on this channel, finalize it first
       if (channel.activeMessageId && channel.hasActivity) {
         console.log(`[PromptHandler] Finalizing previous response before new prompt`);
-        this.finalizeResponse();
+        this.finalizeResponse(channel);
       }
 
       // Clear any pending timeout from previous prompt
@@ -1598,7 +1598,7 @@ export class PromptHandler {
           }
 
           // Success (or non-retriable error) — finalize and return
-          await this.finalizeSyncResponse(responseText, errorMsg || null);
+          await this.finalizeSyncResponse(channel, responseText, errorMsg || null);
           return;
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
@@ -1614,7 +1614,7 @@ export class PromptHandler {
             continue;
           }
           // Non-retriable exception — finalize with error
-          await this.finalizeSyncResponse(null, errMsg);
+          await this.finalizeSyncResponse(channel, null, errMsg);
           return;
         } finally {
           clearTimeout(syncTimeoutId);
@@ -1627,7 +1627,7 @@ export class PromptHandler {
         lastModelError || "The model did not respond."
       );
       console.log(`[PromptHandler] All models exhausted for ${messageId}: ${exhaustedError}`);
-      await this.finalizeSyncResponse(null, exhaustedError);
+      await this.finalizeSyncResponse(channel, null, exhaustedError);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error("[PromptHandler] Error processing prompt:", errorMsg);
@@ -1668,40 +1668,40 @@ export class PromptHandler {
    * stuck tool flushing, completion/idle signals, usage reporting, memory flush,
    * and state cleanup.
    */
-  private async finalizeSyncResponse(content: string | null, error: string | null): Promise<void> {
+  private async finalizeSyncResponse(channel: ChannelSession, content: string | null, error: string | null): Promise<void> {
     // Clear any pending timeouts
     this.clearResponseTimeout();
     this.clearFirstResponseTimeout();
 
-    const messageId = this.activeMessageId;
+    const messageId = channel.activeMessageId;
     // Also consider streamed content from SSE events that arrived during the sync call
-    const effectiveContent = content || this.streamedContent || this.latestAssistantTextSnapshot;
+    const effectiveContent = content || channel.streamedContent || channel.latestAssistantTextSnapshot;
 
     if (effectiveContent) {
       console.log(`[PromptHandler] Sync finalize: success for ${messageId} (${effectiveContent.length} chars)`);
-      this.ensureTurnCreated();
-      this.agentClient.sendTurnFinalize(this.turnId!, "end_turn", effectiveContent);
+      this.ensureTurnCreated(channel);
+      this.agentClient.sendTurnFinalize(channel.turnId!, "end_turn", effectiveContent);
     } else if (error) {
       console.log(`[PromptHandler] Sync finalize: error for ${messageId}: ${error}`);
-      this.ensureTurnCreated();
-      this.agentClient.sendTurnFinalize(this.turnId!, "error", undefined, error);
-    } else if (this.toolStates.size > 0) {
+      this.ensureTurnCreated(channel);
+      this.agentClient.sendTurnFinalize(channel.turnId!, "error", undefined, error);
+    } else if (channel.toolStates.size > 0) {
       // Tools ran but no text was produced — this is normal for tool-only turns
-      console.log(`[PromptHandler] Sync finalize: tools-only for ${messageId} (${this.toolStates.size} tools ran)`);
-      this.ensureTurnCreated();
-      this.agentClient.sendTurnFinalize(this.turnId!, "end_turn");
+      console.log(`[PromptHandler] Sync finalize: tools-only for ${messageId} (${channel.toolStates.size} tools ran)`);
+      this.ensureTurnCreated(channel);
+      this.agentClient.sendTurnFinalize(channel.turnId!, "end_turn");
     } else {
       // Truly empty response
       console.log(`[PromptHandler] Sync finalize: empty response for ${messageId}`);
-      this.ensureTurnCreated();
-      this.agentClient.sendTurnFinalize(this.turnId!, "error", undefined, "The model did not respond.");
+      this.ensureTurnCreated(channel);
+      this.agentClient.sendTurnFinalize(channel.turnId!, "error", undefined, "The model did not respond.");
     }
 
     // Flush any tools still in non-terminal state as "completed"
-    for (const [callID, { status, toolName }] of this.toolStates) {
+    for (const [callID, { status, toolName }] of channel.toolStates) {
       if (status === "pending" || status === "running") {
         console.log(`[PromptHandler] Flushing stuck tool "${toolName}" [${callID}] as completed (was: ${status})`);
-        this.agentClient.sendToolUpdate(this.turnId!, callID, toolName, "completed");
+        this.agentClient.sendToolUpdate(channel.turnId!, callID, toolName, "completed");
       }
     }
 
@@ -1710,14 +1710,11 @@ export class PromptHandler {
     // Emit llm_response timing with token counts for throughput analysis
     if (this.lastPromptSentAt > 0) {
       const durationMs = Date.now() - this.lastPromptSentAt;
-      const usageChannel = this.currentPromptChannel;
       let inputTokens = 0;
       let outputTokens = 0;
-      if (usageChannel) {
-        for (const entry of usageChannel.usageEntries.values()) {
-          inputTokens += entry.inputTokens;
-          outputTokens += entry.outputTokens;
-        }
+      for (const entry of channel.usageEntries.values()) {
+        inputTokens += entry.inputTokens;
+        outputTokens += entry.outputTokens;
       }
       this.agentClient.sendAnalyticsEvents([{
         eventType: 'llm_response',
@@ -1731,13 +1728,12 @@ export class PromptHandler {
       this.lastPromptSentAt = 0;
     }
 
-    this.agentClient.sendComplete(this.activeMessageId ?? undefined);
+    this.agentClient.sendComplete(channel.activeMessageId ?? undefined);
     this.agentClient.sendAgentStatus("idle", undefined, messageId ?? undefined);
 
     // Emit usage report for this turn
-    const usageChannel = this.currentPromptChannel;
-    if (usageChannel && usageChannel.usageEntries.size > 0 && usageChannel.turnId) {
-      const entries = Array.from(usageChannel.usageEntries.entries()).map(
+    if (channel.usageEntries.size > 0 && channel.turnId) {
+      const entries = Array.from(channel.usageEntries.entries()).map(
         ([ocMessageId, data]) => ({
           ocMessageId,
           model: data.model,
@@ -1745,15 +1741,14 @@ export class PromptHandler {
           outputTokens: data.outputTokens,
         })
       );
-      this.agentClient.sendUsageReport(usageChannel.turnId, entries);
-      usageChannel.usageEntries.clear();
+      this.agentClient.sendUsageReport(channel.turnId, entries);
+      channel.usageEntries.clear();
     }
 
     // Check for pre-compaction memory flush after each turn
-    const flushChannel = this.currentPromptChannel;
-    if (flushChannel && !flushChannel.memoryFlushInProgress) {
-      flushChannel.turnCount++;
-      this.checkAndTriggerMemoryFlush(flushChannel).catch(err =>
+    if (!channel.memoryFlushInProgress) {
+      channel.turnCount++;
+      this.checkAndTriggerMemoryFlush(channel).catch(err =>
         console.warn("[PromptHandler] Memory flush check failed:", err)
       );
     }
@@ -1763,87 +1758,85 @@ export class PromptHandler {
       console.error("[PromptHandler] Error reporting files changed:", err)
     );
 
-    this.cleanupAfterFinalize();
+    this.cleanupAfterFinalize(channel);
   }
 
   /**
-   * Reset all per-prompt state after finalization. Shared by both
-   * finalizeSyncResponse and finalizeResponse.
+   * Reset all per-prompt state on the given channel after finalization.
+   * Shared by both finalizeSyncResponse and finalizeResponse.
    */
-  private cleanupAfterFinalize(): void {
-    this.streamedContent = "";
-    this.hasActivity = false;
-    this.hadToolSinceLastText = false;
-    this.activeMessageId = null;
-    this.lastChunkTime = 0;
-    this.lastError = null;
-    this.toolStates.clear();
-    this.textPartSnapshots.clear();
-    this.messageTextSnapshots.clear();
-    this.messageRoles.clear();
-    this.activeAssistantMessageIds.clear();
-    this.latestAssistantTextSnapshot = "";
-    this.recentEventTrace = [];
-    this.awaitingAssistantForAttempt = false;
-    this.turnCreated = false;
-    this.turnId = null;
+  private cleanupAfterFinalize(channel: ChannelSession): void {
+    channel.streamedContent = "";
+    channel.hasActivity = false;
+    channel.hadToolSinceLastText = false;
+    channel.activeMessageId = null;
+    channel.lastChunkTime = 0;
+    channel.lastError = null;
+    channel.toolStates.clear();
+    channel.textPartSnapshots.clear();
+    channel.messageTextSnapshots.clear();
+    channel.messageRoles.clear();
+    channel.activeAssistantMessageIds.clear();
+    channel.latestAssistantTextSnapshot = "";
+    channel.recentEventTrace = [];
+    channel.awaitingAssistantForAttempt = false;
+    channel.turnCreated = false;
+    channel.turnId = null;
     // Clear failover state
-    this.currentModelPreferences = undefined;
-    this.currentModelIndex = 0;
-    this.pendingRetryContent = null;
-    this.pendingRetryAttachments = [];
-    this.pendingRetryAuthor = undefined;
-    this.retryPending = false;
-    this.finalizeInFlight = false;
-    if (this.currentPromptChannel) this.currentPromptChannel.syncPromptInFlight = false;
-    console.log(`[PromptHandler] Response finalized`);
+    channel.currentModelPreferences = undefined;
+    channel.currentModelIndex = 0;
+    channel.pendingRetryContent = null;
+    channel.pendingRetryAttachments = [];
+    channel.pendingRetryAuthor = undefined;
+    channel.retryPending = false;
+    channel.finalizeInFlight = false;
+    channel.syncPromptInFlight = false;
+    console.log(`[PromptHandler] Response finalized (channelKey=${channel.channelKey})`);
   }
 
   /**
    * Attempt to failover to the next model in preferences.
    * Returns true if failover was initiated, false if no more models.
    */
-  private async attemptModelFailover(errorMsg: string): Promise<boolean> {
-    if (!this.currentModelPreferences || this.currentModelPreferences.length === 0) {
+  private async attemptModelFailover(channel: ChannelSession, errorMsg: string): Promise<boolean> {
+    if (!channel.currentModelPreferences || channel.currentModelPreferences.length === 0) {
       return false;
     }
 
-    const nextIndex = this.currentModelIndex + 1;
-    if (nextIndex >= this.currentModelPreferences.length) {
-      console.log(`[PromptHandler] No more models to failover to (tried ${this.currentModelPreferences.length})`);
+    const nextIndex = channel.currentModelIndex + 1;
+    if (nextIndex >= channel.currentModelPreferences.length) {
+      console.log(`[PromptHandler] No more models to failover to (tried ${channel.currentModelPreferences.length})`);
       return false;
     }
 
-    const fromModel = this.currentModelPreferences[this.currentModelIndex] || "default";
-    const toModel = this.currentModelPreferences[nextIndex];
-    this.currentModelIndex = nextIndex;
+    const fromModel = channel.currentModelPreferences[channel.currentModelIndex] || "default";
+    const toModel = channel.currentModelPreferences[nextIndex];
+    channel.currentModelIndex = nextIndex;
 
     console.log(`[PromptHandler] Failing over from ${fromModel} to ${toModel} due to: ${errorMsg}`);
 
     // Notify DO about the switch
-    if (this.activeMessageId) {
-      this.agentClient.sendModelSwitched(this.activeMessageId, fromModel, toModel, errorMsg);
+    if (channel.activeMessageId) {
+      this.agentClient.sendModelSwitched(channel.activeMessageId, fromModel, toModel, errorMsg);
     }
 
     // Reset stream state for retry (keep activeMessageId)
-    if (this.currentPromptChannel) this.currentPromptChannel.resetForRetry();
+    channel.resetForRetry();
 
     // Retry with next model
     try {
-      this.agentClient.sendAgentStatus("thinking", undefined, this.activeMessageId ?? undefined);
-      this.awaitingAssistantForAttempt = true;
-      const activeChannel = this.currentPromptChannel;
-      if (!activeChannel) throw new Error("No active channel for failover retry");
-      const channelContext = this.extractChannelContext(activeChannel);
-      await this.sendPromptToChannelWithRecovery(activeChannel, this.pendingRetryContent!, {
+      this.agentClient.sendAgentStatus("thinking", undefined, channel.activeMessageId ?? undefined);
+      channel.awaitingAssistantForAttempt = true;
+      const channelContext = this.extractChannelContext(channel);
+      await this.sendPromptToChannelWithRecovery(channel, channel.pendingRetryContent!, {
         model: toModel,
-        attachments: this.pendingRetryAttachments,
-        author: this.pendingRetryAuthor,
+        attachments: channel.pendingRetryAttachments,
+        author: channel.pendingRetryAuthor,
         channelType: channelContext.channelType,
         channelId: channelContext.channelId,
       });
       console.log(`[PromptHandler] Retry sent with model ${toModel}`);
-      this.startFirstResponseTimeout();
+      this.startFirstResponseTimeout(channel);
       return true;
     } catch (err) {
       console.error(`[PromptHandler] Failed to retry with model ${toModel}:`, err);
@@ -2327,20 +2320,27 @@ export class PromptHandler {
     return incoming;
   }
 
-  /** Lazily emit message.create for turns on first content. */
-  private ensureTurnCreated(): void {
-    if (this.turnCreated || !this.activeMessageId) return;
-    this.turnCreated = true;
+  /** Lazily emit message.create for turns on first content.
+   *  `channel` MUST be the ChannelSession the triggering event belongs to — never
+   *  `this.currentPromptChannel`, which can be stale under concurrent prompts
+   *  (the original smoke-test bug). All per-prompt state is read from `channel`. */
+  private ensureTurnCreated(channel: ChannelSession): void {
+    if (channel.turnCreated || !channel.activeMessageId) return;
+    channel.turnCreated = true;
     // Generate a NEW turn ID for the assistant message so it doesn't collide
     // with the user/prompt message ID (activeMessageId).
     const turnId = crypto.randomUUID();
-    this.turnId = turnId;
-    const channel = this.currentPromptChannel;
-    const channelContext = channel ? this.extractChannelContext(channel) : {};
+    channel.turnId = turnId;
+    const channelContext = this.extractChannelContext(channel);
+    console.log(
+      `[PromptHandler] ensureTurnCreated: turnId=${turnId} channelKey=${channel.channelKey} ` +
+      `channelType=${channelContext.channelType ?? 'none'} channelId=${channelContext.channelId ?? 'none'} ` +
+      `threadId=${channelContext.threadId ?? 'none'} messageId=${channel.activeMessageId}`
+    );
     this.agentClient.sendTurnCreate(turnId, {
       channelType: channelContext.channelType,
       channelId: channelContext.channelId,
-      opencodeSessionId: channel?.opencodeSessionId ?? undefined,
+      opencodeSessionId: channel.opencodeSessionId ?? undefined,
       threadId: channelContext.threadId,
     });
   }
@@ -3554,10 +3554,10 @@ export class PromptHandler {
         }
         channel.streamedContent += chunk;
         channel.lastChunkTime = Date.now();
-        this.ensureTurnCreated();
-        console.log(`[PromptHandler] text-delta: ${chunk.length} chars (total: ${channel.streamedContent.length})`);
-        this.agentClient.sendTextDelta(this.turnId!, chunk);
-        this.resetResponseTimeout();
+        this.ensureTurnCreated(channel);
+        console.log(`[PromptHandler] text-delta: ${chunk.length} chars (total: ${channel.streamedContent.length}) [channelKey=${channel.channelKey}]`);
+        this.agentClient.sendTextDelta(channel.turnId!, chunk);
+        this.resetResponseTimeout(channel);
       }
     } else if (partType === "tool") {
       this.handleToolPart(part as unknown as ToolPart, channel);
@@ -3565,23 +3565,23 @@ export class PromptHandler {
       // Agent starting a new step (e.g., tool execution phase)
       channel.hasActivity = true;
       channel.lastChunkTime = Date.now();
-      this.resetResponseTimeout();
+      this.resetResponseTimeout(channel);
     } else if (partType === "step-finish") {
       // Agent finished a step
       channel.hasActivity = true;
       channel.lastChunkTime = Date.now();
-      this.resetResponseTimeout();
+      this.resetResponseTimeout(channel);
     } else if (partType === "reasoning") {
       // Reasoning/thinking — track activity but don't send to client
       channel.hasActivity = true;
       channel.lastChunkTime = Date.now();
-      this.resetResponseTimeout();
+      this.resetResponseTimeout(channel);
     } else if (partType) {
       // Unknown part type — log and track
       console.log(`[PromptHandler] Unknown part type: "${partType}" keys=${Object.keys(part).join(",")}`);
       channel.hasActivity = true;
       channel.lastChunkTime = Date.now();
-      this.resetResponseTimeout();
+      this.resetResponseTimeout(channel);
     }
   }
 
@@ -3613,7 +3613,7 @@ export class PromptHandler {
     channel.hasActivity = true;
     channel.hadToolSinceLastText = true;
     channel.lastChunkTime = Date.now();
-    this.resetResponseTimeout();
+    this.resetResponseTimeout(channel);
 
     // When a NEW tool appears and we have accumulated text, commit the text
     // as a stored assistant message so it persists across page reloads.
@@ -3631,13 +3631,13 @@ export class PromptHandler {
       } else {
         this.agentClient.sendAgentStatus("tool_calling", toolName, channel.activeMessageId ?? undefined);
       }
-      this.ensureTurnCreated();
-      this.agentClient.sendToolUpdate(this.turnId!, callID, toolName, currentStatus, state.input ?? undefined);
+      this.ensureTurnCreated(channel);
+      this.agentClient.sendToolUpdate(channel.turnId!, callID, toolName, currentStatus, state.input ?? undefined);
     } else if (currentStatus === "completed") {
       const toolResult = state.output ?? null;
       console.log(`[PromptHandler] Tool "${toolName}" completed (output: ${typeof toolResult === "string" ? toolResult.length + " chars" : "null"})`);
 
-      this.agentClient.sendToolUpdate(this.turnId!, callID, toolName, "completed", state.input ?? undefined, toolResult ?? undefined);
+      this.agentClient.sendToolUpdate(channel.turnId!, callID, toolName, "completed", state.input ?? undefined, toolResult ?? undefined);
 
       // wait_for_event: end the turn and register the event subscription with the DO.
       // The tool returns immediately so OpenCode will naturally stop after this.
@@ -3654,7 +3654,7 @@ export class PromptHandler {
           statuses: (input?.statuses as string[]) || undefined,
         });
 
-        this.finalizeResponse(true);
+        this.finalizeResponse(channel, true);
         this.agentClient.sendComplete(channel.activeMessageId ?? undefined);
         this.agentClient.sendAgentStatus("idle", undefined, channel.activeMessageId ?? undefined);
         channel.idleNotified = true;
@@ -3667,7 +3667,7 @@ export class PromptHandler {
         return;
       }
       console.log(`[PromptHandler] Tool "${toolName}" error: ${state.error}`);
-      this.agentClient.sendToolUpdate(this.turnId!, callID, toolName, "error", state.input ?? undefined, undefined, state.error ?? undefined);
+      this.agentClient.sendToolUpdate(channel.turnId!, callID, toolName, "error", state.input ?? undefined, undefined, state.error ?? undefined);
     }
   }
 
@@ -3719,7 +3719,7 @@ export class PromptHandler {
       }
       channel.hasActivity = true;
       channel.lastChunkTime = Date.now();
-      this.resetResponseTimeout();
+      this.resetResponseTimeout(channel);
     }
 
     // Track last-used model for context limit lookups (before currentModelPreferences is cleared)
@@ -3786,10 +3786,10 @@ export class PromptHandler {
         console.log(`[PromptHandler] session.status=idle: model produced no assistant message — clearing awaitingAssistant, finalizing for failover`);
         channel.awaitingAssistantForAttempt = false;
         this.clearFirstResponseTimeout();
-        this.finalizeResponse();
+        this.finalizeResponse(channel);
       } else if (channel.activeMessageId && !channel.retryPending) {
         console.log(`[PromptHandler] Session idle, finalizing response`);
-        this.finalizeResponse();
+        this.finalizeResponse(channel);
       } else if (channel.retryPending) {
         console.log(
           `[PromptHandler] session.status=idle ignored (retryPending=${channel.retryPending})`
@@ -3849,19 +3849,22 @@ export class PromptHandler {
     this.sseDebugLogCount++;
   }
 
-  private async finalizeResponse(force = false): Promise<void> {
-    if (!this.activeMessageId || this.failoverInProgress) {
+  /** Finalize a prompt's response. `channel` MUST be the one this finalize is
+   *  completing — never `this.currentPromptChannel` (stale under concurrent prompts). */
+  private async finalizeResponse(channel: ChannelSession, force = false): Promise<void> {
+    void force;
+    if (!channel.activeMessageId || channel.failoverInProgress) {
       return;
     }
     // Don't finalize from SSE events while a sync prompt is in flight
-    if (this.currentPromptChannel?.syncPromptInFlight) {
+    if (channel.syncPromptInFlight) {
       console.log(`[PromptHandler] Skipping SSE-side finalization — sync prompt in flight`);
       return;
     }
-    if (this.finalizeInFlight) {
+    if (channel.finalizeInFlight) {
       return;
     }
-    this.finalizeInFlight = true;
+    channel.finalizeInFlight = true;
 
     try {
 
@@ -3869,130 +3872,128 @@ export class PromptHandler {
       this.clearResponseTimeout();
       this.clearFirstResponseTimeout();
 
-      const messageId = this.activeMessageId;
-      let content = this.streamedContent || this.latestAssistantTextSnapshot;
+      const messageId = channel.activeMessageId;
+      let content = channel.streamedContent || channel.latestAssistantTextSnapshot;
 
       // Send result, error, or fallback depending on what happened
       if (content) {
         console.log(`[PromptHandler] Sending result for ${messageId} (${content.length} chars): "${content.slice(0, 100)}..."`);
-        this.ensureTurnCreated();
-        this.agentClient.sendTurnFinalize(this.turnId!, "end_turn", content);
-      } else if (this.lastError) {
-        if (isRetriableProviderError(this.lastError)) {
+        this.ensureTurnCreated(channel);
+        this.agentClient.sendTurnFinalize(channel.turnId!, "end_turn", content);
+      } else if (channel.lastError) {
+        if (isRetriableProviderError(channel.lastError)) {
           console.log(`[PromptHandler] Retriable assistant error for ${messageId} — attempting model failover`);
-          this.failoverInProgress = true;
-          this.retryPending = true;
+          channel.failoverInProgress = true;
+          channel.retryPending = true;
           let didFailover = false;
           try {
-            didFailover = await this.attemptModelFailover(this.lastError);
+            didFailover = await this.attemptModelFailover(channel, channel.lastError);
             if (didFailover) {
               console.log(`[PromptHandler] Failover initiated for ${messageId} after assistant error — waiting for retry`);
               return;
             }
           } finally {
-            this.failoverInProgress = false;
+            channel.failoverInProgress = false;
             if (!didFailover) {
-              this.retryPending = false;
+              channel.retryPending = false;
             }
           }
         }
-        console.log(`[PromptHandler] Sending error for ${messageId}: ${this.lastError}`);
-        this.ensureTurnCreated();
-        this.agentClient.sendTurnFinalize(this.turnId!, "error", undefined, this.lastError || undefined);
-      } else if (this.toolStates.size > 0) {
+        console.log(`[PromptHandler] Sending error for ${messageId}: ${channel.lastError}`);
+        this.ensureTurnCreated(channel);
+        this.agentClient.sendTurnFinalize(channel.turnId!, "error", undefined, channel.lastError || undefined);
+      } else if (channel.toolStates.size > 0) {
         // Tools ran but no text was produced — this is normal for tool-only turns
-        console.log(`[PromptHandler] Tools-only response for ${messageId} (${this.toolStates.size} tools ran)`);
-        this.ensureTurnCreated();
-        this.agentClient.sendTurnFinalize(this.turnId!, "end_turn");
+        console.log(`[PromptHandler] Tools-only response for ${messageId} (${channel.toolStates.size} tools ran)`);
+        this.ensureTurnCreated(channel);
+        this.agentClient.sendTurnFinalize(channel.turnId!, "end_turn");
       } else {
         const recovered = await this.recoverAssistantTextOrError();
         if (recovered.error) {
-          this.lastError = recovered.error;
+          channel.lastError = recovered.error;
         }
         if (recovered.text) {
           content = recovered.text;
           console.log(
             `[PromptHandler] Recovered assistant text for ${messageId} from message API (${recovered.text.length} chars)`
           );
-          this.ensureTurnCreated();
-          this.agentClient.sendTurnFinalize(this.turnId!, "end_turn", recovered.text);
-        } else if (this.lastError) {
-          if (isRetriableProviderError(this.lastError)) {
+          this.ensureTurnCreated(channel);
+          this.agentClient.sendTurnFinalize(channel.turnId!, "end_turn", recovered.text);
+        } else if (channel.lastError) {
+          if (isRetriableProviderError(channel.lastError)) {
             console.log(`[PromptHandler] Retriable recovered error for ${messageId} — attempting model failover`);
-            this.failoverInProgress = true;
-            this.retryPending = true;
+            channel.failoverInProgress = true;
+            channel.retryPending = true;
             let didFailover = false;
             try {
-              didFailover = await this.attemptModelFailover(this.lastError);
+              didFailover = await this.attemptModelFailover(channel, channel.lastError);
               if (didFailover) {
                 console.log(`[PromptHandler] Failover initiated for ${messageId} after recovery error — waiting for retry`);
                 return;
               }
             } finally {
-              this.failoverInProgress = false;
+              channel.failoverInProgress = false;
               if (!didFailover) {
-                this.retryPending = false;
+                channel.retryPending = false;
               }
             }
           }
-          const userError = this.buildFailoverExhaustedError(this.lastError);
+          const userError = this.buildFailoverExhaustedError(channel.lastError);
           console.log(`[PromptHandler] Sending recovered error for ${messageId}: ${userError}`);
-          this.ensureTurnCreated();
-          this.agentClient.sendTurnFinalize(this.turnId!, "error", undefined, userError || undefined);
+          this.ensureTurnCreated(channel);
+          this.agentClient.sendTurnFinalize(channel.turnId!, "error", undefined, userError || undefined);
         } else {
           // Model produced nothing — try failover to next model before giving up
           console.warn(
             `[PromptHandler] Empty-response diagnostics for ${messageId}: ` +
-            `snapshot=${this.latestAssistantTextSnapshot.length} ` +
-            `assistantMsgs=${this.activeAssistantMessageIds.size} ` +
-            `roles=${this.messageRoles.size} ` +
-            `trace=${this.recentEventTrace.join(" | ")}`
+            `snapshot=${channel.latestAssistantTextSnapshot.length} ` +
+            `assistantMsgs=${channel.activeAssistantMessageIds.size} ` +
+            `roles=${channel.messageRoles.size} ` +
+            `trace=${channel.recentEventTrace.join(" | ")}`
           );
           console.log(`[PromptHandler] Empty response for ${messageId} — attempting model failover`);
-          this.failoverInProgress = true;
-          this.retryPending = true;
+          channel.failoverInProgress = true;
+          channel.retryPending = true;
           let didFailover = false;
           try {
-            didFailover = await this.attemptModelFailover("Model returned an empty response");
+            didFailover = await this.attemptModelFailover(channel, "Model returned an empty response");
             if (didFailover) {
               console.log(`[PromptHandler] Failover initiated for ${messageId} — waiting for retry`);
               return; // Don't complete — retry in progress with next model
             }
           } finally {
-            this.failoverInProgress = false;
+            channel.failoverInProgress = false;
             if (!didFailover) {
-              this.retryPending = false;
+              channel.retryPending = false;
             }
           }
           // No more models to try — send error
           const emptyError = this.buildFailoverExhaustedError(
-            this.lastError || "The model did not respond."
+            channel.lastError || "The model did not respond."
           );
           console.log(`[PromptHandler] No failover available for ${messageId} — sending empty response error: ${emptyError}`);
-          this.ensureTurnCreated();
-          this.agentClient.sendTurnFinalize(this.turnId!, "error", undefined, emptyError);
+          this.ensureTurnCreated(channel);
+          this.agentClient.sendTurnFinalize(channel.turnId!, "error", undefined, emptyError);
         }
       }
 
       // Flush any tools still in non-terminal state as "completed".
-      // This handles cases where the completed event was missed or arrived out-of-order.
-      for (const [callID, { status, toolName }] of this.toolStates) {
+      for (const [callID, { status, toolName }] of channel.toolStates) {
         if (status === "pending" || status === "running") {
           console.log(`[PromptHandler] Flushing stuck tool "${toolName}" [${callID}] as completed (was: ${status})`);
-          this.agentClient.sendToolUpdate(this.turnId!, callID, toolName, "completed");
+          this.agentClient.sendToolUpdate(channel.turnId!, callID, toolName, "completed");
         }
       }
 
       console.log(`[PromptHandler] Sending complete`);
-      this.agentClient.sendComplete(this.activeMessageId ?? undefined);
+      this.agentClient.sendComplete(channel.activeMessageId ?? undefined);
 
       // Notify client that agent is idle
       this.agentClient.sendAgentStatus("idle", undefined, messageId ?? undefined);
 
       // Emit usage report for this turn
-      const usageChannel = this.currentPromptChannel;
-      if (usageChannel && usageChannel.usageEntries.size > 0 && usageChannel.turnId) {
-        const entries = Array.from(usageChannel.usageEntries.entries()).map(
+      if (channel.usageEntries.size > 0 && channel.turnId) {
+        const entries = Array.from(channel.usageEntries.entries()).map(
           ([ocMessageId, data]) => ({
             ocMessageId,
             model: data.model,
@@ -4000,16 +4001,14 @@ export class PromptHandler {
             outputTokens: data.outputTokens,
           })
         );
-        this.agentClient.sendUsageReport(usageChannel.turnId, entries);
-        usageChannel.usageEntries.clear();
+        this.agentClient.sendUsageReport(channel.turnId, entries);
+        channel.usageEntries.clear();
       }
 
       // Check for pre-compaction memory flush after each turn
-      const flushChannel = this.currentPromptChannel;
-      if (flushChannel && !flushChannel.memoryFlushInProgress) {
-        flushChannel.turnCount++;
-        // Schedule async — don't block finalization
-        this.checkAndTriggerMemoryFlush(flushChannel).catch(err =>
+      if (!channel.memoryFlushInProgress) {
+        channel.turnCount++;
+        this.checkAndTriggerMemoryFlush(channel).catch(err =>
           console.warn("[PromptHandler] Memory flush check failed:", err)
         );
       }
@@ -4019,22 +4018,23 @@ export class PromptHandler {
         console.error("[PromptHandler] Error reporting files changed:", err)
       );
 
-      this.cleanupAfterFinalize();
+      this.cleanupAfterFinalize(channel);
     } finally {
-      this.finalizeInFlight = false;
+      channel.finalizeInFlight = false;
     }
   }
 
-  private resetResponseTimeout(): void {
+  private resetResponseTimeout(channel: ChannelSession): void {
     this.clearResponseTimeout();
     // Also reset the sync prompt inactivity timeout — the model is actively working
-    this.currentPromptChannel?.resetSyncTimeout?.();
-    // Set a timeout to finalize the response if no completion event is received
+    channel.resetSyncTimeout?.();
+    // Capture channel so the timer callback operates on the right prompt's state
+    // even if this.currentPromptChannel has moved on.
     this.responseTimeoutId = setTimeout(() => {
-      if (this.activeMessageId && this.hasActivity) {
-        const timeSinceLastChunk = Date.now() - this.lastChunkTime;
-        console.log(`[PromptHandler] Response timeout triggered (${timeSinceLastChunk}ms since last chunk)`);
-        this.finalizeResponse();
+      if (channel.activeMessageId && channel.hasActivity) {
+        const timeSinceLastChunk = Date.now() - channel.lastChunkTime;
+        console.log(`[PromptHandler] Response timeout triggered (${timeSinceLastChunk}ms since last chunk, channelKey=${channel.channelKey})`);
+        this.finalizeResponse(channel);
       }
     }, EMERGENCY_TIMEOUT_MS);
   }
@@ -4052,49 +4052,49 @@ export class PromptHandler {
    * prevents the session from being stuck in "Thinking" forever by attempting
    * model failover or erroring out.
    */
-  private startFirstResponseTimeout(): void {
+  private startFirstResponseTimeout(channel: ChannelSession): void {
     this.clearFirstResponseTimeout();
     this.firstResponseTimeoutId = setTimeout(async () => {
       this.firstResponseTimeoutId = null;
-      if (!this.awaitingAssistantForAttempt || !this.activeMessageId) return;
+      if (!channel.awaitingAssistantForAttempt || !channel.activeMessageId) return;
 
-      console.log(`[PromptHandler] First response timeout fired — no assistant message received within ${FIRST_RESPONSE_TIMEOUT_MS}ms`);
+      console.log(`[PromptHandler] First response timeout fired — no assistant message received within ${FIRST_RESPONSE_TIMEOUT_MS}ms (channelKey=${channel.channelKey})`);
 
       // Try model failover
-      this.failoverInProgress = true;
-      this.retryPending = true;
+      channel.failoverInProgress = true;
+      channel.retryPending = true;
       let didFailover = false;
       try {
-        didFailover = await this.attemptModelFailover("Model did not respond (timeout waiting for first response)");
+        didFailover = await this.attemptModelFailover(channel, "Model did not respond (timeout waiting for first response)");
         if (didFailover) {
           console.log(`[PromptHandler] Failover initiated after first-response timeout`);
           return;
         }
       } finally {
-        this.failoverInProgress = false;
+        channel.failoverInProgress = false;
         if (!didFailover) {
-          this.retryPending = false;
+          channel.retryPending = false;
         }
       }
 
       // No more models — error out
       console.log(`[PromptHandler] No failover available — sending timeout error`);
-      this.awaitingAssistantForAttempt = false;
-      const messageId = this.activeMessageId;
+      channel.awaitingAssistantForAttempt = false;
+      const messageId = channel.activeMessageId;
       if (messageId) {
         this.agentClient.sendError(messageId, "The model did not respond. Try again or switch to a different model.");
         this.agentClient.sendComplete(messageId);
         this.agentClient.sendAgentStatus("idle", undefined, messageId);
         // Reset prompt state
-        this.activeMessageId = null;
-        this.streamedContent = "";
-        this.hasActivity = false;
-        this.lastError = null;
-        this.currentModelPreferences = undefined;
-        this.currentModelIndex = 0;
-        this.pendingRetryContent = null;
-        this.pendingRetryAttachments = [];
-        this.pendingRetryAuthor = undefined;
+        channel.activeMessageId = null;
+        channel.streamedContent = "";
+        channel.hasActivity = false;
+        channel.lastError = null;
+        channel.currentModelPreferences = undefined;
+        channel.currentModelIndex = 0;
+        channel.pendingRetryContent = null;
+        channel.pendingRetryAttachments = [];
+        channel.pendingRetryAuthor = undefined;
       }
     }, FIRST_RESPONSE_TIMEOUT_MS);
   }
