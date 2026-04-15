@@ -16,12 +16,74 @@ export interface CreateGitHubAppInput {
 }
 
 /**
+ * Convert a PKCS#1 RSA private key PEM to PKCS#8 format.
+ *
+ * GitHub's manifest flow returns PKCS#1 (`BEGIN RSA PRIVATE KEY`), but
+ * `universal-github-app-jwt` (used by Octokit under Web Crypto / Workers)
+ * only supports PKCS#8 (`BEGIN PRIVATE KEY`).
+ *
+ * The conversion wraps the raw PKCS#1 DER bytes in the PKCS#8
+ * PrivateKeyInfo ASN.1 structure with an RSA AlgorithmIdentifier.
+ */
+function ensurePkcs8(pem: string): string {
+  if (!pem.includes('BEGIN RSA PRIVATE KEY')) return pem;
+
+  // Decode PKCS#1 PEM to DER bytes
+  const b64 = pem
+    .replace(/-----BEGIN RSA PRIVATE KEY-----/, '')
+    .replace(/-----END RSA PRIVATE KEY-----/, '')
+    .replace(/\s/g, '');
+  const pkcs1 = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+  // PKCS#8 PrivateKeyInfo wraps PKCS#1 with:
+  //   SEQUENCE { INTEGER 0, SEQUENCE { OID rsaEncryption, NULL }, OCTET STRING { <pkcs1> } }
+  // Fixed overhead: 22 bytes before the PKCS#1 data
+  const pkcs1Len = pkcs1.length;
+  const totalLen = pkcs1Len + 22;
+  const pkcs8 = new Uint8Array(4 + totalLen);
+
+  // Outer SEQUENCE tag + 2-byte length
+  pkcs8[0] = 0x30;
+  pkcs8[1] = 0x82;
+  pkcs8[2] = (totalLen >> 8) & 0xff;
+  pkcs8[3] = totalLen & 0xff;
+
+  // Version INTEGER 0
+  pkcs8[4] = 0x02;
+  pkcs8[5] = 0x01;
+  pkcs8[6] = 0x00;
+
+  // AlgorithmIdentifier SEQUENCE
+  pkcs8[7] = 0x30;
+  pkcs8[8] = 0x0d;
+  // OID 1.2.840.113549.1.1.1 (rsaEncryption)
+  pkcs8.set([0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01], 9);
+  // NULL
+  pkcs8[20] = 0x05;
+  pkcs8[21] = 0x00;
+
+  // OCTET STRING tag + 2-byte length
+  pkcs8[22] = 0x04;
+  pkcs8[23] = 0x82;
+  pkcs8[24] = (pkcs1Len >> 8) & 0xff;
+  pkcs8[25] = pkcs1Len & 0xff;
+
+  // PKCS#1 payload
+  pkcs8.set(pkcs1, 26);
+
+  // Encode back to PEM
+  const pkcs8B64 = btoa(String.fromCharCode(...pkcs8));
+  const lines = pkcs8B64.match(/.{1,64}/g) || [];
+  return `-----BEGIN PRIVATE KEY-----\n${lines.join('\n')}\n-----END PRIVATE KEY-----`;
+}
+
+/**
  * Create an Octokit `App` instance from explicit credentials.
  */
 export function createGitHubApp(input: CreateGitHubAppInput): App {
   return new App({
     appId: input.appId,
-    privateKey: input.privateKey,
+    privateKey: ensurePkcs8(input.privateKey),
     oauth: {
       clientId: input.oauthClientId,
       clientSecret: input.oauthClientSecret,
