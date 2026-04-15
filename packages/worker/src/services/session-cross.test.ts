@@ -157,7 +157,7 @@ describe('terminateChild', () => {
     await terminateChild({} as any, env, 'orch-1', 'user-1', 'child-1');
 
     const call = fetchMock.mock.calls[0][0] as Request;
-    const body = await call.json();
+    const body = await call.json() as { reason: string };
     expect(body.reason).toBe('terminated_by_parent');
   });
 });
