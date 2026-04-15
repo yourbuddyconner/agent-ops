@@ -2418,8 +2418,18 @@ export class SessionAgentDO {
       },
 
       'agentStatus': async (msg) => {
-        // Forward agent status to all clients for real-time activity indication
-        const statusCh = this.activeChannel;
+        // Forward agent status to all clients for real-time activity indication.
+        // If messageId is present, resolve the prompt's channel for per-thread filtering.
+        // If messageId is absent (startup/reconnect idle signals), broadcast without
+        // channel attribution — this is legitimate session-wide status, not a drop.
+        let statusCh: { channelType: string; channelId: string } | null = null;
+        if (msg.messageId) {
+          statusCh = this.getChannelForMessage(msg.messageId);
+          if (!statusCh) {
+            dropEmission('no_prompt_row', { eventType: 'agentStatus', messageId: msg.messageId, status: msg.status });
+            return;
+          }
+        }
         this.broadcastToClients({
           type: 'agentStatus',
           status: msg.status,

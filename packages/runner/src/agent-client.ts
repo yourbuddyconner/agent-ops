@@ -258,8 +258,8 @@ export class AgentClient {
     this.send({ type: "complete", ...(messageId ? { messageId } : {}) });
   }
 
-  sendAgentStatus(status: AgentStatus, detail?: string): void {
-    this.send({ type: "agentStatus", status, detail });
+  sendAgentStatus(status: AgentStatus, detail?: string, messageId?: string): void {
+    this.send({ type: "agentStatus", messageId, status, detail });
   }
 
   sendGitState(params: { branch?: string; baseBranch?: string; commitCount?: number }): void {

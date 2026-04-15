@@ -900,7 +900,7 @@ export class PromptHandler {
   ): Promise<void> {
     const executionId = request.executionId;
     const emitChatError = options?.emitChatError !== false;
-    this.agentClient.sendAgentStatus("thinking");
+    this.agentClient.sendAgentStatus("thinking", undefined, messageId);
 
     const fail = async (error: string) => {
       this.agentClient.sendWorkflowExecutionResult(executionId, {
@@ -915,7 +915,7 @@ export class PromptHandler {
       if (emitChatError) {
         this.agentClient.sendError(messageId, error);
       }
-      this.agentClient.sendAgentStatus("idle");
+      this.agentClient.sendAgentStatus("idle", undefined, messageId);
       this.agentClient.sendComplete();
     };
 
@@ -985,7 +985,7 @@ export class PromptHandler {
         requiresApproval: envelope.requiresApproval,
         error: envelope.error,
       });
-      this.agentClient.sendAgentStatus("idle");
+      this.agentClient.sendAgentStatus("idle", undefined, messageId);
       this.agentClient.sendComplete();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1469,7 +1469,7 @@ export class PromptHandler {
       this.currentModelIndex = 0;
 
       // Notify client that agent is thinking
-      this.agentClient.sendAgentStatus("thinking");
+      this.agentClient.sendAgentStatus("thinking", undefined, messageId);
       this.awaitingAssistantForAttempt = true;
       this.lastPromptSentAt = Date.now();
 
@@ -1505,7 +1505,7 @@ export class PromptHandler {
           }
           channel.resetForRetry();
           channel.syncPromptInFlight = true; // Re-set after resetForRetry clears it
-          this.agentClient.sendAgentStatus("thinking");
+          this.agentClient.sendAgentStatus("thinking", undefined, messageId);
           this.awaitingAssistantForAttempt = true;
         }
 
@@ -1612,7 +1612,7 @@ export class PromptHandler {
       console.error("[PromptHandler] Error processing prompt:", errorMsg);
       this.agentClient.sendError(messageId, errorMsg);
       this.agentClient.sendComplete(this.activeMessageId ?? undefined);
-      this.agentClient.sendAgentStatus("idle");
+      this.agentClient.sendAgentStatus("idle", undefined, messageId);
     }
   }
 
@@ -1711,7 +1711,7 @@ export class PromptHandler {
     }
 
     this.agentClient.sendComplete(this.activeMessageId ?? undefined);
-    this.agentClient.sendAgentStatus("idle");
+    this.agentClient.sendAgentStatus("idle", undefined, messageId ?? undefined);
 
     // Emit usage report for this turn
     const usageChannel = this.activeChannel;
@@ -1809,7 +1809,7 @@ export class PromptHandler {
 
     // Retry with next model
     try {
-      this.agentClient.sendAgentStatus("thinking");
+      this.agentClient.sendAgentStatus("thinking", undefined, this.activeMessageId ?? undefined);
       this.awaitingAssistantForAttempt = true;
       const activeChannel = this.activeChannel;
       if (!activeChannel) throw new Error("No active channel for failover retry");
@@ -2015,7 +2015,8 @@ export class PromptHandler {
       // 'aborted' signal that triggers handlePromptComplete().
       console.log(`[PromptHandler] Abort: no active channels to abort, sending aborted ack`);
       this.agentClient.sendAborted();
-      this.agentClient.sendAgentStatus("idle");
+      // TEMPORARY: Task 12 plumbs channel-bound messageId through SSE handlers
+      this.agentClient.sendAgentStatus("idle", undefined, this.getActiveMessageId());
       return;
     }
 
@@ -2031,7 +2032,8 @@ export class PromptHandler {
 
     // Tell DO first so clients get immediate feedback
     this.agentClient.sendAborted();
-    this.agentClient.sendAgentStatus("idle");
+    // TEMPORARY: Task 12 plumbs channel-bound messageId through SSE handlers
+    this.agentClient.sendAgentStatus("idle", undefined, this.getActiveMessageId());
 
     // Then tell OpenCode to stop generating for each channel (may be slow)
     for (const ch of targetChannels) {
@@ -3353,7 +3355,8 @@ export class PromptHandler {
           // Don't broadcast misleading idle while a sync prompt is in flight —
           // the agent is not actually idle, OpenCode is between tool rounds.
           if (!this.activeChannel?.syncPromptInFlight) {
-            this.agentClient.sendAgentStatus("idle");
+            // TEMPORARY: Task 12 plumbs channel-bound messageId through SSE handlers
+            this.agentClient.sendAgentStatus("idle", undefined, this.getActiveMessageId());
           }
           this.idleNotified = true;
         }
@@ -3546,7 +3549,8 @@ export class PromptHandler {
 
       if (chunk) {
         if (this.streamedContent === "") {
-          this.agentClient.sendAgentStatus("streaming");
+          // TEMPORARY: Task 12 plumbs channel-bound messageId through SSE handlers
+          this.agentClient.sendAgentStatus("streaming", undefined, this.getActiveMessageId());
         }
         this.hasActivity = true;
         // Text resuming after tool calls — streamedContent was already committed
@@ -3628,10 +3632,12 @@ export class PromptHandler {
     if (currentStatus === "pending" || currentStatus === "running") {
       if (toolName === "question") {
         // Question tools wait on user input; keep UI interactive instead of "thinking".
-        this.agentClient.sendAgentStatus("idle");
+        // TEMPORARY: Task 12 plumbs channel-bound messageId through SSE handlers
+        this.agentClient.sendAgentStatus("idle", undefined, this.getActiveMessageId());
         this.idleNotified = true;
       } else {
-        this.agentClient.sendAgentStatus("tool_calling", toolName);
+        // TEMPORARY: Task 12 plumbs channel-bound messageId through SSE handlers
+        this.agentClient.sendAgentStatus("tool_calling", toolName, this.getActiveMessageId());
       }
       this.ensureTurnCreated();
       this.agentClient.sendToolUpdate(this.turnId!, callID, toolName, currentStatus, state.input ?? undefined);
@@ -3658,7 +3664,8 @@ export class PromptHandler {
 
         this.finalizeResponse(true);
         this.agentClient.sendComplete(this.activeMessageId ?? undefined);
-        this.agentClient.sendAgentStatus("idle");
+        // TEMPORARY: Task 12 plumbs channel-bound messageId through SSE handlers
+        this.agentClient.sendAgentStatus("idle", undefined, this.getActiveMessageId());
         this.idleNotified = true;
       }
 
@@ -3796,7 +3803,8 @@ export class PromptHandler {
       }
       if (!this.idleNotified) {
         if (!this.activeChannel?.syncPromptInFlight) {
-          this.agentClient.sendAgentStatus("idle");
+          // TEMPORARY: Task 12 plumbs channel-bound messageId through SSE handlers
+          this.agentClient.sendAgentStatus("idle", undefined, this.getActiveMessageId());
         }
         this.idleNotified = true;
       }
@@ -3986,7 +3994,7 @@ export class PromptHandler {
       this.agentClient.sendComplete(this.activeMessageId ?? undefined);
 
       // Notify client that agent is idle
-      this.agentClient.sendAgentStatus("idle");
+      this.agentClient.sendAgentStatus("idle", undefined, messageId ?? undefined);
 
       // Emit usage report for this turn
       const usageChannel = this.activeChannel;
@@ -4083,7 +4091,7 @@ export class PromptHandler {
       if (messageId) {
         this.agentClient.sendError(messageId, "The model did not respond. Try again or switch to a different model.");
         this.agentClient.sendComplete(messageId);
-        this.agentClient.sendAgentStatus("idle");
+        this.agentClient.sendAgentStatus("idle", undefined, messageId);
         // Reset prompt state
         this.activeMessageId = null;
         this.streamedContent = "";

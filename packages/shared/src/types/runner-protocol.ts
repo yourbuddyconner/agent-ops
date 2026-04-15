@@ -330,7 +330,7 @@ export type RunnerToDOMessage =
   | { type: 'screenshot'; messageId?: string; data: string; description: string }
   | { type: 'error'; messageId: string; error: string }
   | { type: 'complete'; messageId?: string }
-  | { type: 'agentStatus'; status: AgentStatus; detail?: string }
+  | { type: 'agentStatus'; messageId?: string; status: AgentStatus; detail?: string }
   | {
       type: 'create-pr';
       requestId: string;

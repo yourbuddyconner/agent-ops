@@ -1587,4 +1587,66 @@ describe('SessionAgentDO', () => {
       }),
     });
   });
+
+  it('broadcasts agentStatus without channel attribution when messageId is absent', async () => {
+    const { agent, broadcasts } = await createTestAgent();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await (agent as any).runnerHandlers.agentStatus({
+      type: 'agentStatus',
+      status: 'idle',
+    });
+
+    const statusBroadcasts = broadcasts.filter((m) => m.type === 'agentStatus');
+    expect(statusBroadcasts).toHaveLength(1);
+    expect(statusBroadcasts[0]).toMatchObject({ type: 'agentStatus', status: 'idle' });
+    expect(statusBroadcasts[0]).not.toHaveProperty('channelType');
+    expect(statusBroadcasts[0]).not.toHaveProperty('channelId');
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      '[ChannelRouting] dropped emission',
+      expect.anything(),
+    );
+  });
+
+  it('attributes agentStatus to channel when messageId resolves', async () => {
+    const { agent, broadcasts } = await createTestAgent();
+    (agent as any).promptQueue.enqueue({
+      id: 'msg-1',
+      content: 'hi',
+      status: 'processing',
+      channelType: 'slack',
+      channelId: 'C1',
+    });
+
+    await (agent as any).runnerHandlers.agentStatus({
+      type: 'agentStatus',
+      messageId: 'msg-1',
+      status: 'thinking',
+    });
+
+    const statusBroadcast = broadcasts.find((m) => m.type === 'agentStatus');
+    expect(statusBroadcast).toMatchObject({
+      type: 'agentStatus',
+      status: 'thinking',
+      channelType: 'slack',
+      channelId: 'C1',
+    });
+  });
+
+  it('drops agentStatus when messageId is provided but prompt_queue has no row', async () => {
+    const { agent, broadcasts } = await createTestAgent();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await (agent as any).runnerHandlers.agentStatus({
+      type: 'agentStatus',
+      messageId: 'nonexistent',
+      status: 'thinking',
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[ChannelRouting] dropped emission',
+      expect.objectContaining({ reason: 'no_prompt_row', eventType: 'agentStatus', messageId: 'nonexistent' }),
+    );
+    expect(broadcasts.filter((m) => m.type === 'agentStatus')).toHaveLength(0);
+  });
 });
