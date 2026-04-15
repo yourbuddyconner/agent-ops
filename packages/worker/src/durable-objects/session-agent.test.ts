@@ -1526,4 +1526,65 @@ describe('SessionAgentDO', () => {
       channelId: 'C123',
     });
   });
+
+  it('drops screenshot emission when prompt_queue has no row for messageId', async () => {
+    const { agent, broadcasts } = await createTestAgent();
+    const writeMessageSpy = vi.spyOn((agent as any).messageStore, 'writeMessage');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await (agent as any).runnerHandlers.screenshot({
+      type: 'screenshot',
+      messageId: 'nonexistent',
+      data: 'base64data',
+      description: 'A screenshot',
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[ChannelRouting] dropped emission',
+      expect.objectContaining({ reason: 'no_prompt_row', eventType: 'screenshot', messageId: 'nonexistent' }),
+    );
+    expect(writeMessageSpy).not.toHaveBeenCalled();
+    expect(broadcasts.find((m) => m.type === 'message')).toBeUndefined();
+  });
+
+  it('attributes screenshot to channel from prompt_queue lookup', async () => {
+    const { agent, broadcasts } = await createTestAgent();
+    (agent as any).promptQueue.enqueue({
+      id: 'msg-1',
+      content: 'hi',
+      status: 'processing',
+      channelType: 'slack',
+      channelId: 'C123',
+    });
+    const writeMessageSpy = vi.spyOn((agent as any).messageStore, 'writeMessage');
+
+    await (agent as any).runnerHandlers.screenshot({
+      type: 'screenshot',
+      messageId: 'msg-1',
+      data: 'base64data',
+      description: 'A screenshot',
+    });
+
+    expect(writeMessageSpy).toHaveBeenCalledTimes(1);
+    expect(writeMessageSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: 'system',
+        content: 'A screenshot',
+        parts: expect.stringContaining('screenshot'),
+        channelType: 'slack',
+        channelId: 'C123',
+      }),
+    );
+
+    const ssBroadcast = broadcasts.find((m) => m.type === 'message');
+    expect(ssBroadcast).toMatchObject({
+      type: 'message',
+      data: expect.objectContaining({
+        role: 'system',
+        content: 'A screenshot',
+        channelType: 'slack',
+        channelId: 'C123',
+      }),
+    });
+  });
 });

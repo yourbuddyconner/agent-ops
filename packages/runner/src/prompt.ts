@@ -694,6 +694,14 @@ export class PromptHandler {
     return this.eventStreamActive;
   }
 
+  /** TEMPORARY: exposes the active prompt's messageId for emit paths (screenshot, etc.)
+   *  that need to attribute outbound messages to the in-flight prompt's channel.
+   *  Task 12 will plumb messageId through SSE handlers explicitly; Task 13 deletes
+   *  this getter alongside activeChannel. */
+  getActiveMessageId(): string | undefined {
+    return this.activeChannel?.activeMessageId ?? undefined;
+  }
+
   /** Get or create a ChannelSession for the given channel. */
   getOrCreateChannel(channelType?: string, channelId?: string): ChannelSession {
     const key = ChannelSession.channelKeyFrom(channelType, channelId);

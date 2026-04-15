@@ -2189,16 +2189,27 @@ export class SessionAgentDO {
       },
 
       'screenshot': (msg) => {
+        // Resolve channel explicitly from the originating prompt — never fall back
+        // to a mutable "active" cursor. If the prompt_queue row is missing or lacks
+        // channel context, drop the emission with a structured warning.
+        if (!msg.messageId) {
+          dropEmission('no_message_id', { eventType: 'screenshot' });
+          return;
+        }
+        const ssCh = this.getChannelForMessage(msg.messageId);
+        if (!ssCh) {
+          dropEmission('no_prompt_row', { eventType: 'screenshot', messageId: msg.messageId });
+          return;
+        }
         // Store screenshot reference and broadcast
         const ssId = crypto.randomUUID();
-        const ssCh = this.activeChannel;
         this.messageStore.writeMessage({
           id: ssId,
           role: 'system',
           content: msg.description || 'Screenshot',
           parts: JSON.stringify({ type: 'screenshot', data: msg.data }),
-          channelType: ssCh?.channelType,
-          channelId: ssCh?.channelId,
+          channelType: ssCh.channelType,
+          channelId: ssCh.channelId,
         });
         this.broadcastToClients({
           type: 'message',
@@ -2208,7 +2219,8 @@ export class SessionAgentDO {
             content: msg.description || 'Screenshot',
             parts: { type: 'screenshot', data: msg.data },
             createdAt: Math.floor(Date.now() / 1000),
-            ...(ssCh ? { channelType: ssCh.channelType, channelId: ssCh.channelId } : {}),
+            channelType: ssCh.channelType,
+            channelId: ssCh.channelId,
           },
         });
       },
