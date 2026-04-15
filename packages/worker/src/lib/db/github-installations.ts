@@ -129,7 +129,7 @@ export async function listGithubInstallationsByUser(
   return db
     .select()
     .from(githubInstallations)
-    .where(eq(githubInstallations.linkedUserId, userId))
+    .where(and(eq(githubInstallations.linkedUserId, userId), eq(githubInstallations.status, 'active')))
     .all();
 }
 

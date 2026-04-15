@@ -5,7 +5,6 @@ import { users } from '../lib/schema/users.js';
 import {
   upsertGithubInstallation,
   updateGithubInstallationStatus,
-  linkGithubInstallationToUser,
 } from '../lib/db/github-installations.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -116,7 +115,18 @@ export async function reconcileUserInstallations(
       continue;
     }
 
-    await linkGithubInstallationToUser(db, String(install.id), valetUserId);
+    // Upsert the installation row — it may not exist yet if the webhook hasn't
+    // fired or refreshAllInstallations hasn't been run. We have all the data
+    // from the API response, so create/update the row AND set linkedUserId.
+    await upsertGithubInstallation(db, {
+      githubInstallationId: String(install.id),
+      accountLogin: account.login,
+      accountId: String(account.id),
+      accountType: 'User',
+      repositorySelection: (install.repository_selection ?? 'all') as 'all' | 'selected',
+      permissions: (install.permissions ?? {}) as Record<string, unknown>,
+      linkedUserId: valetUserId,
+    });
     linked++;
   }
 

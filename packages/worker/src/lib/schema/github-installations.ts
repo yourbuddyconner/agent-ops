@@ -4,7 +4,7 @@ import { users } from './users.js';
 
 export const githubInstallations = sqliteTable('github_installations', {
   id: text().primaryKey(),
-  githubInstallationId: text().notNull().unique(),
+  githubInstallationId: text().notNull(),
   accountLogin: text().notNull(),
   accountId: text().notNull(),
   accountType: text().notNull(),

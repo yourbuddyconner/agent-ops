@@ -233,8 +233,8 @@ oauthRouter.get('/:provider', async (c) => {
 
 /**
  * Handle an OAuth/OIDC login callback for a given provider.
- * Extracted so it can be called from both the oauthRouter and the
- * githubMeCallbackRouter (which intercepts /auth/github/callback).
+ * Extracted so it can be called from the oauthRouter for non-GitHub providers.
+ * GitHub login is handled directly by githubAuthRouter.
  */
 export async function handleLoginOAuthCallback(
   env: Env,
