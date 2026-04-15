@@ -179,11 +179,26 @@ adminGitHubRouter.post('/app/manifest', async (c) => {
  */
 adminGitHubRouter.post('/app/refresh', async (c) => {
   const appDb = c.get('db');
-  const app = await loadGitHubApp(c.env, appDb);
+
+  let app;
+  try {
+    app = await loadGitHubApp(c.env, appDb);
+  } catch (err) {
+    console.error('[admin-github] Failed to load GitHub App:', err);
+    return c.json({ error: 'Failed to load GitHub App', detail: err instanceof Error ? err.message : String(err) }, 500);
+  }
   if (!app) return c.json({ error: 'App not configured' }, 400);
 
-  const { count } = await refreshAllInstallations(app, appDb);
-  return c.json({ refreshed: true, installationCount: count });
+  try {
+    const { count } = await refreshAllInstallations(app, appDb);
+    return c.json({ refreshed: true, installationCount: count });
+  } catch (err) {
+    console.error('[admin-github] Failed to refresh installations:', err);
+    return c.json({
+      error: 'Failed to refresh installations',
+      detail: err instanceof Error ? err.message : String(err),
+    }, 500);
+  }
 });
 
 /**
