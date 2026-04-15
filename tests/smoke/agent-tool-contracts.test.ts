@@ -52,15 +52,19 @@ Checks:
 8. LIST_TOOLS_FILTER: Call list_tools with service="github".
    EXPECT: response is a list where every entry's id starts with "github:". Non-github entries leaking through = fail. Record the count.
 
-9. MEM_WRITE_DEEP_PATH: Call mem_write with path="test/a/b/c/deep.md" content="deep". Then call mem_read with path="test/a/b/c/deep.md".
-   EXPECT: write succeeds, read returns "deep" (exactly). Any truncation or path mangling = fail. Cleanup: call mem_rm with path="test/a/b/c/deep.md" (do not include this cleanup in any check; it is best-effort).
+9. MEM_WRITE_DEEP_PATH: Call mem_write with path="test/a/b/deep.md" content="deep". Then call mem_read with path="test/a/b/deep.md".
+   EXPECT: write succeeds with "Written:" prefix, read returns "deep" (exactly). Any truncation or path mangling = fail. Cleanup: call mem_rm with path="test/a/b/deep.md" (do not include this cleanup in any check; it is best-effort).
+   NOTE: 4 path components is the documented maximum. Going deeper triggers a rejection (see check 11).
 
 10. GET_PERSONA_DETERMINISTIC: Call get_my_persona twice in a row.
     EXPECT: both calls return the same name and handle. Different responses = fail (state inconsistency).
 
+11. MEM_WRITE_TOO_DEEP_REJECTED: Call mem_write with path="test/a/b/c/d/too-deep.md" content="x" (5 components — exceeds the documented max of 4).
+    EXPECT: tool returns "Failed to write:" with a "Path too deep" error. Successful write of an over-depth path = fail (constraint not enforced).
+
 Output ONLY this JSON:
 
-{"smoke_test":"tool_contracts","timestamp":"<ISO8601 now>","checks":{"mem_rm_nonexistent":{"pass":true,"detail":"<literal>"},"mem_read_missing":{"pass":true,"detail":"<literal>"},"mem_round_trip":{"pass":true,"detail":"<write> | <rm> | <read>"},"task_update_missing":{"pass":true,"detail":"<literal>"},"spawn_invalid_workspace":{"pass":true,"detail":"<literal>"},"terminate_invalid_session":{"pass":true,"detail":"<literal>"},"search_skills_empty_query":{"pass":true,"detail":"<literal>"},"list_tools_filter":{"pass":true,"detail":"N github tools, leaks=true/false"},"mem_write_deep_path":{"pass":true,"detail":"<write> | <read>"},"get_persona_deterministic":{"pass":true,"detail":"name1=X handle1=Y name2=X handle2=Y match=true/false"}},"summary":{"total":10,"passed":N,"failed":N}}
+{"smoke_test":"tool_contracts","timestamp":"<ISO8601 now>","checks":{"mem_rm_nonexistent":{"pass":true,"detail":"<literal>"},"mem_read_missing":{"pass":true,"detail":"<literal>"},"mem_round_trip":{"pass":true,"detail":"<write> | <rm> | <read>"},"task_update_missing":{"pass":true,"detail":"<literal>"},"spawn_invalid_workspace":{"pass":true,"detail":"<literal>"},"terminate_invalid_session":{"pass":true,"detail":"<literal>"},"search_skills_empty_query":{"pass":true,"detail":"<literal>"},"list_tools_filter":{"pass":true,"detail":"N github tools, leaks=true/false"},"mem_write_deep_path":{"pass":true,"detail":"<write> | <read>"},"get_persona_deterministic":{"pass":true,"detail":"name1=X handle1=Y name2=X handle2=Y match=true/false"},"mem_write_too_deep_rejected":{"pass":true,"detail":"<literal>"}},"summary":{"total":11,"passed":N,"failed":N}}
 
 For any failed check, set pass=false and put the literal tool output in detail. Do not omit failed checks. Do not adjust summary counts to hide failures.`;
 
@@ -123,6 +127,10 @@ describe('agent: tool contracts', () => {
     expect(result?.checks?.get_persona_deterministic?.pass).toBe(true);
   });
 
+  it('mem_write rejects paths exceeding the documented depth limit', () => {
+    expect(result?.checks?.mem_write_too_deep_rejected?.pass).toBe(true);
+  });
+
   it('no failures in summary', () => {
     expect(result?.summary?.failed).toBe(0);
   });
@@ -173,5 +181,15 @@ describe('agent: tool contracts', () => {
 
   it('trace: no orphaned non-terminal tool calls', () => {
     trace.expectAllTerminal();
+  });
+
+  it('trace: at least one mem_write was rejected with "Failed to write:" (depth limit enforced)', () => {
+    // The too-deep mem_write should produce a "Failed to write:" result.
+    trace.expectResultMatches('mem_write', /^Failed to write:/);
+  });
+
+  it('trace: at least one mem_write succeeded with "Written:" (within-bounds path)', () => {
+    // The within-bounds round-trip and deep-path writes should both produce "Written:".
+    trace.expectResultMatches('mem_write', /^Written:/);
   });
 });
