@@ -2311,11 +2311,11 @@ export class SessionAgentDO {
       // ─── V2 Parts-Based Message Protocol ──────────────────────────────
       'message.create': (msg) => {
         const turnId = msg.turnId!;
-        // Resolve threadId: prefer Runner-provided value, fall back to the currently-processing prompt's threadId
-        let resolvedThreadId = msg.threadId || undefined;
-        if (!resolvedThreadId) {
-          resolvedThreadId = this.promptQueue.getProcessingThreadId() || undefined;
-        }
+        // threadId comes directly from the Runner via the message.create envelope —
+        // no fallback. The Runner derives it from extractChannelContext(channel).threadId
+        // for thread-channel prompts; non-thread channels (web/slack/telegram) don't
+        // have a threadId, which is correct.
+        const resolvedThreadId = msg.threadId || undefined;
         console.log(`[SessionAgentDO] V2 message.create: turnId=${turnId} threadId=${resolvedThreadId || 'none'}`);
         this.messageStore.createTurn(turnId, {
           channelType: msg.channelType || undefined,

@@ -483,7 +483,7 @@ describe('SessionAgentDO', () => {
     expect(initMessage.data).not.toHaveProperty('auditLog');
   });
 
-  it('tags assistant messages with the thread from the processing prompt queue entry', async () => {
+  it('tags assistant messages with the thread from the Runner-provided message.create envelope', async () => {
     const runnerSocket = { send: vi.fn() };
     const { agent, broadcasts } = await createTestAgent({ sockets: [runnerSocket] });
 
@@ -497,10 +497,11 @@ describe('SessionAgentDO', () => {
       'thread-direct',
     );
 
-    // Thread ID comes from the processing queue entry, not sessionState
+    // Runner derives threadId from extractChannelContext and sends it explicitly
     await (agent as any).runnerHandlers['message.create']({
       type: 'message.create',
       turnId: 'turn-direct',
+      threadId: 'thread-direct',
     });
 
     const created = broadcasts.find((message) => {
@@ -636,10 +637,11 @@ describe('SessionAgentDO', () => {
     const dispatched = await (agent as any).sendNextQueuedPrompt();
     expect(dispatched).toBe(true);
 
-    // Thread ID resolved from the processing queue entry
+    // Runner echoes threadId back on message.create envelope
     await (agent as any).runnerHandlers['message.create']({
       type: 'message.create',
       turnId: 'turn-queued',
+      threadId: 'thread-queued',
     });
 
     const created = broadcasts.find((message) => {
@@ -654,7 +656,7 @@ describe('SessionAgentDO', () => {
 
   it('preserves threadId through tool updates and finalize once the turn is created', async () => {
     const { agent, broadcasts } = await createTestAgent();
-    // Simulate a processing entry with a thread_id so message.create can resolve it
+    // Runner provides threadId explicitly on message.create; no queue fallback.
     (agent as any).promptQueue.enqueue({
       id: 'prompt-parts',
       content: 'threaded work',
@@ -668,6 +670,7 @@ describe('SessionAgentDO', () => {
     await (agent as any).runnerHandlers['message.create']({
       type: 'message.create',
       turnId: 'turn-parts',
+      threadId: 'thread-parts',
     });
     await (agent as any).runnerHandlers['message.part.tool-update']({
       type: 'message.part.tool-update',
