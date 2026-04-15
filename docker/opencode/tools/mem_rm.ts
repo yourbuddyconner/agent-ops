@@ -27,8 +27,10 @@ export default tool({
         return `Failed to delete: ${errText}`
       }
 
-      const data = (await res.json()) as { deleted: number; success: boolean }
-      if (!data.success) {
+      const data = (await res.json()) as { deleted: number }
+      // The service returns the count of files deleted; HTTP 200 = call succeeded.
+      // 0 deletions means the path didn't match anything (legitimate "not found").
+      if (!data.deleted) {
         return `Not found: ${args.path}`
       }
 

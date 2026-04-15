@@ -166,7 +166,7 @@ def get_base_image() -> modal.Image:
                 "DISPLAY": ":99",
                 "HOME": "/root",
                 # Force image rebuild on deploy (change this value to trigger rebuild)
-                "IMAGE_BUILD_VERSION": "2026-04-15-v22-suppress-yield-abort-everywhere",
+                "IMAGE_BUILD_VERSION": "2026-04-15-v23-mem-rm-success-check",
                 "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
                 "AGENT_BROWSER_PROFILE": "/root/.agent-browser-profile",
                 "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright",
