@@ -2100,9 +2100,20 @@ export class SessionAgentDO {
       },
 
       'question': async (msg) => {
+        // Resolve channel explicitly from the originating prompt — never fall back
+        // to a mutable "active" cursor. If the prompt_queue row is missing or lacks
+        // channel context, drop the emission with a structured warning.
+        if (!msg.messageId) {
+          dropEmission('no_message_id', { eventType: 'question', questionId: msg.questionId });
+          return;
+        }
+        const questionCh = this.getChannelForMessage(msg.messageId);
+        if (!questionCh) {
+          dropEmission('no_prompt_row', { eventType: 'question', messageId: msg.messageId, questionId: msg.questionId });
+          return;
+        }
         // Store question as interactive prompt and broadcast to all clients
         const qId = msg.questionId || crypto.randomUUID();
-        const questionCh = this.activeChannel;
         const QUESTION_TIMEOUT_SECS = 5 * 60; // 5 minutes
         const expiresAt = Math.floor(Date.now() / 1000) + QUESTION_TIMEOUT_SECS;
         const sessionId = this.sessionState.sessionId;
@@ -2112,10 +2123,8 @@ export class SessionAgentDO {
           : [];
 
         const context: Record<string, unknown> = msg.options ? { options: msg.options } : {};
-        if (questionCh) {
-          context.channelType = questionCh.channelType;
-          context.channelId = questionCh.channelId;
-        }
+        context.channelType = questionCh.channelType;
+        context.channelId = questionCh.channelId;
 
         this.ctx.storage.sql.exec(
           `INSERT INTO interactive_prompts (id, type, request_id, title, actions, context, status, expires_at)
@@ -2141,7 +2150,8 @@ export class SessionAgentDO {
         this.broadcastToClients({
           type: 'interactive_prompt',
           prompt,
-          ...(questionCh ? { channelType: questionCh.channelType, channelId: questionCh.channelId } : {}),
+          channelType: questionCh.channelType,
+          channelId: questionCh.channelId,
         });
 
         // Schedule an alarm to expire the question if unanswered

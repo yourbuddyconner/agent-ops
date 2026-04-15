@@ -377,6 +377,7 @@ describe('SessionAgentDO', () => {
 
     await (agent as any).runnerHandlers.question({
       type: 'question',
+      messageId: 'web-turn',
       questionId: 'q-web',
       text: 'Need a decision',
       options: ['Yes', 'No'],
@@ -384,26 +385,34 @@ describe('SessionAgentDO', () => {
 
     const promptMessage = broadcasts.find((message) => message.type === 'interactive_prompt');
     expect(promptMessage).toBeTruthy();
-    expect(promptMessage).not.toHaveProperty('channelType');
-    expect(promptMessage).not.toHaveProperty('channelId');
+    // Channel is attributed from the prompt_queue row, not the stale Slack cursor.
+    expect(promptMessage).toMatchObject({ channelType: 'web', channelId: 'default' });
     expect(promptMessage?.prompt).toMatchObject({
       id: 'q-web',
       type: 'question',
-      context: { options: ['Yes', 'No'] },
+      context: { options: ['Yes', 'No'], channelType: 'web', channelId: 'default' },
     });
 
     expect(sendChannelInteractivePrompts).toHaveBeenCalledOnce();
     expect(sendChannelInteractivePrompts).toHaveBeenCalledWith(
       'q-web',
       expect.objectContaining({
-        context: { options: ['Yes', 'No'] },
+        context: expect.objectContaining({
+          options: ['Yes', 'No'],
+          channelType: 'web',
+          channelId: 'default',
+        }),
       }),
     );
     expect(waitUntil).toHaveBeenCalledOnce();
 
     const storedPrompt = sql.interactivePrompts.get('q-web');
     expect(storedPrompt).toBeTruthy();
-    expect(JSON.parse(storedPrompt!.context)).toEqual({ options: ['Yes', 'No'] });
+    expect(JSON.parse(storedPrompt!.context)).toEqual({
+      options: ['Yes', 'No'],
+      channelType: 'web',
+      channelId: 'default',
+    });
   });
 
   it('re-arms the alarm when idle hibernation is the only pending deadline', async () => {
@@ -1462,6 +1471,59 @@ describe('SessionAgentDO', () => {
       error: 'oops',
       channelType: 'thread',
       channelId: 'thread-abc',
+    });
+  });
+
+  it('drops question emission when prompt_queue has no row for messageId', async () => {
+    const { agent, sql, broadcasts } = await createTestAgent();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await (agent as any).runnerHandlers.question({
+      type: 'question',
+      messageId: 'nonexistent',
+      questionId: 'q-1',
+      text: 'pick?',
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[ChannelRouting] dropped emission',
+      expect.objectContaining({ reason: 'no_prompt_row', messageId: 'nonexistent', questionId: 'q-1' }),
+    );
+    expect(sql.interactivePrompts.size).toBe(0);
+    expect(broadcasts.find((m) => m.type === 'interactive_prompt')).toBeUndefined();
+    expect((agent as any).notifyEventBus).not.toHaveBeenCalled();
+    expect((agent as any).sendChannelInteractivePrompts).not.toHaveBeenCalled();
+  });
+
+  it('attributes question to channel from prompt_queue lookup', async () => {
+    const { agent, sql, broadcasts } = await createTestAgent();
+    (agent as any).promptQueue.enqueue({
+      id: 'msg-1',
+      content: 'hi',
+      status: 'processing',
+      channelType: 'slack',
+      channelId: 'C123',
+    });
+
+    await (agent as any).runnerHandlers.question({
+      type: 'question',
+      messageId: 'msg-1',
+      questionId: 'q-1',
+      text: 'pick?',
+      options: ['a', 'b'],
+    });
+
+    expect(sql.interactivePrompts.size).toBe(1);
+    const storedPrompt = sql.interactivePrompts.get('q-1');
+    expect(storedPrompt).toBeTruthy();
+    const storedContext = JSON.parse(storedPrompt!.context);
+    expect(storedContext).toMatchObject({ channelType: 'slack', channelId: 'C123' });
+
+    const promptBroadcast = broadcasts.find((m) => m.type === 'interactive_prompt');
+    expect(promptBroadcast).toMatchObject({
+      type: 'interactive_prompt',
+      channelType: 'slack',
+      channelId: 'C123',
     });
   });
 });

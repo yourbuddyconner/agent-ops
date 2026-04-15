@@ -1949,7 +1949,15 @@ export class PromptHandler {
     parsedQuestions.forEach((question, index) => {
       const promptID = parsedQuestions.length === 1 ? requestID : `${requestID}:${index}`;
       this.promptToQuestion.set(promptID, { requestID, index });
-      this.agentClient.sendQuestion(promptID, question.text, question.options);
+      // TEMPORARY: read messageId from activeChannel — Task 12 will plumb channel
+      // explicitly through SSE handlers. This is the legacy mutable-cursor read,
+      // intentionally left for one more task cycle to keep this change focused.
+      const messageId = this.activeChannel?.activeMessageId;
+      if (!messageId) {
+        console.warn(`[PromptHandler] question.asked but no active messageId — dropping (requestID=${requestID})`);
+        return;
+      }
+      this.agentClient.sendQuestion(messageId, promptID, question.text, question.options);
     });
   }
 

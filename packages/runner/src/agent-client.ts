@@ -242,8 +242,8 @@ export class AgentClient {
     });
   }
 
-  sendQuestion(questionId: string, text: string, options?: string[]): void {
-    this.send({ type: "question", questionId, text, options });
+  sendQuestion(messageId: string, questionId: string, text: string, options?: string[]): void {
+    this.send({ type: "question", messageId, questionId, text, options });
   }
 
   sendScreenshot(data: string, description: string): void {
