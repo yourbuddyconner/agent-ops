@@ -3580,19 +3580,6 @@ export class SessionAgentDO {
     try {
       this.promptQueue.clearDispatchTimers();
 
-      // Wait subscription is per-turn. If wait_for_event was called during this
-      // turn but the agent then continued with more tool calls / text and the
-      // turn finalized normally, the subscription is stale and would cause
-      // subsequent user prompts to be queued indefinitely (because dispatch
-      // holds user prompts while a wait subscription is active). Clear it.
-      // The agent's persona will re-call wait_for_event next turn if it wants
-      // to yield. Child events still wake the agent — they just lose the
-      // terminal-only filter, which is a benign performance trade-off.
-      if (this.sessionState.waitSubscription) {
-        console.log('[SessionAgentDO] handlePromptComplete: clearing stale wait subscription');
-        this.sessionState.waitSubscription = null;
-      }
-
       // Emit turn_complete timing — measure total time from prompt received to completion
       const promptStart = this.promptQueue.promptReceivedAt;
       if (promptStart > 0) {
@@ -4253,13 +4240,14 @@ export class SessionAgentDO {
       return false;
     }
 
-    // When a wait subscription is active, only dequeue child events — hold user
-    // messages in the queue until the wait resolves. This prevents user messages
-    // from being dispatched before the child event the agent is waiting for.
-    const hasWaitSub = !!this.sessionState.waitSubscription;
-    let prompt = hasWaitSub
-      ? this.promptQueue.dequeueNextChild()
-      : this.promptQueue.dequeueNext();
+    // When a wait subscription is active, prefer child events that match the
+    // subscription (dispatched directly by handleSystemMessage's wake path,
+    // not via the queue — but legacy queued events may exist). If the next
+    // child event in the queue matches, dispatch it; otherwise fall through
+    // to general dispatch and let the user prompt wake the agent — per the
+    // orchestrator persona, user messages always wake an agent that yielded
+    // via wait_for_event. The subscription is cleared at dispatch time below.
+    let prompt = this.promptQueue.dequeueNext();
     while (prompt) {
       console.log(`[SessionAgentDO] sendNextQueuedPrompt: found queued item id=${prompt.id} channelType=${prompt.channelType || 'none'} channelId=${prompt.channelId || 'none'} queueType=${prompt.queueType || 'prompt'}`);
 
@@ -4302,9 +4290,7 @@ export class SessionAgentDO {
 
       if (shouldSkip) {
         this.promptQueue.dropEntry(prompt.id);
-        prompt = hasWaitSub
-          ? this.promptQueue.dequeueNextChild()
-          : this.promptQueue.dequeueNext();
+        prompt = this.promptQueue.dequeueNext();
         continue;
       }
 

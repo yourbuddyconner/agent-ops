@@ -3635,16 +3635,13 @@ export class PromptHandler {
 
       this.agentClient.sendToolUpdate(channel.turnId!, callID, toolName, "completed", state.input ?? undefined, toolResult ?? undefined);
 
-      // wait_for_event: register the event subscription with the DO. Do NOT force-
-      // finalize the turn — the LLM may continue with more tool calls or text
-      // after wait_for_event returns (the smoke test, for example, calls
-      // wait_for_event then proceeds with read_messages, terminate_session, etc.
-      // in the same turn). Force-finalizing here would set waitForEventForced=true
-      // and suppress all subsequent SSE events on this channel, dropping the rest
-      // of the agent's output silently. Let the natural session.idle event finalize
-      // when the LLM is genuinely done.
+      // wait_for_event: yield. Register the subscription with the DO and call
+      // OpenCode's abort endpoint to actually halt the LLM — without this the
+      // model keeps generating and may execute real side-effect tools the agent
+      // believes it has yielded past. The natural session.idle that follows
+      // the abort will finalize the turn cleanly via the standard handler.
       if (toolName === "wait_for_event") {
-        console.log(`[PromptHandler] wait_for_event completed — registering subscription, letting turn continue`);
+        console.log(`[PromptHandler] wait_for_event completed — registering subscription and aborting OpenCode session to yield`);
         const input = state.input as Record<string, unknown> | undefined;
         this.agentClient.sendWaitSubscription({
           reason: (input?.reason as string) || undefined,
@@ -3652,6 +3649,11 @@ export class PromptHandler {
           notifyOn: (input?.notify_on as string) || undefined,
           statuses: (input?.statuses as string[]) || undefined,
         });
+        const ocSessionId = channel.opencodeSessionId;
+        if (ocSessionId) {
+          fetch(`${this.opencodeUrl}/session/${ocSessionId}/abort`, { method: "POST" })
+            .catch((err) => console.warn(`[PromptHandler] wait_for_event abort failed:`, err));
+        }
       }
 
     } else if (currentStatus === "error") {

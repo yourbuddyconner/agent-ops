@@ -16,7 +16,7 @@ const PROMPT = `You are running an automated smoke test for the child session li
 Steps:
 
 1. SPAWN: Call spawn_session with task="Run these commands and report EXACT output: (1) echo SMOKE_OK (2) node --version (3) git --version. Then you are done." workspace="smoke-test" title="Smoke Child".
-2. WAIT: Call wait_for_event with the child's session ID and notify_on="terminal". Record whether it woke correctly and the child's status.
+2. WAIT: Call wait_for_event with session_ids=[child id] and notify_on="status_change" so the agent yields and resumes when the child reaches any non-running state (idle once the bash commands finish, or terminal). Record whether it woke correctly and the child's status.
 3. READ: Call read_messages for the child session. Record whether you got messages and if "SMOKE_OK" appears.
 4. STATUS: Call get_session_status for the child session. Record the status and runnerConnected fields.
 5. LIST: Call list_sessions. Record whether the child appears in the list.
