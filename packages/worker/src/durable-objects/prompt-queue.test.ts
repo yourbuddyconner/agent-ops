@@ -391,6 +391,44 @@ describe('PromptQueue', () => {
     });
   });
 
+  describe('getChannelTargetById', () => {
+    it('prefers reply_channel_* over channel_*', () => {
+      pq.enqueue({
+        id: 'p1', content: 'a',
+        channelType: 'thread', channelId: 'th1',
+        replyChannelType: 'slack', replyChannelId: 'C123:ts',
+      });
+      const target = pq.getChannelTargetById('p1');
+      expect(target).toEqual({ channelType: 'slack', channelId: 'C123:ts' });
+    });
+
+    it('falls back to channel_* when reply_channel_* is missing', () => {
+      pq.enqueue({
+        id: 'p1', content: 'a',
+        channelType: 'telegram', channelId: '12345',
+      });
+      const target = pq.getChannelTargetById('p1');
+      expect(target).toEqual({ channelType: 'telegram', channelId: '12345' });
+    });
+
+    it('returns web/thread as valid targets (no special-casing)', () => {
+      pq.enqueue({
+        id: 'p-web', content: 'a',
+        channelType: 'web', channelId: 'session-1',
+      });
+      pq.enqueue({
+        id: 'p-thread', content: 'b',
+        channelType: 'thread', channelId: 'th42',
+      });
+      expect(pq.getChannelTargetById('p-web')).toEqual({ channelType: 'web', channelId: 'session-1' });
+      expect(pq.getChannelTargetById('p-thread')).toEqual({ channelType: 'thread', channelId: 'th42' });
+    });
+
+    it('returns undefined when the row is missing', () => {
+      expect(pq.getChannelTargetById('does-not-exist')).toBeUndefined();
+    });
+  });
+
   describe('getProcessingChannelContext', () => {
     it('prefers reply channel over channel', () => {
       pq.enqueue({

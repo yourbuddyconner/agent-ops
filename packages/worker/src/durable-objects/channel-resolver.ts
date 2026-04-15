@@ -25,7 +25,7 @@ export type DropReason =
 
 /**
  * Resolve the channel target for an outbound emission by looking up the
- * prompt_queue row for the given messageId.
+ * prompt_queue row for the given messageId via `promptQueue.getChannelTargetById`.
  *
  * Returns null if the row is missing or lacks both channelType and channelId.
  * Callers MUST handle null explicitly — do NOT fall back to mutable state.
@@ -34,7 +34,7 @@ export function getChannelForMessage(
   promptQueue: PromptQueue,
   messageId: string,
 ): ChannelTarget | null {
-  const row = promptQueue.getRowById(messageId);
+  const row = promptQueue.getChannelTargetById(messageId);
   if (!row) return null;
   if (!row.channelType || !row.channelId) return null;
   return { channelType: row.channelType, channelId: row.channelId };

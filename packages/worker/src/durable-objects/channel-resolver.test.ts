@@ -4,10 +4,17 @@ import type { PromptQueue } from './prompt-queue.js';
 
 function makePromptQueueMock(
   row: { channelType: string | null; channelId: string | null } | undefined,
-): { queue: PromptQueue; getRowById: ReturnType<typeof vi.fn> } {
-  const getRowById = vi.fn().mockReturnValue(row);
-  const queue = { getRowById } as unknown as PromptQueue;
-  return { queue, getRowById };
+): { queue: PromptQueue; getChannelTargetById: ReturnType<typeof vi.fn> } {
+  const getChannelTargetById = vi.fn().mockReturnValue(row);
+  const queue = { getChannelTargetById } as unknown as PromptQueue;
+  return { queue, getChannelTargetById };
+}
+
+function makePromptQueueMockFromMap(
+  rowsByMessageId: Record<string, { channelType: string | null; channelId: string | null } | undefined>,
+): PromptQueue {
+  const getChannelTargetById = vi.fn((messageId: string) => rowsByMessageId[messageId]);
+  return { getChannelTargetById } as unknown as PromptQueue;
 }
 
 describe('getChannelForMessage', () => {
@@ -52,16 +59,24 @@ describe('getChannelForMessage', () => {
     expect(result).toBeNull();
   });
 
-  it('calls getRowById with the exact messageId passed in', () => {
-    const { queue, getRowById } = makePromptQueueMock({
+  it('calls getChannelTargetById with the exact messageId passed in', () => {
+    const { queue, getChannelTargetById } = makePromptQueueMock({
       channelType: 'telegram',
       channelId: 'T999',
     });
 
     getChannelForMessage(queue, 'exact-message-id');
 
-    expect(getRowById).toHaveBeenCalledTimes(1);
-    expect(getRowById).toHaveBeenCalledWith('exact-message-id');
+    expect(getChannelTargetById).toHaveBeenCalledTimes(1);
+    expect(getChannelTargetById).toHaveBeenCalledWith('exact-message-id');
+  });
+
+  it('uses reply_channel_* precedence (caller mock returns the precedence-applied row)', () => {
+    const promptQueue = makePromptQueueMockFromMap({
+      'msg-1': { channelType: 'slack-thread-reply-target', channelId: 'C-thread-id' },
+    });
+    const result = getChannelForMessage(promptQueue, 'msg-1');
+    expect(result).toEqual({ channelType: 'slack-thread-reply-target', channelId: 'C-thread-id' });
   });
 });
 

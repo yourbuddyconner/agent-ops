@@ -351,16 +351,20 @@ export class PromptQueue {
     return rows[0].model ? String(rows[0].model) : null;
   }
 
-  /** Get channel context for a specific prompt by messageId (the prompt_queue id). */
-  getRowById(messageId: string): { channelType: string | null; channelId: string | null } | undefined {
+  /** Get channel target for a specific prompt by messageId.
+   *  Prefers reply_channel_* over channel_* (matches legacy getProcessingChannelContext
+   *  precedence) so external-channel replies route correctly.
+   *  Unlike getProcessingChannelContext, does NOT special-case 'web'/'thread' — those
+   *  are valid emit targets in the explicit-routing contract.
+   */
+  getChannelTargetById(messageId: string): { channelType: string | null; channelId: string | null } | undefined {
     const rows = this.sql
-      .exec("SELECT channel_type, channel_id FROM prompt_queue WHERE id = ? LIMIT 1", messageId)
+      .exec("SELECT channel_type, channel_id, reply_channel_type, reply_channel_id FROM prompt_queue WHERE id = ? LIMIT 1", messageId)
       .toArray();
     if (rows.length === 0) return undefined;
-    return {
-      channelType: (rows[0].channel_type as string) || null,
-      channelId: (rows[0].channel_id as string) || null,
-    };
+    const channelType = (rows[0].reply_channel_type as string) || (rows[0].channel_type as string) || null;
+    const channelId = (rows[0].reply_channel_id as string) || (rows[0].channel_id as string) || null;
+    return { channelType, channelId };
   }
 
   /**
