@@ -6,6 +6,7 @@ import { getExecutionWithWorkflow, updateExecutionRuntimeState, resumeExecution,
 import { getUserIdleTimeout, getUserGitConfig } from '../lib/db/users.js';
 import { getCredential } from '../services/credentials.js';
 import { getSession, getSessionGitState, updateSessionStatus } from '../lib/db/sessions.js';
+import { deriveSandboxJwtSecret } from '../lib/jwt.js';
 
 interface EnqueueRequest {
   executionId: string;
@@ -263,7 +264,7 @@ export class WorkflowExecutorDO implements DurableObject {
         imageType: 'base',
         doWsUrl,
         runnerToken,
-        jwtSecret: this.env.ENCRYPTION_KEY,
+        jwtSecret: await deriveSandboxJwtSecret(this.env.ENCRYPTION_KEY, params.sessionId),
         idleTimeoutSeconds,
         envVars,
       };

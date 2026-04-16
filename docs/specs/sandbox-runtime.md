@@ -184,7 +184,7 @@ exec bun run src/bin.ts \
 | `SESSION_ID` | Yes | Modal secrets | Session identifier |
 | `DO_WS_URL` | Yes | Modal secrets | WebSocket URL to SessionAgent DO |
 | `RUNNER_TOKEN` | Yes | Modal secrets | Auth token for DO connection |
-| `JWT_SECRET` | Yes | Modal secrets | HMAC key for gateway JWT validation |
+| `JWT_SECRET` | Yes | Modal secrets | Per-session HMAC key for gateway JWT validation, derived as `HMAC-SHA256(ENCRYPTION_KEY, sessionId)` — the raw `ENCRYPTION_KEY` is never sent to sandboxes (see `auth-access.md`) |
 | `OPENCODE_SERVER_PASSWORD` | Yes | Modal secrets | OpenCode server auth |
 | `REPO_URL` | No | Modal secrets | Git repo to clone |
 | `REPO_BRANCH` | No | Modal secrets | Branch to check out |

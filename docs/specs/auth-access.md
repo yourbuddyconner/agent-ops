@@ -249,17 +249,19 @@ if (user.role !== 'admin') throw new ForbiddenError('Admin access required');
 
 ## JWT Issuance
 
-Two JWT use cases, both using HMAC-SHA256 with the `ENCRYPTION_KEY` secret:
+Two JWT use cases, both using HMAC-SHA256:
 
 ### OAuth State JWT (5-minute)
 
-Used during OAuth initiation/callback to prevent CSRF. Payload contains provider name (`sub`), random session ID (`sid`), and optional `invite_code`.
+Signed directly with `ENCRYPTION_KEY`. Used during OAuth initiation/callback to prevent CSRF. Payload contains provider name (`sub`), random session ID (`sid`), and optional `invite_code`.
 
 ### Sandbox Access JWT (15-minute)
 
 Issued via `GET /api/sessions/:id/sandbox-token`. Used by the frontend to authenticate iframe access to sandbox services (VS Code, VNC, terminal) through the auth gateway.
 
 Payload: `{ sub: userId, sid: sessionId, exp, iat }`.
+
+Signed with a **per-session derived key**, not `ENCRYPTION_KEY` directly: `sandboxJwtSecret = hex(HMAC-SHA256(ENCRYPTION_KEY, sessionId))`. The worker passes this same derived value to the sandbox as `JWT_SECRET` at spawn time (see `deriveSandboxJwtSecret()` in `packages/worker/src/lib/jwt.ts`). This keeps the raw encryption key out of every sandbox while remaining deterministic (no per-session state to store) and compatible with the gateway's existing HMAC verification. A compromised sandbox can forge tokens only for its own session and cannot decrypt stored org credentials.
 
 Guards: rejects if session is in terminal or hibernated status.
 

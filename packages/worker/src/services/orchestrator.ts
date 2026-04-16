@@ -8,6 +8,7 @@ import { createPersona, upsertPersonaFile } from '../lib/db/personas.js';
 import { generateRunnerToken, assembleProviderEnv, assembleCredentialEnv } from '../lib/env-assembly.js';
 import { ensureTodayJournal } from '../lib/db/memory-files.js';
 import { loadMemorySnapshot, formatMemorySnapshot } from '../lib/memory-snapshot.js';
+import { deriveSandboxJwtSecret } from '../lib/jwt.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -220,7 +221,7 @@ export async function restartOrchestratorSession(
     imageType: 'base',
     doWsUrl,
     runnerToken,
-    jwtSecret: env.ENCRYPTION_KEY,
+    jwtSecret: await deriveSandboxJwtSecret(env.ENCRYPTION_KEY, sessionId),
     idleTimeoutSeconds,
     envVars,
     personaFiles,

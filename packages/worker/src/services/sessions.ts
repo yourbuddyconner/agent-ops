@@ -3,7 +3,7 @@ import type { Env } from '../env.js';
 import * as db from '../lib/db.js';
 import type { AppDb } from '../lib/drizzle.js';
 import { getDb } from '../lib/drizzle.js';
-import { signJWT } from '../lib/jwt.js';
+import { deriveSandboxJwtSecret, signJWT } from '../lib/jwt.js';
 import { buildDoWebSocketUrl } from '../lib/do-ws-url.js';
 import { generateRunnerToken, assembleProviderEnv, assembleCredentialEnv, assembleCustomProviders, assembleBuiltInProviderModelConfigs, assembleRepoEnv } from '../lib/env-assembly.js';
 import { getCredential } from '../services/credentials.js';
@@ -348,7 +348,7 @@ export async function createSession(
     imageType: 'base',
     doWsUrl,
     runnerToken,
-    jwtSecret: env.ENCRYPTION_KEY,
+    jwtSecret: await deriveSandboxJwtSecret(env.ENCRYPTION_KEY, sessionId),
     idleTimeoutSeconds,
     envVars,
     gitConfig: Object.keys(repoGitConfig).length > 0 ? repoGitConfig : undefined,
@@ -534,6 +534,7 @@ export async function issueSandboxToken(
   }
 
   const now = Math.floor(Date.now() / 1000);
+  const secret = await deriveSandboxJwtSecret(env.ENCRYPTION_KEY, sessionId);
   const token = await signJWT(
     {
       sub: userId,
@@ -541,7 +542,7 @@ export async function issueSandboxToken(
       iat: now,
       exp: now + 15 * 60,
     },
-    env.ENCRYPTION_KEY,
+    secret,
   );
 
   return {
