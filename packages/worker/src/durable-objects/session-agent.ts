@@ -4070,7 +4070,7 @@ export class SessionAgentDO {
         const childId = parts.childSessionId as string;
         const childStatus = parts.childStatus as string | undefined;
         const terminalStatuses = new Set(['terminated', 'error', 'hibernated']);
-        const notifyOn = sub.notifyOn || 'terminal';
+        const notifyOn = sub.notifyOn || 'status_change';
 
         // Session ID filter
         if (sub.sessionIds?.length && !sub.sessionIds.includes(childId)) {
@@ -4268,7 +4268,7 @@ export class SessionAgentDO {
         const queueSub = this.sessionState.waitSubscription;
         if (queueSub) {
           const terminalStatuses = new Set(['terminated', 'error', 'hibernated']);
-          const notifyOn = queueSub.notifyOn || 'terminal';
+          const notifyOn = queueSub.notifyOn || 'status_change';
 
           if (queueSub.sessionIds?.length && !queueSub.sessionIds.includes(prompt.childSessionId)) {
             console.log(`[SessionAgentDO] sendNextQueuedPrompt: dropping child event from ${prompt.childSessionId} (not in watched list)`);
