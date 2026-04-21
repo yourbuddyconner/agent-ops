@@ -598,23 +598,22 @@ async function main() {
   // Ack config to the DO
   agentClient.sendOpenCodeConfigApplied(true, false);
 
-  // Wait for the repo clone to finish before signaling idle.
-  // The DO drains queued prompts on idle, and the agent needs the working tree
-  // checked out before it can act on them. If no repo-config arrives within
-  // the timeout (e.g. session has no repo), proceed without blocking.
-  const CLONE_WAIT_TIMEOUT_MS = 120_000; // 2 min — large repos can take a while
-  let cloneTimeoutHandle: ReturnType<typeof setTimeout>;
-  const cloneResult = await Promise.race([
-    agentClient.repoReady.then(() => "ready" as const),
+  // Wait for repo clone AND plugin content to finish before signaling idle.
+  // The DO drains queued prompts on idle, and the agent needs both the working
+  // tree checked out and persona/skill/tool files written before it can act.
+  const BOOT_WAIT_TIMEOUT_MS = 120_000; // 2 min — large repos can take a while
+  let bootTimeoutHandle: ReturnType<typeof setTimeout>;
+  const bootResult = await Promise.race([
+    Promise.all([agentClient.repoReady, agentClient.pluginContentReady]).then(() => "ready" as const),
     new Promise<"timeout">((resolve) => {
-      cloneTimeoutHandle = setTimeout(() => resolve("timeout"), CLONE_WAIT_TIMEOUT_MS);
+      bootTimeoutHandle = setTimeout(() => resolve("timeout"), BOOT_WAIT_TIMEOUT_MS);
     }),
   ]);
-  clearTimeout(cloneTimeoutHandle!);
-  if (cloneResult === "timeout") {
-    console.warn("[Runner] Timed out waiting for repo clone — proceeding without it");
+  clearTimeout(bootTimeoutHandle!);
+  if (bootResult === "timeout") {
+    console.warn("[Runner] Timed out waiting for boot prerequisites (repo clone / plugin content) — proceeding");
   } else {
-    console.log("[Runner] Repo clone complete (or no repo configured)");
+    console.log("[Runner] Boot prerequisites complete (repo clone + plugin content)");
   }
 
   // Signal readiness — this triggers the DO to drain any queued prompts.

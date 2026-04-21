@@ -6132,6 +6132,8 @@ export class SessionAgentDO {
       settings = await getPluginSettings(this.env.DB, orgId);
     } catch (err) {
       console.warn('[SessionAgentDO] sendPluginContent: failed to fetch plugin data from D1', err);
+      // Always send so the Runner can resolve its pluginContentReady promise
+      this.runnerLink.send({ type: 'plugin-content', pluginContent: { personas: [], skills: [], tools: [], allowRepoContent: false, toolWhitelist: null } });
       return;
     }
 

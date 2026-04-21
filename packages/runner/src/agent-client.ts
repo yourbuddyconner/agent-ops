@@ -96,6 +96,12 @@ export class AgentClient {
   private _resolveRepoReady!: () => void;
   readonly repoReady: Promise<void>;
 
+  // Resolves when plugin-content files (personas, skills, tools) have been
+  // written to disk. Without this gate the first prompt can arrive at OpenCode
+  // before its persona/tool files exist.
+  private _resolvePluginContentReady!: () => void;
+  readonly pluginContentReady: Promise<void>;
+
   constructor(
     private doUrl: string,
     private runnerToken: string,
@@ -111,6 +117,11 @@ export class AgentClient {
       this.repoReady = Promise.resolve();
       this._resolveRepoReady = () => {};
     }
+
+    // plugin-content is always sent by the DO on connect
+    this.pluginContentReady = new Promise<void>((resolve) => {
+      this._resolvePluginContentReady = resolve;
+    });
   }
 
   // ─── Lifecycle ───────────────────────────────────────────────────────
@@ -1033,7 +1044,11 @@ export class AgentClient {
           break;
 
         case "plugin-content":
-          await this.pluginContentHandler?.(msg.pluginContent);
+          try {
+            await this.pluginContentHandler?.(msg.pluginContent);
+          } finally {
+            this._resolvePluginContentReady();
+          }
           break;
 
         case "spawn-child-result":
