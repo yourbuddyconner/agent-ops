@@ -4239,6 +4239,10 @@ export class SessionAgentDO {
       console.log(`[SessionAgentDO] sendNextQueuedPrompt: no runner sockets, skipping`);
       return false;
     }
+    if (!this.runnerLink.isReady) {
+      console.log(`[SessionAgentDO] sendNextQueuedPrompt: runner connected but not ready, skipping`);
+      return false;
+    }
 
     // When a wait subscription is active, prefer child events that match the
     // subscription (dispatched directly by handleSystemMessage's wake path,
