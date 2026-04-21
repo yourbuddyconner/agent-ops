@@ -164,10 +164,6 @@ adminGitHubRouter.post('/app/manifest', async (c) => {
       `${frontendUrl}/auth/github/repo-callback`,
     ],
     request_oauth_on_install: false,
-    // Expiring tokens are required for "with AppName" attribution badge on
-    // actions performed via user-to-server tokens. Without this, tokens
-    // behave like regular OAuth tokens with no app attribution.
-    expire_user_authorization_tokens: true,
     public: true,
     default_permissions: permissions,
     default_events: events,
