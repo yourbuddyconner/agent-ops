@@ -171,7 +171,8 @@ async function main() {
   });
 
   // ─── Connect to SessionAgent DO ─────────────────────────────────────
-  const agentClient = new AgentClient(doUrl!, runnerToken!);
+  const expectRepo = !!process.env.REPO_URL;
+  const agentClient = new AgentClient(doUrl!, runnerToken!, { expectRepo });
 
   // Wire OpenCode crash/fatal callbacks to runner-health messages
   openCodeManager.onCrashed((exitCode, crashCount, healthTimeout) => {
@@ -597,8 +598,26 @@ async function main() {
   // Ack config to the DO
   agentClient.sendOpenCodeConfigApplied(true, false);
 
-  // Signal readiness immediately — don't block on model discovery.
-  // This triggers the DO to drain any queued prompts.
+  // Wait for the repo clone to finish before signaling idle.
+  // The DO drains queued prompts on idle, and the agent needs the working tree
+  // checked out before it can act on them. If no repo-config arrives within
+  // the timeout (e.g. session has no repo), proceed without blocking.
+  const CLONE_WAIT_TIMEOUT_MS = 120_000; // 2 min — large repos can take a while
+  let cloneTimeoutHandle: ReturnType<typeof setTimeout>;
+  const cloneResult = await Promise.race([
+    agentClient.repoReady.then(() => "ready" as const),
+    new Promise<"timeout">((resolve) => {
+      cloneTimeoutHandle = setTimeout(() => resolve("timeout"), CLONE_WAIT_TIMEOUT_MS);
+    }),
+  ]);
+  clearTimeout(cloneTimeoutHandle!);
+  if (cloneResult === "timeout") {
+    console.warn("[Runner] Timed out waiting for repo clone — proceeding without it");
+  } else {
+    console.log("[Runner] Repo clone complete (or no repo configured)");
+  }
+
+  // Signal readiness — this triggers the DO to drain any queued prompts.
   agentClient.sendAgentStatus("idle");
   console.log("[Runner] Ready — sent initial agentStatus: idle to DO");
 

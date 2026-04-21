@@ -265,7 +265,7 @@ export type DOToRunnerMessage =
   | { type: 'init' }
   | {
       type: 'repo-config';
-      token: string;
+      token: string | null;
       expiresAt?: string;
       gitConfig: Record<string, string>;
       repoUrl?: string;

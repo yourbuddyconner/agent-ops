@@ -35,6 +35,23 @@ export async function cloneRepo(opts: {
   const clonePath = `${workdir}/${repoName}`;
 
   try {
+    // Check if the repo already exists (e.g. from snapshot restore or previous boot).
+    // Verify it has a valid working tree — a partial clone may have .git/ but no files.
+    const { existsSync } = await import("node:fs");
+    if (existsSync(`${clonePath}/.git`)) {
+      // Repo directory exists — force-populate the working tree.
+      // A previous clone may have been interrupted after fetch but before checkout,
+      // leaving .git/ populated but the working tree empty. Plain `git checkout`
+      // (no args) only restores modified files — it won't create files that were
+      // never checked out. `checkout HEAD -- .` forces a full tree write.
+      //
+      // If a specific ref/branch was requested, check that out instead of HEAD
+      // so restored sessions land on the correct revision.
+      const target = opts.ref || opts.branch || "HEAD";
+      await $`git -C ${clonePath} checkout ${target} -- .`.quiet();
+      return { success: true };
+    }
+
     if (opts.branch) {
       await $`git clone --branch ${opts.branch} --single-branch ${opts.repoUrl} ${clonePath}`.quiet();
     } else {
@@ -42,7 +59,7 @@ export async function cloneRepo(opts: {
     }
 
     if (opts.ref) {
-      await $`cd ${clonePath} && git checkout ${opts.ref}`.quiet();
+      await $`git -C ${clonePath} checkout ${opts.ref}`.quiet();
     }
 
     return { success: true };

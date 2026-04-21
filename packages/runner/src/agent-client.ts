@@ -90,10 +90,28 @@ export class AgentClient {
     timer: ReturnType<typeof setTimeout>;
   }>();
 
+  // Resolves when repo-config clone finishes (or immediately if no clone needed).
+  // bin.ts awaits this before signaling agentStatus: idle so the first prompt
+  // doesn't arrive before the working tree is checked out.
+  private _resolveRepoReady!: () => void;
+  readonly repoReady: Promise<void>;
+
   constructor(
     private doUrl: string,
     private runnerToken: string,
-  ) {}
+    options?: { expectRepo?: boolean },
+  ) {
+    if (options?.expectRepo) {
+      // A repo clone is expected — block until repo-config handler resolves it
+      this.repoReady = new Promise<void>((resolve) => {
+        this._resolveRepoReady = resolve;
+      });
+    } else {
+      // No repo expected — resolve immediately so idle isn't delayed
+      this.repoReady = Promise.resolve();
+      this._resolveRepoReady = () => {};
+    }
+  }
 
   // ─── Lifecycle ───────────────────────────────────────────────────────
 
@@ -1326,6 +1344,14 @@ export class AgentClient {
         case "repo-config": {
           const { token, expiresAt, gitConfig, repoUrl, branch, ref } = msg;
 
+          // No token means the DO couldn't assemble credentials — resolve
+          // repoReady so the runner doesn't burn the full timeout waiting.
+          if (!token) {
+            console.warn("[AgentClient] repo-config received with no token — skipping clone");
+            this._resolveRepoReady();
+            break;
+          }
+
           // Set token in credential manager
           gitCredentials.setToken(token, expiresAt);
 
@@ -1352,6 +1378,9 @@ export class AgentClient {
           if (repoUrl) {
             const result = await cloneRepo({ repoUrl, branch, ref });
             this.send({ type: "repo:clone-complete", ...result });
+            this._resolveRepoReady();
+          } else {
+            this._resolveRepoReady();
           }
           break;
         }

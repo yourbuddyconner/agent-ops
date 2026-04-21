@@ -6019,15 +6019,27 @@ export class SessionAgentDO {
   }
 
   private async sendRepoConfig(): Promise<void> {
+    // Always send a repo-config message so the Runner can resolve its repoReady
+    // promise promptly. If we bail early or credentials fail, send with no repoUrl
+    // so the Runner knows no clone is coming and doesn't burn the full timeout.
     const sessionId = this.sessionState.sessionId;
-    if (!sessionId) return;
+    if (!sessionId) {
+      this.runnerLink.send({ type: 'repo-config', token: null, gitConfig: {} });
+      return;
+    }
 
     const gitState = await getSessionGitState(this.appDb, sessionId);
     const repoUrl = gitState?.sourceRepoUrl;
-    if (!repoUrl) return;
+    if (!repoUrl) {
+      this.runnerLink.send({ type: 'repo-config', token: null, gitConfig: {} });
+      return;
+    }
 
     const userId = this.sessionState.userId;
-    if (!userId) return;
+    if (!userId) {
+      this.runnerLink.send({ type: 'repo-config', token: null, gitConfig: {} });
+      return;
+    }
 
     const orgId = await this.resolveOrgId();
 
@@ -6040,6 +6052,7 @@ export class SessionAgentDO {
 
       if (repoEnv.error) {
         console.warn(`[SessionAgentDO] sendRepoConfig: ${repoEnv.error}`);
+        this.runnerLink.send({ type: 'repo-config', token: null, gitConfig: {} });
         return;
       }
 
@@ -6054,9 +6067,12 @@ export class SessionAgentDO {
           ref: gitState.ref ?? undefined,
         });
         console.log(`[SessionAgentDO] Sent repo-config to runner for ${repoUrl}`);
+      } else {
+        this.runnerLink.send({ type: 'repo-config', token: null, gitConfig: {} });
       }
     } catch (err) {
       console.error('[SessionAgentDO] Failed to assemble repo config for runner:', err);
+      this.runnerLink.send({ type: 'repo-config', token: null, gitConfig: {} });
     }
   }
 
