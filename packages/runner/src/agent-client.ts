@@ -1352,34 +1352,39 @@ export class AgentClient {
             break;
           }
 
-          // Set token in credential manager
-          gitCredentials.setToken(token, expiresAt);
+          // Wrap in try/finally to guarantee _resolveRepoReady is called even
+          // if setupGitConfig or cloneRepo throw unexpectedly. Without this,
+          // an error leaves repoReady unresolved and the runner burns the full
+          // 2-minute timeout before sending idle.
+          try {
+            // Set token in credential manager
+            gitCredentials.setToken(token, expiresAt);
 
-          // Set up refresh callback
-          gitCredentials.setRefreshCallback(async () => {
-            const requestId = crypto.randomUUID();
-            this.send({ type: "repo:refresh-token", requestId });
-            return new Promise((resolve, reject) => {
-              this.pendingTokenRefresh = { requestId, resolve };
-              // Timeout after 30s to prevent hanging forever if DO doesn't respond
-              setTimeout(() => {
-                if (this.pendingTokenRefresh?.requestId === requestId) {
-                  this.pendingTokenRefresh = null;
-                  reject(new Error("Token refresh timed out after 30s"));
-                }
-              }, 30_000);
+            // Set up refresh callback
+            gitCredentials.setRefreshCallback(async () => {
+              const requestId = crypto.randomUUID();
+              this.send({ type: "repo:refresh-token", requestId });
+              return new Promise((resolve, reject) => {
+                this.pendingTokenRefresh = { requestId, resolve };
+                // Timeout after 30s to prevent hanging forever if DO doesn't respond
+                setTimeout(() => {
+                  if (this.pendingTokenRefresh?.requestId === requestId) {
+                    this.pendingTokenRefresh = null;
+                    reject(new Error("Token refresh timed out after 30s"));
+                  }
+                }, 30_000);
+              });
             });
-          });
 
-          // Apply git config
-          await setupGitConfig(gitConfig);
+            // Apply git config
+            await setupGitConfig(gitConfig);
 
-          // Clone repo if URL provided
-          if (repoUrl) {
-            const result = await cloneRepo({ repoUrl, branch, ref });
-            this.send({ type: "repo:clone-complete", ...result });
-            this._resolveRepoReady();
-          } else {
+            // Clone repo if URL provided
+            if (repoUrl) {
+              const result = await cloneRepo({ repoUrl, branch, ref });
+              this.send({ type: "repo:clone-complete", ...result });
+            }
+          } finally {
             this._resolveRepoReady();
           }
           break;

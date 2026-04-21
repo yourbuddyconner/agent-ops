@@ -3675,6 +3675,7 @@ export class SessionAgentDO {
     // Initialize all session state (clears stale values, sets identity + optional fields)
     this.sessionState.initialize(body);
     this.runnerLink.token = body.runnerToken;
+    this.runnerLink.ready = false; // clear stale ready state from previous lifecycle
     this.promptQueue.runnerBusy = false;
     this.promptQueue.queueMode = body.queueMode || 'followup';
     this.promptQueue.collectDebounceMs = body.collectDebounceMs || 3000;
@@ -4119,7 +4120,7 @@ export class SessionAgentDO {
         // Dispatch the system event as a prompt so the runner wakes up and can
         // decide whether to act on it (e.g. child session idle/completed events).
         const runnerBusy = this.promptQueue.runnerBusy;
-        if (this.runnerLink.isConnected && !runnerBusy) {
+        if (this.runnerLink.isConnected && this.runnerLink.isReady && !runnerBusy) {
           // Runner is connected and idle — insert as 'processing' for recoverability, then dispatch
           this.promptQueue.enqueue({ id: messageId, content, threadId, channelType: sysChannelType, channelId: sysChannelId, status: 'processing', childSessionId: queueChildSessionId, childStatus: queueChildStatus });
           this.promptQueue.stampDispatched();
@@ -4197,6 +4198,10 @@ export class SessionAgentDO {
 
     if (!this.runnerLink.isConnected) {
       return queueWorkflowDispatch('runner_not_connected');
+    }
+
+    if (!this.runnerLink.isReady) {
+      return queueWorkflowDispatch('runner_not_ready');
     }
 
     if (this.promptQueue.runnerBusy) {
@@ -4745,6 +4750,7 @@ export class SessionAgentDO {
       this.sessionState.tunnelUrls = null;
       this.sessionState.tunnels = [];
       this.promptQueue.runnerBusy = false;
+      this.runnerLink.ready = false; // runner is gone — clear ready state for next wake
       this.sessionState.status = 'hibernated';
 
       this.broadcastToClients({
