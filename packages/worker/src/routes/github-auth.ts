@@ -82,6 +82,10 @@ githubAuthRouter.get('/callback', async (c) => {
     return c.redirect(`${frontendUrl}/login?error=token_exchange_failed`);
   }
 
+  // Log token type for debugging attribution badge
+  const tokenPrefix = authentication.token.substring(0, 4);
+  console.log(`[github-auth] Token exchanged: prefix=${tokenPrefix}..., hasRefreshToken=${!!authentication.refreshToken}, expiresAt=${authentication.expiresAt || 'none'}`);
+
   // Fetch user profile
   const userOctokit = new Octokit({ auth: authentication.token });
   let profile: { id: number; login: string; email: string | null; name: string | null; avatar_url: string };
