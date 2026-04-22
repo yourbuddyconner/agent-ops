@@ -1,0 +1,4 @@
+name: google-workspace
+version: 0.0.1
+description: Google Workspace integration — Drive, Docs, and Sheets with unified OAuth and labels-based access guard
+icon: "🏢"
