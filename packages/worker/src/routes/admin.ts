@@ -45,6 +45,9 @@ adminRouter.put('/', async (c) => {
     emailAllowlistEnabled?: boolean;
     modelPreferences?: string[];
     enabledLoginProviders?: string[];
+    driveLabelsGuardEnabled?: boolean;
+    driveRequiredLabelIds?: string[];
+    driveLabelsFailMode?: 'deny' | 'allow';
   }>();
 
   if (body.modelPreferences !== undefined) {
@@ -66,6 +69,19 @@ adminRouter.put('/', async (c) => {
     if (!body.enabledLoginProviders.every((p) => typeof p === 'string' && p.length <= 50)) {
       throw new ValidationError('Each login provider must be a string (max 50 chars)');
     }
+  }
+
+  if (body.driveRequiredLabelIds !== undefined) {
+    if (!Array.isArray(body.driveRequiredLabelIds)) {
+      throw new ValidationError('driveRequiredLabelIds must be an array of strings');
+    }
+    if (!body.driveRequiredLabelIds.every((id) => typeof id === 'string' && id.length <= 255)) {
+      throw new ValidationError('Each label ID must be a string (max 255 chars)');
+    }
+  }
+
+  if (body.driveLabelsFailMode !== undefined && !['deny', 'allow'].includes(body.driveLabelsFailMode)) {
+    throw new ValidationError('driveLabelsFailMode must be "deny" or "allow"');
   }
 
   const settings = await updateOrgSettings(c.get('db'), body);
