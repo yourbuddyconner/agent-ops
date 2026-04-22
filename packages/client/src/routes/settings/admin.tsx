@@ -41,6 +41,7 @@ import { useDisabledActions, useSetServiceDisabledState } from '@/api/disabled-a
 import type { DisabledAction } from '@valet/shared';
 import { useOrgDefaultSkills, useUpdateOrgDefaultSkills } from '@/api/org-default-skills';
 import { SkillPicker } from '@/components/skills/skill-picker';
+import { useDriveLabels } from '@/api/drive-labels';
 import { LoadMoreButton } from '@/components/ui/load-more-button';
 import {
   AlertDialog,
@@ -100,6 +101,7 @@ function AdminSettingsPage() {
         <InvitesSection />
         <UsersSection currentUserId={user.id} />
         <DefaultSkillsSection />
+        <DriveLabelsGuardSection />
         <ActionPoliciesSection />
         <PluginsSection />
       </div>
@@ -2603,6 +2605,143 @@ function LoginProvidersSection() {
             </label>
           );
         })}
+      </div>
+    </Section>
+  );
+}
+
+// --- Drive Labels Guard ---
+
+function DriveLabelsGuardSection() {
+  const { data: settings } = useOrgSettings();
+  const updateSettings = useUpdateOrgSettings();
+  const { data: labelsData, isLoading: labelsLoading } = useDriveLabels();
+
+  const [enabled, setEnabled] = React.useState(false);
+  const [selectedIds, setSelectedIds] = React.useState<string[]>([]);
+  const [failMode, setFailMode] = React.useState<'deny' | 'allow'>('deny');
+  const [saved, setSaved] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!settings) return;
+    setEnabled(settings.driveLabelsGuardEnabled ?? false);
+    setSelectedIds(settings.driveRequiredLabelIds ?? []);
+    setFailMode(settings.driveLabelsFailMode ?? 'deny');
+  }, [settings]);
+
+  const labelsAvailable = labelsData?.available === true;
+  const labelsList = labelsData?.labels ?? [];
+
+  function toggleLabel(id: string) {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }
+
+  function handleSave() {
+    updateSettings.mutate(
+      {
+        driveLabelsGuardEnabled: enabled,
+        driveRequiredLabelIds: selectedIds,
+        driveLabelsFailMode: failMode,
+      },
+      {
+        onSuccess: () => {
+          setSaved(true);
+          setTimeout(() => setSaved(false), 2000);
+        },
+      }
+    );
+  }
+
+  return (
+    <Section title="Drive Labels Guard">
+      <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-4">
+        Require files shared with the agent to have specific Google Drive labels before actions are allowed.
+      </p>
+
+      {!labelsLoading && !labelsAvailable && (
+        <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-800 dark:bg-amber-900/30">
+          <span className="text-xs text-amber-700 dark:text-amber-300">
+            {labelsData?.reason ?? 'Connect a Google Workspace integration to configure Drive Labels.'}
+          </span>
+        </div>
+      )}
+
+      <div className="space-y-4">
+        <label className="flex items-center gap-3 text-sm">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+            disabled={!labelsAvailable}
+            className="h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-800 disabled:opacity-50"
+          />
+          <span className="font-medium text-neutral-700 dark:text-neutral-300">
+            Enable Drive Labels guard
+          </span>
+        </label>
+
+        {enabled && labelsAvailable && (
+          <>
+            <div>
+              <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">
+                Required labels{' '}
+                <span className="font-normal text-neutral-400">(files must have at least one)</span>
+              </p>
+              {labelsLoading ? (
+                <p className="text-sm text-neutral-400">Loading labels...</p>
+              ) : labelsList.length === 0 ? (
+                <p className="text-sm text-neutral-400">No labels found in your Drive account.</p>
+              ) : (
+                <div className="space-y-1 max-h-48 overflow-y-auto rounded-md border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-700 dark:bg-neutral-900">
+                  {labelsList.map((label) => (
+                    <label key={label.id} className="flex items-center gap-2 text-sm cursor-pointer px-1 py-0.5 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.includes(label.id)}
+                        onChange={() => toggleLabel(label.id)}
+                        className="h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-500 dark:border-neutral-600 dark:bg-neutral-800"
+                      />
+                      <span className="text-neutral-700 dark:text-neutral-300">{label.name}</span>
+                      <span className="text-xs text-neutral-400">{label.type}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label htmlFor="drive-fail-mode" className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                Fail mode
+              </label>
+              <select
+                id="drive-fail-mode"
+                value={failMode}
+                onChange={(e) => setFailMode(e.target.value as 'deny' | 'allow')}
+                className={selectClass}
+              >
+                <option value="deny">Deny — block the action if labels are missing</option>
+                <option value="allow">Allow — log a warning but proceed anyway</option>
+              </select>
+              {failMode === 'allow' && (
+                <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                  Warning: allow mode will not block actions on unlabeled files.
+                </p>
+              )}
+            </div>
+          </>
+        )}
+
+        <div className="flex items-center gap-3">
+          <Button
+            onClick={handleSave}
+            disabled={!labelsAvailable || updateSettings.isPending}
+          >
+            {updateSettings.isPending ? 'Saving...' : 'Save'}
+          </Button>
+          {saved && <span className="text-sm text-green-600 dark:text-green-400">Saved</span>}
+        </div>
       </div>
     </Section>
   );
