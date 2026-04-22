@@ -412,6 +412,8 @@ export interface ExecuteActionOpts {
   credentialCache: CredentialCache;
   /** Spawn request env vars, used to detect orchestrator sessions */
   spawnEnvVars?: Record<string, string>;
+  /** Org-level guard configuration, threaded from the DO to action plugins. */
+  guardConfig?: Record<string, unknown>;
 }
 
 /**
@@ -479,7 +481,7 @@ export async function executeAction(
   };
 
   const toolExecStart = Date.now();
-  let actionResult = await actionSource.execute(actionId, params, { credentials, userId, attribution, callerIdentity, analytics: actionAnalytics });
+  let actionResult = await actionSource.execute(actionId, params, { credentials, userId, attribution, callerIdentity, analytics: actionAnalytics, guardConfig: opts.guardConfig });
 
   // Auth failure retry — force-refresh on 401 and retry once (simple token-expired retry)
   // Note: 403 is excluded — GitHub 403s are permission problems (missing App permissions),
@@ -500,7 +502,7 @@ export async function executeAction(
         refreshedCredentials.owner_slack_user_id = credentials.owner_slack_user_id;
       }
       actionResult = await actionSource.execute(actionId, params, {
-        credentials: refreshedCredentials, userId, attribution, callerIdentity, analytics: actionAnalytics,
+        credentials: refreshedCredentials, userId, attribution, callerIdentity, analytics: actionAnalytics, guardConfig: opts.guardConfig,
       });
     }
   }

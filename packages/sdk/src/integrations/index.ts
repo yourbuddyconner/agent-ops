@@ -46,6 +46,8 @@ export interface ActionContext {
   analytics?: Analytics;
   /** Present when the credential is a bot token being used on behalf of a user. */
   attribution?: { name: string; email: string };
+  /** Org-level guard configuration, passed by the worker at execution time. */
+  guardConfig?: Record<string, unknown>;
 }
 
 /** Result of executing an action. */

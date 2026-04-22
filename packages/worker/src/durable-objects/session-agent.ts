@@ -265,6 +265,9 @@ export class SessionAgentDO {
 
   private disconnectRevertTimer: ReturnType<typeof setTimeout> | null = null;
 
+  private guardConfigCache: Record<string, unknown> | null = null;
+  private guardConfigExpiresAt = 0;
+
   private channelRouter = new ChannelRouter({
     resolveToken: async (channelType, userId) => {
       if (channelType === 'slack') {
@@ -382,6 +385,22 @@ export class SessionAgentDO {
       console.error('[SessionAgentDO] Failed to fetch org settings for model preferences:', err);
       return undefined;
     }
+  }
+
+  /** Fetch org-level guard config with a 60-second in-memory TTL. */
+  private async getGuardConfig(): Promise<Record<string, unknown>> {
+    const now = Date.now();
+    if (this.guardConfigCache && now < this.guardConfigExpiresAt) {
+      return this.guardConfigCache;
+    }
+    const settings = await getOrgSettings(this.appDb);
+    this.guardConfigCache = {
+      driveLabelsGuardEnabled: settings.driveLabelsGuardEnabled,
+      driveRequiredLabelIds: settings.driveRequiredLabelIds,
+      driveLabelsFailMode: settings.driveLabelsFailMode,
+    };
+    this.guardConfigExpiresAt = now + 60_000;
+    return this.guardConfigCache;
   }
 
   // ─── Entry Point ───────────────────────────────────────────────────────
@@ -5620,11 +5639,12 @@ export class SessionAgentDO {
   ) {
     const spawnRequest = this.sessionState.spawnRequest;
     const spawnEnvVars = spawnRequest?.envVars as Record<string, string> | undefined;
+    const guardConfig = await this.getGuardConfig();
 
     const result = await executeActionSvc(
       this.appDb, this.env, userId, toolId, service, actionId, params,
       actionSource, invocationId,
-      { credentialCache: this.credentialCacheAdapter, spawnEnvVars },
+      { credentialCache: this.credentialCacheAdapter, spawnEnvVars, guardConfig },
     );
 
     // Emit tool_exec timing event
