@@ -270,11 +270,11 @@ integrationsRouter.get('/google_workspace/labels', async (c) => {
     'google_workspace', env, user.id, {}
   );
 
-  if (!credResult.credentials?.access_token) {
+  if (!credResult.ok) {
     return c.json({ available: false, reason: 'Google Workspace integration not connected' });
   }
 
-  const token = credResult.credentials.access_token;
+  const token = credResult.credential.accessToken;
 
   try {
     const res = await fetch(
