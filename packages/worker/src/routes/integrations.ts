@@ -259,6 +259,56 @@ integrationsRouter.post('/', zValidator('json', configureIntegrationSchema), asy
 });
 
 /**
+ * GET /api/integrations/google_workspace/labels
+ * List available Drive labels for guard config
+ */
+integrationsRouter.get('/google_workspace/labels', async (c) => {
+  const user = c.get('user');
+  const env = c.env;
+
+  const credResult = await integrationRegistry.resolveCredentials(
+    'google_workspace', env, user.id, {}
+  );
+
+  if (!credResult.credentials?.access_token) {
+    return c.json({ available: false, reason: 'Google Workspace integration not connected' });
+  }
+
+  const token = credResult.credentials.access_token;
+
+  try {
+    const res = await fetch(
+      'https://drivelabels.googleapis.com/v2/labels?view=LABEL_VIEW_FULL',
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+
+    if (!res.ok) {
+      return c.json({
+        available: false,
+        reason: 'Drive Labels API not available for this account type',
+      });
+    }
+
+    const data = (await res.json()) as {
+      labels?: Array<{ id: string; name: string; labelType: string; properties?: { title: string } }>;
+    };
+
+    const labels = (data.labels ?? []).map((l) => ({
+      id: l.id,
+      name: l.properties?.title ?? l.name ?? l.id,
+      type: l.labelType ?? 'UNKNOWN',
+    }));
+
+    return c.json({ available: true, labels });
+  } catch {
+    return c.json({
+      available: false,
+      reason: 'Failed to fetch labels from Google Drive API',
+    });
+  }
+});
+
+/**
  * GET /api/integrations/:id
  * Get integration details
  */
