@@ -392,6 +392,11 @@ async function executeAction(
           `mimeType='application/vnd.google-apps.document'`,
           'trashed = false',
         ];
+        // Injected by labels guard to restrict results to labeled files
+        const rawSearchParams = params as Record<string, unknown> | null;
+        if (rawSearchParams?.__labelFilter && typeof rawSearchParams.__labelFilter === 'string') {
+          queryParts.push(rawSearchParams.__labelFilter);
+        }
         const qs = new URLSearchParams({
           q: queryParts.join(' and '),
           fields: 'files(id,name,modifiedTime,webViewLink)',

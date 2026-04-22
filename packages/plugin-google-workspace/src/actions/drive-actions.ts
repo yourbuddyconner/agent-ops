@@ -303,6 +303,11 @@ async function executeAction(
         if (p.mimeType) queryParts.push(`mimeType = '${escapeDriveQuery(p.mimeType)}'`);
         if (!p.includeTrash) queryParts.push('trashed = false');
         if (p.query) queryParts.push(p.query);
+        // Injected by labels guard to restrict results to labeled files
+        const rawParams = params as Record<string, unknown> | null;
+        if (rawParams?.__labelFilter && typeof rawParams.__labelFilter === 'string') {
+          queryParts.push(rawParams.__labelFilter);
+        }
 
         const qs = new URLSearchParams({
           fields: `nextPageToken,files(${FILE_FIELDS})`,
@@ -326,6 +331,11 @@ async function executeAction(
           `fullText contains '${escapeDriveQuery(p.query)}'`,
           'trashed = false',
         ];
+        // Injected by labels guard to restrict results to labeled files
+        const rawSearchParams = params as Record<string, unknown> | null;
+        if (rawSearchParams?.__labelFilter && typeof rawSearchParams.__labelFilter === 'string') {
+          queryParts.push(rawSearchParams.__labelFilter);
+        }
 
         const qs = new URLSearchParams({
           q: queryParts.join(' and '),
