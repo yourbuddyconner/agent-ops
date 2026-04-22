@@ -129,8 +129,8 @@ export async function getAutoEnabledServices(
 }
 
 /**
- * Converts a plugin name (e.g. 'google-drive') to the service identifier
- * used by the integration registry and credentials table (e.g. 'google_drive').
+ * Converts a plugin name (e.g. 'google-workspace') to the service identifier
+ * used by the integration registry and credentials table (e.g. 'google_workspace').
  */
 export function pluginNameToService(name: string): string {
   return name.replace(/-/g, '_');
