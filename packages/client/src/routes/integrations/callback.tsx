@@ -16,8 +16,8 @@ const GOOGLE_API_LINKS: Record<string, { name: string; url: string }> = {
     name: 'Gmail API',
     url: 'https://console.cloud.google.com/apis/library/gmail.googleapis.com',
   },
-  google_drive: {
-    name: 'Google Drive API',
+  google_workspace: {
+    name: 'Google Drive, Docs, Sheets, and Labels APIs',
     url: 'https://console.cloud.google.com/apis/library/drive.googleapis.com',
   },
 };

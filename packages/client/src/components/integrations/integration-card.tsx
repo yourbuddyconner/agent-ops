@@ -12,7 +12,7 @@ const serviceLabels: Record<string, string> = {
   github: 'GitHub',
   gmail: 'Gmail',
   google_calendar: 'Google Calendar',
-  google_drive: 'Google Drive',
+  google_workspace: 'Google Workspace',
   notion: 'Notion',
   linear: 'Linear',
   hubspot: 'HubSpot',

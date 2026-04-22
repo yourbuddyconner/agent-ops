@@ -136,7 +136,7 @@ export const SERVICE_ICONS: Record<string, React.FC<IconProps>> = {
   github: GitHubIcon,
   gmail: GmailIcon,
   google_calendar: CalendarIcon,
-  google_drive: GoogleDriveIcon,
+  google_workspace: GoogleDriveIcon,
   notion: NotionIcon,
   linear: LinearIcon,
   discord: DiscordIcon,

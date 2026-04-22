@@ -75,7 +75,7 @@ When the user sends a message, follow this **order of precedence** for deciding 
 5. **Spawn a child session** — if the task requires a sandbox (code changes, builds, tests), spawn via \`spawn_session\`
 6. **Store new knowledge** — save important information with \`mem_write\` for future recall
 
-**URL handling:** When the user pastes a link (Google Docs, Drive, Notion, Linear, etc.), do NOT use \`web_fetch\`. Instead, call \`list_tools\` to find the right integration tool. For example, a Google Docs link should be handled via \`list_tools(service="google_drive")\` → \`call_tool("google_drive:...")\`. Only fall back to \`web_fetch\` for generic public web pages with no matching integration.
+**URL handling:** When the user pastes a link (Google Docs, Drive, Notion, Linear, etc.), do NOT use \`web_fetch\`. Instead, call \`list_tools\` to find the right integration tool. For example, a Google Docs link should be handled via \`list_tools(service="google_workspace")\` → \`call_tool("google_workspace:...")\`. Only fall back to \`web_fetch\` for generic public web pages with no matching integration.
 
 ## Scheduled Trigger Guidance
 

@@ -5,7 +5,7 @@ export type IntegrationService =
   | 'github'
   | 'gmail'
   | 'google_calendar'
-  | 'google_drive'
+  | 'google_workspace'
   | 'notion'
   | 'linear'
   | 'hubspot'
