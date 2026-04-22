@@ -46,6 +46,10 @@ async function executeAction(
   // ── Pre-dispatch guards ──
 
   if (category === 'list_search') {
+    // When the guard is enabled with no required labels, deny all results
+    if (guard.driveRequiredLabelIds.length === 0) {
+      return { success: true, data: { files: [] } };
+    }
     // Inject label filter clause into params for search/list actions
     const clause = buildLabelFilterClause(guard.driveRequiredLabelIds);
     if (clause) {
@@ -54,12 +58,42 @@ async function executeAction(
     return dispatchAction(actionId, p, ctx);
   }
 
+  // ── drive.copy_file: source-file label check + dispatch + auto-label copy ──
+
+  if (actionId === 'drive.copy_file') {
+    const fileId = extractFileId(actionId, p);
+    if (!fileId) {
+      if (guard.driveLabelsFailMode === 'allow') return dispatchAction(actionId, params, ctx);
+      return { success: false, error: 'File not found or access denied' };
+    }
+    const denial = await checkFileLabel(fileId, token, guard);
+    if (denial) return denial;
+
+    const result = await dispatchAction(actionId, params, ctx);
+    if (result.success && guard.driveRequiredLabelIds.length > 0) {
+      const createdId = extractCreatedFileId(actionId, result);
+      if (createdId) {
+        const labeled = await applyLabel(createdId, token, guard.driveRequiredLabelIds[0]);
+        if (!labeled) {
+          await deleteFile(createdId, token);
+          return {
+            success: false,
+            error: 'Failed to create file: could not apply required Drive label',
+          };
+        }
+      }
+    }
+    return result;
+  }
+
   if (category === 'read_get' || category === 'write_modify') {
     const fileId = extractFileId(actionId, p);
-    if (fileId) {
-      const denial = await checkFileLabel(fileId, token, guard);
-      if (denial) return denial;
+    if (!fileId) {
+      if (guard.driveLabelsFailMode === 'allow') return dispatchAction(actionId, params, ctx);
+      return { success: false, error: 'File not found or access denied' };
     }
+    const denial = await checkFileLabel(fileId, token, guard);
+    if (denial) return denial;
     return dispatchAction(actionId, params, ctx);
   }
 
@@ -69,7 +103,7 @@ async function executeAction(
 
   // ── Post-dispatch: auto-label created files ──
 
-  if (category === 'create' || actionId === 'drive.copy_file') {
+  if (category === 'create') {
     if (result.success && guard.driveRequiredLabelIds.length > 0) {
       const createdId = extractCreatedFileId(actionId, result);
       if (createdId) {
