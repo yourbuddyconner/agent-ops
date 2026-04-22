@@ -261,7 +261,7 @@ importers:
         specifier: ^4.0.18
         version: 4.0.18(@types/node@25.0.9)(jiti@1.21.7)(tsx@4.21.0)
 
-  packages/plugin-google-docs:
+  packages/plugin-google-workspace:
     dependencies:
       '@toon-format/toon':
         specifier: ^2.1.0
@@ -275,6 +275,9 @@ importers:
       markdown-it:
         specifier: ^14.1.0
         version: 14.1.1
+      unpdf:
+        specifier: ^0.12
+        version: 0.12.2
       zod:
         specifier: ^3.22.4
         version: 3.25.76
@@ -282,69 +285,6 @@ importers:
       '@types/markdown-it':
         specifier: ^14.1.2
         version: 14.1.2
-      typescript:
-        specifier: ^5.3.3
-        version: 5.9.3
-      vitest:
-        specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.9)(jiti@1.21.7)(tsx@4.21.0)
-
-  packages/plugin-google-drive:
-    dependencies:
-      '@valet/sdk':
-        specifier: workspace:*
-        version: link:../sdk
-      '@valet/shared':
-        specifier: workspace:*
-        version: link:../shared
-      unpdf:
-        specifier: ^0.12
-        version: 0.12.2
-      zod:
-        specifier: ^3.22.4
-        version: 3.25.76
-    devDependencies:
-      typescript:
-        specifier: ^5.3.3
-        version: 5.9.3
-      vitest:
-        specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.9)(jiti@1.21.7)(tsx@4.21.0)
-
-  packages/plugin-google-sheets:
-    dependencies:
-      '@valet/sdk':
-        specifier: workspace:*
-        version: link:../sdk
-      '@valet/shared':
-        specifier: workspace:*
-        version: link:../shared
-      zod:
-        specifier: ^3.22.4
-        version: 3.25.76
-    devDependencies:
-      typescript:
-        specifier: ^5.3.3
-        version: 5.9.3
-      vitest:
-        specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.9)(jiti@1.21.7)(tsx@4.21.0)
-
-  packages/plugin-google-workspace:
-    dependencies:
-      '@valet/sdk':
-        specifier: workspace:*
-        version: link:../sdk
-      '@valet/shared':
-        specifier: workspace:*
-        version: link:../shared
-      unpdf:
-        specifier: ^0.12
-        version: 0.12.2
-      zod:
-        specifier: ^3.22.4
-        version: 3.25.76
-    devDependencies:
       typescript:
         specifier: ^5.3.3
         version: 5.9.3
@@ -570,15 +510,9 @@ importers:
       '@valet/plugin-google-calendar':
         specifier: workspace:*
         version: link:../plugin-google-calendar
-      '@valet/plugin-google-docs':
+      '@valet/plugin-google-workspace':
         specifier: workspace:*
-        version: link:../plugin-google-docs
-      '@valet/plugin-google-drive':
-        specifier: workspace:*
-        version: link:../plugin-google-drive
-      '@valet/plugin-google-sheets':
-        specifier: workspace:*
-        version: link:../plugin-google-sheets
+        version: link:../plugin-google-workspace
       '@valet/plugin-linear':
         specifier: workspace:*
         version: link:../plugin-linear

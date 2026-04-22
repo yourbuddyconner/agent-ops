@@ -550,10 +550,10 @@ Note: the end date is exclusive — a single all-day event on March 20 uses \`en
     ],
   },
   {
-    name: "google-docs",
+    name: "google-workspace",
     version: "0.0.1",
-    description: "Google Docs integration with markdown-native read/write",
-    icon: "📝",
+    description: "Google Workspace integration — Drive, Docs, and Sheets with unified OAuth and labels-based access guard",
+    icon: "🏢",
     capabilities: ["actions","skills"],
     artifacts: [
       { type: "skill", filename: "google-docs.md", content: `---
@@ -563,7 +563,7 @@ description: How to use Google Docs tools effectively — markdown formatting, s
 
 # Google Docs
 
-You have full read/write access to Google Docs through the \`google-docs\` plugin. The key advantage is **rich text formatting** — content you write in markdown is automatically converted to properly formatted Google Docs (headings, bold, italic, links, lists, tables, code blocks, etc).
+You have full read/write access to Google Docs through the Google Workspace integration. The key advantage is **rich text formatting** — content you write in markdown is automatically converted to properly formatted Google Docs (headings, bold, italic, links, lists, tables, code blocks, etc).
 
 ## Critical Rule: Always Use Markdown
 
@@ -844,15 +844,6 @@ Inline code like \`variable_name\` renders in green monospace font.
 - **Targeted edits are not markdown**: \`docs.update_document\` writes plain text into existing structures and takes either \`operationsJson\` or a TOON-encoded operation list. Use it when preserving current formatting matters more than generating new formatting from markdown.
 - **Heading levels matter**: Section operations use heading hierarchy. A \`## Subheading\` under \`# Heading\` is part of the \`# Heading\` section. Replacing \`# Heading\` replaces everything including sub-sections.
 `, sortOrder: 0 },
-    ],
-  },
-  {
-    name: "google-drive",
-    version: "0.0.1",
-    description: "Google Drive integration for files and documents",
-    icon: "📁",
-    capabilities: ["actions","skills"],
-    artifacts: [
       { type: "skill", filename: "google-drive.md", content: `---
 name: google-drive
 description: How to use Google Drive tools effectively — file search, reading, creating, organizing, sharing, and working with Google Workspace file types.
@@ -860,7 +851,7 @@ description: How to use Google Drive tools effectively — file search, reading,
 
 # Google Drive
 
-You have full access to Google Drive through the \`google-drive\` plugin. Drive is the file system — use it to find, read, create, organize, and share files. For editing Google Docs or Sheets content, use the dedicated \`google-docs\` or \`google-sheets\` tools instead.
+You have full access to Google Drive through the Google Workspace integration. Drive is the file system — use it to find, read, create, organize, and share files. For editing Google Docs or Sheets content, use the \`docs.*\` or \`sheets.*\` tools instead.
 
 ## Available Tools
 
@@ -946,7 +937,7 @@ drive.create_file({
 })
 \`\`\`
 
-The content is uploaded as plain text and converted to a native Google Doc. For rich formatting, use \`google-docs\` tools instead — they support full markdown-to-Docs conversion.
+The content is uploaded as plain text and converted to a native Google Doc. For rich formatting, use the \`docs.*\` tools instead — they support full markdown-to-Docs conversion.
 
 ### Organizing Files
 
@@ -1000,9 +991,9 @@ drive.share_file({
 | Google Drawings | \`application/vnd.google-apps.drawing\` |
 | Folder | \`application/vnd.google-apps.folder\` |
 
-## When to Use Drive vs Dedicated Plugins
+## When to Use Drive vs Dedicated Tools
 
-Drive is the file system layer — use it for finding, organizing, and sharing files. For reading or editing the **content** of Google Workspace files, always use the dedicated plugin:
+Drive is the file system layer — use it for finding, organizing, and sharing files. For reading or editing the **content** of Google Workspace files, always use the dedicated tools:
 
 | Task | Use This | NOT This |
 |------|----------|----------|
@@ -1024,9 +1015,20 @@ Drive is the file system layer — use it for finding, organizing, and sharing f
 - Trashing/deleting files
 
 **Drive is NOT the right tool for:**
-- Creating or editing Google Sheets — use \`google-sheets\` tools (they support cell-level reads, writes, formatting, and formulas)
-- Creating or editing Google Docs — use \`google-docs\` tools (they support markdown conversion and section-level editing)
+- Creating or editing Google Sheets — use the \`sheets.*\` tools (they support cell-level reads, writes, formatting, and formulas)
+- Creating or editing Google Docs — use the \`docs.*\` tools (they support markdown conversion and section-level editing)
 - Anything that requires understanding the internal structure of a Workspace file
+
+## Drive Labels Guard
+
+Your organization may have a Drive Labels guard enabled. When active, only files with an admin-configured Google Drive label are accessible.
+
+**If you get "File not found or access denied"** for a file the user says exists, the file likely doesn't have the required Drive label. Tell the user:
+- The file needs a specific Google Drive label applied to be accessible to Valet
+- They can apply the label in the Google Drive web UI (right-click → Labels)
+- Their admin can tell them which label is required
+
+**If search returns fewer results than expected**, the guard may be filtering out unlabeled files. Let the user know that only labeled files are visible.
 
 ## Tips
 
@@ -1034,16 +1036,7 @@ Drive is the file system layer — use it for finding, organizing, and sharing f
 - **Read file handles PDFs**: \`read_file\` automatically extracts text from PDF files.
 - **Binary files are rejected**: \`read_file\` only works with text-based files, Google Workspace files, and PDFs. Use \`get_file\` for metadata of binary files.
 - **Trash before delete**: Prefer \`trash_file\` over \`delete_file\` — trashed files can be recovered.
-`, sortOrder: 0 },
-    ],
-  },
-  {
-    name: "google-sheets",
-    version: "0.0.1",
-    description: "Google Sheets integration for spreadsheet operations",
-    icon: "📊",
-    capabilities: ["actions","skills"],
-    artifacts: [
+`, sortOrder: 1 },
       { type: "skill", filename: "google-sheets.md", content: `---
 name: google-sheets
 description: How to use Google Sheets tools effectively — reading/writing ranges, A1 notation, multi-range reads, spreadsheet structure, and common data patterns.
@@ -1051,7 +1044,7 @@ description: How to use Google Sheets tools effectively — reading/writing rang
 
 # Google Sheets
 
-You have full read/write access to Google Sheets through the \`google-sheets\` plugin.
+You have full read/write access to Google Sheets through the Google Workspace integration.
 
 ## Available Tools
 
@@ -1345,7 +1338,7 @@ Example: merge A1:C1 on the first sheet:
 - **Only set properties you intend to change.** Omitted properties are preserved — you don't need to specify every field.
 - **For borders, set one side only.** The cell below doesn't also need a \`top\` border if the cell above has a \`bottom\` border.
 - **Use \`write_range\` with formatting for one-call writes.** This avoids a window where data appears without styling.
-`, sortOrder: 0 },
+`, sortOrder: 2 },
     ],
   },
   {
