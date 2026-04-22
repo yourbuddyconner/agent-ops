@@ -13,6 +13,9 @@ export const orgSettings = sqliteTable('org_settings', {
   defaultSessionVisibility: text().notNull().default('private'),
   modelPreferences: text({ mode: 'json' }).$type<string[]>(),
   enabledLoginProviders: text({ mode: 'json' }).$type<string[]>(),
+  driveLabelsGuardEnabled: integer('drive_labels_guard_enabled').notNull().default(0),
+  driveRequiredLabelIds: text('drive_required_label_ids').notNull().default('[]'),
+  driveLabelsFailMode: text('drive_labels_fail_mode').notNull().default('deny'),
   createdAt: text().default(sql`(datetime('now'))`),
   updatedAt: text().default(sql`(datetime('now'))`),
 });

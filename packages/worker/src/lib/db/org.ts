@@ -17,6 +17,9 @@ function rowToOrgSettings(row: typeof orgSettings.$inferSelect): OrgSettings {
     defaultSessionVisibility: (row.defaultSessionVisibility as OrgSettings['defaultSessionVisibility']) || 'private',
     modelPreferences: row.modelPreferences || undefined,
     enabledLoginProviders: row.enabledLoginProviders || undefined,
+    driveLabelsGuardEnabled: Boolean(row.driveLabelsGuardEnabled),
+    driveRequiredLabelIds: JSON.parse(row.driveRequiredLabelIds || '[]') as string[],
+    driveLabelsFailMode: (row.driveLabelsFailMode || 'deny') as 'deny' | 'allow',
     createdAt: toDate(row.createdAt),
     updatedAt: toDate(row.updatedAt),
   };
@@ -66,6 +69,9 @@ export async function getOrgSettings(db: AppDb): Promise<OrgSettings> {
       domainGatingEnabled: false,
       emailAllowlistEnabled: false,
       defaultSessionVisibility: 'private',
+      driveLabelsGuardEnabled: false,
+      driveRequiredLabelIds: [],
+      driveLabelsFailMode: 'deny' as const,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -75,7 +81,7 @@ export async function getOrgSettings(db: AppDb): Promise<OrgSettings> {
 
 export async function updateOrgSettings(
   db: AppDb,
-  updates: Partial<Pick<OrgSettings, 'name' | 'allowedEmailDomain' | 'allowedEmails' | 'domainGatingEnabled' | 'emailAllowlistEnabled' | 'modelPreferences' | 'enabledLoginProviders'>>
+  updates: Partial<Pick<OrgSettings, 'name' | 'allowedEmailDomain' | 'allowedEmails' | 'domainGatingEnabled' | 'emailAllowlistEnabled' | 'modelPreferences' | 'enabledLoginProviders' | 'driveLabelsGuardEnabled' | 'driveRequiredLabelIds' | 'driveLabelsFailMode'>>
 ): Promise<OrgSettings> {
   const setValues: Record<string, unknown> = {};
 
@@ -86,6 +92,9 @@ export async function updateOrgSettings(
   if (updates.emailAllowlistEnabled !== undefined) setValues.emailAllowlistEnabled = updates.emailAllowlistEnabled;
   if (updates.modelPreferences !== undefined) setValues.modelPreferences = updates.modelPreferences && updates.modelPreferences.length > 0 ? updates.modelPreferences : null;
   if (updates.enabledLoginProviders !== undefined) setValues.enabledLoginProviders = updates.enabledLoginProviders && updates.enabledLoginProviders.length > 0 ? updates.enabledLoginProviders : null;
+  if (updates.driveLabelsGuardEnabled !== undefined) setValues.driveLabelsGuardEnabled = updates.driveLabelsGuardEnabled ? 1 : 0;
+  if (updates.driveRequiredLabelIds !== undefined) setValues.driveRequiredLabelIds = JSON.stringify(updates.driveRequiredLabelIds);
+  if (updates.driveLabelsFailMode !== undefined) setValues.driveLabelsFailMode = updates.driveLabelsFailMode;
 
   if (Object.keys(setValues).length > 0) {
     setValues.updatedAt = sql`datetime('now')`;

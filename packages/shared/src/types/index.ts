@@ -306,6 +306,9 @@ export interface OrgSettings {
   defaultSessionVisibility: SessionVisibility;
   modelPreferences?: string[];
   enabledLoginProviders?: string[];
+  driveLabelsGuardEnabled: boolean;
+  driveRequiredLabelIds: string[];
+  driveLabelsFailMode: 'deny' | 'allow';
   createdAt: Date;
   updatedAt: Date;
 }
