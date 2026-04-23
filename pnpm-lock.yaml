@@ -263,9 +263,6 @@ importers:
 
   packages/plugin-google-workspace:
     dependencies:
-      '@toon-format/toon':
-        specifier: ^2.1.0
-        version: 2.1.0
       '@valet/sdk':
         specifier: workspace:*
         version: link:../sdk
