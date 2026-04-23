@@ -179,9 +179,9 @@ threadsRouter.post('/:sessionId/threads/:threadId/continue', async (c) => {
   }
 
   await assertOrchestratorThreadAccess(c.get('db'), session, thread, user.id, 'collaborator');
-  const continuationContext = !thread.opencodeSessionId
-    ? await buildContinuationContext(c.env.DB, thread.sessionId, threadId)
-    : undefined;
+  // Always build continuation context — even if the thread has an opencodeSessionId,
+  // the orchestrator may have restarted and the old OpenCode session is gone.
+  const continuationContext = await buildContinuationContext(c.env.DB, thread.sessionId, threadId);
 
   if (thread.status === 'archived') {
     await db.updateThreadStatus(c.env.DB, threadId, 'active');
