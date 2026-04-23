@@ -1,9 +1,29 @@
+/**
+ * Bidirectional Google Docs <-> Markdown conversion.
+ *
+ * Ported from the reference MCP server's markdown-transformer module.
+ * Combines both directions (docsJsonToMarkdown + insertMarkdown) in one file,
+ * adapted to use raw fetch() instead of googleapis client.
+ *
+ * Public API:
+ *   docsJsonToMarkdown(body, lists?)  - Convert Docs JSON body to markdown string
+ *   convertMarkdownToRequests(md, opts?) - Convert markdown to batchUpdate requests
+ *   insertMarkdown(token, documentId, markdown, opts?) - Full pipeline: parse + insert via API
+ */
+
 import MarkdownIt from 'markdown-it';
 import type Token from 'markdown-it/lib/token.mjs';
+import {
+  executeBatchUpdateWithSplitting,
+  buildUpdateTextStyleRequest,
+  buildUpdateParagraphStyleRequest,
+  hexToRgbColor,
+} from './docs-helpers.js';
+import type { BatchUpdateMetadata } from './docs-helpers.js';
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════════
+// Types (shared across both directions)
+// ═══════════════════════════════════════════════════════════════════════════
 
 export type DocsRequest = Record<string, unknown>;
 
@@ -13,9 +33,380 @@ export interface ConvertOptions {
   firstHeadingAsTitle?: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Internal types
-// ---------------------------------------------------------------------------
+/** Metadata returned by insertMarkdown(). */
+export interface InsertMarkdownResult {
+  totalRequests: number;
+  requestsByType: Record<string, number>;
+  parseElapsedMs: number;
+  batchUpdate: BatchUpdateMetadata;
+  totalElapsedMs: number;
+}
+
+// Inline type definitions for Docs JSON (no googleapis dependency)
+
+export interface TextStyle {
+  bold?: boolean;
+  italic?: boolean;
+  strikethrough?: boolean;
+  underline?: boolean;
+  link?: { url?: string };
+  weightedFontFamily?: { fontFamily?: string };
+}
+
+export interface TextRun {
+  content?: string;
+  textStyle?: TextStyle;
+}
+
+export interface ParagraphElement {
+  startIndex?: number;
+  endIndex?: number;
+  textRun?: TextRun;
+  inlineObjectElement?: { inlineObjectId?: string };
+}
+
+export interface ParagraphStyle {
+  namedStyleType?: string;
+}
+
+export interface Bullet {
+  listId?: string;
+  nestingLevel?: number;
+}
+
+export interface Paragraph {
+  elements?: ParagraphElement[];
+  paragraphStyle?: ParagraphStyle;
+  bullet?: Bullet;
+}
+
+export interface TableCell {
+  content?: StructuralElement[];
+  tableCellStyle?: {
+    backgroundColor?: {
+      color?: { rgbColor?: { red?: number; green?: number; blue?: number } };
+    };
+  };
+}
+
+export interface TableRow {
+  tableCells?: TableCell[];
+}
+
+export interface Table {
+  rows?: number;
+  columns?: number;
+  tableRows?: TableRow[];
+}
+
+export interface StructuralElement {
+  paragraph?: Paragraph;
+  table?: Table;
+  sectionBreak?: Record<string, unknown>;
+}
+
+export interface DocsBody {
+  content?: StructuralElement[];
+}
+
+interface NestingLevel {
+  glyphType?: string;
+  glyphSymbol?: string;
+}
+
+interface ListProperties {
+  nestingLevels?: NestingLevel[];
+}
+
+export interface DocsLists {
+  [listId: string]: { listProperties?: ListProperties };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DIRECTION 1: Google Docs JSON → Markdown
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Font families used by the markdown-to-docs direction for code styling.
+ * When these are detected on a text run, we render backtick code in markdown.
+ */
+const CODE_FONT_FAMILIES = new Set([
+  'Roboto Mono',
+  'Courier New',
+  'Consolas',
+  'monospace',
+]);
+
+/**
+ * Convert a Google Docs document body to markdown.
+ *
+ * Handles headings, paragraphs, text formatting (bold, italic, strikethrough,
+ * underline, links, code), ordered & unordered lists with nesting, tables,
+ * and section breaks.
+ */
+export function docsJsonToMarkdown(body: DocsBody, lists?: DocsLists): string {
+  if (!body?.content) {
+    return '';
+  }
+
+  const resolvedLists: DocsLists = lists ?? {};
+  let markdown = '';
+
+  for (const element of body.content) {
+    if (element.paragraph) {
+      markdown += convertParagraph(element.paragraph, resolvedLists);
+    } else if (element.table) {
+      markdown += convertTable(element.table);
+    } else if (element.sectionBreak) {
+      markdown += '\n---\n\n';
+    }
+  }
+
+  return markdown.trim();
+}
+
+// --- Paragraph Conversion ---
+
+function convertParagraph(paragraph: Paragraph, lists: DocsLists): string {
+  const headingLevel = getDocHeadingLevel(paragraph);
+  const listInfo = getListInfo(paragraph, lists);
+  const elements: ParagraphElement[] = paragraph.elements ?? [];
+  const text = extractFormattedText(elements);
+
+  if (headingLevel && text.trim()) {
+    const hashes = '#'.repeat(Math.min(headingLevel, 6));
+    return `${hashes} ${text.trim()}\n\n`;
+  }
+
+  if (listInfo && text.trim()) {
+    const indent = '  '.repeat(listInfo.nestingLevel);
+    const marker = listInfo.ordered ? `1.` : `-`;
+    return `${indent}${marker} ${text.trim()}\n`;
+  }
+
+  if (text.trim()) {
+    return `${text.trim()}\n\n`;
+  }
+
+  return '\n';
+}
+
+function getDocHeadingLevel(paragraph: Paragraph): number | null {
+  const styleType = paragraph.paragraphStyle?.namedStyleType;
+  if (!styleType) return null;
+
+  if (styleType === 'TITLE') return 1;
+  if (styleType === 'SUBTITLE') return 2;
+
+  const match = styleType.match(/^HEADING_(\d)$/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+interface ListInfo {
+  ordered: boolean;
+  nestingLevel: number;
+}
+
+function getListInfo(paragraph: Paragraph, lists: DocsLists): ListInfo | null {
+  if (!paragraph.bullet) return null;
+
+  const nestingLevel: number = paragraph.bullet.nestingLevel ?? 0;
+  const listId: string | undefined = paragraph.bullet.listId;
+  let ordered = false;
+
+  if (listId && lists[listId]?.listProperties?.nestingLevels) {
+    const nestingLevels = lists[listId].listProperties!.nestingLevels!;
+    const level = nestingLevels[nestingLevel];
+    if (level) {
+      if (level.glyphType && level.glyphType !== 'GLYPH_TYPE_UNSPECIFIED') {
+        ordered = true;
+      }
+    }
+  }
+
+  return { ordered, nestingLevel };
+}
+
+// --- Text Run Conversion ---
+
+function extractFormattedText(elements: ParagraphElement[]): string {
+  let result = '';
+
+  for (const element of elements) {
+    if (element.textRun) {
+      result += convertTextRun(element.textRun);
+    }
+  }
+
+  return result;
+}
+
+function convertTextRun(textRun: TextRun): string {
+  let text: string = textRun.content ?? '';
+  const style = textRun.textStyle;
+
+  if (!style) return text;
+
+  if (isCodeStyled(style)) {
+    const trimmed = text.replace(/\n$/, '');
+    if (trimmed) {
+      return `\`${trimmed}\`${text.endsWith('\n') ? '\n' : ''}`;
+    }
+    return text;
+  }
+
+  const trailingNewline = text.endsWith('\n');
+  const content = trailingNewline ? text.slice(0, -1) : text;
+
+  if (!content) return text;
+
+  let formatted = content;
+
+  if (style.bold && style.italic) {
+    formatted = `***${formatted}***`;
+  } else if (style.bold) {
+    formatted = `**${formatted}**`;
+  } else if (style.italic) {
+    formatted = `*${formatted}*`;
+  }
+
+  if (style.strikethrough) {
+    formatted = `~~${formatted}~~`;
+  }
+
+  if (style.underline && !style.link) {
+    formatted = `<u>${formatted}</u>`;
+  }
+
+  if (style.link?.url) {
+    formatted = `[${formatted}](${style.link.url})`;
+  }
+
+  return formatted + (trailingNewline ? '\n' : '');
+}
+
+function isCodeStyled(style: TextStyle): boolean {
+  const fontFamily = style.weightedFontFamily?.fontFamily;
+  return typeof fontFamily === 'string' && CODE_FONT_FAMILIES.has(fontFamily);
+}
+
+// --- Table Conversion ---
+
+function convertTable(table: Table): string {
+  if (!table.tableRows || table.tableRows.length === 0) {
+    return '';
+  }
+
+  if (isCodeBlockTable(table)) {
+    return convertCodeBlockTable(table);
+  }
+
+  let markdown = '\n';
+  let isFirstRow = true;
+
+  for (const row of table.tableRows) {
+    if (!row.tableCells) continue;
+
+    let rowText = '|';
+    for (const cell of row.tableCells) {
+      const cellText = extractCellText(cell);
+      rowText += ` ${cellText} |`;
+    }
+    markdown += rowText + '\n';
+
+    if (isFirstRow) {
+      let separator = '|';
+      for (let i = 0; i < row.tableCells.length; i++) {
+        separator += ' --- |';
+      }
+      markdown += separator + '\n';
+      isFirstRow = false;
+    }
+  }
+
+  return markdown + '\n';
+}
+
+function isCodeBlockTable(table: Table): boolean {
+  if (!table.tableRows || table.tableRows.length !== 1) return false;
+  const row = table.tableRows[0];
+  if (!row.tableCells || row.tableCells.length !== 1) return false;
+
+  const cell = row.tableCells[0];
+
+  const cellStyle = cell.tableCellStyle;
+  if (cellStyle?.backgroundColor?.color?.rgbColor) {
+    const bg = cellStyle.backgroundColor.color.rgbColor;
+    const r = bg.red ?? 0;
+    const g = bg.green ?? 0;
+    const b = bg.blue ?? 0;
+    if (r > 0.85 && g > 0.85 && b > 0.85 && r < 1 && g < 1 && b < 1) {
+      return true;
+    }
+  }
+
+  if (cell.content) {
+    for (const element of cell.content) {
+      if (element.paragraph?.elements) {
+        for (const pe of element.paragraph.elements) {
+          if (pe.textRun?.textStyle) {
+            if (isCodeStyled(pe.textRun.textStyle)) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function convertCodeBlockTable(table: Table): string {
+  const cell = table.tableRows![0].tableCells![0];
+  let codeText = '';
+
+  if (cell.content) {
+    for (const element of cell.content) {
+      if (element.paragraph?.elements) {
+        for (const pe of element.paragraph.elements) {
+          if (pe.textRun?.content) {
+            codeText += pe.textRun.content;
+          }
+        }
+      }
+    }
+  }
+
+  if (codeText.endsWith('\n')) {
+    codeText = codeText.slice(0, -1);
+  }
+
+  return '\n```\n' + codeText + '\n```\n\n';
+}
+
+function extractCellText(cell: TableCell): string {
+  let text = '';
+  if (!cell.content) return text;
+
+  for (const element of cell.content) {
+    if (element.paragraph?.elements) {
+      for (const pe of element.paragraph.elements) {
+        if (pe.textRun?.content) {
+          text += pe.textRun.content.replace(/\n/g, ' ').trim();
+        }
+      }
+    }
+  }
+
+  return text;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DIRECTION 2: Markdown → Google Docs batchUpdate requests
+// ═══════════════════════════════════════════════════════════════════════════
+
+// --- Internal Types ---
 
 interface TextRange {
   startIndex: number;
@@ -100,9 +491,7 @@ interface ConversionContext {
   firstHeadingAsTitle: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+// --- Constants ---
 
 const CODE_FONT_FAMILY = 'Roboto Mono';
 const CODE_TEXT_HEX = '#188038';
@@ -123,137 +512,7 @@ const CODE_BLOCK_BORDER_RGB = { red: 0.855, green: 0.863, blue: 0.878 }; // #DAD
 const CELL_CONTENT_OFFSET = 4;
 const EMPTY_1x1_TABLE_SIZE = 6;
 
-// ---------------------------------------------------------------------------
-// Hex → RGB helper
-// ---------------------------------------------------------------------------
-
-interface RgbColor {
-  red: number;
-  green: number;
-  blue: number;
-}
-
-function hexToRgbColor(hex: string): RgbColor | null {
-  if (!hex) return null;
-  let h = hex.startsWith('#') ? hex.slice(1) : hex;
-  if (h.length === 3) {
-    h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
-  }
-  if (h.length !== 6) return null;
-  const n = parseInt(h, 16);
-  if (isNaN(n)) return null;
-  return {
-    red: ((n >> 16) & 255) / 255,
-    green: ((n >> 8) & 255) / 255,
-    blue: (n & 255) / 255,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Request builder helpers (inlined from reference's googleDocsApiHelpers)
-// ---------------------------------------------------------------------------
-
-interface TextStyleArgs {
-  bold?: boolean;
-  italic?: boolean;
-  strikethrough?: boolean;
-  fontFamily?: string;
-  foregroundColor?: string;
-  backgroundColor?: string;
-  linkUrl?: string;
-}
-
-function buildUpdateTextStyleRequest(
-  startIndex: number,
-  endIndex: number,
-  style: TextStyleArgs,
-  tabId?: string,
-): DocsRequest | null {
-  const textStyle: Record<string, unknown> = {};
-  const fields: string[] = [];
-
-  if (style.bold !== undefined) {
-    textStyle.bold = style.bold;
-    fields.push('bold');
-  }
-  if (style.italic !== undefined) {
-    textStyle.italic = style.italic;
-    fields.push('italic');
-  }
-  if (style.strikethrough !== undefined) {
-    textStyle.strikethrough = style.strikethrough;
-    fields.push('strikethrough');
-  }
-  if (style.fontFamily !== undefined) {
-    textStyle.weightedFontFamily = { fontFamily: style.fontFamily };
-    fields.push('weightedFontFamily');
-  }
-  if (style.foregroundColor !== undefined) {
-    const rgb = hexToRgbColor(style.foregroundColor);
-    if (!rgb) return null;
-    textStyle.foregroundColor = { color: { rgbColor: rgb } };
-    fields.push('foregroundColor');
-  }
-  if (style.backgroundColor !== undefined) {
-    const rgb = hexToRgbColor(style.backgroundColor);
-    if (!rgb) return null;
-    textStyle.backgroundColor = { color: { rgbColor: rgb } };
-    fields.push('backgroundColor');
-  }
-  if (style.linkUrl !== undefined) {
-    textStyle.link = { url: style.linkUrl };
-    fields.push('link');
-  }
-
-  if (fields.length === 0) return null;
-
-  const range: Record<string, unknown> = { startIndex, endIndex };
-  if (tabId) range.tabId = tabId;
-
-  return {
-    updateTextStyle: {
-      range,
-      textStyle,
-      fields: fields.join(','),
-    },
-  };
-}
-
-interface ParagraphStyleArgs {
-  namedStyleType?: string;
-}
-
-function buildUpdateParagraphStyleRequest(
-  startIndex: number,
-  endIndex: number,
-  style: ParagraphStyleArgs,
-  tabId?: string,
-): DocsRequest | null {
-  const paragraphStyle: Record<string, unknown> = {};
-  const fields: string[] = [];
-
-  if (style.namedStyleType !== undefined) {
-    paragraphStyle.namedStyleType = style.namedStyleType;
-    fields.push('namedStyleType');
-  }
-
-  if (fields.length === 0) return null;
-
-  const range: Record<string, unknown> = { startIndex, endIndex };
-  if (tabId) range.tabId = tabId;
-
-  return {
-    updateParagraphStyle: {
-      range,
-      paragraphStyle,
-      fields: fields.join(','),
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Markdown-it setup
-// ---------------------------------------------------------------------------
+// --- Markdown-it setup ---
 
 function createParser(): MarkdownIt {
   return new MarkdownIt({
@@ -273,15 +532,13 @@ function getLinkHref(token: Token): string | null {
   return hrefAttr ? hrefAttr[1] : null;
 }
 
-function getHeadingLevel(token: Token): number | null {
+function getMdHeadingLevel(token: Token): number | null {
   if (!token.type.startsWith('heading_')) return null;
   const match = token.tag.match(/h(\d)/);
   return match ? parseInt(match[1], 10) : null;
 }
 
-// ---------------------------------------------------------------------------
-// Main conversion function
-// ---------------------------------------------------------------------------
+// --- Main conversion function ---
 
 /**
  * Convert markdown to an array of Google Docs batchUpdate requests.
@@ -331,9 +588,7 @@ export function convertMarkdownToRequests(
   return [...context.insertRequests, ...context.formatRequests];
 }
 
-// ---------------------------------------------------------------------------
-// Token processing
-// ---------------------------------------------------------------------------
+// --- Token processing ---
 
 function processToken(token: Token, context: ConversionContext): void {
   switch (token.type) {
@@ -424,14 +679,14 @@ function processToken(token: Token, context: ConversionContext): void {
       if (context.inTableCell && context.tableState?.currentCell) {
         context.tableState.currentCell.text += ' ';
       } else {
-        insertText(' ', context);
+        mdInsertText(' ', context);
       }
       break;
     case 'hardbreak':
       if (context.inTableCell && context.tableState?.currentCell) {
         context.tableState.currentCell.text += '\n';
       } else {
-        insertText('\n', context);
+        mdInsertText('\n', context);
       }
       break;
 
@@ -524,12 +779,10 @@ function processToken(token: Token, context: ConversionContext): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Heading handlers
-// ---------------------------------------------------------------------------
+// --- Heading handlers ---
 
 function handleHeadingOpen(token: Token, context: ConversionContext): void {
-  const level = getHeadingLevel(token);
+  const level = getMdHeadingLevel(token);
   if (level) {
     context.currentHeadingLevel = level;
     context.currentParagraphStart = context.currentIndex;
@@ -558,30 +811,26 @@ function handleHeadingClose(context: ConversionContext): void {
         : `HEADING_${context.currentHeadingLevel}`,
     });
 
-    insertText('\n', context);
+    mdInsertText('\n', context);
     context.currentHeadingLevel = undefined;
     context.currentParagraphStart = undefined;
   }
 }
 
-// ---------------------------------------------------------------------------
-// Horizontal rule
-// ---------------------------------------------------------------------------
+// --- Horizontal rule ---
 
 function handleHorizontalRule(context: ConversionContext): void {
   if (!lastInsertEndsWithNewline(context)) {
-    insertText('\n', context);
+    mdInsertText('\n', context);
   }
 
   const start = context.currentIndex;
-  insertText('\n', context);
+  mdInsertText('\n', context);
 
   context.hrRanges.push({ startIndex: start, endIndex: context.currentIndex });
 }
 
-// ---------------------------------------------------------------------------
-// Paragraph handlers
-// ---------------------------------------------------------------------------
+// --- Paragraph handlers ---
 
 function handleParagraphOpen(context: ConversionContext): void {
   if (context.listStack.length === 0) {
@@ -593,7 +842,7 @@ function handleParagraphClose(context: ConversionContext): void {
   const paragraphStart = context.currentParagraphStart;
 
   if (!lastInsertEndsWithNewline(context)) {
-    insertText('\n', context);
+    mdInsertText('\n', context);
   }
 
   const currentListItem = getCurrentOpenListItem(context);
@@ -616,9 +865,7 @@ function handleParagraphClose(context: ConversionContext): void {
   context.currentParagraphStart = undefined;
 }
 
-// ---------------------------------------------------------------------------
-// List handlers
-// ---------------------------------------------------------------------------
+// --- List handlers ---
 
 function handleListItemOpen(context: ConversionContext): void {
   if (context.listStack.length === 0) {
@@ -629,7 +876,7 @@ function handleListItemOpen(context: ConversionContext): void {
   const itemStart = context.currentIndex;
 
   if (currentList.level > 0) {
-    insertText('\t'.repeat(currentList.level), context);
+    mdInsertText('\t'.repeat(currentList.level), context);
   }
 
   const listItem: PendingListItem = {
@@ -660,7 +907,7 @@ function handleListItemClose(context: ConversionContext): void {
   }
 
   if (!lastInsertEndsWithNewline(context)) {
-    insertText('\n', context);
+    mdInsertText('\n', context);
   }
 }
 
@@ -681,15 +928,13 @@ function handleListClose(context: ConversionContext): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Text handling
-// ---------------------------------------------------------------------------
+// --- Text handling ---
 
 function handleTextToken(token: Token, context: ConversionContext): void {
   let text = token.content;
   if (!text) return;
 
-  // Inside a table cell — collect into cell buffer
+  // Inside a table cell -- collect into cell buffer
   if (context.inTableCell && context.tableState?.currentCell) {
     const cell = context.tableState.currentCell;
     const startIndex = cell.text.length;
@@ -719,7 +964,7 @@ function handleTextToken(token: Token, context: ConversionContext): void {
   const startIndex = context.currentIndex;
   const endIndex = startIndex + text.length;
 
-  insertText(text, context);
+  mdInsertText(text, context);
 
   const currentFormatting = mergeFormattingStack(context.formattingStack);
   if (hasFormatting(currentFormatting)) {
@@ -736,9 +981,7 @@ function handleCodeInlineToken(
   popFormatting(context, 'code');
 }
 
-// ---------------------------------------------------------------------------
-// Code block handler
-// ---------------------------------------------------------------------------
+// --- Code block handler ---
 
 function handleCodeBlockToken(
   token: Token,
@@ -754,7 +997,7 @@ function handleCodeBlockToken(
     context.insertRequests.length > 0 &&
     !lastInsertEndsWithNewline(context)
   ) {
-    insertText('\n', context);
+    mdInsertText('\n', context);
   }
 
   const tableStartIndex = context.currentIndex;
@@ -797,12 +1040,10 @@ function handleCodeBlockToken(
   context.currentIndex = tableStartIndex + EMPTY_1x1_TABLE_SIZE + textLength;
 
   // 5. Newline after table for paragraph separation
-  insertText('\n', context);
+  mdInsertText('\n', context);
 }
 
-// ---------------------------------------------------------------------------
-// Table handler
-// ---------------------------------------------------------------------------
+// --- Table handler ---
 
 function handleTableClose(
   tableState: TableState,
@@ -817,7 +1058,7 @@ function handleTableClose(
 
   // Ensure newline before table
   if (!lastInsertEndsWithNewline(context)) {
-    insertText('\n', context);
+    mdInsertText('\n', context);
   }
 
   const tableStartIndex = context.currentIndex;
@@ -886,7 +1127,7 @@ function handleTableClose(
             },
             context.tabId,
           );
-          if (styleReq) context.formatRequests.push(styleReq);
+          if (styleReq) context.formatRequests.push(styleReq.request);
         }
 
         if (range.formatting.link) {
@@ -896,7 +1137,7 @@ function handleTableClose(
             { linkUrl: range.formatting.link },
             context.tabId,
           );
-          if (linkReq) context.formatRequests.push(linkReq);
+          if (linkReq) context.formatRequests.push(linkReq.request);
         }
       }
 
@@ -908,7 +1149,7 @@ function handleTableClose(
           { bold: true },
           context.tabId,
         );
-        if (headerStyleReq) context.formatRequests.push(headerStyleReq);
+        if (headerStyleReq) context.formatRequests.push(headerStyleReq.request);
       }
 
       cumulativeTextLength += cell.text.length;
@@ -920,14 +1161,12 @@ function handleTableClose(
   context.currentIndex = tableStartIndex + emptyTableSize + cumulativeTextLength;
 
   // Newline after table
-  insertText('\n', context);
+  mdInsertText('\n', context);
 }
 
-// ---------------------------------------------------------------------------
-// Insert helper
-// ---------------------------------------------------------------------------
+// --- Insert helper ---
 
-function insertText(text: string, context: ConversionContext): void {
+function mdInsertText(text: string, context: ConversionContext): void {
   const location: Record<string, unknown> = { index: context.currentIndex };
   if (context.tabId) {
     location.tabId = context.tabId;
@@ -940,9 +1179,7 @@ function insertText(text: string, context: ConversionContext): void {
   context.currentIndex += text.length;
 }
 
-// ---------------------------------------------------------------------------
-// Formatting stack
-// ---------------------------------------------------------------------------
+// --- Formatting stack ---
 
 function mergeFormattingStack(stack: FormattingState[]): FormattingState {
   const merged: FormattingState = {};
@@ -979,15 +1216,11 @@ function popFormatting(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Finalization — apply all deferred formatting requests
-// ---------------------------------------------------------------------------
+// --- Finalization -- apply all deferred formatting requests ---
 
 function finalizeFormatting(context: ConversionContext): void {
   // Style reset pass: clear inherited fontSize/weightedFontFamily so
   // named styles (HEADING_1, NORMAL_TEXT, etc.) control the appearance.
-  // Without this, inserted text inherits character-level styling from
-  // the text before the insertion point, causing font size scrambling.
 
   // Reset for heading paragraphs
   for (const paraRange of context.paragraphRanges) {
@@ -1047,7 +1280,7 @@ function finalizeFormatting(context: ConversionContext): void {
         context.tabId,
       );
       if (styleRequest) {
-        context.formatRequests.push(styleRequest);
+        context.formatRequests.push(styleRequest.request);
       }
     }
 
@@ -1059,7 +1292,7 @@ function finalizeFormatting(context: ConversionContext): void {
         context.tabId,
       );
       if (linkRequest) {
-        context.formatRequests.push(linkRequest);
+        context.formatRequests.push(linkRequest.request);
       }
     }
   }
@@ -1070,11 +1303,11 @@ function finalizeFormatting(context: ConversionContext): void {
       const paraRequest = buildUpdateParagraphStyleRequest(
         paraRange.startIndex,
         paraRange.endIndex,
-        { namedStyleType: paraRange.namedStyleType },
+        { namedStyleType: paraRange.namedStyleType as 'TITLE' | 'HEADING_1' | 'HEADING_2' | 'HEADING_3' | 'HEADING_4' | 'HEADING_5' | 'HEADING_6' },
         context.tabId,
       );
       if (paraRequest) {
-        context.formatRequests.push(paraRequest);
+        context.formatRequests.push(paraRequest.request);
       }
     }
   }
@@ -1133,7 +1366,7 @@ function finalizeFormatting(context: ConversionContext): void {
         context.tabId,
       );
       if (codeTextStyle) {
-        context.formatRequests.push(codeTextStyle);
+        context.formatRequests.push(codeTextStyle.request);
       }
     }
 
@@ -1200,7 +1433,7 @@ function finalizeFormatting(context: ConversionContext): void {
     });
   }
 
-  // List formatting — merge adjacent items of the same bullet type
+  // List formatting -- merge adjacent items of the same bullet type
   const validListItems = context.pendingListItems
     .filter(
       (item) => item.endIndex !== undefined && item.endIndex > item.startIndex,
@@ -1248,9 +1481,7 @@ function finalizeFormatting(context: ConversionContext): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
+// --- Utilities ---
 
 function getCurrentOpenListItem(
   context: ConversionContext,
@@ -1265,4 +1496,107 @@ function lastInsertEndsWithNewline(context: ConversionContext): boolean {
   const last = context.insertRequests[context.insertRequests.length - 1];
   const text = (last?.insertText as { text?: string } | undefined)?.text;
   return Boolean(text && text.endsWith('\n'));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// insertMarkdown — Full pipeline: parse markdown + insert via API
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Formats InsertMarkdownResult into a concise human-readable debug summary. */
+export function formatInsertResult(result: InsertMarkdownResult): string {
+  const lines: string[] = [];
+  lines.push(`Markdown insert completed in ${result.totalElapsedMs}ms`);
+  lines.push(`  Parse: ${result.parseElapsedMs}ms`);
+  lines.push(
+    `  Requests: ${result.totalRequests} total (${Object.entries(result.requestsByType)
+      .map(([k, v]) => `${v} ${k}`)
+      .join(', ')})`,
+  );
+  lines.push(
+    `  API calls: ${result.batchUpdate.totalApiCalls} batchUpdate calls in ${result.batchUpdate.totalElapsedMs}ms`,
+  );
+  const { phases } = result.batchUpdate;
+  if (phases.delete.requests > 0) {
+    lines.push(
+      `    Delete phase: ${phases.delete.requests} requests, ${phases.delete.apiCalls} calls, ${phases.delete.elapsedMs}ms`,
+    );
+  }
+  if (phases.insert.requests > 0) {
+    lines.push(
+      `    Insert phase: ${phases.insert.requests} requests, ${phases.insert.apiCalls} calls, ${phases.insert.elapsedMs}ms`,
+    );
+  }
+  if (phases.format.requests > 0) {
+    lines.push(
+      `    Format phase: ${phases.format.requests} requests, ${phases.format.apiCalls} calls, ${phases.format.elapsedMs}ms`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Convert markdown to Google Docs formatting and insert it into a document.
+ *
+ * Handles the full pipeline: markdown parsing, request generation, and batch
+ * execution against the Docs API. Callers never see raw API requests.
+ *
+ * @param token - OAuth access token
+ * @param documentId - The document ID
+ * @param markdown - The markdown content to insert
+ * @param options - Optional: startIndex (default 1), tabId, firstHeadingAsTitle
+ * @returns Debug metadata about the operation (request counts, timing, API calls)
+ */
+export async function insertMarkdown(
+  token: string,
+  documentId: string,
+  markdown: string,
+  options?: { startIndex?: number; tabId?: string; firstHeadingAsTitle?: boolean },
+): Promise<InsertMarkdownResult> {
+  const overallStart = performance.now();
+  const startIndex = options?.startIndex ?? 1;
+  const tabId = options?.tabId;
+
+  const parseStart = performance.now();
+  const conversionOptions: ConvertOptions | undefined =
+    options?.firstHeadingAsTitle
+      ? { startIndex, tabId, firstHeadingAsTitle: true }
+      : { startIndex, tabId };
+  const requests = convertMarkdownToRequests(markdown, conversionOptions);
+  const parseElapsedMs = Math.round(performance.now() - parseStart);
+
+  // Count requests by type
+  const requestsByType: Record<string, number> = {};
+  for (const r of requests) {
+    const type = Object.keys(r)[0];
+    requestsByType[type] = (requestsByType[type] || 0) + 1;
+  }
+
+  if (requests.length === 0) {
+    return {
+      totalRequests: 0,
+      requestsByType,
+      parseElapsedMs,
+      batchUpdate: {
+        totalRequests: 0,
+        phases: {
+          delete: { requests: 0, apiCalls: 0, elapsedMs: 0 },
+          insert: { requests: 0, apiCalls: 0, elapsedMs: 0 },
+          format: { requests: 0, apiCalls: 0, elapsedMs: 0 },
+        },
+        totalApiCalls: 0,
+        totalElapsedMs: 0,
+      },
+      totalElapsedMs: Math.round(performance.now() - overallStart),
+    };
+  }
+
+  const batchUpdate = await executeBatchUpdateWithSplitting(token, documentId, requests);
+
+  return {
+    totalRequests: requests.length,
+    requestsByType,
+    parseElapsedMs,
+    batchUpdate,
+    totalElapsedMs: Math.round(performance.now() - overallStart),
+  };
 }

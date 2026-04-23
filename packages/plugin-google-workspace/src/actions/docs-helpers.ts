@@ -5,7 +5,7 @@
  * now takes `token: string` as the first parameter.
  */
 
-import type { DocsRequest } from './markdown-to-docs.js';
+import type { DocsRequest } from './docs-markdown.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
