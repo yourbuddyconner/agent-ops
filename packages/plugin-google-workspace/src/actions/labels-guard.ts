@@ -1,5 +1,5 @@
 import type { ActionContext, ActionResult } from '@valet/sdk/integrations';
-import { normalizeDocumentId } from './docs-api.js';
+import { normalizeDocumentId } from './docs-helpers.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 

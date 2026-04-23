@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { decode as decodeToon } from '@toon-format/toon';
 import type { ActionDefinition, ActionContext, ActionResult } from '@valet/sdk';
-import { docsFetch, driveFetchForDocs, apiError, executeBatchUpdate, normalizeDocumentId } from './docs-api.js';
+import { docsFetch, driveFetchForDocs, apiError, executeBatchUpdate, normalizeDocumentId } from './docs-helpers.js';
 import { escapeDriveQuery } from './drive-api.js';
 import { docsToMarkdown } from './docs-to-markdown.js';
 import type { DocsBody, DocsLists } from './docs-to-markdown.js';
