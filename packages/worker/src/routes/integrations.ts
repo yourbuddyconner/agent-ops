@@ -290,11 +290,17 @@ integrationsRouter.get('/google_workspace/labels', async (c) => {
       );
 
       if (!res.ok) {
-        // If the first page fails, report unavailable. If a subsequent page fails, return what we have.
+        // If the first page fails, report unavailable with the actual error for diagnosis.
         if (allLabels.length === 0) {
+          let detail = `${res.status}`;
+          try {
+            const errBody = (await res.json()) as { error?: { message?: string; status?: string } };
+            if (errBody.error?.message) detail = errBody.error.message;
+          } catch { /* ignore parse failure */ }
+          console.error(`Drive Labels API error: ${res.status} — ${detail}`);
           return c.json({
             available: false,
-            reason: 'Drive Labels API not available for this account type',
+            reason: `Drive Labels API error: ${detail}`,
           });
         }
         break;
