@@ -52,14 +52,14 @@ function exportThread(thread: { title?: string; firstMessagePreview?: string; cr
   const title = thread.title || thread.firstMessagePreview || 'Untitled thread';
   lines.push(`# ${title}`);
   lines.push(`Exported: ${new Date().toISOString()}`);
-  lines.push(`Thread started: ${thread.createdAt.toISOString()}`);
+  lines.push(`Thread started: ${new Date(thread.createdAt).toISOString()}`);
   lines.push(`Messages: ${messages.length}`);
   lines.push('');
   lines.push('---');
   lines.push('');
 
   for (const msg of messages) {
-    const timestamp = msg.createdAt.toISOString();
+    const timestamp = new Date(msg.createdAt).toISOString();
     const author = msg.authorName || msg.authorEmail || msg.role;
     lines.push(`## [${msg.role.toUpperCase()}] ${author} — ${timestamp}`);
     lines.push('');
