@@ -8,12 +8,15 @@ import * as db from '../lib/db.js';
 
 export const threadsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-async function buildContinuationContext(dbConn: D1Database, sessionId: string, threadId: string): Promise<string> {
+async function buildContinuationContext(dbConn: D1Database, threadId: string): Promise<string> {
   const msgResult = await dbConn
     .prepare(
-      'SELECT role, content FROM messages WHERE session_id = ? AND thread_id = ? ORDER BY created_at DESC LIMIT 20'
+      `SELECT m.role, m.content FROM messages m
+       JOIN sessions s ON m.session_id = s.id
+       WHERE m.thread_id = ? AND s.parent_session_id IS NULL
+       ORDER BY m.created_at DESC LIMIT 20`
     )
-    .bind(sessionId, threadId)
+    .bind(threadId)
     .all();
 
   const oldMessages = (msgResult.results || []).reverse();
@@ -181,7 +184,7 @@ threadsRouter.post('/:sessionId/threads/:threadId/continue', async (c) => {
   await assertOrchestratorThreadAccess(c.get('db'), session, thread, user.id, 'collaborator');
   // Always build continuation context — even if the thread has an opencodeSessionId,
   // the orchestrator may have restarted and the old OpenCode session is gone.
-  const continuationContext = await buildContinuationContext(c.env.DB, thread.sessionId, threadId);
+  const continuationContext = await buildContinuationContext(c.env.DB, threadId);
 
   if (thread.status === 'archived') {
     await db.updateThreadStatus(c.env.DB, threadId, 'active');

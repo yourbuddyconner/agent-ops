@@ -3584,9 +3584,12 @@ export class SessionAgentDO {
 
     const msgResult = await this.env.DB
       .prepare(
-        'SELECT role, content FROM messages WHERE session_id = ? AND thread_id = ? ORDER BY created_at DESC LIMIT 20'
+        `SELECT m.role, m.content FROM messages m
+         JOIN sessions s ON m.session_id = s.id
+         WHERE m.thread_id = ? AND s.parent_session_id IS NULL
+         ORDER BY m.created_at DESC LIMIT 20`
       )
-      .bind(owningSessionId, threadId)
+      .bind(threadId)
       .all<{ role?: string; content?: string }>();
 
     const rows = (msgResult.results || []).reverse();

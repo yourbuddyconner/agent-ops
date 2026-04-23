@@ -280,12 +280,20 @@ describe('threadsRouter POST /:sessionId/threads/:threadId/continue', () => {
 
     getThreadMock.mockResolvedValue(existingThread);
 
+    const emptyDbMock = {
+      prepare: vi.fn(() => ({
+        bind: vi.fn(() => ({
+          all: vi.fn().mockResolvedValue({ results: [] }),
+        })),
+      })),
+    } as unknown as Pick<D1Database, 'prepare'>;
+
     const app = buildApp();
     const res = await app.fetch(
       new Request('http://localhost/orchestrator/threads/thread-1/continue', {
         method: 'POST',
       }),
-      { DB: {} } as any
+      { DB: emptyDbMock } as any
     );
 
     expect(res.status).toBe(200);
@@ -334,17 +342,25 @@ describe('threadsRouter POST /:sessionId/threads/:threadId/continue', () => {
       .mockResolvedValueOnce(archivedThread)
       .mockResolvedValueOnce(reactivatedThread);
 
+    const emptyDbMock = {
+      prepare: vi.fn(() => ({
+        bind: vi.fn(() => ({
+          all: vi.fn().mockResolvedValue({ results: [] }),
+        })),
+      })),
+    } as unknown as Pick<D1Database, 'prepare'>;
+
     const app = buildApp();
     const res = await app.fetch(
       new Request('http://localhost/orchestrator/threads/thread-2/continue', {
         method: 'POST',
       }),
-      { DB: {} } as any
+      { DB: emptyDbMock } as any
     );
 
     expect(res.status).toBe(200);
     expect(createThreadMock).not.toHaveBeenCalled();
-    expect(updateThreadStatusMock).toHaveBeenCalledWith({}, 'thread-2', 'active');
+    expect(updateThreadStatusMock).toHaveBeenCalledWith(emptyDbMock, 'thread-2', 'active');
     expect(await res.json()).toEqual({
       thread: reactivatedThread,
       resumed: true,
