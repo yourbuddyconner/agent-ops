@@ -19,10 +19,7 @@ export const LIST_SEARCH_ACTIONS: string[] = [
   'drive.list_documents',
   'drive.search_documents',
   'drive.list_folder_contents',
-  'docs.list_tabs',
   'sheets.list_spreadsheets',
-  'sheets.list_tables',
-  'sheets.get_conditional_formatting',
 ];
 
 export const READ_GET_ACTIONS: string[] = [
@@ -30,12 +27,15 @@ export const READ_GET_ACTIONS: string[] = [
   'drive.get_folder_info',
   'drive.download_file',
   'docs.read_document',
+  'docs.list_tabs',
   'docs.list_comments',
   'docs.get_comment',
   'sheets.read_spreadsheet',
   'sheets.get_spreadsheet_info',
   'sheets.read_cell_format',
   'sheets.get_table',
+  'sheets.list_tables',
+  'sheets.get_conditional_formatting',
 ];
 
 export const WRITE_MODIFY_ACTIONS: string[] = [
@@ -294,6 +294,9 @@ export function extractFileId(actionId: string, params: Record<string, unknown>)
   }
   if (actionId.startsWith('docs.')) {
     return typeof params.documentId === 'string' ? normalizeDocumentId(params.documentId) : null;
+  }
+  if (actionId === 'sheets.copy_sheet_to') {
+    return typeof params.sourceSpreadsheetId === 'string' ? params.sourceSpreadsheetId : null;
   }
   if (actionId.startsWith('sheets.')) {
     return typeof params.spreadsheetId === 'string' ? params.spreadsheetId : null;

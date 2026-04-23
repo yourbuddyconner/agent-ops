@@ -610,7 +610,7 @@ async function executeAction(
               error: `Tab "${p.tabId}" does not have content (may not be a document tab).`,
             };
           }
-          contentSource = { body: dt.body };
+          contentSource = { body: dt.body, lists: dt.lists };
         } else {
           contentSource = doc;
         }
@@ -988,10 +988,17 @@ async function executeAction(
           return { success: false, error: batchResult.error || 'Failed to find and replace' };
         }
 
+        // Extract occurrencesChanged from the API response
+        const responseData = batchResult.data as {
+          replies?: Array<{ replaceAllText?: { occurrencesChanged?: number } }>;
+        } | undefined;
+        const occurrencesChanged = responseData?.replies?.[0]?.replaceAllText?.occurrencesChanged ?? 0;
+
         return {
           success: true,
           data: {
-            message: `Replaced occurrences of "${p.findText}" with "${p.replaceText}".`,
+            message: `Replaced ${occurrencesChanged} occurrence(s) of "${p.findText}" with "${p.replaceText}".`,
+            occurrencesChanged,
           },
         };
       }

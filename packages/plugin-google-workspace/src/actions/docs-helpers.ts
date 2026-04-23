@@ -238,10 +238,12 @@ export async function executeBatchUpdate(
   token: string,
   requests: DocsRequest[],
   options?: { preserveOrder?: boolean },
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; data?: unknown }> {
   if (requests.length === 0) {
     return { success: true };
   }
+
+  let lastResponseData: unknown = undefined;
 
   if (options?.preserveOrder) {
     for (let i = 0; i < requests.length; i += MAX_BATCH_UPDATE_REQUESTS) {
@@ -254,8 +256,9 @@ export async function executeBatchUpdate(
       if (!res.ok) {
         return apiError(res, 'Docs batchUpdate');
       }
+      lastResponseData = await res.json();
     }
-    return { success: true };
+    return { success: true, data: lastResponseData };
   }
 
   // Categorize requests into three phases
@@ -292,10 +295,11 @@ export async function executeBatchUpdate(
       if (!res.ok) {
         return apiError(res, 'Docs batchUpdate');
       }
+      lastResponseData = await res.json();
     }
   }
 
-  return { success: true };
+  return { success: true, data: lastResponseData };
 }
 
 // ─── Batch Update with Splitting & Metadata ─────────────────────────────────
@@ -353,8 +357,15 @@ export async function executeBatchUpdateWithSplitting(
         { method: 'POST', body: JSON.stringify({ requests: batch }) },
       );
       if (!res.ok) {
-        const err = await res.text();
-        throw new Error(`Docs API ${res.status}: ${err}`);
+        let detail = '';
+        try {
+          const body = await res.text();
+          const json = JSON.parse(body);
+          detail = json?.error?.message || body.slice(0, 500);
+        } catch {
+          detail = res.statusText;
+        }
+        throw new Error(`Docs batchUpdate API ${res.status}: ${detail}`);
       }
       totalApiCalls++;
     }

@@ -18,10 +18,10 @@ const MIME_TYPE_SHORTCUTS: Record<string, string> = {
 };
 
 const WORKSPACE_EXPORT_DEFAULTS: Record<string, string> = {
-  'application/vnd.google-apps.document': 'text/plain',
+  'application/vnd.google-apps.document': 'text/markdown',
   'application/vnd.google-apps.spreadsheet': 'text/csv',
   'application/vnd.google-apps.presentation': 'text/plain',
-  'application/vnd.google-apps.drawing': 'image/svg+xml',
+  'application/vnd.google-apps.drawing': 'image/png',
   'application/vnd.google-apps.script': 'application/vnd.google-apps.script+json',
 };
 
@@ -299,10 +299,11 @@ const renameFile: ActionDefinition = {
 const deleteFileDef: ActionDefinition = {
   id: 'drive.delete_file',
   name: 'Delete File',
-  description: 'Permanently deletes a file or folder (cannot be undone).',
-  riskLevel: 'critical',
+  description: 'Moves a file or folder to trash by default. Set permanent=true for irreversible deletion.',
+  riskLevel: 'high',
   params: z.object({
-    fileId: z.string().describe('File ID (PERMANENT deletion)'),
+    fileId: z.string().describe('File ID'),
+    permanent: z.boolean().optional().describe('If true, permanently delete (cannot be undone). Default: false (trash).'),
   }),
 };
 
@@ -435,7 +436,7 @@ async function executeAction(
         }
 
         if (p.mimeType) queryParts.push(`mimeType='${escapeDriveQuery(resolveMimeType(p.mimeType))}'`);
-        if (p.folderId) queryParts.push(`'${escapeDriveQuery(p.folderId)}' in parents`);
+        if (p.folderId) queryParts.push(`'${escapeDriveQuery(p.folderId)}' in ancestors`);
         if (p.modifiedAfter) {
           const cutoff = new Date(p.modifiedAfter).toISOString();
           queryParts.push(`modifiedTime > '${escapeDriveQuery(cutoff)}'`);
@@ -805,13 +806,23 @@ async function executeAction(
       }
 
       case 'drive.delete_file': {
-        const { fileId } = deleteFileDef.params.parse(params);
-        const qs = new URLSearchParams({ supportsAllDrives: 'true' });
-        const res = await driveFetch(`/files/${encodeURIComponent(fileId)}?${qs}`, token, {
-          method: 'DELETE',
-        });
-        if (!res.ok && res.status !== 404) return driveError(res);
-        return { success: true };
+        const { fileId, permanent } = deleteFileDef.params.parse(params);
+        if (permanent) {
+          const qs = new URLSearchParams({ supportsAllDrives: 'true' });
+          const res = await driveFetch(`/files/${encodeURIComponent(fileId)}?${qs}`, token, {
+            method: 'DELETE',
+          });
+          if (!res.ok && res.status !== 404) return driveError(res);
+          return { success: true, data: { trashed: false, permanentlyDeleted: true } };
+        } else {
+          const qs = new URLSearchParams({ supportsAllDrives: 'true' });
+          const res = await driveFetch(`/files/${encodeURIComponent(fileId)}?${qs}`, token, {
+            method: 'PATCH',
+            body: JSON.stringify({ trashed: true }),
+          });
+          if (!res.ok && res.status !== 404) return driveError(res);
+          return { success: true, data: { trashed: true, permanentlyDeleted: false } };
+        }
       }
 
       case 'drive.download_file': {
@@ -906,7 +917,7 @@ async function executeAction(
           try {
             const requests = Object.entries(p.replacements).map(([searchText, replaceText]) => ({
               replaceAllText: {
-                containsText: { text: searchText, matchCase: true },
+                containsText: { text: searchText, matchCase: false },
                 replaceText,
               },
             }));

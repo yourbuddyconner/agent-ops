@@ -730,12 +730,25 @@ async function executeAction(
 
       case 'sheets.list_spreadsheets': {
         const p = listSpreadsheets.params.parse(params);
-        let q = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false";
+        const labelFilter = (params as Record<string, unknown>).__labelFilter as string | undefined;
+        const queryParts: string[] = [
+          "mimeType='application/vnd.google-apps.spreadsheet'",
+          'trashed=false',
+        ];
         if (p.query) {
-          q += ` and fullText contains '${p.query.replace(/'/g, "\\'")}'`;
+          queryParts.push(`fullText contains '${p.query.replace(/'/g, "\\'")}'`);
+        }
+        const userQuery = queryParts.join(' and ');
+        let finalQuery: string;
+        if (userQuery && labelFilter) {
+          finalQuery = `(${userQuery}) and ${labelFilter}`;
+        } else if (labelFilter) {
+          finalQuery = labelFilter;
+        } else {
+          finalQuery = userQuery;
         }
         const qs = new URLSearchParams({
-          q,
+          q: finalQuery,
           fields: 'files(id,name,modifiedTime,webViewLink)',
           pageSize: String(p.maxResults || 20),
           supportsAllDrives: 'true',
