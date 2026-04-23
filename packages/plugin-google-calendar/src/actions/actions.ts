@@ -1,293 +1,214 @@
 import { z } from 'zod';
 import type { ActionDefinition, ActionSource, ActionContext, ActionResult } from '@valet/sdk';
-import { calendarFetch } from './api.js';
 
-// ─── Internal Types ──────────────────────────────────────────────────────────
+const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
 
-interface GoogleEvent {
-  id: string;
-  status: 'confirmed' | 'tentative' | 'cancelled';
-  htmlLink: string;
-  summary?: string;
-  description?: string;
-  location?: string;
-  creator?: { email: string; displayName?: string };
-  organizer?: { email: string; displayName?: string };
-  start: { date?: string; dateTime?: string; timeZone?: string };
-  end: { date?: string; dateTime?: string; timeZone?: string };
-  recurrence?: string[];
-  attendees?: Array<{
-    email: string;
-    displayName?: string;
-    responseStatus: string;
-    organizer?: boolean;
-    self?: boolean;
-    optional?: boolean;
-  }>;
-  conferenceData?: {
-    entryPoints?: Array<{ entryPointType: string; uri: string }>;
-  };
-  created: string;
-  updated: string;
+function calendarFetch(
+  url: string,
+  token: string,
+  options?: RequestInit,
+): Promise<Response> {
+  return fetch(url, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      ...options?.headers,
+    },
+  });
 }
 
-interface GoogleCalendar {
-  id: string;
-  summary: string;
-  description?: string;
-  timeZone: string;
-  primary?: boolean;
-  accessRole: string;
-}
+// ─── Shared schema ────────────────────────────────────────────────────────────
 
-interface CalendarEvent {
-  id: string;
-  calendarId: string;
-  title: string;
-  description?: string;
-  location?: string;
-  start: Date;
-  end: Date;
-  isAllDay: boolean;
-  timeZone?: string;
-  attendees: Array<{ email: string; name?: string; status: string; isOrganizer: boolean }>;
-  organizer?: { email: string; name?: string };
-  meetingLink?: string;
-  recurrence?: string[];
-  status: string;
-  htmlLink: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-function parseEvent(event: GoogleEvent, calendarId: string): CalendarEvent {
-  const isAllDay = !!event.start.date;
-  const start = isAllDay ? new Date(event.start.date!) : new Date(event.start.dateTime!);
-  const end = isAllDay ? new Date(event.end.date!) : new Date(event.end.dateTime!);
-  const meetingLink = event.conferenceData?.entryPoints?.find(
-    (e) => e.entryPointType === 'video',
-  )?.uri;
-
-  return {
-    id: event.id,
-    calendarId,
-    title: event.summary || '(No title)',
-    description: event.description,
-    location: event.location,
-    start,
-    end,
-    isAllDay,
-    timeZone: event.start.timeZone || event.end.timeZone,
-    attendees: (event.attendees || []).map((a) => ({
-      email: a.email,
-      name: a.displayName,
-      status: a.responseStatus,
-      isOrganizer: a.organizer || false,
-    })),
-    organizer: event.organizer
-      ? { email: event.organizer.email, name: event.organizer.displayName }
-      : undefined,
-    meetingLink,
-    recurrence: event.recurrence,
-    status: event.status,
-    htmlLink: event.htmlLink,
-    createdAt: new Date(event.created),
-    updatedAt: new Date(event.updated),
-  };
-}
-
-function buildEventBody(options: {
-  title: string;
-  description?: string;
-  location?: string;
-  start: string;
-  end: string;
-  isAllDay?: boolean;
-  timeZone?: string;
-  attendees?: Array<{ email: string; optional?: boolean }>;
-  recurrence?: string[];
-  conferenceData?: { createRequest?: { requestId: string } };
-  reminders?: { useDefault?: boolean; overrides?: Array<{ method: string; minutes: number }> };
-}): Record<string, unknown> {
-  const body: Record<string, unknown> = { summary: options.title };
-  if (options.description) body.description = options.description;
-  if (options.location) body.location = options.location;
-
-  const formatDT = (dt: string, allDay: boolean) => {
-    const date = new Date(dt);
-    if (allDay) return { date: date.toISOString().split('T')[0] };
-    return { dateTime: date.toISOString(), timeZone: options.timeZone || 'UTC' };
-  };
-
-  body.start = formatDT(options.start, options.isAllDay || false);
-  body.end = formatDT(options.end, options.isAllDay || false);
-
-  if (options.attendees?.length) {
-    body.attendees = options.attendees.map((a) => ({ email: a.email, optional: a.optional || false }));
-  }
-  if (options.conferenceData) body.conferenceData = options.conferenceData;
-  if (options.reminders) body.reminders = options.reminders;
-  if (options.recurrence) body.recurrence = options.recurrence;
-
-  return body;
-}
+const eventDateTimeSchema = z
+  .object({
+    dateTime: z
+      .string()
+      .optional()
+      .describe(
+        'RFC3339 timestamp with timezone offset, e.g. "2026-04-15T14:00:00-08:00". Use this for timed events.',
+      ),
+    date: z
+      .string()
+      .optional()
+      .describe('ISO date "YYYY-MM-DD" for all-day events. Use instead of dateTime.'),
+    timeZone: z
+      .string()
+      .optional()
+      .describe('IANA timezone like "America/Los_Angeles". Optional when dateTime has an offset.'),
+  })
+  .refine((v) => v.dateTime || v.date, {
+    message: 'Provide either dateTime (timed event) or date (all-day event).',
+  });
 
 // ─── Action Definitions ──────────────────────────────────────────────────────
-
-const listCalendars: ActionDefinition = {
-  id: 'calendar.list_calendars',
-  name: 'List Calendars',
-  description: 'List all calendars the user has access to',
-  riskLevel: 'low',
-  params: z.object({}),
-};
-
-const getCalendar: ActionDefinition = {
-  id: 'calendar.get_calendar',
-  name: 'Get Calendar',
-  description: 'Get a specific calendar by ID',
-  riskLevel: 'low',
-  params: z.object({ calendarId: z.string().optional().default('primary') }),
-};
 
 const listEvents: ActionDefinition = {
   id: 'calendar.list_events',
   name: 'List Events',
-  description: 'List events from a calendar',
+  description:
+    "Lists or searches Google Calendar events. Defaults to the user's primary calendar starting now. Use timeMin/timeMax (RFC3339 timestamps) to bound the window, q for free-text search, and maxResults to cap the count. Returns event IDs needed for updateEvent and deleteEvent.",
   riskLevel: 'low',
   params: z.object({
-    calendarId: z.string().optional().default('primary'),
-    timeMin: z.string().optional().describe('ISO 8601 date-time'),
-    timeMax: z.string().optional().describe('ISO 8601 date-time'),
-    maxResults: z.number().int().min(1).max(250).optional(),
-    query: z.string().optional(),
-  }),
-};
-
-const getEvent: ActionDefinition = {
-  id: 'calendar.get_event',
-  name: 'Get Event',
-  description: 'Get a specific event by ID',
-  riskLevel: 'low',
-  params: z.object({
-    eventId: z.string(),
-    calendarId: z.string().optional().default('primary'),
+    calendarId: z
+      .string()
+      .optional()
+      .default('primary')
+      .describe('Calendar ID. Defaults to "primary" (the user\'s main calendar).'),
+    q: z
+      .string()
+      .optional()
+      .describe('Free-text search across summary, description, location, and attendees.'),
+    timeMin: z
+      .string()
+      .optional()
+      .describe(
+        'Lower bound (inclusive) as RFC3339 timestamp, e.g. "2026-04-10T00:00:00-08:00". Defaults to now.',
+      ),
+    timeMax: z.string().optional().describe('Upper bound (exclusive) as RFC3339 timestamp.'),
+    maxResults: z
+      .number()
+      .int()
+      .min(1)
+      .max(2500)
+      .optional()
+      .default(25)
+      .describe('Maximum number of events to return (1-2500). Defaults to 25.'),
+    singleEvents: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe(
+        'If true (default), expands recurring events into individual instances. Set false to receive recurring events as a single record.',
+      ),
   }),
 };
 
 const createEvent: ActionDefinition = {
   id: 'calendar.create_event',
   name: 'Create Event',
-  description: 'Create a new calendar event',
+  description:
+    'Creates a new event on a Google Calendar. Supports timed events (start/end with dateTime) and all-day events (start/end with date). Set sendUpdates to email invitations to attendees.',
   riskLevel: 'medium',
   params: z.object({
-    calendarId: z.string().optional().default('primary'),
-    title: z.string(),
-    description: z.string().optional(),
-    location: z.string().optional(),
-    start: z.string().describe('ISO 8601 date-time'),
-    end: z.string().describe('ISO 8601 date-time'),
-    isAllDay: z.boolean().optional(),
-    timeZone: z.string().optional(),
-    attendees: z.array(z.object({ email: z.string(), optional: z.boolean().optional() })).optional(),
-    sendUpdates: z.enum(['all', 'externalOnly', 'none']).optional(),
-    recurrence: z.array(z.string()).optional(),
+    calendarId: z
+      .string()
+      .optional()
+      .default('primary')
+      .describe('Calendar ID. Defaults to "primary".'),
+    summary: z.string().describe('Event title.'),
+    description: z.string().optional().describe('Event description / notes.'),
+    location: z.string().optional().describe('Physical address or location string.'),
+    start: eventDateTimeSchema.describe('Event start. Provide dateTime or date.'),
+    end: eventDateTimeSchema.describe(
+      'Event end. Provide dateTime or date. For all-day events, end.date is exclusive.',
+    ),
+    attendees: z
+      .array(
+        z.object({
+          email: z.string().describe('Attendee email address.'),
+          optional: z.boolean().optional().describe('Mark attendee as optional.'),
+        }),
+      )
+      .optional()
+      .describe('List of attendees to invite.'),
+    sendUpdates: z
+      .enum(['all', 'externalOnly', 'none'])
+      .optional()
+      .default('none')
+      .describe(
+        'Whether to send email invitations: "all" sends to everyone, "externalOnly" only to non-domain attendees, "none" sends nothing (default).',
+      ),
+    conferenceData: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('If true, attaches an automatically generated Google Meet link to the event.'),
   }),
 };
 
 const updateEvent: ActionDefinition = {
   id: 'calendar.update_event',
   name: 'Update Event',
-  description: 'Update an existing calendar event',
+  description:
+    'Updates an existing Google Calendar event with PATCH semantics — only the fields you provide are changed; everything else stays the same. Common uses: reschedule (set start+end), retitle (set summary), add/remove attendees (set attendees array which fully replaces).',
   riskLevel: 'medium',
   params: z.object({
-    eventId: z.string(),
-    calendarId: z.string().optional().default('primary'),
-    title: z.string().optional(),
-    description: z.string().optional(),
-    location: z.string().optional(),
-    start: z.string().optional(),
-    end: z.string().optional(),
-    isAllDay: z.boolean().optional(),
-    timeZone: z.string().optional(),
-    attendees: z.array(z.object({ email: z.string(), optional: z.boolean().optional() })).optional(),
-    sendUpdates: z.enum(['all', 'externalOnly', 'none']).optional(),
+    calendarId: z
+      .string()
+      .optional()
+      .default('primary')
+      .describe('Calendar ID. Defaults to "primary".'),
+    eventId: z.string().describe('The event ID to update (from list_events).'),
+    summary: z.string().optional().describe('New event title.'),
+    description: z.string().optional().describe('New event description.'),
+    location: z.string().optional().describe('New location.'),
+    start: eventDateTimeSchema.optional().describe('New start time.'),
+    end: eventDateTimeSchema.optional().describe('New end time.'),
+    attendees: z
+      .array(
+        z.object({
+          email: z.string(),
+          optional: z.boolean().optional(),
+        }),
+      )
+      .optional()
+      .describe('Replaces the entire attendee list. To add one, fetch the event first.'),
+    sendUpdates: z
+      .enum(['all', 'externalOnly', 'none'])
+      .optional()
+      .default('none')
+      .describe('Whether to email attendees about the change.'),
   }),
 };
 
 const deleteEvent: ActionDefinition = {
   id: 'calendar.delete_event',
   name: 'Delete Event',
-  description: 'Delete a calendar event',
+  description:
+    'Deletes an event from a Google Calendar. This is permanent — the event is removed, not trashed. Use sendUpdates to email cancellations to attendees.',
   riskLevel: 'high',
   params: z.object({
-    eventId: z.string(),
-    calendarId: z.string().optional().default('primary'),
-    sendUpdates: z.enum(['all', 'externalOnly', 'none']).optional().default('all'),
+    calendarId: z
+      .string()
+      .optional()
+      .default('primary')
+      .describe('Calendar ID. Defaults to "primary".'),
+    eventId: z.string().describe('The event ID to delete (from list_events).'),
+    sendUpdates: z
+      .enum(['all', 'externalOnly', 'none'])
+      .optional()
+      .default('none')
+      .describe('Whether to email cancellation notices to attendees.'),
   }),
 };
 
 const quickAdd: ActionDefinition = {
   id: 'calendar.quick_add',
   name: 'Quick Add Event',
-  description: 'Create an event from natural language text',
+  description:
+    'Creates a calendar event from a natural-language string using Google Calendar\'s quick-add parser. Examples: "Lunch with Sarah tomorrow at 12pm", "Dentist appointment next Tuesday 3-4pm", "Team standup every weekday 9am". Faster than create_event when you don\'t need attendees, descriptions, or precise control over fields.',
   riskLevel: 'medium',
   params: z.object({
-    text: z.string().describe('Natural language event description'),
-    calendarId: z.string().optional().default('primary'),
+    calendarId: z
+      .string()
+      .optional()
+      .default('primary')
+      .describe('Calendar ID. Defaults to "primary".'),
+    text: z
+      .string()
+      .describe(
+        'Natural-language description of the event. Google parses the title and time from this string.',
+      ),
+    sendUpdates: z
+      .enum(['all', 'externalOnly', 'none'])
+      .optional()
+      .default('none')
+      .describe('Whether to email invitations (rarely useful for quick add).'),
   }),
 };
 
-const respondToEvent: ActionDefinition = {
-  id: 'calendar.respond_to_event',
-  name: 'Respond to Event',
-  description: 'RSVP to an event invitation',
-  riskLevel: 'medium',
-  params: z.object({
-    eventId: z.string(),
-    response: z.enum(['accepted', 'declined', 'tentative']),
-    calendarId: z.string().optional().default('primary'),
-  }),
-};
-
-const queryFreeBusy: ActionDefinition = {
-  id: 'calendar.query_freebusy',
-  name: 'Query Free/Busy',
-  description: 'Query free/busy information for calendars',
-  riskLevel: 'low',
-  params: z.object({
-    timeMin: z.string().describe('ISO 8601 date-time'),
-    timeMax: z.string().describe('ISO 8601 date-time'),
-    calendars: z.array(z.string()).optional(),
-  }),
-};
-
-const findAvailableSlots: ActionDefinition = {
-  id: 'calendar.find_available_slots',
-  name: 'Find Available Slots',
-  description: 'Find available time slots across calendars',
-  riskLevel: 'low',
-  params: z.object({
-    duration: z.number().int().describe('Duration in minutes'),
-    timeMin: z.string().describe('ISO 8601 date-time'),
-    timeMax: z.string().describe('ISO 8601 date-time'),
-    calendars: z.array(z.string()).optional(),
-  }),
-};
-
-const allActions: ActionDefinition[] = [
-  listCalendars,
-  getCalendar,
-  listEvents,
-  getEvent,
-  createEvent,
-  updateEvent,
-  deleteEvent,
-  quickAdd,
-  respondToEvent,
-  queryFreeBusy,
-  findAvailableSlots,
-];
+const allActions: ActionDefinition[] = [listEvents, createEvent, updateEvent, deleteEvent, quickAdd];
 
 // ─── Action Execution ────────────────────────────────────────────────────────
 
@@ -301,226 +222,282 @@ async function executeAction(
 
   try {
     switch (actionId) {
-      case 'calendar.list_calendars': {
-        listCalendars.params.parse(params);
-        const calendars: GoogleCalendar[] = [];
-        let pageToken: string | undefined;
-
-        do {
-          const qs = new URLSearchParams({ maxResults: '250' });
-          if (pageToken) qs.set('pageToken', pageToken);
-          const res = await calendarFetch(`/users/me/calendarList?${qs}`, token);
-          if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
-          const data = (await res.json()) as { items: GoogleCalendar[]; nextPageToken?: string };
-          calendars.push(...(data.items || []));
-          pageToken = data.nextPageToken;
-        } while (pageToken);
-
-        return { success: true, data: calendars };
-      }
-
-      case 'calendar.get_calendar': {
-        const { calendarId } = getCalendar.params.parse(params);
-        const res = await calendarFetch(`/calendars/${encodeURIComponent(calendarId)}`, token);
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
-        return { success: true, data: await res.json() };
-      }
-
       case 'calendar.list_events': {
         const p = listEvents.params.parse(params);
+        const timeMin = p.timeMin ?? new Date().toISOString();
         const qs = new URLSearchParams({
-          maxResults: String(p.maxResults || 50),
-          singleEvents: 'true',
-          orderBy: 'startTime',
+          maxResults: String(p.maxResults),
+          singleEvents: String(p.singleEvents),
         });
-        if (p.timeMin) qs.set('timeMin', p.timeMin);
+        if (timeMin) qs.set('timeMin', timeMin);
         if (p.timeMax) qs.set('timeMax', p.timeMax);
-        if (p.query) qs.set('q', p.query);
+        if (p.q) qs.set('q', p.q);
+        if (p.singleEvents) qs.set('orderBy', 'startTime');
 
         const res = await calendarFetch(
-          `/calendars/${encodeURIComponent(p.calendarId)}/events?${qs}`,
+          `${CALENDAR_API}/calendars/${encodeURIComponent(p.calendarId)}/events?${qs}`,
           token,
         );
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
-        const data = (await res.json()) as { items: GoogleEvent[] };
-        return {
-          success: true,
-          data: (data.items || []).map((e) => parseEvent(e, p.calendarId)),
+        if (!res.ok) {
+          const body = await res.text();
+          if (res.status === 404)
+            return { success: false, error: `Calendar not found (ID: ${p.calendarId}).` };
+          if (res.status === 403)
+            return {
+              success: false,
+              error: 'Permission denied. Confirm the calendar.events scope was granted.',
+            };
+          return { success: false, error: `Failed to list events: ${res.status} ${body}` };
+        }
+        const data = (await res.json()) as {
+          items?: Array<{
+            id?: string;
+            status?: string;
+            summary?: string;
+            description?: string;
+            location?: string;
+            start?: { dateTime?: string; date?: string; timeZone?: string };
+            end?: { dateTime?: string; date?: string; timeZone?: string };
+            attendees?: Array<{
+              email?: string;
+              responseStatus?: string;
+              optional?: boolean;
+            }>;
+            organizer?: { email?: string };
+            htmlLink?: string;
+            recurringEventId?: string;
+          }>;
+          nextPageToken?: string;
         };
-      }
-
-      case 'calendar.get_event': {
-        const { eventId, calendarId } = getEvent.params.parse(params);
-        const res = await calendarFetch(
-          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
-          token,
-        );
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
-        const event = (await res.json()) as GoogleEvent;
-        return { success: true, data: parseEvent(event, calendarId) };
+        const events = (data.items ?? []).map((event) => ({
+          id: event.id,
+          status: event.status,
+          summary: event.summary ?? null,
+          description: event.description ?? null,
+          location: event.location ?? null,
+          start: event.start ?? null,
+          end: event.end ?? null,
+          attendees:
+            event.attendees?.map((a) => ({
+              email: a.email,
+              responseStatus: a.responseStatus,
+              optional: a.optional ?? false,
+            })) ?? [],
+          organizer: event.organizer?.email ?? null,
+          htmlLink: event.htmlLink ?? null,
+          recurringEventId: event.recurringEventId ?? null,
+        }));
+        return { success: true, data: { events, count: events.length, nextPageToken: data.nextPageToken ?? null } };
       }
 
       case 'calendar.create_event': {
         const p = createEvent.params.parse(params);
-        const qs = new URLSearchParams();
-        if (p.sendUpdates) qs.set('sendUpdates', p.sendUpdates);
+        const qs = new URLSearchParams({ sendUpdates: p.sendUpdates });
+        if (p.conferenceData) qs.set('conferenceDataVersion', '1');
 
-        const body = buildEventBody(p);
+        const requestBody: Record<string, unknown> = {
+          summary: p.summary,
+          start: p.start,
+          end: p.end,
+        };
+        if (p.description !== undefined) requestBody.description = p.description;
+        if (p.location !== undefined) requestBody.location = p.location;
+        if (p.attendees !== undefined) requestBody.attendees = p.attendees;
+        if (p.conferenceData) {
+          requestBody.conferenceData = {
+            createRequest: {
+              requestId: `valet-${crypto.randomUUID()}`,
+              conferenceSolutionKey: { type: 'hangoutsMeet' },
+            },
+          };
+        }
+
         const res = await calendarFetch(
-          `/calendars/${encodeURIComponent(p.calendarId)}/events?${qs}`,
+          `${CALENDAR_API}/calendars/${encodeURIComponent(p.calendarId)}/events?${qs}`,
           token,
-          { method: 'POST', body: JSON.stringify(body) },
+          { method: 'POST', body: JSON.stringify(requestBody) },
         );
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
-        const event = (await res.json()) as GoogleEvent;
-        return { success: true, data: parseEvent(event, p.calendarId) };
+        if (!res.ok) {
+          const body = await res.text();
+          if (res.status === 404)
+            return { success: false, error: `Calendar not found (ID: ${p.calendarId}).` };
+          if (res.status === 403)
+            return {
+              success: false,
+              error: 'Permission denied. Confirm the calendar.events scope was granted.',
+            };
+          if (res.status === 400)
+            return {
+              success: false,
+              error: `Calendar rejected the event: ${body}. Check that start/end formats are valid RFC3339.`,
+            };
+          return { success: false, error: `Failed to create event: ${res.status} ${body}` };
+        }
+        const event = (await res.json()) as {
+          id?: string;
+          summary?: string;
+          start?: unknown;
+          end?: unknown;
+          htmlLink?: string;
+          hangoutLink?: string;
+          attendees?: unknown[];
+        };
+        return {
+          success: true,
+          data: {
+            id: event.id,
+            summary: event.summary,
+            start: event.start,
+            end: event.end,
+            htmlLink: event.htmlLink,
+            hangoutLink: event.hangoutLink ?? null,
+            attendees: event.attendees?.length ?? 0,
+            message: `Event "${event.summary}" created.`,
+          },
+        };
       }
 
       case 'calendar.update_event': {
         const p = updateEvent.params.parse(params);
-        const qs = new URLSearchParams();
-        if (p.sendUpdates) qs.set('sendUpdates', p.sendUpdates);
+        const qs = new URLSearchParams({ sendUpdates: p.sendUpdates });
 
-        // Get existing event to merge
-        const existingRes = await calendarFetch(
-          `/calendars/${encodeURIComponent(p.calendarId)}/events/${encodeURIComponent(p.eventId)}`,
-          token,
-        );
-        if (!existingRes.ok) return { success: false, error: `Event not found: ${existingRes.status}` };
-        const existing = (await existingRes.json()) as GoogleEvent;
-        const existingParsed = parseEvent(existing, p.calendarId);
+        const requestBody: Record<string, unknown> = {};
+        if (p.summary !== undefined) requestBody.summary = p.summary;
+        if (p.description !== undefined) requestBody.description = p.description;
+        if (p.location !== undefined) requestBody.location = p.location;
+        if (p.start !== undefined) requestBody.start = p.start;
+        if (p.end !== undefined) requestBody.end = p.end;
+        if (p.attendees !== undefined) requestBody.attendees = p.attendees;
 
-        const body = buildEventBody({
-          title: p.title ?? existingParsed.title,
-          description: p.description ?? existingParsed.description,
-          location: p.location ?? existingParsed.location,
-          start: p.start ?? existingParsed.start.toISOString(),
-          end: p.end ?? existingParsed.end.toISOString(),
-          isAllDay: p.isAllDay ?? existingParsed.isAllDay,
-          timeZone: p.timeZone ?? existingParsed.timeZone,
-          attendees: p.attendees ?? existingParsed.attendees.map((a) => ({ email: a.email })),
-          recurrence: existingParsed.recurrence,
-        });
+        if (Object.keys(requestBody).length === 0) {
+          return {
+            success: false,
+            error:
+              'No fields provided to update. Pass at least one of summary, description, location, start, end, or attendees.',
+          };
+        }
 
         const res = await calendarFetch(
-          `/calendars/${encodeURIComponent(p.calendarId)}/events/${encodeURIComponent(p.eventId)}?${qs}`,
+          `${CALENDAR_API}/calendars/${encodeURIComponent(p.calendarId)}/events/${encodeURIComponent(p.eventId)}?${qs}`,
           token,
-          { method: 'PUT', body: JSON.stringify(body) },
+          { method: 'PATCH', body: JSON.stringify(requestBody) },
         );
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
-        const event = (await res.json()) as GoogleEvent;
-        return { success: true, data: parseEvent(event, p.calendarId) };
+        if (!res.ok) {
+          const body = await res.text();
+          if (res.status === 404)
+            return {
+              success: false,
+              error: `Event not found: ${p.eventId} on calendar ${p.calendarId}.`,
+            };
+          if (res.status === 403)
+            return {
+              success: false,
+              error: 'Permission denied. Confirm the calendar.events scope was granted.',
+            };
+          if (res.status === 400)
+            return {
+              success: false,
+              error: `Calendar rejected the update: ${body}.`,
+            };
+          return { success: false, error: `Failed to update event: ${res.status} ${body}` };
+        }
+        const event = (await res.json()) as {
+          id?: string;
+          summary?: string;
+          start?: unknown;
+          end?: unknown;
+          htmlLink?: string;
+          updated?: string;
+        };
+        return {
+          success: true,
+          data: {
+            id: event.id,
+            summary: event.summary,
+            start: event.start,
+            end: event.end,
+            htmlLink: event.htmlLink,
+            updated: event.updated,
+            message: `Event ${event.id} updated.`,
+          },
+        };
       }
 
       case 'calendar.delete_event': {
-        const { eventId, calendarId, sendUpdates } = deleteEvent.params.parse(params);
-        const qs = new URLSearchParams({ sendUpdates });
+        const p = deleteEvent.params.parse(params);
+        const qs = new URLSearchParams({ sendUpdates: p.sendUpdates });
+
         const res = await calendarFetch(
-          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}?${qs}`,
+          `${CALENDAR_API}/calendars/${encodeURIComponent(p.calendarId)}/events/${encodeURIComponent(p.eventId)}?${qs}`,
           token,
           { method: 'DELETE' },
         );
-        if (!res.ok && res.status !== 410) return { success: false, error: `Failed: ${res.status}` };
-        return { success: true };
+        if (!res.ok) {
+          if (res.status === 404)
+            return { success: false, error: `Event not found: ${p.eventId}.` };
+          if (res.status === 410)
+            return { success: false, error: `Event ${p.eventId} was already deleted.` };
+          if (res.status === 403)
+            return {
+              success: false,
+              error: 'Permission denied. Confirm the calendar.events scope was granted.',
+            };
+          const body = await res.text();
+          return { success: false, error: `Failed to delete event: ${res.status} ${body}` };
+        }
+        return {
+          success: true,
+          data: {
+            eventId: p.eventId,
+            calendarId: p.calendarId,
+            message: `Event ${p.eventId} deleted from calendar ${p.calendarId}.`,
+          },
+        };
       }
 
       case 'calendar.quick_add': {
-        const { text, calendarId } = quickAdd.params.parse(params);
-        const qs = new URLSearchParams({ text });
+        const p = quickAdd.params.parse(params);
+        const qs = new URLSearchParams({ text: p.text, sendUpdates: p.sendUpdates });
+
         const res = await calendarFetch(
-          `/calendars/${encodeURIComponent(calendarId)}/events/quickAdd?${qs}`,
+          `${CALENDAR_API}/calendars/${encodeURIComponent(p.calendarId)}/events/quickAdd?${qs}`,
           token,
           { method: 'POST' },
         );
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
-        const event = (await res.json()) as GoogleEvent;
-        return { success: true, data: parseEvent(event, calendarId) };
-      }
-
-      case 'calendar.respond_to_event': {
-        const { eventId, response, calendarId } = respondToEvent.params.parse(params);
-        const getRes = await calendarFetch(
-          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
-          token,
-        );
-        if (!getRes.ok) return { success: false, error: `Event not found: ${getRes.status}` };
-
-        const event = (await getRes.json()) as GoogleEvent;
-        const attendees = event.attendees?.map((a) =>
-          a.self ? { ...a, responseStatus: response } : a,
-        );
-
-        const patchRes = await calendarFetch(
-          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
-          token,
-          { method: 'PATCH', body: JSON.stringify({ attendees }) },
-        );
-        if (!patchRes.ok) return { success: false, error: `Failed: ${patchRes.status}` };
-        return { success: true };
-      }
-
-      case 'calendar.query_freebusy': {
-        const p = queryFreeBusy.params.parse(params);
-        const res = await calendarFetch('/freeBusy', token, {
-          method: 'POST',
-          body: JSON.stringify({
-            timeMin: p.timeMin,
-            timeMax: p.timeMax,
-            items: (p.calendars || ['primary']).map((id: string) => ({ id })),
-          }),
-        });
-        if (!res.ok) return { success: false, error: `Failed: ${res.status}` };
-
-        const data = (await res.json()) as {
-          calendars: Record<string, { busy: Array<{ start: string; end: string }> }>;
-        };
-
-        const results = Object.entries(data.calendars || {}).map(([calendar, info]) => ({
-          calendar,
-          busy: (info.busy || []).map((b) => ({ start: new Date(b.start), end: new Date(b.end) })),
-        }));
-        return { success: true, data: results };
-      }
-
-      case 'calendar.find_available_slots': {
-        const p = findAvailableSlots.params.parse(params);
-        // Query free/busy first
-        const fbRes = await calendarFetch('/freeBusy', token, {
-          method: 'POST',
-          body: JSON.stringify({
-            timeMin: p.timeMin,
-            timeMax: p.timeMax,
-            items: (p.calendars || ['primary']).map((id: string) => ({ id })),
-          }),
-        });
-        if (!fbRes.ok) return { success: false, error: `Failed: ${fbRes.status}` };
-
-        const fbData = (await fbRes.json()) as {
-          calendars: Record<string, { busy: Array<{ start: string; end: string }> }>;
-        };
-
-        const allBusy = Object.values(fbData.calendars || {})
-          .flatMap((info) => info.busy)
-          .map((b) => ({ start: new Date(b.start), end: new Date(b.end) }))
-          .sort((a, b) => a.start.getTime() - b.start.getTime());
-
-        const slots: Array<{ start: Date; end: Date }> = [];
-        let current = new Date(p.timeMin);
-        const endTime = new Date(p.timeMax);
-        const durationMs = p.duration * 60 * 1000;
-
-        for (const busy of allBusy) {
-          if (busy.start.getTime() - current.getTime() >= durationMs) {
-            slots.push({ start: current, end: busy.start });
-          }
-          if (busy.end > current) current = busy.end;
+        if (!res.ok) {
+          const body = await res.text();
+          if (res.status === 404)
+            return { success: false, error: `Calendar not found (ID: ${p.calendarId}).` };
+          if (res.status === 403)
+            return {
+              success: false,
+              error: 'Permission denied. Confirm the calendar.events scope was granted.',
+            };
+          if (res.status === 400)
+            return {
+              success: false,
+              error: `Calendar could not parse "${p.text}" as an event. Try a clearer time format.`,
+            };
+          return { success: false, error: `Failed to quick-add event: ${res.status} ${body}` };
         }
-
-        if (endTime.getTime() - current.getTime() >= durationMs) {
-          slots.push({ start: current, end: endTime });
-        }
-
-        return { success: true, data: slots };
+        const event = (await res.json()) as {
+          id?: string;
+          summary?: string;
+          start?: unknown;
+          end?: unknown;
+          htmlLink?: string;
+        };
+        return {
+          success: true,
+          data: {
+            id: event.id,
+            summary: event.summary,
+            start: event.start,
+            end: event.end,
+            htmlLink: event.htmlLink,
+            message: `Event "${event.summary}" created from "${p.text}".`,
+          },
+        };
       }
 
       default:
