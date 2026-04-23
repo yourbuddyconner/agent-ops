@@ -1,23 +1,32 @@
 /**
- * Google Docs actions — core read/write operations (8 of 25).
+ * Google Docs actions — 25 total (read/write, content insertion, tabs,
+ * formatting, comments).
  *
  * Ported from the reference MCP server tools. Uses raw fetch() via
  * docs-helpers.ts and markdown conversion via docs-markdown.ts.
- *
- * Subsequent tasks will add the remaining 17 actions.
+ * Comments use the Drive API v3 (not the Docs API).
  */
 
 import { z } from 'zod';
 import type { ActionDefinition, ActionContext, ActionResult } from '@valet/sdk';
 import {
   docsFetch,
+  driveFetchForDocs,
   apiError,
   normalizeDocumentId,
   executeBatchUpdate,
+  executeBatchUpdateWithSplitting,
   findTextRange,
   findTabById,
+  getAllTabs,
+  getTabTextLength,
+  getParagraphRange,
   buildUpdateTextStyleRequest,
+  buildUpdateParagraphStyleRequest,
+  createTable,
+  insertInlineImage,
 } from './docs-helpers.js';
+import type { TextStyleArgs, ParagraphStyleArgs } from './docs-helpers.js';
 import type { DocsRequest } from './docs-markdown.js';
 import {
   docsJsonToMarkdown,
@@ -162,6 +171,308 @@ const allActions: ActionDefinition[] = [
       preserveTitle: z.boolean().optional(),
       tabId: z.string().optional(),
       firstHeadingAsTitle: z.boolean().optional(),
+    }),
+  },
+
+  // ── Content Insertion ──────────────────────────────────────────────────────
+
+  {
+    id: 'docs.insert_table',
+    name: 'Insert Table',
+    description:
+      'Insert an empty table with the specified number of rows and columns at a character index',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      rows: z.number().int().min(1).describe('Number of rows'),
+      columns: z.number().int().min(1).describe('Number of columns'),
+      index: z.number().int().min(1).describe('1-based character index'),
+      tabId: z.string().optional(),
+    }),
+  },
+  {
+    id: 'docs.insert_table_with_data',
+    name: 'Insert Table with Data',
+    description:
+      'Insert a table pre-populated with data. Optionally bolds the first row as a header. Ragged rows are padded with empty cells.',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      data: z
+        .array(z.array(z.string()).max(50))
+        .min(1)
+        .max(200)
+        .describe('2D array of strings — each inner array is one row'),
+      index: z.number().int().min(1).describe('1-based character index'),
+      hasHeaderRow: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe('If true, bold the first row as a header'),
+      tabId: z.string().optional(),
+    }),
+  },
+  {
+    id: 'docs.insert_image',
+    name: 'Insert Image',
+    description:
+      'Insert an inline image from a publicly accessible URL at a character index',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      imageUrl: z.string().url().describe('Publicly accessible image URL'),
+      index: z.number().int().min(1).describe('1-based character index'),
+      width: z.number().min(1).optional().describe('Width in points'),
+      height: z.number().min(1).optional().describe('Height in points'),
+      tabId: z.string().optional(),
+    }),
+  },
+  {
+    id: 'docs.insert_page_break',
+    name: 'Insert Page Break',
+    description: 'Insert a page break at a character index',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      index: z.number().int().min(1).describe('1-based character index'),
+      tabId: z.string().optional(),
+    }),
+  },
+  {
+    id: 'docs.insert_section_break',
+    name: 'Insert Section Break',
+    description:
+      'Insert a section break. Use NEXT_PAGE when you need a fresh page (e.g. mixing portrait/landscape). Use CONTINUOUS for inline section changes.',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      index: z.number().int().min(1).describe('1-based character index'),
+      sectionType: z
+        .enum(['NEXT_PAGE', 'CONTINUOUS'])
+        .optional()
+        .default('NEXT_PAGE')
+        .describe('Section break type'),
+      tabId: z.string().optional(),
+    }),
+  },
+
+  // ── Tabs ───────────────────────────────────────────────────────────────────
+
+  {
+    id: 'docs.add_tab',
+    name: 'Add Tab',
+    description:
+      'Add a new tab to a document. Optionally set title, position, and parent tab for nesting.',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      title: z.string().optional().describe('Title for the new tab'),
+      parentTabId: z
+        .string()
+        .optional()
+        .describe('ID of existing tab to nest under as a child'),
+      index: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe('Zero-based position among sibling tabs'),
+    }),
+  },
+  {
+    id: 'docs.list_tabs',
+    name: 'List Tabs',
+    description:
+      'List all tabs in a document with IDs, titles, and hierarchy. Use tab IDs with other tools.',
+    riskLevel: 'low',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      includeContent: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe('Include character count per tab'),
+    }),
+  },
+  {
+    id: 'docs.rename_tab',
+    name: 'Rename Tab',
+    description: 'Rename a tab in a document',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      tabId: z.string().describe('ID of the tab to rename'),
+      newTitle: z.string().min(1).describe('New title for the tab'),
+    }),
+  },
+
+  // ── Formatting ─────────────────────────────────────────────────────────────
+
+  {
+    id: 'docs.apply_text_style',
+    name: 'Apply Text Style',
+    description:
+      'Apply character-level formatting (bold, italic, color, font, etc.) to text identified by range or text search',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      target: z.union([
+        z.object({
+          startIndex: z.number().int().min(1),
+          endIndex: z.number().int().min(1),
+        }),
+        z.object({
+          textToFind: z.string().min(1),
+          matchInstance: z.number().int().min(1).optional(),
+        }),
+      ]),
+      style: z.object({
+        bold: z.boolean().optional(),
+        italic: z.boolean().optional(),
+        underline: z.boolean().optional(),
+        strikethrough: z.boolean().optional(),
+        fontSize: z.number().optional(),
+        fontFamily: z.string().optional(),
+        foregroundColor: z.string().optional(),
+        backgroundColor: z.string().optional(),
+        linkUrl: z.string().optional(),
+      }),
+      tabId: z.string().optional(),
+    }),
+  },
+  {
+    id: 'docs.apply_paragraph_style',
+    name: 'Apply Paragraph Style',
+    description:
+      'Apply paragraph-level formatting (alignment, spacing, heading styles) to paragraphs identified by range, text search, or index',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      target: z.union([
+        z.object({
+          startIndex: z.number().int().min(1),
+          endIndex: z.number().int().min(1),
+        }),
+        z.object({
+          textToFind: z.string().min(1),
+          matchInstance: z.number().int().min(1).optional(),
+        }),
+        z.object({
+          indexWithinParagraph: z.number().int().min(1),
+        }),
+      ]),
+      style: z.object({
+        alignment: z.enum(['START', 'END', 'CENTER', 'JUSTIFIED']).optional(),
+        indentStart: z.number().optional(),
+        indentEnd: z.number().optional(),
+        spaceAbove: z.number().optional(),
+        spaceBelow: z.number().optional(),
+        namedStyleType: z
+          .enum([
+            'NORMAL_TEXT',
+            'TITLE',
+            'SUBTITLE',
+            'HEADING_1',
+            'HEADING_2',
+            'HEADING_3',
+            'HEADING_4',
+            'HEADING_5',
+            'HEADING_6',
+          ])
+          .optional(),
+        keepWithNext: z.boolean().optional(),
+      }),
+      tabId: z.string().optional(),
+    }),
+  },
+  {
+    id: 'docs.update_section_style',
+    name: 'Update Section Style',
+    description:
+      'Update the style of a section identified by range — supports page orientation, margins, and section type',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      startIndex: z.number().int().min(1),
+      endIndex: z.number().int().min(1),
+      flipPageOrientation: z.boolean().optional(),
+      sectionType: z
+        .enum(['SECTION_TYPE_UNSPECIFIED', 'CONTINUOUS', 'NEXT_PAGE'])
+        .optional(),
+      marginTop: z.number().nonnegative().optional().describe('Points'),
+      marginBottom: z.number().nonnegative().optional().describe('Points'),
+      marginLeft: z.number().nonnegative().optional().describe('Points'),
+      marginRight: z.number().nonnegative().optional().describe('Points'),
+      pageNumberStart: z.number().int().min(1).optional(),
+      tabId: z.string().optional(),
+    }),
+  },
+
+  // ── Comments (Drive API v3) ────────────────────────────────────────────────
+
+  {
+    id: 'docs.list_comments',
+    name: 'List Comments',
+    description:
+      'List all comments in a document with IDs, authors, status, and quoted text',
+    riskLevel: 'low',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+    }),
+  },
+  {
+    id: 'docs.get_comment',
+    name: 'Get Comment',
+    description:
+      'Get a specific comment and its full reply thread',
+    riskLevel: 'low',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      commentId: z.string().describe('Comment ID'),
+    }),
+  },
+  {
+    id: 'docs.add_comment',
+    name: 'Add Comment',
+    description:
+      'Add a comment anchored to a text range in the document',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      startIndex: z.number().int().min(1).describe('Start of text range (inclusive, 1-based)'),
+      endIndex: z.number().int().min(1).describe('End of text range (exclusive)'),
+      content: z.string().min(1).describe('Comment text'),
+    }),
+  },
+  {
+    id: 'docs.reply_to_comment',
+    name: 'Reply to Comment',
+    description: 'Add a reply to an existing comment thread',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      commentId: z.string().describe('Comment ID to reply to'),
+      content: z.string().min(1).describe('Reply text'),
+    }),
+  },
+  {
+    id: 'docs.delete_comment',
+    name: 'Delete Comment',
+    description: 'Permanently delete a comment and all its replies',
+    riskLevel: 'high',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      commentId: z.string().describe('Comment ID to delete'),
+    }),
+  },
+  {
+    id: 'docs.resolve_comment',
+    name: 'Resolve Comment',
+    description: 'Mark a comment as resolved',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      commentId: z.string().describe('Comment ID to resolve'),
     }),
   },
 ];
@@ -852,6 +1163,875 @@ async function executeAction(
           success: true,
           data: {
             message: `Successfully replaced document content with ${p.markdown.length} characters of markdown.\n\n${debugSummary}`,
+          },
+        };
+      }
+
+      // ── docs.insert_table ──────────────────────────────────────────
+      case 'docs.insert_table': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          rows: number;
+          columns: number;
+          index: number;
+          tabId?: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        if (p.tabId) {
+          const tabCheck = await fetchDocument(token, docId, {
+            includeTabsContent: true,
+            fields: 'tabs(tabProperties,documentTab)',
+          });
+          if (!tabCheck.ok) return tabCheck.result;
+          const tab = findTabById(tabCheck.doc, p.tabId);
+          if (!tab) {
+            return { success: false, error: `Tab with ID "${p.tabId}" not found in document.` };
+          }
+        }
+
+        const result = await createTable(token, docId, p.rows, p.columns, p.index, p.tabId);
+        if (!result.success) {
+          return { success: false, error: result.error || 'Failed to insert table' };
+        }
+
+        return {
+          success: true,
+          data: {
+            message: `Successfully inserted a ${p.rows}x${p.columns} table at index ${p.index}${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
+          },
+        };
+      }
+
+      // ── docs.insert_table_with_data ────────────────────────────────
+      case 'docs.insert_table_with_data': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          data: string[][];
+          index: number;
+          hasHeaderRow: boolean;
+          tabId?: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        const numRows = p.data.length;
+        const numCols = p.data.reduce((max, row) => Math.max(max, row.length), 0);
+
+        if (numRows === 0 || numCols === 0) {
+          return { success: false, error: 'Table data must contain at least one non-empty row with at least one cell.' };
+        }
+
+        if (p.tabId) {
+          const tabCheck = await fetchDocument(token, docId, {
+            includeTabsContent: true,
+            fields: 'tabs(tabProperties,documentTab)',
+          });
+          if (!tabCheck.ok) return tabCheck.result;
+          const tab = findTabById(tabCheck.doc, p.tabId);
+          if (!tab) {
+            return { success: false, error: `Tab with ID "${p.tabId}" not found in document.` };
+          }
+        }
+
+        // Pad ragged rows
+        const normalizedData = p.data.map((row) => {
+          const padded = [...row];
+          while (padded.length < numCols) padded.push('');
+          return padded;
+        });
+
+        // Build requests: insert table + populate cells + optional header bold
+        const requests: DocsRequest[] = [];
+        const formatRequests: DocsRequest[] = [];
+
+        const location: Record<string, unknown> = { index: p.index };
+        if (p.tabId) location.tabId = p.tabId;
+        requests.push({ insertTable: { location, rows: numRows, columns: numCols } });
+
+        // Cell index math: cellContentIndex(T, r, c, C) = T + 4 + r * (1 + 2*C) + 2*c
+        let cumulativeTextLength = 0;
+        for (let r = 0; r < numRows; r++) {
+          for (let c = 0; c < numCols; c++) {
+            const cellText = normalizedData[r][c];
+            if (!cellText) continue;
+
+            const baseCellIndex = p.index + 4 + r * (1 + 2 * numCols) + 2 * c;
+            const adjustedIndex = baseCellIndex + cumulativeTextLength;
+
+            const cellLocation: Record<string, unknown> = { index: adjustedIndex };
+            if (p.tabId) cellLocation.tabId = p.tabId;
+
+            requests.push({ insertText: { location: cellLocation, text: cellText } });
+
+            if (p.hasHeaderRow && r === 0) {
+              const styleReq = buildUpdateTextStyleRequest(
+                adjustedIndex,
+                adjustedIndex + cellText.length,
+                { bold: true },
+                p.tabId,
+              );
+              if (styleReq) formatRequests.push(styleReq.request);
+            }
+
+            cumulativeTextLength += cellText.length;
+          }
+        }
+
+        const allRequests = [...requests, ...formatRequests];
+        const meta = await executeBatchUpdateWithSplitting(token, docId, allRequests);
+
+        return {
+          success: true,
+          data: {
+            message: `Successfully inserted a ${numRows}x${numCols} table with data at index ${p.index}${p.tabId ? ` in tab ${p.tabId}` : ''}. ${p.hasHeaderRow ? 'Header row bolded. ' : ''}(${meta.totalRequests} requests in ${meta.totalApiCalls} API calls, ${meta.totalElapsedMs}ms)`,
+          },
+        };
+      }
+
+      // ── docs.insert_image ──────────────────────────────────────────
+      case 'docs.insert_image': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          imageUrl: string;
+          index: number;
+          width?: number;
+          height?: number;
+          tabId?: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        if (p.tabId) {
+          const tabCheck = await fetchDocument(token, docId, {
+            includeTabsContent: true,
+            fields: 'tabs(tabProperties,documentTab)',
+          });
+          if (!tabCheck.ok) return tabCheck.result;
+          const tab = findTabById(tabCheck.doc, p.tabId);
+          if (!tab) {
+            return { success: false, error: `Tab with ID "${p.tabId}" not found in document.` };
+          }
+        }
+
+        const result = await insertInlineImage(
+          token,
+          docId,
+          p.imageUrl,
+          p.index,
+          p.width,
+          p.height,
+          p.tabId,
+        );
+        if (!result.success) {
+          return { success: false, error: result.error || 'Failed to insert image' };
+        }
+
+        let sizeInfo = '';
+        if (p.width && p.height) sizeInfo = ` with size ${p.width}x${p.height}pt`;
+
+        return {
+          success: true,
+          data: {
+            message: `Successfully inserted image at index ${p.index}${sizeInfo}${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
+          },
+        };
+      }
+
+      // ── docs.insert_page_break ─────────────────────────────────────
+      case 'docs.insert_page_break': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          index: number;
+          tabId?: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        if (p.tabId) {
+          const tabCheck = await fetchDocument(token, docId, {
+            includeTabsContent: true,
+            fields: 'tabs(tabProperties,documentTab)',
+          });
+          if (!tabCheck.ok) return tabCheck.result;
+          const tab = findTabById(tabCheck.doc, p.tabId);
+          if (!tab) {
+            return { success: false, error: `Tab with ID "${p.tabId}" not found in document.` };
+          }
+        }
+
+        const loc: Record<string, unknown> = { index: p.index };
+        if (p.tabId) loc.tabId = p.tabId;
+
+        const batchResult = await executeBatchUpdate(docId, token, [
+          { insertPageBreak: { location: loc } },
+        ]);
+        if (!batchResult.success) {
+          return { success: false, error: batchResult.error || 'Failed to insert page break' };
+        }
+
+        return {
+          success: true,
+          data: {
+            message: `Successfully inserted page break at index ${p.index}${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
+          },
+        };
+      }
+
+      // ── docs.insert_section_break ──────────────────────────────────
+      case 'docs.insert_section_break': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          index: number;
+          sectionType: 'NEXT_PAGE' | 'CONTINUOUS';
+          tabId?: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        if (p.tabId) {
+          const tabCheck = await fetchDocument(token, docId, {
+            includeTabsContent: true,
+            fields: 'tabs(tabProperties,documentTab)',
+          });
+          if (!tabCheck.ok) return tabCheck.result;
+          const tab = findTabById(tabCheck.doc, p.tabId);
+          if (!tab) {
+            return { success: false, error: `Tab with ID "${p.tabId}" not found in document.` };
+          }
+        }
+
+        const loc: Record<string, unknown> = { index: p.index };
+        if (p.tabId) loc.tabId = p.tabId;
+
+        const batchResult = await executeBatchUpdate(docId, token, [
+          { insertSectionBreak: { location: loc, sectionType: p.sectionType } },
+        ]);
+        if (!batchResult.success) {
+          return { success: false, error: batchResult.error || 'Failed to insert section break' };
+        }
+
+        return {
+          success: true,
+          data: {
+            message: `Successfully inserted ${p.sectionType} section break at index ${p.index}${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
+          },
+        };
+      }
+
+      // ── docs.add_tab ───────────────────────────────────────────────
+      case 'docs.add_tab': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          title?: string;
+          parentTabId?: string;
+          index?: number;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        // Verify parent tab exists if specified
+        if (p.parentTabId) {
+          const tabCheck = await fetchDocument(token, docId, {
+            includeTabsContent: true,
+            fields: 'tabs(tabProperties,documentTab)',
+          });
+          if (!tabCheck.ok) return tabCheck.result;
+          const parentTab = findTabById(tabCheck.doc, p.parentTabId);
+          if (!parentTab) {
+            return { success: false, error: `Parent tab with ID "${p.parentTabId}" not found in document.` };
+          }
+        }
+
+        const tabProperties: Record<string, unknown> = {};
+        if (p.title !== undefined) tabProperties.title = p.title;
+        if (p.parentTabId !== undefined) tabProperties.parentTabId = p.parentTabId;
+        if (p.index !== undefined) tabProperties.index = p.index;
+
+        const res = await docsFetch(
+          `/documents/${encodeURIComponent(docId)}:batchUpdate`,
+          token,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requests: [{ addDocumentTab: { tabProperties } }],
+            }),
+          },
+        );
+        if (!res.ok) return await apiError(res, 'Docs batchUpdate');
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const resBody = (await res.json()) as any;
+        const newTabProps = resBody?.replies?.[0]?.addDocumentTab?.tabProperties;
+
+        if (newTabProps) {
+          return {
+            success: true,
+            data: {
+              message: `Successfully added new tab "${newTabProps.title || '(untitled)'}".`,
+              tabId: newTabProps.tabId,
+              title: newTabProps.title,
+              index: newTabProps.index,
+              parentTabId: newTabProps.parentTabId,
+            },
+          };
+        }
+
+        return { success: true, data: { message: 'Tab created but could not retrieve details.' } };
+      }
+
+      // ── docs.list_tabs ─────────────────────────────────────────────
+      case 'docs.list_tabs': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          includeContent: boolean;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        const fields = p.includeContent
+          ? 'title,tabs'
+          : 'title,tabs(tabProperties,childTabs)';
+        const fetchResult = await fetchDocument(token, docId, {
+          includeTabsContent: true,
+          fields,
+        });
+        if (!fetchResult.ok) return fetchResult.result;
+
+        const docTitle = (fetchResult.doc.title as string) || 'Untitled Document';
+        const allTabsList = getAllTabs(fetchResult.doc);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const tabs = allTabsList.map((tab) => {
+          const tp = tab.tabProperties || {};
+          const tabObj: Record<string, unknown> = {
+            id: tp.tabId || null,
+            title: tp.title || null,
+            index: tp.index ?? null,
+          };
+          if (tp.parentTabId) tabObj.parentTabId = tp.parentTabId;
+          if (p.includeContent && tab.documentTab) {
+            tabObj.characterCount = getTabTextLength(tab.documentTab);
+          }
+          return tabObj;
+        });
+
+        return { success: true, data: { documentTitle: docTitle, tabs } };
+      }
+
+      // ── docs.rename_tab ────────────────────────────────────────────
+      case 'docs.rename_tab': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          tabId: string;
+          newTitle: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        // Verify tab exists and get old title
+        const tabCheck = await fetchDocument(token, docId, {
+          includeTabsContent: true,
+          fields: 'tabs(tabProperties,documentTab)',
+        });
+        if (!tabCheck.ok) return tabCheck.result;
+        const targetTab = findTabById(tabCheck.doc, p.tabId);
+        if (!targetTab) {
+          return { success: false, error: `Tab with ID "${p.tabId}" not found in document.` };
+        }
+        const oldTitle =
+          (targetTab as DocJson).tabProperties?.title || '(untitled)';
+
+        const batchResult = await executeBatchUpdate(docId, token, [
+          {
+            updateDocumentTabProperties: {
+              tabProperties: { tabId: p.tabId, title: p.newTitle },
+              fields: 'title',
+            },
+          },
+        ]);
+        if (!batchResult.success) {
+          return { success: false, error: batchResult.error || 'Failed to rename tab' };
+        }
+
+        return {
+          success: true,
+          data: {
+            message: `Successfully renamed tab from "${oldTitle}" to "${p.newTitle}".`,
+          },
+        };
+      }
+
+      // ── docs.apply_text_style ──────────────────────────────────────
+      case 'docs.apply_text_style': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          target:
+            | { startIndex: number; endIndex: number }
+            | { textToFind: string; matchInstance?: number };
+          style: TextStyleArgs;
+          tabId?: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        let startIndex: number;
+        let endIndex: number;
+
+        if ('textToFind' in p.target) {
+          const range = await findTextRange(
+            token,
+            docId,
+            p.target.textToFind,
+            p.target.matchInstance ?? 1,
+            p.tabId,
+          );
+          if (!range) {
+            return {
+              success: false,
+              error: `Could not find instance ${p.target.matchInstance ?? 1} of text "${p.target.textToFind}"${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
+            };
+          }
+          startIndex = range.startIndex;
+          endIndex = range.endIndex;
+        } else {
+          startIndex = p.target.startIndex;
+          endIndex = p.target.endIndex;
+        }
+
+        if (endIndex <= startIndex) {
+          return { success: false, error: 'End index must be greater than start index.' };
+        }
+
+        const requestInfo = buildUpdateTextStyleRequest(startIndex, endIndex, p.style, p.tabId);
+        if (!requestInfo) {
+          return { success: true, data: { message: 'No valid text styling options were provided.' } };
+        }
+
+        const batchResult = await executeBatchUpdate(docId, token, [requestInfo.request]);
+        if (!batchResult.success) {
+          return { success: false, error: batchResult.error || 'Failed to apply text style' };
+        }
+
+        return {
+          success: true,
+          data: {
+            message: `Successfully applied text style (${requestInfo.fields.join(', ')}) to range ${startIndex}-${endIndex}${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
+          },
+        };
+      }
+
+      // ── docs.apply_paragraph_style ─────────────────────────────────
+      case 'docs.apply_paragraph_style': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          target:
+            | { startIndex: number; endIndex: number }
+            | { textToFind: string; matchInstance?: number }
+            | { indexWithinParagraph: number };
+          style: ParagraphStyleArgs;
+          tabId?: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        let startIndex: number | undefined;
+        let endIndex: number | undefined;
+
+        if ('textToFind' in p.target) {
+          const textRange = await findTextRange(
+            token,
+            docId,
+            p.target.textToFind,
+            p.target.matchInstance ?? 1,
+            p.tabId,
+          );
+          if (!textRange) {
+            return {
+              success: false,
+              error: `Could not find "${p.target.textToFind}" in the document${p.tabId ? ` (tab: ${p.tabId})` : ''}.`,
+            };
+          }
+          const paraRange = await getParagraphRange(token, docId, textRange.startIndex, p.tabId);
+          if (!paraRange) {
+            return { success: false, error: 'Found text but could not determine paragraph boundaries.' };
+          }
+          startIndex = paraRange.startIndex;
+          endIndex = paraRange.endIndex;
+        } else if ('indexWithinParagraph' in p.target) {
+          const paraRange = await getParagraphRange(
+            token,
+            docId,
+            p.target.indexWithinParagraph,
+            p.tabId,
+          );
+          if (!paraRange) {
+            return {
+              success: false,
+              error: `Could not find paragraph containing index ${p.target.indexWithinParagraph}${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
+            };
+          }
+          startIndex = paraRange.startIndex;
+          endIndex = paraRange.endIndex;
+        } else {
+          startIndex = p.target.startIndex;
+          endIndex = p.target.endIndex;
+        }
+
+        if (startIndex === undefined || endIndex === undefined) {
+          return { success: false, error: 'Could not determine target paragraph range.' };
+        }
+        if (endIndex <= startIndex) {
+          return { success: false, error: `Invalid range: endIndex (${endIndex}) must be > startIndex (${startIndex}).` };
+        }
+
+        const requestInfo = buildUpdateParagraphStyleRequest(startIndex, endIndex, p.style, p.tabId);
+        if (!requestInfo) {
+          return { success: true, data: { message: 'No valid paragraph styling options were provided.' } };
+        }
+
+        const batchResult = await executeBatchUpdate(docId, token, [requestInfo.request]);
+        if (!batchResult.success) {
+          return { success: false, error: batchResult.error || 'Failed to apply paragraph style' };
+        }
+
+        return {
+          success: true,
+          data: {
+            message: `Successfully applied paragraph styles (${requestInfo.fields.join(', ')})${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
+          },
+        };
+      }
+
+      // ── docs.update_section_style ──────────────────────────────────
+      case 'docs.update_section_style': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          startIndex: number;
+          endIndex: number;
+          flipPageOrientation?: boolean;
+          sectionType?: 'SECTION_TYPE_UNSPECIFIED' | 'CONTINUOUS' | 'NEXT_PAGE';
+          marginTop?: number;
+          marginBottom?: number;
+          marginLeft?: number;
+          marginRight?: number;
+          pageNumberStart?: number;
+          tabId?: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        if (p.endIndex <= p.startIndex) {
+          return { success: false, error: 'endIndex must be greater than startIndex.' };
+        }
+
+        if (p.tabId) {
+          const tabCheck = await fetchDocument(token, docId, {
+            includeTabsContent: true,
+            fields: 'tabs(tabProperties,documentTab)',
+          });
+          if (!tabCheck.ok) return tabCheck.result;
+          const tab = findTabById(tabCheck.doc, p.tabId);
+          if (!tab) {
+            return { success: false, error: `Tab with ID "${p.tabId}" not found in document.` };
+          }
+        }
+
+        // Build section style
+        const sectionStyle: Record<string, unknown> = {};
+        const fieldsToUpdate: string[] = [];
+
+        if (p.flipPageOrientation !== undefined) {
+          sectionStyle.flipPageOrientation = p.flipPageOrientation;
+          fieldsToUpdate.push('flipPageOrientation');
+        }
+        if (p.sectionType !== undefined) {
+          sectionStyle.sectionType = p.sectionType;
+          fieldsToUpdate.push('sectionType');
+        }
+        if (p.marginTop !== undefined) {
+          sectionStyle.marginTop = { magnitude: p.marginTop, unit: 'PT' };
+          fieldsToUpdate.push('marginTop');
+        }
+        if (p.marginBottom !== undefined) {
+          sectionStyle.marginBottom = { magnitude: p.marginBottom, unit: 'PT' };
+          fieldsToUpdate.push('marginBottom');
+        }
+        if (p.marginLeft !== undefined) {
+          sectionStyle.marginLeft = { magnitude: p.marginLeft, unit: 'PT' };
+          fieldsToUpdate.push('marginLeft');
+        }
+        if (p.marginRight !== undefined) {
+          sectionStyle.marginRight = { magnitude: p.marginRight, unit: 'PT' };
+          fieldsToUpdate.push('marginRight');
+        }
+        if (p.pageNumberStart !== undefined) {
+          sectionStyle.pageNumberStart = p.pageNumberStart;
+          fieldsToUpdate.push('pageNumberStart');
+        }
+
+        if (fieldsToUpdate.length === 0) {
+          return {
+            success: false,
+            error: 'No section style options provided. Set at least one of: flipPageOrientation, sectionType, marginTop, marginBottom, marginLeft, marginRight, pageNumberStart.',
+          };
+        }
+
+        const range: Record<string, unknown> = {
+          startIndex: p.startIndex,
+          endIndex: p.endIndex,
+        };
+        if (p.tabId) range.tabId = p.tabId;
+
+        const batchResult = await executeBatchUpdate(docId, token, [
+          {
+            updateSectionStyle: {
+              range,
+              sectionStyle,
+              fields: fieldsToUpdate.join(','),
+            },
+          },
+        ]);
+        if (!batchResult.success) {
+          return { success: false, error: batchResult.error || 'Failed to update section style' };
+        }
+
+        return {
+          success: true,
+          data: {
+            message: `Successfully updated section style (${fieldsToUpdate.join(', ')}) for range ${p.startIndex}-${p.endIndex}${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
+          },
+        };
+      }
+
+      // ── docs.list_comments ─────────────────────────────────────────
+      case 'docs.list_comments': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        const res = await driveFetchForDocs(
+          `/files/${encodeURIComponent(docId)}/comments?fields=comments(id,content,quotedFileContent,author,createdTime,resolved)&includeDeleted=false&pageSize=100`,
+          token,
+        );
+        if (!res.ok) return await apiError(res, 'Drive comments');
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const body = (await res.json()) as any;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const comments = ((body.comments || []) as any[]).map((c) => ({
+          id: c.id,
+          author: c.author?.displayName || null,
+          content: c.content,
+          quotedText: c.quotedFileContent?.value || null,
+          resolved: c.resolved || false,
+          createdTime: c.createdTime,
+          replyCount: c.replies?.length || 0,
+        }));
+
+        return { success: true, data: { comments } };
+      }
+
+      // ── docs.get_comment ───────────────────────────────────────────
+      case 'docs.get_comment': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          commentId: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        const res = await driveFetchForDocs(
+          `/files/${encodeURIComponent(docId)}/comments/${encodeURIComponent(p.commentId)}?fields=id,content,quotedFileContent,author,createdTime,resolved,replies(id,content,author,createdTime)`,
+          token,
+        );
+        if (!res.ok) return await apiError(res, 'Drive comments');
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const c = (await res.json()) as any;
+        return {
+          success: true,
+          data: {
+            id: c.id,
+            author: c.author?.displayName || null,
+            content: c.content,
+            quotedText: c.quotedFileContent?.value || null,
+            resolved: c.resolved || false,
+            createdTime: c.createdTime,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            replies: ((c.replies || []) as any[]).map((r) => ({
+              id: r.id,
+              author: r.author?.displayName || null,
+              content: r.content,
+              createdTime: r.createdTime,
+            })),
+          },
+        };
+      }
+
+      // ── docs.add_comment ───────────────────────────────────────────
+      case 'docs.add_comment': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          startIndex: number;
+          endIndex: number;
+          content: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        if (p.endIndex <= p.startIndex) {
+          return { success: false, error: 'endIndex must be greater than startIndex.' };
+        }
+
+        // Extract the quoted text from the document
+        const fetchResult = await fetchDocument(token, docId);
+        if (!fetchResult.ok) return fetchResult.result;
+        const bodyContent = (fetchResult.doc.body as { content?: unknown[] })?.content || [];
+
+        let quotedText = '';
+        for (const element of bodyContent as Record<string, unknown>[]) {
+          const para = element.paragraph as { elements?: Record<string, unknown>[] } | undefined;
+          if (para?.elements) {
+            for (const pe of para.elements) {
+              const textRun = pe.textRun as { content?: string } | undefined;
+              const elemStart = (pe.startIndex as number) || 0;
+              const elemEnd = (pe.endIndex as number) || 0;
+              if (textRun?.content && elemEnd > p.startIndex && elemStart < p.endIndex) {
+                const text = textRun.content;
+                const startOffset = Math.max(0, p.startIndex - elemStart);
+                const endOffset = Math.min(text.length, p.endIndex - elemStart);
+                quotedText += text.substring(startOffset, endOffset);
+              }
+            }
+          }
+        }
+
+        const commentRes = await driveFetchForDocs(
+          `/files/${encodeURIComponent(docId)}/comments?fields=id,content,quotedFileContent,author,createdTime,resolved`,
+          token,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              content: p.content,
+              quotedFileContent: {
+                value: quotedText,
+                mimeType: 'text/html',
+              },
+              anchor: JSON.stringify({
+                r: docId,
+                a: [
+                  {
+                    txt: {
+                      o: p.startIndex - 1, // Drive API uses 0-based indexing
+                      l: p.endIndex - p.startIndex,
+                      ml: p.endIndex - p.startIndex,
+                    },
+                  },
+                ],
+              }),
+            }),
+          },
+        );
+        if (!commentRes.ok) return await apiError(commentRes, 'Drive comments');
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const commentBody = (await commentRes.json()) as any;
+        return {
+          success: true,
+          data: { message: `Comment added successfully. Comment ID: ${commentBody.id}` },
+        };
+      }
+
+      // ── docs.reply_to_comment ──────────────────────────────────────
+      case 'docs.reply_to_comment': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          commentId: string;
+          content: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        const res = await driveFetchForDocs(
+          `/files/${encodeURIComponent(docId)}/comments/${encodeURIComponent(p.commentId)}/replies?fields=id,content,author,createdTime`,
+          token,
+          {
+            method: 'POST',
+            body: JSON.stringify({ content: p.content }),
+          },
+        );
+        if (!res.ok) return await apiError(res, 'Drive replies');
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const body = (await res.json()) as any;
+        return {
+          success: true,
+          data: { message: `Reply added successfully. Reply ID: ${body.id}` },
+        };
+      }
+
+      // ── docs.delete_comment ────────────────────────────────────────
+      case 'docs.delete_comment': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          commentId: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        const res = await driveFetchForDocs(
+          `/files/${encodeURIComponent(docId)}/comments/${encodeURIComponent(p.commentId)}`,
+          token,
+          { method: 'DELETE' },
+        );
+        if (!res.ok) return await apiError(res, 'Drive comments');
+
+        return {
+          success: true,
+          data: { message: `Comment ${p.commentId} has been deleted.` },
+        };
+      }
+
+      // ── docs.resolve_comment ───────────────────────────────────────
+      case 'docs.resolve_comment': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          commentId: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        // Get current comment content (required for the update)
+        const getRes = await driveFetchForDocs(
+          `/files/${encodeURIComponent(docId)}/comments/${encodeURIComponent(p.commentId)}?fields=content`,
+          token,
+        );
+        if (!getRes.ok) return await apiError(getRes, 'Drive comments');
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const currentComment = (await getRes.json()) as any;
+
+        // Update with resolved status
+        const updateRes = await driveFetchForDocs(
+          `/files/${encodeURIComponent(docId)}/comments/${encodeURIComponent(p.commentId)}?fields=id,resolved`,
+          token,
+          {
+            method: 'PATCH',
+            body: JSON.stringify({
+              content: currentComment.content,
+              resolved: true,
+            }),
+          },
+        );
+        if (!updateRes.ok) return await apiError(updateRes, 'Drive comments');
+
+        // Verify
+        const verifyRes = await driveFetchForDocs(
+          `/files/${encodeURIComponent(docId)}/comments/${encodeURIComponent(p.commentId)}?fields=resolved`,
+          token,
+        );
+        if (verifyRes.ok) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const verified = (await verifyRes.json()) as any;
+          if (verified.resolved) {
+            return {
+              success: true,
+              data: { message: `Comment ${p.commentId} has been marked as resolved.` },
+            };
+          }
+        }
+
+        return {
+          success: true,
+          data: {
+            message: `Attempted to resolve comment ${p.commentId}, but the resolved status may not persist in the Google Docs UI due to API limitations.`,
           },
         };
       }

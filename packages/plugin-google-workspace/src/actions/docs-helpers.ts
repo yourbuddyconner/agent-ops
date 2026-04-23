@@ -861,6 +861,75 @@ export function findTabById(doc: DocsDocument, tabId: string): Tab | null {
 }
 
 /**
+ * Find the paragraph element containing the given character index.
+ * Returns its {startIndex, endIndex} range or null if not found.
+ */
+export async function getParagraphRange(
+  token: string,
+  documentId: string,
+  indexWithin: number,
+  tabId?: string,
+): Promise<{ startIndex: number; endIndex: number } | null> {
+  const needsTabsContent = !!tabId;
+  const fields = needsTabsContent
+    ? 'tabs(tabProperties(tabId),documentTab(body(content(startIndex,endIndex,paragraph,table,sectionBreak,tableOfContents))))'
+    : 'body(content(startIndex,endIndex,paragraph,table,sectionBreak,tableOfContents))';
+
+  const qs = new URLSearchParams({ fields });
+  if (needsTabsContent) qs.set('includeTabsContent', 'true');
+
+  const res = await docsFetch(
+    `/documents/${encodeURIComponent(documentId)}?${qs}`,
+    token,
+  );
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Docs API ${res.status}: ${err}`);
+  }
+  const doc = (await res.json()) as DocsDocument & { body?: { content?: unknown[] } };
+
+  let bodyContent: unknown[] | undefined;
+  if (tabId) {
+    const targetTab = findTabById(doc, tabId);
+    if (!targetTab) throw new Error(`Tab with ID "${tabId}" not found in document.`);
+    bodyContent = (targetTab as Tab).documentTab?.body?.content;
+    if (!bodyContent) throw new Error(`Tab "${tabId}" does not have content.`);
+  } else {
+    bodyContent = doc.body?.content;
+  }
+
+  if (!bodyContent) return null;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const findInContent = (content: any[]): { startIndex: number; endIndex: number } | null => {
+    for (const element of content) {
+      if (element.startIndex !== undefined && element.endIndex !== undefined) {
+        if (indexWithin >= element.startIndex && indexWithin < element.endIndex) {
+          if (element.paragraph) {
+            return { startIndex: element.startIndex, endIndex: element.endIndex };
+          }
+          if (element.table?.tableRows) {
+            for (const row of element.table.tableRows) {
+              if (row.tableCells) {
+                for (const cell of row.tableCells) {
+                  if (cell.content) {
+                    const result = findInContent(cell.content);
+                    if (result) return result;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    return null;
+  };
+
+  return findInContent(bodyContent as unknown[]);
+}
+
+/**
  * Get the total character count from a DocumentTab's body content.
  */
 export function getTabTextLength(
