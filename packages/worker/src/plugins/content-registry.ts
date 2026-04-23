@@ -558,337 +558,207 @@ Note: the end date is exclusive — a single all-day event on March 20 uses \`en
     artifacts: [
       { type: "skill", filename: "google-docs.md", content: `---
 name: google-docs
-description: How to use Google Docs tools effectively — markdown formatting, section-based editing, read-before-write patterns, and rich text best practices.
+description: How to use Google Docs tools effectively — reading documents with index awareness, surgical text editing, markdown rewrites, formatting, tabs, and comments.
 ---
 
 # Google Docs
 
-You have full read/write access to Google Docs through the Google Workspace integration. The key advantage is **rich text formatting** — content you write in markdown is automatically converted to properly formatted Google Docs (headings, bold, italic, links, lists, tables, code blocks, etc).
+You have full read/write access to Google Docs through the Google Workspace integration. The 25 available tools support surgical index-based editing, full markdown rewrites, formatting, tab management, and comments.
 
-## Critical Rule: Always Use Markdown
-
-**Every piece of content you write to a Google Doc MUST be formatted in markdown.** The system converts markdown to native Google Docs formatting. If you write plain text without markdown, the document will look unformatted and unprofessional.
-
-\`\`\`markdown
-# Meeting Notes — March 15, 2026
-
-## Action Items
-
-- **@alice**: Finalize the API spec by Friday
-- **@bob**: Review the [design doc](https://docs.google.com/...)
-- ~~Cancelled: vendor demo~~ — rescheduled to next week
-
-## Technical Summary
-
-The migration uses a \`three-phase approach\`:
-
-1. **Phase 1** — Schema migration with backwards compatibility
-2. **Phase 2** — Dual-write to old and new tables
-3. **Phase 3** — Cut over and deprecate old schema
-\`\`\`
-
-This produces a document with proper headings, bold names, a clickable link, strikethrough, inline code, and a numbered list — not just raw text.
-
-## Supported Markdown Formatting
-
-| Markdown | Result in Google Docs |
-|---|---|
-| \`# Heading\` through \`###### Heading\` | Heading 1 through Heading 6 |
-| \`**bold**\` | Bold text |
-| \`*italic*\` | Italic text |
-| \`~~strikethrough~~\` | Strikethrough text |
-| \`[text](url)\` | Clickable hyperlink |
-| \`\` \`inline code\` \`\` | Monospace font (Roboto Mono, green) |
-| Triple-backtick code blocks | Gray-background table cell with monospace font |
-| \`- item\` or \`* item\` | Bullet list |
-| \`1. item\` | Numbered list |
-| \`- [ ] task\` / \`- [x] task\` | Checkbox list items |
-| \`---\` | Horizontal rule |
-| Markdown tables | Native Google Docs tables |
+Documents are created via \`drive.create_document\` (not a docs action). All tools that accept \`documentId\` accept either a bare document ID or a full Google Docs URL.
 
 ## Available Tools
 
-### Reading
+### List / Search
 
-- **\`docs.search_documents\`** — Find documents by title keyword. Use this to locate documents before reading/editing.
-- **\`docs.get_document\`** — Get full document metadata (title, sections, revision info). Good for understanding document structure.
-- **\`docs.read_document\`** — Read entire document content as markdown. Tables are annotated as \`[Table N]\` in document order to make \`fillCell\` targeting easier.
-- **\`docs.read_section\`** — Read a specific section by heading name. Use for long documents where you only need part of the content.
+- **\`docs.list_tabs\`** — List all tabs in a document (tab IDs, titles, nesting).
 
-### Writing (Markdown-Based)
+### Read / Get
 
-- **\`docs.create_document\`** — Create a new document. Content MUST be markdown.
-- **\`docs.replace_document\`** — Replace the entire document body. Content MUST be markdown.
-- **\`docs.append_content\`** — Append content to the end of the document. Content MUST be markdown.
-- **\`docs.replace_section\`** — Replace the content under a specific heading. Content MUST be markdown.
-- **\`docs.insert_section\`** — Insert a new section before or after an existing heading.
-- **\`docs.delete_section\`** — Delete a section and all its content.
+- **\`docs.read_document\`** — Read document content. Use \`format=markdown\` for human-readable output or \`format=json\` to get the raw document structure with character indices required for surgical edits.
+- **\`docs.list_comments\`** — List all comments on a document (open or resolved).
+- **\`docs.get_comment\`** — Get a single comment by ID, including all replies.
 
-### Targeted Edits (Format-Preserving)
+### Write / Modify
 
-- **\`docs.update_document\`** — Apply surgical edits with high-level operations. Bypasses markdown conversion entirely, preserving all existing formatting, table styling, and document structure.
+**Text edits (index-based — requires \`format=json\` read first):**
+- **\`docs.insert_text\`** — Insert text at a specific character index.
+- **\`docs.append_text\`** — Append plain text at the end of a document (or tab).
+- **\`docs.modify_text\`** — Replace text within a start–end index range.
+- **\`docs.delete_range\`** — Delete content between a start–end index range.
 
-**When to use \`update_document\`:**
-- Filling in template fields (e.g., replacing \`{{PLACEHOLDER}}\` with values)
-- Replacing specific text throughout a document
-- Editing individual table cells without destroying cell formatting
-- Making small targeted changes to richly formatted documents
+**Bulk text changes:**
+- **\`docs.find_and_replace\`** — Find and replace text throughout the document or a specific tab.
 
-**When to use markdown-based tools instead:**
-- Rewriting large sections where formatting isn't critical
-- Creating new documents from scratch
-- Appending new content to the end of a document
+**Markdown-based writes:**
+- **\`docs.append_markdown\`** — Convert markdown and append at the end of the document.
+- **\`docs.replace_document_with_markdown\`** — Replace the entire document body with rendered markdown content.
 
-**Supported operations:**
-- \`replaceAll\` — Find-and-replace across the document. Best for placeholders like \`{{CAPABILITY_NAME}}\`.
-- \`fillCell\` — Replace the content of a specific table cell by \`(tableIndex, row, col)\`, using 0-based indexing.
-- \`insertText\` — Insert text immediately after an anchor string that already exists in the document.
+**Structural insertion:**
+- **\`docs.insert_table\`** — Insert an empty table at a specific index.
+- **\`docs.insert_table_with_data\`** — Insert a table pre-populated with data at a specific index.
+- **\`docs.insert_image\`** — Insert an image (by URL) at a specific index.
+- **\`docs.insert_page_break\`** — Insert a page break at a specific index.
+- **\`docs.insert_section_break\`** — Insert a section break (continuous, next page, even page, odd page) at a specific index.
 
-**Input formats:**
-- \`operationsJson\` — Preferred when possible. Pass a normal JSON array of operations, not a JSON string.
-- \`operationsToon\` — Supported for token-efficient prompts, but easier to misformat than JSON.
+**Tabs:**
+- **\`docs.add_tab\`** — Add a new tab to the document.
+- **\`docs.rename_tab\`** — Rename an existing tab by tab ID.
 
-**Document identifiers:**
-- All tools that take \`documentId\` accept either a bare document ID or a full Google Docs URL. You do not need to manually strip the ID out of a standard Docs URL.
+**Formatting:**
+- **\`docs.apply_text_style\`** — Apply character-level style (bold, italic, underline, font, color, etc.) to a text range.
+- **\`docs.apply_paragraph_style\`** — Apply paragraph-level style (heading level, alignment, spacing, etc.) to a range.
+- **\`docs.update_section_style\`** — Update section layout properties (margins, columns, etc.).
 
-**Use \`replaceAll\` for placeholders:**
-\`\`\`text
-documentId: 1Jmzvis-SH_...
-operationsJson:
-  - type: replaceAll
-    find: "{{PROJECT_NAME}}"
-    replace: Wallet Export v2
-  - type: replaceAll
-    find: "{{LAUNCH_DATE}}"
-    replace: 2026-04-15
-\`\`\`
+**Comments:**
+- **\`docs.add_comment\`** — Add a new comment anchored to a text range or the whole document.
+- **\`docs.reply_to_comment\`** — Reply to an existing comment thread.
+- **\`docs.delete_comment\`** — Delete a comment (and its replies).
+- **\`docs.resolve_comment\`** — Mark a comment thread as resolved.
 
-**Use \`fillCell\` for template tables:**
-\`\`\`text
-documentId: 1Jmzvis-SH_...
-operationsJson:
-  - type: fillCell
-    tableIndex: 0
-    row: 0
-    col: 1
-    text: Wallet Export v2
-  - type: fillCell
-    tableIndex: 0
-    row: 1
-    col: 1
-    text: Tier 1
-\`\`\`
+## Core Workflows
 
-**Use \`insertText\` for anchored insertions:**
-\`\`\`text
-documentId: 1Jmzvis-SH_...
-operationsJson:
-  - type: insertText
-    after: "Marketing Owner:"
-    text: " Jane Smith"
-\`\`\`
+### Read Then Surgically Edit
 
-\`insertText\` is anchor-based only. It does not accept a raw document index. If you need to insert near existing content, first read the document and choose a stable \`after\` anchor string that already exists.
-
-For \`update_document\`, first read the doc with \`docs.read_document\` to understand the structure:
-- Use the \`[Table N]\` labels in the readback to map table indices
-- Count table rows and columns starting from \`0\`
-- Prefer \`replaceAll\` when the template already has stable placeholder text
-- Use \`fillCell\` when a value belongs in a specific table cell
-- Use \`insertText\` when you know the exact anchor string already present in the doc
-- Prefer \`operationsJson\` unless you specifically need TOON
-
-**Caution:** \`fillCell\` and \`insertText\` require non-empty \`text\`. The Google Docs API rejects empty \`insertText\` requests. If a cell should remain blank, omit the operation for that cell instead of passing an empty string.
-
-**TOON encoding rules:**
-- Each TOON block must use a single consistent column schema.
-- Do not mix \`replaceAll\`, \`fillCell\`, and \`insertText\` rows in the same TOON block because they have different fields.
-- In practice, prefer \`operationsJson\` when mixing operation types.
-- If you must use TOON, keep each \`update_document\` call to one operation shape or make separate \`update_document\` calls per shape.
-
-## Common Patterns
-
-### Read Before Write
-
-Always read a document before modifying it to understand its structure:
+Use this when you need to make precise changes without disturbing surrounding content.
 
 \`\`\`
-1. docs.search_documents({ query: "Q1 Planning" })
-2. docs.get_document({ documentId: "..." })      // see section headings
-3. docs.read_section({ documentId: "...", sectionHeading: "Budget" })
-4. docs.replace_section({ documentId: "...", sectionHeading: "Budget", content: "..." })
+1. docs.read_document({ documentId: "...", format: "json" })
+   → Returns raw document structure with character indices
+
+2. Locate the text or range you want to modify in the JSON
+   → Note the startIndex and endIndex values
+
+3. Apply targeted edits:
+   - docs.modify_text({ documentId: "...", startIndex: 42, endIndex: 67, text: "replacement" })
+   - docs.delete_range({ documentId: "...", startIndex: 42, endIndex: 67 })
+   - docs.insert_text({ documentId: "...", index: 42, text: "new content" })
 \`\`\`
 
-For targeted edits to formatted templates:
+Important: Read with \`format=json\` before any index-based edit. Character indices shift after every mutation, so plan all edits from a single read snapshot and apply them in reverse order (highest index first) to avoid offset drift.
+
+### Find and Replace
+
+For bulk text substitutions — placeholders, renames, or corrections throughout the document:
 
 \`\`\`
-1. docs.read_document({ documentId: "..." })
-2. Use the [Table N] labels to identify the table you want, then count row/col positions
-3. docs.update_document({
-     documentId: "...",
-     operationsJson: [
-       { type: "replaceAll", find: "{{PROJECT_NAME}}", replace: "Wallet Export v2" },
-       { type: "fillCell", tableIndex: 0, row: 2, col: 1, text: "2026-04-01" }
-     ]
-   })
+docs.find_and_replace({
+  documentId: "...",
+  find: "{{PROJECT_NAME}}",
+  replace: "Wallet Export v2"
+})
 \`\`\`
 
-### Worked Example: Read → Plan → Fill
+Use \`find_and_replace\` for any case where you know the exact text to swap. It is simpler and safer than calculating indices.
 
-Use this workflow when filling a structured template without disturbing formatting:
+### Full Document Rewrite
 
-\`\`\`text
-1. docs.read_document({
-     documentId: "https://docs.google.com/document/d/1Jmzvis-SH_.../edit"
-   })
+When you want to replace the entire document body with new markdown content:
 
-2. Inspect the markdown response:
-   - Find \`[Table 0]\`, \`[Table 1]\`, etc.
-   - Note which table row/col holds each value you need to fill
-   - Leave untouched cells out of the plan entirely
-
-3. Build the operation list:
-   operationsJson:
-     - type: replaceAll
-       find: "{{CAPABILITY_NAME}}"
-       replace: Wallet Export v2
-     - type: insertText
-       after: "Marketing Owner:"
-       text: " Jane Smith"
-     - type: fillCell
-       tableIndex: 0
-       row: 0
-       col: 1
-       text: Wallet Export v2
-     - type: fillCell
-       tableIndex: 0
-       row: 1
-       col: 1
-       text: Tier 1
-
-4. Apply the targeted edit:
-   docs.update_document({
-     documentId: "https://docs.google.com/document/d/1Jmzvis-SH_.../edit",
-     operationsJson: [...]
-   })
-
-5. Re-read the document and verify the filled cells and inline fields landed in the expected places.
+\`\`\`
+docs.replace_document_with_markdown({
+  documentId: "...",
+  markdown: "# New Title\\n\\n## Section 1\\n\\nContent here..."
+})
 \`\`\`
 
-### Section-Based Editing
+Use this for complete rewrites, template population from scratch, or when structure has changed enough that surgical edits would be more complex than starting fresh.
 
-Documents are organized by headings. Use section tools to surgically edit specific parts without touching the rest:
+### Append Content
 
-- **Replace a section**: \`docs.replace_section\` replaces everything under a heading (up to the next heading of equal or higher level)
-- **Insert a section**: \`docs.insert_section\` adds a new section before or after an existing one
-- **Delete a section**: \`docs.delete_section\` removes a heading and everything under it
+To add new content at the end without touching existing content:
 
-When targeting a section, the heading parameter is a case-insensitive substring match.
+\`\`\`
+# Plain text
+docs.append_text({ documentId: "...", text: "New paragraph." })
 
-### Creating Well-Structured Documents
-
-When creating new documents, use heading hierarchy to establish clear structure:
-
-\`\`\`markdown
-# Project Title
-
-Brief overview paragraph.
-
-## Background
-
-Context and motivation.
-
-## Requirements
-
-### Functional Requirements
-
-- Requirement 1
-- Requirement 2
-
-### Non-Functional Requirements
-
-- Performance: < 200ms p99
-- Availability: 99.9%
-
-## Timeline
-
-| Phase | Date | Milestone |
-|---|---|---|
-| Design | Mar 20 | Design doc approved |
-| Build | Apr 10 | MVP complete |
-| Launch | Apr 30 | GA release |
+# Markdown (converted to native formatting)
+docs.append_markdown({ documentId: "...", markdown: "## New Section\\n\\nContent..." })
 \`\`\`
 
-### Appending to Existing Documents
+Use \`append_markdown\` when the content has headings, lists, tables, or other formatting. Use \`append_text\` for simple unformatted additions.
 
-Use \`docs.append_content\` to add new content at the end. This is useful for running logs, meeting notes, or adding new sections to an existing document.
+### Working with Tabs
 
-### Code in Documents
+Multi-tab documents require listing tabs first:
 
-Code blocks render as gray-background table cells with monospace font, making them visually distinct:
-
-\`\`\`\`markdown
-\`\`\`python
-def hello():
-    print("Hello, world!")
 \`\`\`
-\`\`\`\`
+1. docs.list_tabs({ documentId: "..." })
+   → Returns tabId, title, nesting for each tab
 
-Inline code like \`variable_name\` renders in green monospace font.
+2. Pass tabId to any index-based tool to scope edits to that tab:
+   docs.read_document({ documentId: "...", tabId: "t.abc123", format: "json" })
+   docs.insert_text({ documentId: "...", tabId: "t.abc123", index: 10, text: "..." })
+\`\`\`
+
+### Commenting
+
+\`\`\`
+# Add a comment
+docs.add_comment({ documentId: "...", content: "Needs review" })
+
+# Reply to a thread
+docs.reply_to_comment({ documentId: "...", commentId: "...", content: "Fixed in v2" })
+
+# Resolve when done
+docs.resolve_comment({ documentId: "...", commentId: "..." })
+\`\`\`
+
+## Drive Labels Guard Awareness
+
+When the Drive Labels Guard is active (configured per organization), all docs tools that operate on a specific document are subject to label enforcement. The guard classifies each action:
+
+- **\`docs.list_tabs\`** — list/search (label filter applied to results)
+- **\`docs.read_document\`, \`docs.list_comments\`, \`docs.get_comment\`** — read/get (document must carry a required label)
+- All write/modify tools — require the document to carry a required label before the edit proceeds
+
+If a document does not carry the required label, the tool returns \`"File not found or access denied"\` regardless of actual permissions. This is intentional — it is indistinguishable from a 404 to prevent information leakage.
+
+Documents are created via \`drive.create_document\`, which is classified as a create action. When the guard is active, the newly created document is automatically labeled.
 
 ## Tips
 
-- **Search first**: Use \`docs.search_documents\` to find documents by title before working with them. You need the document ID for all other operations.
-- **Use sections**: For large documents, prefer \`read_section\` and \`replace_section\` over reading/replacing the entire document.
-- **Markdown everywhere**: Every content string — in create, replace, append, insert — is parsed as markdown. Take advantage of this for professional-looking documents.
-- **Targeted edits are not markdown**: \`docs.update_document\` writes plain text into existing structures and takes either \`operationsJson\` or a TOON-encoded operation list. Use it when preserving current formatting matters more than generating new formatting from markdown.
-- **Heading levels matter**: Section operations use heading hierarchy. A \`## Subheading\` under \`# Heading\` is part of the \`# Heading\` section. Replacing \`# Heading\` replaces everything including sub-sections.
+- **Index order for multi-edit**: When applying multiple index-based edits from a single read, work from highest index to lowest. Each insertion or deletion shifts indices for everything that follows.
+- **Find-and-replace over indices for placeholders**: If the document uses \`{{PLACEHOLDER}}\` style tokens, \`find_and_replace\` is simpler and doesn't require a JSON read.
+- **Markdown for new content, JSON for surgery**: Use \`append_markdown\` / \`replace_document_with_markdown\` when generating fresh content. Use \`format=json\` reads + \`modify_text\` / \`delete_range\` when editing existing content at known positions.
+- **Tab awareness**: Operations that don't specify a \`tabId\` apply to the first (default) tab. Always call \`list_tabs\` first on documents where you don't know the tab structure.
+- **Formatting after content**: Apply \`apply_text_style\` and \`apply_paragraph_style\` after inserting content, targeting the known index range of the newly inserted text.
 `, sortOrder: 0 },
       { type: "skill", filename: "google-drive.md", content: `---
 name: google-drive
-description: How to use Google Drive tools effectively — file search, reading, creating, organizing, sharing, and working with Google Workspace file types.
+description: How to use Google Drive tools effectively — file discovery, folder navigation, document creation with markdown, file operations, and template workflows.
 ---
 
 # Google Drive
 
-You have full access to Google Drive through the Google Workspace integration. Drive is the file system — use it to find, read, create, organize, and share files. For editing Google Docs or Sheets content, use the \`docs.*\` or \`sheets.*\` tools instead.
+You have full access to Google Drive through the Google Workspace integration. Drive is the file system layer — use it to find, organize, create, and download files. For editing the content of Google Docs or Sheets, use the \`docs.*\` or \`sheets.*\` tools instead.
 
 ## Available Tools
 
-### Finding Files
+### Discovery (Finding Files)
 
-- **\`drive.list_files\`** — List files in a folder (or root). Supports query filters, MIME type filtering, sorting, and pagination.
-- **\`drive.search_files\`** — Full-text search across file names and content. The fastest way to find a file.
-- **\`drive.get_file\`** — Get full metadata for a file by ID (name, type, size, owners, sharing status, links).
+- **\`drive.list_files\`** — List files with optional folder, MIME type, ownership, and date filtering. Supports sorting and pagination. Use MIME type shortcuts: "document", "spreadsheet", "folder", etc.
+- **\`drive.search_files\`** — Full-text search across all file types by name, content, or both. The fastest way to find any file.
+- **\`drive.list_documents\`** — List Google Documents only, optionally filtered by name/content.
+- **\`drive.search_documents\`** — Search specifically within Google Documents by name, content, or both.
+- **\`drive.list_folder_contents\`** — List files and subfolders within a specific folder. Results are sorted with folders first.
+- **\`drive.get_document_info\`** — Get metadata for a file: name, type, owner, sharing status, dates, links.
+- **\`drive.get_folder_info\`** — Get metadata for a folder including child count.
 
-### Reading Content
+### File Operations
 
-- **\`drive.read_file\`** — Read text content of a file. Automatically exports Google Workspace files (Docs → plain text, Sheets → CSV). Extracts text from PDFs. Rejects binary files.
-- **\`drive.export_file\`** — Export a Google Workspace file to a specific text format (plain text, CSV, HTML, JSON, XML).
-
-### Creating & Updating
-
-- **\`drive.create_file\`** — Create a new file with text content. Set \`mimeType\` to a Google Apps type to create native Workspace files.
-- **\`drive.create_folder\`** — Create a new folder.
-- **\`drive.update_content\`** — Replace the content of an existing file.
-- **\`drive.update_metadata\`** — Rename, move, star, or update description of a file.
+- **\`drive.create_document\`** — Create a new Google Doc. Optionally provide markdown content that gets converted to formatted Docs content (headings, bold, italic, links, lists, tables).
+- **\`drive.create_folder\`** — Create a new folder, optionally inside a parent folder.
 - **\`drive.copy_file\`** — Copy a file, optionally to a different folder with a new name.
-
-### Sharing
-
-- **\`drive.share_file\`** — Share with a user, group, domain, or anyone. Set role (reader/commenter/writer/organizer).
-- **\`drive.list_permissions\`** — List all permissions on a file.
-- **\`drive.remove_permission\`** — Remove a specific permission.
-
-### Cleanup
-
-- **\`drive.trash_file\`** — Move to trash (recoverable).
-- **\`drive.untrash_file\`** — Restore from trash.
-- **\`drive.delete_file\`** — Permanently delete (cannot be undone).
+- **\`drive.move_file\`** — Move a file or folder to a different folder.
+- **\`drive.rename_file\`** — Rename a file or folder.
+- **\`drive.delete_file\`** — Permanently delete a file (cannot be undone).
+- **\`drive.download_file\`** — Download text content of a file. Auto-exports Google Workspace files (Docs to text, Sheets to CSV). Rejects binary files.
+- **\`drive.create_from_template\`** — Copy a template document and optionally replace placeholder text (e.g. \`{{name}}\` to \`Alice\`).
 
 ## Common Patterns
 
-### Finding a File
+### Finding Files
 
 Search is the fastest way to find files:
 
@@ -896,128 +766,131 @@ Search is the fastest way to find files:
 drive.search_files({ query: "Q1 budget report" })
 \`\`\`
 
-To browse a specific folder:
+Search only by file name:
 
 \`\`\`
-drive.list_files({ folderId: "folder-id-here", orderBy: "modifiedTime desc" })
+drive.search_files({ query: "meeting notes", searchIn: "name" })
 \`\`\`
 
-To find files by type:
+Find only Google Docs:
 
 \`\`\`
-drive.list_files({ mimeType: "application/vnd.google-apps.spreadsheet" })
+drive.list_documents({ query: "project plan" })
 \`\`\`
 
-### Reading Google Workspace Files
-
-\`read_file\` auto-exports Workspace files to readable text:
-
-- Google Docs → plain text
-- Google Sheets → CSV
-- Google Slides → plain text
-
-For more control over the export format, use \`export_file\`:
+Browse a specific folder:
 
 \`\`\`
-drive.export_file({ fileId: "...", mimeType: "text/html" })        // Docs as HTML
-drive.export_file({ fileId: "...", mimeType: "text/csv" })          // Sheets as CSV
-drive.export_file({ fileId: "...", mimeType: "text/plain" })        // Slides as text
+drive.list_folder_contents({ folderId: "folder-id-here" })
 \`\`\`
 
-### Creating a Google Doc via Drive
-
-To create a native Google Doc (not a plain text file), set the Google Apps MIME type:
+List files by type:
 
 \`\`\`
-drive.create_file({
-  name: "Meeting Notes",
-  content: "# Meeting Notes\\n\\nAgenda items...",
-  mimeType: "application/vnd.google-apps.document",
+drive.list_files({ mimeType: "spreadsheet" })
+\`\`\`
+
+Find recently modified files:
+
+\`\`\`
+drive.list_files({ modifiedAfter: "2026-01-01", orderBy: "modifiedTime" })
+\`\`\`
+
+### Creating Documents with Markdown
+
+Create a formatted Google Doc from markdown:
+
+\`\`\`
+drive.create_document({
+  title: "Meeting Notes",
+  markdown: "# Meeting Notes\\n\\n## Attendees\\n- Alice\\n- Bob\\n\\n## Action Items\\n1. **Review proposal** by Friday\\n2. Schedule follow-up",
   folderId: "folder-id-here"
 })
 \`\`\`
 
-The content is uploaded as plain text and converted to a native Google Doc. For rich formatting, use the \`docs.*\` tools instead — they support full markdown-to-Docs conversion.
+The markdown is converted to native Google Docs formatting: headings, bold, italic, links, lists, and more.
+
+### Creating from Templates
+
+Copy a template and fill in placeholders:
+
+\`\`\`
+drive.create_from_template({
+  templateId: "template-doc-id",
+  title: "Offer Letter - Alice",
+  folderId: "hr-folder-id",
+  replacements: {
+    "{{name}}": "Alice Smith",
+    "{{title}}": "Senior Engineer",
+    "{{start_date}}": "2026-05-01"
+  }
+})
+\`\`\`
+
+### Folder Navigation
+
+Navigate a folder hierarchy:
+
+\`\`\`
+drive.get_folder_info({ folderId: "folder-id" })
+drive.list_folder_contents({ folderId: "folder-id" })
+\`\`\`
+
+### Reading File Content
+
+Download text content:
+
+\`\`\`
+drive.download_file({ fileId: "file-id" })
+\`\`\`
+
+Google Workspace files are auto-exported: Docs become plain text, Sheets become CSV, Slides become plain text.
 
 ### Organizing Files
 
-Move a file to a different folder:
+Move a file:
 
 \`\`\`
-drive.update_metadata({
-  fileId: "...",
-  addParents: "target-folder-id",
-  removeParents: "current-folder-id"
-})
+drive.move_file({ fileId: "file-id", folderId: "destination-folder-id" })
 \`\`\`
 
 Rename a file:
 
 \`\`\`
-drive.update_metadata({ fileId: "...", name: "New Name" })
+drive.rename_file({ fileId: "file-id", name: "New Name" })
 \`\`\`
 
-### Sharing Files
-
-Share with a specific person:
+Copy a file:
 
 \`\`\`
-drive.share_file({
-  fileId: "...",
-  role: "writer",
-  type: "user",
-  emailAddress: "alice@example.com"
-})
+drive.copy_file({ fileId: "file-id", name: "Copy Name", folderId: "destination-folder-id" })
 \`\`\`
-
-Share with anyone who has the link:
-
-\`\`\`
-drive.share_file({
-  fileId: "...",
-  role: "reader",
-  type: "anyone"
-})
-\`\`\`
-
-## Google Workspace MIME Types
-
-| Type | MIME Type |
-|---|---|
-| Google Docs | \`application/vnd.google-apps.document\` |
-| Google Sheets | \`application/vnd.google-apps.spreadsheet\` |
-| Google Slides | \`application/vnd.google-apps.presentation\` |
-| Google Forms | \`application/vnd.google-apps.form\` |
-| Google Drawings | \`application/vnd.google-apps.drawing\` |
-| Folder | \`application/vnd.google-apps.folder\` |
 
 ## When to Use Drive vs Dedicated Tools
 
-Drive is the file system layer — use it for finding, organizing, and sharing files. For reading or editing the **content** of Google Workspace files, always use the dedicated tools:
+Drive is the file system layer. For editing the **content** of Google Workspace files, use the dedicated tools:
 
 | Task | Use This | NOT This |
 |------|----------|----------|
-| Create a Google Sheet | \`sheets.create_spreadsheet\` | \`drive.create_file\` with spreadsheet MIME type |
-| Read spreadsheet data | \`sheets.read_range\` | \`drive.read_file\` (exports as CSV, loses structure) |
-| Write/format cells | \`sheets.write_range\`, \`sheets.format_cells\` | \`drive.update_content\` (replaces whole file) |
-| Create a Google Doc | \`docs.create_document\` | \`drive.create_file\` with document MIME type |
-| Edit document sections | \`docs.replace_section\` | \`drive.update_content\` (replaces whole file) |
-| Read a document | \`docs.read_document\` | \`drive.read_file\` (exports as plain text, loses formatting) |
-| Send an email | \`gmail.send_message\` | N/A |
-| Create a calendar event | \`calendar.create_event\` | N/A |
+| Create a Google Doc with content | \`drive.create_document\` (markdown) | \`docs.insert_text\` (lower-level) |
+| Edit document sections | \`docs.*\` tools | drive tools |
+| Read structured doc content | \`docs.read_document\` | \`drive.download_file\` (loses formatting) |
+| Read spreadsheet data | \`sheets.read_range\` | \`drive.download_file\` (exports as CSV) |
+| Write/format cells | \`sheets.*\` tools | drive tools |
+| Find files across Drive | \`drive.search_files\` | \`drive.list_documents\` (Docs only) |
+| Get file metadata/links | \`drive.get_document_info\` | docs/sheets tools |
+| Move/rename/copy/delete | \`drive.move_file\`, \`drive.rename_file\`, etc. | N/A |
 
-**Drive is the right tool for:**
-- Searching for files across the user's Drive (\`drive.search_files\`)
-- Getting file metadata, URLs, and sharing status (\`drive.get_file\`)
-- Moving, renaming, copying, or organizing files (\`drive.update_metadata\`, \`drive.copy_file\`)
-- Sharing and permissions (\`drive.share_file\`)
-- Creating plain text files or uploading non-Workspace files
-- Trashing/deleting files
+## Google Workspace MIME Types
 
-**Drive is NOT the right tool for:**
-- Creating or editing Google Sheets — use the \`sheets.*\` tools (they support cell-level reads, writes, formatting, and formulas)
-- Creating or editing Google Docs — use the \`docs.*\` tools (they support markdown conversion and section-level editing)
-- Anything that requires understanding the internal structure of a Workspace file
+| Type | MIME Type | Shortcut |
+|---|---|---|
+| Google Docs | \`application/vnd.google-apps.document\` | \`document\` |
+| Google Sheets | \`application/vnd.google-apps.spreadsheet\` | \`spreadsheet\` |
+| Google Slides | \`application/vnd.google-apps.presentation\` | \`presentation\` |
+| Google Forms | \`application/vnd.google-apps.form\` | \`form\` |
+| Folder | \`application/vnd.google-apps.folder\` | \`folder\` |
+| PDF | \`application/pdf\` | \`pdf\` |
 
 ## Drive Labels Guard
 
@@ -1025,55 +898,96 @@ Your organization may have a Drive Labels guard enabled. When active, only files
 
 **If you get "File not found or access denied"** for a file the user says exists, the file likely doesn't have the required Drive label. Tell the user:
 - The file needs a specific Google Drive label applied to be accessible to Valet
-- They can apply the label in the Google Drive web UI (right-click → Labels)
+- They can apply the label in the Google Drive web UI (right-click > Labels)
 - Their admin can tell them which label is required
 
 **If search returns fewer results than expected**, the guard may be filtering out unlabeled files. Let the user know that only labeled files are visible.
 
 ## Tips
 
-- **Search broadly**: \`search_files\` searches both file names and content. It's the best starting point when looking for something.
-- **Read file handles PDFs**: \`read_file\` automatically extracts text from PDF files.
-- **Binary files are rejected**: \`read_file\` only works with text-based files, Google Workspace files, and PDFs. Use \`get_file\` for metadata of binary files.
-- **Trash before delete**: Prefer \`trash_file\` over \`delete_file\` — trashed files can be recovered.
+- **Search broadly**: \`search_files\` searches both file names and content. It's the best starting point.
+- **Use document-specific search**: \`list_documents\` and \`search_documents\` are faster when you know you need a Google Doc.
+- **Browse folders**: \`list_folder_contents\` shows folders first, then files — good for navigation.
+- **Binary files are rejected**: \`download_file\` only works with text-based and Google Workspace files.
+- **Delete is permanent**: \`delete_file\` cannot be undone. Confirm with the user before deleting.
 `, sortOrder: 1 },
       { type: "skill", filename: "google-sheets.md", content: `---
 name: google-sheets
-description: How to use Google Sheets tools effectively — reading/writing ranges, A1 notation, multi-range reads, spreadsheet structure, and common data patterns.
+description: How to use Google Sheets tools effectively -- 37 actions covering data, sheet management, formatting, tables, charts, conditional formatting, validation, and protection.
 ---
 
 # Google Sheets
 
-You have full read/write access to Google Sheets through the Google Workspace integration.
+You have full read/write access to Google Sheets through the Google Workspace integration with 37 tools.
 
 ## Available Tools
 
-### Reading
+### Reading Data
 
-- **\`sheets.get_spreadsheet\`** — Get spreadsheet metadata: title, sheet names, grid dimensions. Always start here to understand the spreadsheet structure.
-- **\`sheets.read_range\`** — Read a single range of cells (returns 2D array of values).
-- **\`sheets.read_multiple_ranges\`** — Read multiple ranges in one call (more efficient than multiple single reads).
+- **\`sheets.read_spreadsheet\`** -- Read cell values from a range using A1 notation (returns 2D array).
+- **\`sheets.get_spreadsheet_info\`** -- Get spreadsheet metadata: title, URL, sheet names, dimensions, sheet IDs. Always start here.
+- **\`sheets.list_spreadsheets\`** -- List spreadsheets in Drive, optionally filtered by name.
 
-### Writing
+### Writing Data
 
-- **\`sheets.write_range\`** — Write values to a specific range (overwrites existing data).
-- **\`sheets.append_rows\`** — Append rows after the last row with data. Use for adding entries to tables/logs.
-- **\`sheets.clear_range\`** — Clear values from a range without deleting cells.
+- **\`sheets.write_spreadsheet\`** -- Write values to a specific range (overwrites existing data).
+- **\`sheets.append_rows\`** -- Append rows after the last row with data. Use for adding entries to tables/logs.
+- **\`sheets.batch_write\`** -- Write data to multiple ranges in a single API call (more efficient for bulk updates).
+- **\`sheets.clear_range\`** -- Clear values from a range without deleting cells (formatting preserved).
+- **\`sheets.create_spreadsheet\`** -- Create a new spreadsheet with a title and optional sheet names.
 
-### Spreadsheet Management
+### Sheet Management
 
-- **\`sheets.create_spreadsheet\`** — Create a new spreadsheet with a title and optional sheet names.
-- **\`sheets.add_sheet\`** — Add a new sheet (tab) to an existing spreadsheet.
-- **\`sheets.delete_sheet\`** — Delete a sheet by its numeric ID (use \`get_spreadsheet\` to find sheet IDs).
+- **\`sheets.add_sheet\`** -- Add a new sheet/tab to an existing spreadsheet.
+- **\`sheets.delete_sheet\`** -- Delete a sheet by its numeric ID (use \`get_spreadsheet_info\` to find sheet IDs).
+- **\`sheets.rename_sheet\`** -- Rename a sheet/tab.
+- **\`sheets.duplicate_sheet\`** -- Duplicate a sheet within a spreadsheet (copies values, formulas, formatting).
+- **\`sheets.copy_sheet_to\`** -- Copy a sheet from one spreadsheet to another.
 
-### Formatting
+### Cell Formatting
 
-- **\`sheets.read_formatting\`** — Read cell formatting (colors, bold, borders, alignment) from a range. Always use this before writing to a styled spreadsheet so you can match existing styles.
-- **\`sheets.format_cells\`** — Apply formatting to a range. Use \`format\` for uniform styling across all cells, or \`formats\` for per-cell control. Can also merge/unmerge cells.
+- **\`sheets.format_cells\`** -- Apply formatting to a range: bold, italic, font size, colors, alignment, number format, wrap strategy.
+- **\`sheets.read_cell_format\`** -- Read formatting/style of cells (bold, colors, borders, alignment, number format).
+- **\`sheets.copy_formatting\`** -- Copy formatting (not values) from a source range to a destination range.
+- **\`sheets.set_column_widths\`** -- Set column widths in pixels for one or more columns.
+- **\`sheets.set_row_heights\`** -- Set fixed pixel height for row ranges.
+- **\`sheets.auto_resize_columns\`** -- Auto-resize columns to fit their content.
+- **\`sheets.auto_resize_rows\`** -- Auto-resize rows to fit their content.
+- **\`sheets.set_cell_borders\`** -- Set borders on a range (each side independently: top, bottom, left, right, innerHorizontal, innerVertical).
+- **\`sheets.freeze_rows_and_columns\`** -- Pin rows/columns so they stay visible when scrolling.
 
-**\`sheets.write_range\`** and **\`sheets.append_rows\`** also accept optional \`format\` or \`formats\` parameters to write values and styling in a single call.
+### Tables
 
-**Important:** When using \`format_cells\` or \`write_range\` with formatting, the range must include explicit row numbers (e.g., \`"Sheet1!A1:D10"\`, not \`"Sheet1!A:D"\`). Column-only ranges work for value-only operations and \`append_rows\`, but formatting actions need exact cell boundaries.
+- **\`sheets.create_table\`** -- Create a named table with structured columns.
+- **\`sheets.get_table\`** -- Get table details (columns, range, properties).
+- **\`sheets.list_tables\`** -- List all tables in a spreadsheet.
+- **\`sheets.delete_table\`** -- Delete a table (optionally clear data too).
+- **\`sheets.update_table_range\`** -- Modify a table's dimensions by updating its range.
+- **\`sheets.append_table_rows\`** -- Append rows to a table using table-aware insertion.
+
+### Charts
+
+- **\`sheets.insert_chart\`** -- Insert a chart (BAR, LINE, AREA, COLUMN, SCATTER, COMBO, PIE) with configurable data range and position.
+- **\`sheets.delete_chart\`** -- Delete a chart by its chart ID.
+
+### Conditional Formatting
+
+- **\`sheets.add_conditional_formatting\`** -- Add a conditional formatting rule (NUMBER_GREATER, TEXT_CONTAINS, CUSTOM_FORMULA, BLANK, NOT_BLANK, etc.).
+- **\`sheets.delete_conditional_formatting\`** -- Delete a conditional formatting rule by index.
+- **\`sheets.get_conditional_formatting\`** -- List all conditional formatting rules for a sheet.
+
+### Data Validation
+
+- **\`sheets.set_dropdown_validation\`** -- Add or remove dropdown lists on a range. Omit values to clear.
+
+### Protection
+
+- **\`sheets.protect_range\`** -- Lock a range or entire sheet to prevent accidental edits. Supports warning-only mode.
+
+### Row Grouping
+
+- **\`sheets.group_rows\`** -- Create collapsible row groups.
+- **\`sheets.ungroup_all_rows\`** -- Remove all row groupings from a sheet.
 
 ## A1 Notation
 
@@ -1095,249 +1009,158 @@ All range parameters use A1 notation:
 Always check the spreadsheet structure first:
 
 \`\`\`
-1. sheets.get_spreadsheet({ spreadsheetId: "..." })     // see sheet names, dimensions
-2. sheets.read_range({ spreadsheetId: "...", range: "Sheet1!A1:Z1" })  // read headers
-3. sheets.read_range({ spreadsheetId: "...", range: "Sheet1!A1:Z10" }) // read sample data
-4. sheets.write_range({ ... })  // now write with confidence
-\`\`\`
-
-### Reading a Full Table
-
-Read the header row first to understand columns, then read the data:
-
-\`\`\`
-1. sheets.read_range({ range: "Sheet1!1:1" })           // headers
-2. sheets.read_range({ range: "Sheet1!A2:Z" })          // all data rows
-\`\`\`
-
-Or read everything at once:
-
-\`\`\`
-sheets.read_range({ range: "Sheet1!A1:Z" })
-\`\`\`
-
-### Multi-Range Reads
-
-When you need data from different parts of a spreadsheet, use a single \`read_multiple_ranges\` call:
-
-\`\`\`
-sheets.read_multiple_ranges({
-  spreadsheetId: "...",
-  ranges: ["Sheet1!A1:D10", "Summary!A1:B5", "Sheet1!F1:F10"]
-})
+1. sheets.get_spreadsheet_info({ spreadsheetId: "..." })
+2. sheets.read_spreadsheet({ spreadsheetId: "...", range: "Sheet1!A1:Z1" })  // headers
+3. sheets.read_spreadsheet({ spreadsheetId: "...", range: "Sheet1!A1:Z10" }) // sample data
+4. sheets.write_spreadsheet({ ... })  // now write with confidence
 \`\`\`
 
 ### Appending Data
 
-Use \`append_rows\` to add new rows to the end of a table. The range should cover the table area — Sheets finds the last row automatically:
+Use \`append_rows\` to add rows to the end of a table:
 
 \`\`\`
 sheets.append_rows({
   spreadsheetId: "...",
   range: "Sheet1!A:D",
-  values: [
+  data: [
     ["2026-03-15", "New item", 42, "active"],
     ["2026-03-15", "Another item", 17, "pending"]
   ]
 })
 \`\`\`
 
-### Writing Data
+### Batch Writing
 
-Values are always a 2D array (rows of cells):
+When updating multiple ranges, use \`batch_write\` for efficiency:
 
 \`\`\`
-sheets.write_range({
+sheets.batch_write({
   spreadsheetId: "...",
-  range: "Sheet1!A1:C3",
-  values: [
-    ["Name", "Score", "Status"],
-    ["Alice", 95, "Pass"],
-    ["Bob", 82, "Pass"]
+  data: [
+    { range: "Sheet1!A1:B1", values: [["Header1", "Header2"]] },
+    { range: "Sheet2!A1:A3", values: [["X"], ["Y"], ["Z"]] }
   ]
 })
 \`\`\`
 
-### Creating a New Spreadsheet
+### Working with Tables
+
+Tables provide structured data with named columns. Use tables for data that needs column-level operations:
 
 \`\`\`
-sheets.create_spreadsheet({
-  title: "Q1 2026 Budget",
-  sheetTitles: ["Overview", "Monthly", "Categories"]
+1. sheets.create_table({ spreadsheetId: "...", name: "Sales", range: "Sheet1!A1:D10", columns: ["Date", "Product", "Qty", "Total"] })
+2. sheets.append_table_rows({ spreadsheetId: "...", tableId: "...", values: [["2026-04-01", "Widget", 5, 25.00]] })
+3. sheets.list_tables({ spreadsheetId: "..." })  // see all tables
+\`\`\`
+
+### Formatting
+
+Apply formatting after writing data:
+
+\`\`\`
+sheets.format_cells({
+  spreadsheetId: "...",
+  range: "Sheet1!A1:D1",
+  format: {
+    backgroundColor: { red: 0.2, green: 0.2, blue: 0.2 },
+    textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+    horizontalAlignment: "LEFT"
+  }
+})
+\`\`\`
+
+Read existing formatting to match styles:
+
+\`\`\`
+sheets.read_cell_format({ spreadsheetId: "...", range: "Sheet1!A5:F5" })
+\`\`\`
+
+Copy formatting from one range to another:
+
+\`\`\`
+sheets.copy_formatting({
+  spreadsheetId: "...",
+  sourceRange: "Sheet1!A1:D1",
+  destinationRange: "Sheet1!A10:D10"
+})
+\`\`\`
+
+### Charts
+
+Insert a chart from data:
+
+\`\`\`
+sheets.insert_chart({
+  spreadsheetId: "...",
+  chartType: "BAR",
+  sourceRange: "Sheet1!A1:C10",
+  title: "Sales by Region"
+})
+\`\`\`
+
+### Conditional Formatting
+
+Highlight cells meeting conditions:
+
+\`\`\`
+sheets.add_conditional_formatting({
+  spreadsheetId: "...",
+  range: "Sheet1!C2:C100",
+  conditionType: "NUMBER_GREATER",
+  conditionValues: ["100"],
+  format: { backgroundColor: { red: 0.85, green: 0.95, blue: 0.85 } }
+})
+\`\`\`
+
+Use \`CUSTOM_FORMULA\` for complex conditions:
+
+\`\`\`
+sheets.add_conditional_formatting({
+  spreadsheetId: "...",
+  range: "Sheet1!A2:D100",
+  conditionType: "CUSTOM_FORMULA",
+  conditionValues: ["=$D2>1000"],
+  format: { textFormat: { bold: true } }
+})
+\`\`\`
+
+### Dropdown Validation
+
+Create dropdown lists:
+
+\`\`\`
+sheets.set_dropdown_validation({
+  spreadsheetId: "...",
+  range: "Sheet1!B2:B100",
+  values: ["Open", "In Progress", "Done"],
+  strict: true,
+  inputMessage: "Select a status"
+})
+\`\`\`
+
+### Protection
+
+Lock header rows:
+
+\`\`\`
+sheets.protect_range({
+  spreadsheetId: "...",
+  range: "Sheet1!1:1",
+  description: "Header row - do not edit",
+  warningOnly: false
 })
 \`\`\`
 
 ## Tips
 
-- **Check structure first**: Always call \`get_spreadsheet\` before writing to understand the sheet names and dimensions.
-- **Use \`read_multiple_ranges\`** when you need data from several places — it's one API call instead of many.
-- **Append vs Write**: Use \`append_rows\` to add to the end of a table. Use \`write_range\` to overwrite a specific location.
-- **Empty cells**: Empty cells appear as empty strings \`""\` in read results. When writing, use \`""\` or \`null\` for empty cells.
-- **Sheet IDs vs Names**: Most tools use sheet names in A1 notation. \`delete_sheet\` uses numeric sheet IDs (found in \`get_spreadsheet\` metadata).
-
-## Formatting
-
-### Preserving Existing Styles
-
-When editing a spreadsheet that already has styling, always match the existing formatting:
-
-1. Read formatting from a reference row (usually the row above where you're inserting, or a representative data row):
-   \`\`\`
-   sheets.read_formatting({ spreadsheetId: "...", range: "Sheet1!A5:F5" })
-   \`\`\`
-
-2. If all columns share the same style, pass it as a uniform format:
-   \`\`\`
-   sheets.append_rows({
-     spreadsheetId: "...",
-     range: "Sheet1!A:F",
-     values: [["New item", "Description", ...]],
-     format: <format from step 1's formats[0][0]>
-   })
-   \`\`\`
-
-3. If columns have different styles (e.g., column A is bold, column C has a color), use per-cell formatting to preserve column-specific styles:
-   \`\`\`
-   sheets.append_rows({
-     spreadsheetId: "...",
-     range: "Sheet1!A:F",
-     values: [["New item", "Description", ...]],
-     formats: [<formats[0] from step 1>]
-   })
-   \`\`\`
-
-**Working with \`read_formatting\` results:**
-
-The response has shape \`{ range, formats: CellFormat[][], merges: Merge[] }\`. The \`formats\` field is a 2D grid (rows × columns). To use it:
-
-- **Uniform style** (all columns same): pass \`result.data.formats[0][0]\` to the \`format\` parameter
-- **Per-column style** (different columns have different formatting): pass \`[result.data.formats[0]]\` to the \`formats\` parameter — note the wrapping array, since \`formats\` expects \`CellFormat[][]\`
-
-Do NOT pass the full response object to \`format\` or \`formats\` — you must index into the \`formats\` grid first.
-
-**Key rule:** When appending to a table, copy the format from the last data row — not the header or a section divider.
-
-### Color Reference
-
-Colors use RGB floats from 0 to 1. Common values:
-
-| Color | Value |
-|-------|-------|
-| White | \`{ red: 1, green: 1, blue: 1 }\` |
-| Black | \`{ red: 0, green: 0, blue: 0 }\` |
-| Light gray (subtle bg) | \`{ red: 0.95, green: 0.95, blue: 0.95 }\` |
-| Medium gray (borders) | \`{ red: 0.7, green: 0.7, blue: 0.7 }\` |
-| Dark gray (header bg) | \`{ red: 0.2, green: 0.2, blue: 0.2 }\` |
-| Light green | \`{ red: 0.85, green: 0.95, blue: 0.85 }\` |
-| Light blue | \`{ red: 0.85, green: 0.92, blue: 1 }\` |
-| Light yellow | \`{ red: 1, green: 0.97, blue: 0.85 }\` |
-| Red (error/alert) | \`{ red: 0.9, green: 0.2, blue: 0.2 }\` |
-| Green (success) | \`{ red: 0.2, green: 0.66, blue: 0.33 }\` |
-| Blue (links/accent) | \`{ red: 0.16, green: 0.38, blue: 0.71 }\` |
-| White text | \`foregroundColor: { red: 1, green: 1, blue: 1 }\` |
-
-### Creating Well-Formatted Spreadsheets
-
-**Professional header row:**
-\`\`\`
-sheets.write_range({
-  spreadsheetId: "...",
-  range: "Sheet1!A1:D1",
-  values: [["Name", "Role", "Status", "Score"]],
-  format: {
-    backgroundColor: { red: 0.2, green: 0.2, blue: 0.2 },
-    textFormat: {
-      bold: true,
-      foregroundColor: { red: 1, green: 1, blue: 1 },
-      fontSize: 11
-    },
-    horizontalAlignment: "LEFT",
-    borders: {
-      bottom: { style: "SOLID_MEDIUM", color: { red: 0.4, green: 0.4, blue: 0.4 } }
-    }
-  }
-})
-\`\`\`
-
-**Section divider row** (dark background spanning all columns):
-\`\`\`
-sheets.write_range({
-  spreadsheetId: "...",
-  range: "Sheet1!A10:D10",
-  values: [["SECTION TITLE", "", "", ""]],
-  format: {
-    backgroundColor: { red: 0.25, green: 0.3, blue: 0.2 },
-    textFormat: {
-      bold: true,
-      foregroundColor: { red: 1, green: 1, blue: 1 },
-      fontSize: 11
-    }
-  }
-})
-\`\`\`
-
-**Alternating row colors** for readability:
-\`\`\`
-// After writing data rows, apply striped background:
-// Odd rows (1, 3, 5...): light gray
-sheets.format_cells({
-  spreadsheetId: "...",
-  range: "Sheet1!A2:D2",
-  format: { backgroundColor: { red: 0.95, green: 0.95, blue: 0.95 } }
-})
-// Even rows (2, 4, 6...): white (or skip — white is default)
-\`\`\`
-
-**Standard data table recipe:**
-1. Write header row with formatting (bold, dark bg, white text, bottom border)
-2. Write data rows with \`write_range\` (values only or with per-row alternating colors)
-3. Optionally apply a bottom border on the last data row to close the table
-
-### Formatting Properties Reference
-
-**CellFormat fields:**
-
-| Property | Type | Example |
-|----------|------|---------|
-| \`backgroundColor\` | Color | \`{ red: 0.95, green: 0.95, blue: 0.95 }\` |
-| \`textFormat.bold\` | boolean | \`true\` |
-| \`textFormat.italic\` | boolean | \`true\` |
-| \`textFormat.strikethrough\` | boolean | \`true\` |
-| \`textFormat.underline\` | boolean | \`true\` |
-| \`textFormat.fontSize\` | number | \`12\` |
-| \`textFormat.fontFamily\` | string | \`"Arial"\` |
-| \`textFormat.foregroundColor\` | Color | \`{ red: 0, green: 0, blue: 0 }\` |
-| \`horizontalAlignment\` | enum | \`"LEFT"\`, \`"CENTER"\`, \`"RIGHT"\` |
-| \`verticalAlignment\` | enum | \`"TOP"\`, \`"MIDDLE"\`, \`"BOTTOM"\` |
-| \`wrapStrategy\` | enum | \`"OVERFLOW_CELL"\`, \`"CLIP"\`, \`"WRAP"\` |
-| \`numberFormat.type\` | enum | \`"NUMBER"\`, \`"CURRENCY"\`, \`"PERCENT"\`, \`"DATE"\` |
-| \`numberFormat.pattern\` | string | \`"#,##0.00"\`, \`"yyyy-mm-dd"\` |
-| \`borders.top\` | Border | \`{ style: "SOLID", color: { red: 0 } }\` |
-| \`borders.bottom\` | Border | \`{ style: "SOLID_MEDIUM" }\` |
-| \`borders.left\` | Border | \`{ style: "DASHED" }\` |
-| \`borders.right\` | Border | \`{ style: "DOUBLE" }\` |
-
-**Border styles:** \`NONE\`, \`SOLID\`, \`SOLID_MEDIUM\`, \`SOLID_THICK\`, \`DASHED\`, \`DOTTED\`, \`DOUBLE\`
-
-### Merge Coordinates
-
-Merges use 0-based row and column indices (not A1 notation):
-- Column A = 0, B = 1, ..., Z = 25, AA = 26
-- Row 1 = 0, Row 2 = 1, etc.
-- \`endRowIndex\` and \`endColumnIndex\` are exclusive (same as Python slice notation)
-
-Example: merge A1:C1 on the first sheet:
-\`\`\`
-{ sheetId: 0, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 3 }
-\`\`\`
-
-### Formatting Best Practices
-
-- **Always read before writing to styled sheets.** Use \`read_formatting\` on a nearby row and pass the result to \`write_range\` or \`append_rows\`.
-- **Use \`format\` (uniform) when all cells share the same style.** Use \`formats\` (per-cell) when columns have different formatting.
-- **Only set properties you intend to change.** Omitted properties are preserved — you don't need to specify every field.
-- **For borders, set one side only.** The cell below doesn't also need a \`top\` border if the cell above has a \`bottom\` border.
-- **Use \`write_range\` with formatting for one-call writes.** This avoids a window where data appears without styling.
+- **Check structure first**: Always call \`get_spreadsheet_info\` before writing.
+- **Append vs Write**: Use \`append_rows\` to add to the end. Use \`write_spreadsheet\` to overwrite a specific location.
+- **Sheet IDs vs Names**: Most tools use sheet names in A1 notation. \`delete_sheet\`, \`rename_sheet\`, \`duplicate_sheet\` use numeric sheet IDs (from \`get_spreadsheet_info\`).
+- **Empty cells**: Empty cells appear as \`""\`. When writing, use \`""\` or \`null\`.
+- **Border styles**: SOLID, SOLID_MEDIUM, SOLID_THICK, DASHED, DOTTED, DOUBLE, NONE.
+- **Colors**: RGB floats from 0 to 1. Black = \`{red:0, green:0, blue:0}\`, White = \`{red:1, green:1, blue:1}\`.
+- **Hex colors in borders**: \`set_cell_borders\` accepts hex strings like \`"#FF0000"\` for color.
 `, sortOrder: 2 },
     ],
   },

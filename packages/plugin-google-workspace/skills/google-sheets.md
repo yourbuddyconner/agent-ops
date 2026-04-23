@@ -1,40 +1,80 @@
 ---
 name: google-sheets
-description: How to use Google Sheets tools effectively — reading/writing ranges, A1 notation, multi-range reads, spreadsheet structure, and common data patterns.
+description: How to use Google Sheets tools effectively -- 37 actions covering data, sheet management, formatting, tables, charts, conditional formatting, validation, and protection.
 ---
 
 # Google Sheets
 
-You have full read/write access to Google Sheets through the Google Workspace integration.
+You have full read/write access to Google Sheets through the Google Workspace integration with 37 tools.
 
 ## Available Tools
 
-### Reading
+### Reading Data
 
-- **`sheets.get_spreadsheet`** — Get spreadsheet metadata: title, sheet names, grid dimensions. Always start here to understand the spreadsheet structure.
-- **`sheets.read_range`** — Read a single range of cells (returns 2D array of values).
-- **`sheets.read_multiple_ranges`** — Read multiple ranges in one call (more efficient than multiple single reads).
+- **`sheets.read_spreadsheet`** -- Read cell values from a range using A1 notation (returns 2D array).
+- **`sheets.get_spreadsheet_info`** -- Get spreadsheet metadata: title, URL, sheet names, dimensions, sheet IDs. Always start here.
+- **`sheets.list_spreadsheets`** -- List spreadsheets in Drive, optionally filtered by name.
 
-### Writing
+### Writing Data
 
-- **`sheets.write_range`** — Write values to a specific range (overwrites existing data).
-- **`sheets.append_rows`** — Append rows after the last row with data. Use for adding entries to tables/logs.
-- **`sheets.clear_range`** — Clear values from a range without deleting cells.
+- **`sheets.write_spreadsheet`** -- Write values to a specific range (overwrites existing data).
+- **`sheets.append_rows`** -- Append rows after the last row with data. Use for adding entries to tables/logs.
+- **`sheets.batch_write`** -- Write data to multiple ranges in a single API call (more efficient for bulk updates).
+- **`sheets.clear_range`** -- Clear values from a range without deleting cells (formatting preserved).
+- **`sheets.create_spreadsheet`** -- Create a new spreadsheet with a title and optional sheet names.
 
-### Spreadsheet Management
+### Sheet Management
 
-- **`sheets.create_spreadsheet`** — Create a new spreadsheet with a title and optional sheet names.
-- **`sheets.add_sheet`** — Add a new sheet (tab) to an existing spreadsheet.
-- **`sheets.delete_sheet`** — Delete a sheet by its numeric ID (use `get_spreadsheet` to find sheet IDs).
+- **`sheets.add_sheet`** -- Add a new sheet/tab to an existing spreadsheet.
+- **`sheets.delete_sheet`** -- Delete a sheet by its numeric ID (use `get_spreadsheet_info` to find sheet IDs).
+- **`sheets.rename_sheet`** -- Rename a sheet/tab.
+- **`sheets.duplicate_sheet`** -- Duplicate a sheet within a spreadsheet (copies values, formulas, formatting).
+- **`sheets.copy_sheet_to`** -- Copy a sheet from one spreadsheet to another.
 
-### Formatting
+### Cell Formatting
 
-- **`sheets.read_formatting`** — Read cell formatting (colors, bold, borders, alignment) from a range. Always use this before writing to a styled spreadsheet so you can match existing styles.
-- **`sheets.format_cells`** — Apply formatting to a range. Use `format` for uniform styling across all cells, or `formats` for per-cell control. Can also merge/unmerge cells.
+- **`sheets.format_cells`** -- Apply formatting to a range: bold, italic, font size, colors, alignment, number format, wrap strategy.
+- **`sheets.read_cell_format`** -- Read formatting/style of cells (bold, colors, borders, alignment, number format).
+- **`sheets.copy_formatting`** -- Copy formatting (not values) from a source range to a destination range.
+- **`sheets.set_column_widths`** -- Set column widths in pixels for one or more columns.
+- **`sheets.set_row_heights`** -- Set fixed pixel height for row ranges.
+- **`sheets.auto_resize_columns`** -- Auto-resize columns to fit their content.
+- **`sheets.auto_resize_rows`** -- Auto-resize rows to fit their content.
+- **`sheets.set_cell_borders`** -- Set borders on a range (each side independently: top, bottom, left, right, innerHorizontal, innerVertical).
+- **`sheets.freeze_rows_and_columns`** -- Pin rows/columns so they stay visible when scrolling.
 
-**`sheets.write_range`** and **`sheets.append_rows`** also accept optional `format` or `formats` parameters to write values and styling in a single call.
+### Tables
 
-**Important:** When using `format_cells` or `write_range` with formatting, the range must include explicit row numbers (e.g., `"Sheet1!A1:D10"`, not `"Sheet1!A:D"`). Column-only ranges work for value-only operations and `append_rows`, but formatting actions need exact cell boundaries.
+- **`sheets.create_table`** -- Create a named table with structured columns.
+- **`sheets.get_table`** -- Get table details (columns, range, properties).
+- **`sheets.list_tables`** -- List all tables in a spreadsheet.
+- **`sheets.delete_table`** -- Delete a table (optionally clear data too).
+- **`sheets.update_table_range`** -- Modify a table's dimensions by updating its range.
+- **`sheets.append_table_rows`** -- Append rows to a table using table-aware insertion.
+
+### Charts
+
+- **`sheets.insert_chart`** -- Insert a chart (BAR, LINE, AREA, COLUMN, SCATTER, COMBO, PIE) with configurable data range and position.
+- **`sheets.delete_chart`** -- Delete a chart by its chart ID.
+
+### Conditional Formatting
+
+- **`sheets.add_conditional_formatting`** -- Add a conditional formatting rule (NUMBER_GREATER, TEXT_CONTAINS, CUSTOM_FORMULA, BLANK, NOT_BLANK, etc.).
+- **`sheets.delete_conditional_formatting`** -- Delete a conditional formatting rule by index.
+- **`sheets.get_conditional_formatting`** -- List all conditional formatting rules for a sheet.
+
+### Data Validation
+
+- **`sheets.set_dropdown_validation`** -- Add or remove dropdown lists on a range. Omit values to clear.
+
+### Protection
+
+- **`sheets.protect_range`** -- Lock a range or entire sheet to prevent accidental edits. Supports warning-only mode.
+
+### Row Grouping
+
+- **`sheets.group_rows`** -- Create collapsible row groups.
+- **`sheets.ungroup_all_rows`** -- Remove all row groupings from a sheet.
 
 ## A1 Notation
 
@@ -56,246 +96,155 @@ All range parameters use A1 notation:
 Always check the spreadsheet structure first:
 
 ```
-1. sheets.get_spreadsheet({ spreadsheetId: "..." })     // see sheet names, dimensions
-2. sheets.read_range({ spreadsheetId: "...", range: "Sheet1!A1:Z1" })  // read headers
-3. sheets.read_range({ spreadsheetId: "...", range: "Sheet1!A1:Z10" }) // read sample data
-4. sheets.write_range({ ... })  // now write with confidence
-```
-
-### Reading a Full Table
-
-Read the header row first to understand columns, then read the data:
-
-```
-1. sheets.read_range({ range: "Sheet1!1:1" })           // headers
-2. sheets.read_range({ range: "Sheet1!A2:Z" })          // all data rows
-```
-
-Or read everything at once:
-
-```
-sheets.read_range({ range: "Sheet1!A1:Z" })
-```
-
-### Multi-Range Reads
-
-When you need data from different parts of a spreadsheet, use a single `read_multiple_ranges` call:
-
-```
-sheets.read_multiple_ranges({
-  spreadsheetId: "...",
-  ranges: ["Sheet1!A1:D10", "Summary!A1:B5", "Sheet1!F1:F10"]
-})
+1. sheets.get_spreadsheet_info({ spreadsheetId: "..." })
+2. sheets.read_spreadsheet({ spreadsheetId: "...", range: "Sheet1!A1:Z1" })  // headers
+3. sheets.read_spreadsheet({ spreadsheetId: "...", range: "Sheet1!A1:Z10" }) // sample data
+4. sheets.write_spreadsheet({ ... })  // now write with confidence
 ```
 
 ### Appending Data
 
-Use `append_rows` to add new rows to the end of a table. The range should cover the table area — Sheets finds the last row automatically:
+Use `append_rows` to add rows to the end of a table:
 
 ```
 sheets.append_rows({
   spreadsheetId: "...",
   range: "Sheet1!A:D",
-  values: [
+  data: [
     ["2026-03-15", "New item", 42, "active"],
     ["2026-03-15", "Another item", 17, "pending"]
   ]
 })
 ```
 
-### Writing Data
+### Batch Writing
 
-Values are always a 2D array (rows of cells):
+When updating multiple ranges, use `batch_write` for efficiency:
 
 ```
-sheets.write_range({
+sheets.batch_write({
   spreadsheetId: "...",
-  range: "Sheet1!A1:C3",
-  values: [
-    ["Name", "Score", "Status"],
-    ["Alice", 95, "Pass"],
-    ["Bob", 82, "Pass"]
+  data: [
+    { range: "Sheet1!A1:B1", values: [["Header1", "Header2"]] },
+    { range: "Sheet2!A1:A3", values: [["X"], ["Y"], ["Z"]] }
   ]
 })
 ```
 
-### Creating a New Spreadsheet
+### Working with Tables
+
+Tables provide structured data with named columns. Use tables for data that needs column-level operations:
 
 ```
-sheets.create_spreadsheet({
-  title: "Q1 2026 Budget",
-  sheetTitles: ["Overview", "Monthly", "Categories"]
+1. sheets.create_table({ spreadsheetId: "...", name: "Sales", range: "Sheet1!A1:D10", columns: ["Date", "Product", "Qty", "Total"] })
+2. sheets.append_table_rows({ spreadsheetId: "...", tableId: "...", values: [["2026-04-01", "Widget", 5, 25.00]] })
+3. sheets.list_tables({ spreadsheetId: "..." })  // see all tables
+```
+
+### Formatting
+
+Apply formatting after writing data:
+
+```
+sheets.format_cells({
+  spreadsheetId: "...",
+  range: "Sheet1!A1:D1",
+  format: {
+    backgroundColor: { red: 0.2, green: 0.2, blue: 0.2 },
+    textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+    horizontalAlignment: "LEFT"
+  }
+})
+```
+
+Read existing formatting to match styles:
+
+```
+sheets.read_cell_format({ spreadsheetId: "...", range: "Sheet1!A5:F5" })
+```
+
+Copy formatting from one range to another:
+
+```
+sheets.copy_formatting({
+  spreadsheetId: "...",
+  sourceRange: "Sheet1!A1:D1",
+  destinationRange: "Sheet1!A10:D10"
+})
+```
+
+### Charts
+
+Insert a chart from data:
+
+```
+sheets.insert_chart({
+  spreadsheetId: "...",
+  chartType: "BAR",
+  sourceRange: "Sheet1!A1:C10",
+  title: "Sales by Region"
+})
+```
+
+### Conditional Formatting
+
+Highlight cells meeting conditions:
+
+```
+sheets.add_conditional_formatting({
+  spreadsheetId: "...",
+  range: "Sheet1!C2:C100",
+  conditionType: "NUMBER_GREATER",
+  conditionValues: ["100"],
+  format: { backgroundColor: { red: 0.85, green: 0.95, blue: 0.85 } }
+})
+```
+
+Use `CUSTOM_FORMULA` for complex conditions:
+
+```
+sheets.add_conditional_formatting({
+  spreadsheetId: "...",
+  range: "Sheet1!A2:D100",
+  conditionType: "CUSTOM_FORMULA",
+  conditionValues: ["=$D2>1000"],
+  format: { textFormat: { bold: true } }
+})
+```
+
+### Dropdown Validation
+
+Create dropdown lists:
+
+```
+sheets.set_dropdown_validation({
+  spreadsheetId: "...",
+  range: "Sheet1!B2:B100",
+  values: ["Open", "In Progress", "Done"],
+  strict: true,
+  inputMessage: "Select a status"
+})
+```
+
+### Protection
+
+Lock header rows:
+
+```
+sheets.protect_range({
+  spreadsheetId: "...",
+  range: "Sheet1!1:1",
+  description: "Header row - do not edit",
+  warningOnly: false
 })
 ```
 
 ## Tips
 
-- **Check structure first**: Always call `get_spreadsheet` before writing to understand the sheet names and dimensions.
-- **Use `read_multiple_ranges`** when you need data from several places — it's one API call instead of many.
-- **Append vs Write**: Use `append_rows` to add to the end of a table. Use `write_range` to overwrite a specific location.
-- **Empty cells**: Empty cells appear as empty strings `""` in read results. When writing, use `""` or `null` for empty cells.
-- **Sheet IDs vs Names**: Most tools use sheet names in A1 notation. `delete_sheet` uses numeric sheet IDs (found in `get_spreadsheet` metadata).
-
-## Formatting
-
-### Preserving Existing Styles
-
-When editing a spreadsheet that already has styling, always match the existing formatting:
-
-1. Read formatting from a reference row (usually the row above where you're inserting, or a representative data row):
-   ```
-   sheets.read_formatting({ spreadsheetId: "...", range: "Sheet1!A5:F5" })
-   ```
-
-2. If all columns share the same style, pass it as a uniform format:
-   ```
-   sheets.append_rows({
-     spreadsheetId: "...",
-     range: "Sheet1!A:F",
-     values: [["New item", "Description", ...]],
-     format: <format from step 1's formats[0][0]>
-   })
-   ```
-
-3. If columns have different styles (e.g., column A is bold, column C has a color), use per-cell formatting to preserve column-specific styles:
-   ```
-   sheets.append_rows({
-     spreadsheetId: "...",
-     range: "Sheet1!A:F",
-     values: [["New item", "Description", ...]],
-     formats: [<formats[0] from step 1>]
-   })
-   ```
-
-**Working with `read_formatting` results:**
-
-The response has shape `{ range, formats: CellFormat[][], merges: Merge[] }`. The `formats` field is a 2D grid (rows × columns). To use it:
-
-- **Uniform style** (all columns same): pass `result.data.formats[0][0]` to the `format` parameter
-- **Per-column style** (different columns have different formatting): pass `[result.data.formats[0]]` to the `formats` parameter — note the wrapping array, since `formats` expects `CellFormat[][]`
-
-Do NOT pass the full response object to `format` or `formats` — you must index into the `formats` grid first.
-
-**Key rule:** When appending to a table, copy the format from the last data row — not the header or a section divider.
-
-### Color Reference
-
-Colors use RGB floats from 0 to 1. Common values:
-
-| Color | Value |
-|-------|-------|
-| White | `{ red: 1, green: 1, blue: 1 }` |
-| Black | `{ red: 0, green: 0, blue: 0 }` |
-| Light gray (subtle bg) | `{ red: 0.95, green: 0.95, blue: 0.95 }` |
-| Medium gray (borders) | `{ red: 0.7, green: 0.7, blue: 0.7 }` |
-| Dark gray (header bg) | `{ red: 0.2, green: 0.2, blue: 0.2 }` |
-| Light green | `{ red: 0.85, green: 0.95, blue: 0.85 }` |
-| Light blue | `{ red: 0.85, green: 0.92, blue: 1 }` |
-| Light yellow | `{ red: 1, green: 0.97, blue: 0.85 }` |
-| Red (error/alert) | `{ red: 0.9, green: 0.2, blue: 0.2 }` |
-| Green (success) | `{ red: 0.2, green: 0.66, blue: 0.33 }` |
-| Blue (links/accent) | `{ red: 0.16, green: 0.38, blue: 0.71 }` |
-| White text | `foregroundColor: { red: 1, green: 1, blue: 1 }` |
-
-### Creating Well-Formatted Spreadsheets
-
-**Professional header row:**
-```
-sheets.write_range({
-  spreadsheetId: "...",
-  range: "Sheet1!A1:D1",
-  values: [["Name", "Role", "Status", "Score"]],
-  format: {
-    backgroundColor: { red: 0.2, green: 0.2, blue: 0.2 },
-    textFormat: {
-      bold: true,
-      foregroundColor: { red: 1, green: 1, blue: 1 },
-      fontSize: 11
-    },
-    horizontalAlignment: "LEFT",
-    borders: {
-      bottom: { style: "SOLID_MEDIUM", color: { red: 0.4, green: 0.4, blue: 0.4 } }
-    }
-  }
-})
-```
-
-**Section divider row** (dark background spanning all columns):
-```
-sheets.write_range({
-  spreadsheetId: "...",
-  range: "Sheet1!A10:D10",
-  values: [["SECTION TITLE", "", "", ""]],
-  format: {
-    backgroundColor: { red: 0.25, green: 0.3, blue: 0.2 },
-    textFormat: {
-      bold: true,
-      foregroundColor: { red: 1, green: 1, blue: 1 },
-      fontSize: 11
-    }
-  }
-})
-```
-
-**Alternating row colors** for readability:
-```
-// After writing data rows, apply striped background:
-// Odd rows (1, 3, 5...): light gray
-sheets.format_cells({
-  spreadsheetId: "...",
-  range: "Sheet1!A2:D2",
-  format: { backgroundColor: { red: 0.95, green: 0.95, blue: 0.95 } }
-})
-// Even rows (2, 4, 6...): white (or skip — white is default)
-```
-
-**Standard data table recipe:**
-1. Write header row with formatting (bold, dark bg, white text, bottom border)
-2. Write data rows with `write_range` (values only or with per-row alternating colors)
-3. Optionally apply a bottom border on the last data row to close the table
-
-### Formatting Properties Reference
-
-**CellFormat fields:**
-
-| Property | Type | Example |
-|----------|------|---------|
-| `backgroundColor` | Color | `{ red: 0.95, green: 0.95, blue: 0.95 }` |
-| `textFormat.bold` | boolean | `true` |
-| `textFormat.italic` | boolean | `true` |
-| `textFormat.strikethrough` | boolean | `true` |
-| `textFormat.underline` | boolean | `true` |
-| `textFormat.fontSize` | number | `12` |
-| `textFormat.fontFamily` | string | `"Arial"` |
-| `textFormat.foregroundColor` | Color | `{ red: 0, green: 0, blue: 0 }` |
-| `horizontalAlignment` | enum | `"LEFT"`, `"CENTER"`, `"RIGHT"` |
-| `verticalAlignment` | enum | `"TOP"`, `"MIDDLE"`, `"BOTTOM"` |
-| `wrapStrategy` | enum | `"OVERFLOW_CELL"`, `"CLIP"`, `"WRAP"` |
-| `numberFormat.type` | enum | `"NUMBER"`, `"CURRENCY"`, `"PERCENT"`, `"DATE"` |
-| `numberFormat.pattern` | string | `"#,##0.00"`, `"yyyy-mm-dd"` |
-| `borders.top` | Border | `{ style: "SOLID", color: { red: 0 } }` |
-| `borders.bottom` | Border | `{ style: "SOLID_MEDIUM" }` |
-| `borders.left` | Border | `{ style: "DASHED" }` |
-| `borders.right` | Border | `{ style: "DOUBLE" }` |
-
-**Border styles:** `NONE`, `SOLID`, `SOLID_MEDIUM`, `SOLID_THICK`, `DASHED`, `DOTTED`, `DOUBLE`
-
-### Merge Coordinates
-
-Merges use 0-based row and column indices (not A1 notation):
-- Column A = 0, B = 1, ..., Z = 25, AA = 26
-- Row 1 = 0, Row 2 = 1, etc.
-- `endRowIndex` and `endColumnIndex` are exclusive (same as Python slice notation)
-
-Example: merge A1:C1 on the first sheet:
-```
-{ sheetId: 0, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 3 }
-```
-
-### Formatting Best Practices
-
-- **Always read before writing to styled sheets.** Use `read_formatting` on a nearby row and pass the result to `write_range` or `append_rows`.
-- **Use `format` (uniform) when all cells share the same style.** Use `formats` (per-cell) when columns have different formatting.
-- **Only set properties you intend to change.** Omitted properties are preserved — you don't need to specify every field.
-- **For borders, set one side only.** The cell below doesn't also need a `top` border if the cell above has a `bottom` border.
-- **Use `write_range` with formatting for one-call writes.** This avoids a window where data appears without styling.
+- **Check structure first**: Always call `get_spreadsheet_info` before writing.
+- **Append vs Write**: Use `append_rows` to add to the end. Use `write_spreadsheet` to overwrite a specific location.
+- **Sheet IDs vs Names**: Most tools use sheet names in A1 notation. `delete_sheet`, `rename_sheet`, `duplicate_sheet` use numeric sheet IDs (from `get_spreadsheet_info`).
+- **Empty cells**: Empty cells appear as `""`. When writing, use `""` or `null`.
+- **Border styles**: SOLID, SOLID_MEDIUM, SOLID_THICK, DASHED, DOTTED, DOUBLE, NONE.
+- **Colors**: RGB floats from 0 to 1. Black = `{red:0, green:0, blue:0}`, White = `{red:1, green:1, blue:1}`.
+- **Hex colors in borders**: `set_cell_borders` accepts hex strings like `"#FF0000"` for color.

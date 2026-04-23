@@ -1,206 +1,638 @@
 import { z } from 'zod';
 import type { ActionDefinition, ActionContext, ActionResult } from '@valet/sdk';
-import { sheetsFetch, sheetsError } from './sheets-api.js';
-import { cellFormatSchema, mergeSchema, normalizeFormatsResponse, parseA1Range, buildRepeatCellRequest, buildUpdateCellsRequest, buildMergeRequests } from './formatting.js';
-import type { CellFormat } from './formatting.js';
+import {
+  sheetsFetch,
+  sheetsError,
+  resolveSheetId,
+  parseRange,
+  parseA1ToGridRange,
+  colLettersToIndex,
+  colIndexToLetters,
+  rowColToA1,
+  hexToRgb,
+  rgbToHex,
+  sheetsBatchUpdate,
+  readRange,
+  writeRange,
+  appendValues,
+  clearRange,
+  getSpreadsheetMetadata,
+  formatCells,
+  freezeRowsAndColumns,
+  setColumnWidths,
+  setDropdownValidation,
+  addConditionalFormatRule,
+  resolveTableIdentifier,
+  listAllTables,
+} from './sheets-helpers.js';
 
-// ─── Action Definitions ──────────────────────────────────────────────────────
+// ─── Action Definitions ────────────────────────────────────────────────────
 
-const getSpreadsheet: ActionDefinition = {
-  id: 'sheets.get_spreadsheet',
-  name: 'Get Spreadsheet',
-  description: 'Get spreadsheet metadata (title, sheets list, properties)',
+// -- Core Data (8) -----------------------------------------------------------
+
+const readSpreadsheet: ActionDefinition = {
+  id: 'sheets.read_spreadsheet',
+  name: 'Read Spreadsheet',
+  description: 'Read data from a range in a spreadsheet. Returns rows as arrays.',
   riskLevel: 'low',
   params: z.object({
-    spreadsheetId: z.string().describe('The spreadsheet ID (from the URL)'),
-  }),
-};
-
-const readRange: ActionDefinition = {
-  id: 'sheets.read_range',
-  name: 'Read Range',
-  description: 'Read cell values from a range using A1 notation (e.g. Sheet1!A1:D10)',
-  riskLevel: 'low',
-  params: z.object({
-    spreadsheetId: z.string().describe('The spreadsheet ID'),
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
     range: z.string().describe('A1 notation range (e.g. "Sheet1!A1:D10")'),
-    majorDimension: z.enum(['ROWS', 'COLUMNS']).optional().describe('Major dimension (default: ROWS)'),
     valueRenderOption: z.enum(['FORMATTED_VALUE', 'UNFORMATTED_VALUE', 'FORMULA']).optional()
       .describe('How values should be rendered (default: FORMATTED_VALUE)'),
   }),
 };
 
-const readMultipleRanges: ActionDefinition = {
-  id: 'sheets.read_multiple_ranges',
-  name: 'Read Multiple Ranges',
-  description: 'Batch read multiple ranges in one call',
-  riskLevel: 'low',
-  params: z.object({
-    spreadsheetId: z.string().describe('The spreadsheet ID'),
-    ranges: z.array(z.string()).min(1).describe('Array of A1 notation ranges'),
-    majorDimension: z.enum(['ROWS', 'COLUMNS']).optional(),
-    valueRenderOption: z.enum(['FORMATTED_VALUE', 'UNFORMATTED_VALUE', 'FORMULA']).optional(),
-  }),
-};
-
-const writeRange: ActionDefinition = {
-  id: 'sheets.write_range',
-  name: 'Write Range',
-  description: 'Write values to a range using A1 notation. Optionally include formatting to style cells in the same call.',
+const writeSpreadsheet: ActionDefinition = {
+  id: 'sheets.write_spreadsheet',
+  name: 'Write Spreadsheet',
+  description: 'Write data to a range, overwriting existing values. Use append_rows to add without overwriting.',
   riskLevel: 'medium',
   params: z.object({
-    spreadsheetId: z.string().describe('The spreadsheet ID'),
-    range: z.string().describe('A1 notation range (e.g. "Sheet1!A1:D3")'),
-    values: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).describe('2D array of values (rows x columns)'),
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    range: z.string().describe('A1 notation range'),
+    data: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).describe('2D array of values'),
     valueInputOption: z.enum(['RAW', 'USER_ENTERED']).optional()
-      .describe('How input should be interpreted (default: USER_ENTERED). Ignored when format/formats is provided (strings starting with = are always treated as formulas in the formatting path).'),
-    format: cellFormatSchema.optional().describe('Single format applied to all written cells'),
-    formats: z.array(z.array(cellFormatSchema)).optional().describe('Per-cell formatting (must match values dimensions)'),
+      .describe('How input should be interpreted (default: USER_ENTERED)'),
   }),
 };
 
-const appendRows: ActionDefinition = {
+const appendRowsDef: ActionDefinition = {
   id: 'sheets.append_rows',
   name: 'Append Rows',
-  description: 'Append rows after the last row with data in a range. Optionally include formatting to style the appended rows.',
+  description: 'Append rows after the last row with data in a range.',
   riskLevel: 'medium',
   params: z.object({
-    spreadsheetId: z.string().describe('The spreadsheet ID'),
-    range: z.string().describe('A1 notation range to search for data (e.g. "Sheet1!A:D")'),
-    values: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).describe('2D array of rows to append'),
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    range: z.string().describe('A1 notation range to search for data'),
+    data: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).describe('2D array of rows'),
     valueInputOption: z.enum(['RAW', 'USER_ENTERED']).optional()
-      .describe('How input should be interpreted (default: USER_ENTERED). Ignored when format/formats is provided (strings starting with = are always treated as formulas in the formatting path).'),
-    format: cellFormatSchema.optional().describe('Single format applied to all appended cells'),
-    formats: z.array(z.array(cellFormatSchema)).optional().describe('Per-cell formatting (must match values dimensions)'),
-  }),
-};
-
-const clearRange: ActionDefinition = {
-  id: 'sheets.clear_range',
-  name: 'Clear Range',
-  description: 'Clear all values from a range (formatting is preserved)',
-  riskLevel: 'medium',
-  params: z.object({
-    spreadsheetId: z.string().describe('The spreadsheet ID'),
-    range: z.string().describe('A1 notation range to clear'),
+      .describe('How input should be interpreted (default: USER_ENTERED)'),
   }),
 };
 
 const createSpreadsheet: ActionDefinition = {
   id: 'sheets.create_spreadsheet',
   name: 'Create Spreadsheet',
-  description: 'Create a new spreadsheet',
+  description: 'Create a new spreadsheet with a title and optional sheet names.',
   riskLevel: 'medium',
   params: z.object({
-    title: z.string().describe('Title of the new spreadsheet'),
-    sheetTitles: z.array(z.string()).optional().describe('Names for the initial sheets (default: one sheet named "Sheet1")'),
+    title: z.string().describe('Spreadsheet title'),
+    sheetTitles: z.array(z.string()).optional().describe('Initial sheet names'),
   }),
 };
+
+const getSpreadsheetInfo: ActionDefinition = {
+  id: 'sheets.get_spreadsheet_info',
+  name: 'Get Spreadsheet Info',
+  description: 'Get spreadsheet metadata including title, URL, and a list of all sheets with dimensions.',
+  riskLevel: 'low',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+  }),
+};
+
+const listSpreadsheets: ActionDefinition = {
+  id: 'sheets.list_spreadsheets',
+  name: 'List Spreadsheets',
+  description: 'List spreadsheets in your Drive, optionally filtered by name.',
+  riskLevel: 'low',
+  params: z.object({
+    query: z.string().optional().describe('Search text'),
+    maxResults: z.number().int().min(1).max(100).optional().describe('Max results (default: 20)'),
+  }),
+};
+
+const batchWrite: ActionDefinition = {
+  id: 'sheets.batch_write',
+  name: 'Batch Write',
+  description: 'Write data to multiple ranges in a single API call.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    data: z.array(z.object({
+      range: z.string().describe('A1 notation range'),
+      values: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))),
+    })).min(1).describe('Array of range+values pairs'),
+    valueInputOption: z.enum(['RAW', 'USER_ENTERED']).optional()
+      .describe('How input should be interpreted (default: USER_ENTERED)'),
+  }),
+};
+
+const clearRangeDef: ActionDefinition = {
+  id: 'sheets.clear_range',
+  name: 'Clear Range',
+  description: 'Clear all values from a range (formatting is preserved).',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    range: z.string().describe('A1 notation range to clear'),
+  }),
+};
+
+// -- Sheet Management (5) ----------------------------------------------------
 
 const addSheet: ActionDefinition = {
   id: 'sheets.add_sheet',
   name: 'Add Sheet',
-  description: 'Add a new sheet/tab to an existing spreadsheet',
+  description: 'Add a new sheet/tab to an existing spreadsheet.',
   riskLevel: 'medium',
   params: z.object({
-    spreadsheetId: z.string().describe('The spreadsheet ID'),
-    title: z.string().describe('Title for the new sheet'),
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    title: z.string().describe('Sheet/tab title'),
   }),
 };
 
 const deleteSheet: ActionDefinition = {
   id: 'sheets.delete_sheet',
   name: 'Delete Sheet',
-  description: 'Delete a sheet/tab from a spreadsheet by its sheet ID',
+  description: 'Delete a sheet/tab from a spreadsheet by its numeric sheet ID.',
   riskLevel: 'high',
   params: z.object({
-    spreadsheetId: z.string().describe('The spreadsheet ID'),
-    sheetId: z.number().int().describe('The numeric sheet ID (from get_spreadsheet)'),
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetId: z.number().int().describe('Numeric sheet ID (from get_spreadsheet_info)'),
   }),
 };
 
-const readFormatting: ActionDefinition = {
-  id: 'sheets.read_formatting',
-  name: 'Read Formatting',
-  description: 'Read cell formatting (colors, bold, borders, alignment, etc.) from a range. Use this to inspect existing styles before writing data so you can match them.',
-  riskLevel: 'low',
-  params: z.object({
-    spreadsheetId: z.string().describe('The spreadsheet ID'),
-    range: z.string().describe('A1 notation range to inspect (e.g. "Sheet1!A1:F10")'),
-  }),
-};
-
-const formatCells: ActionDefinition = {
-  id: 'sheets.format_cells',
-  name: 'Format Cells',
-  description: 'Apply formatting (colors, bold, borders, alignment, number format, etc.) to a range. Use "format" for uniform styling or "formats" for per-cell styling. Can also merge/unmerge cells.',
+const renameSheet: ActionDefinition = {
+  id: 'sheets.rename_sheet',
+  name: 'Rename Sheet',
+  description: 'Rename a sheet/tab in a spreadsheet.',
   riskLevel: 'medium',
   params: z.object({
-    spreadsheetId: z.string().describe('The spreadsheet ID'),
-    range: z.string().describe('A1 notation range to format (e.g. "Sheet1!A1:F10")'),
-    format: cellFormatSchema.optional().describe('Single format applied to all cells in the range'),
-    formats: z.array(z.array(cellFormatSchema)).optional().describe('Per-cell formatting grid (must match range dimensions)'),
-    merges: z.array(mergeSchema).optional().describe('Merge regions to apply (0-based row/column indices)'),
-    unmerge: z.boolean().optional().describe('If true, unmerge all cells in range before applying new merges'),
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetId: z.number().int().describe('Numeric sheet ID'),
+    title: z.string().describe('New sheet title'),
   }),
 };
 
+const duplicateSheet: ActionDefinition = {
+  id: 'sheets.duplicate_sheet',
+  name: 'Duplicate Sheet',
+  description: 'Duplicate a sheet/tab within a spreadsheet, copying all values, formulas, formatting, and validations.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetId: z.number().int().describe('Sheet ID to duplicate'),
+    title: z.string().optional().describe('Title for the copy'),
+  }),
+};
+
+const copySheetTo: ActionDefinition = {
+  id: 'sheets.copy_sheet_to',
+  name: 'Copy Sheet To',
+  description: 'Copy a sheet/tab from one spreadsheet to another.',
+  riskLevel: 'medium',
+  params: z.object({
+    sourceSpreadsheetId: z.string().describe('Source spreadsheet ID'),
+    sheetId: z.number().int().describe('Sheet ID to copy'),
+    destinationSpreadsheetId: z.string().describe('Target spreadsheet ID'),
+  }),
+};
+
+// -- Cell Formatting (9) -----------------------------------------------------
+
+const formatCellsDef: ActionDefinition = {
+  id: 'sheets.format_cells',
+  name: 'Format Cells',
+  description: 'Apply formatting to a range. Supports bold, italic, font size, colors, alignment, number format, and wrap strategy.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    range: z.string().describe('A1 notation range'),
+    format: z.object({
+      backgroundColor: z.object({ red: z.number(), green: z.number(), blue: z.number() }).optional(),
+      textFormat: z.object({
+        foregroundColor: z.object({ red: z.number(), green: z.number(), blue: z.number() }).optional(),
+        fontSize: z.number().optional(),
+        bold: z.boolean().optional(),
+        italic: z.boolean().optional(),
+      }).optional(),
+      horizontalAlignment: z.enum(['LEFT', 'CENTER', 'RIGHT']).optional(),
+      verticalAlignment: z.enum(['TOP', 'MIDDLE', 'BOTTOM']).optional(),
+      wrapStrategy: z.enum(['OVERFLOW_CELL', 'CLIP', 'WRAP']).optional(),
+      numberFormat: z.object({ type: z.string(), pattern: z.string().optional() }).optional(),
+    }).describe('Cell formatting properties'),
+  }),
+};
+
+const readCellFormat: ActionDefinition = {
+  id: 'sheets.read_cell_format',
+  name: 'Read Cell Format',
+  description: 'Read formatting/style of cells in a range (bold, colors, borders, alignment, number format).',
+  riskLevel: 'low',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    range: z.string().describe('A1 notation range'),
+  }),
+};
+
+const copyFormatting: ActionDefinition = {
+  id: 'sheets.copy_formatting',
+  name: 'Copy Formatting',
+  description: 'Copy formatting (not values) from a source range to a destination range within the same spreadsheet.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sourceRange: z.string().describe('A1 notation source range (including sheet name)'),
+    destinationRange: z.string().describe('A1 notation destination range (including sheet name)'),
+  }),
+};
+
+const setColumnWidthsDef: ActionDefinition = {
+  id: 'sheets.set_column_widths',
+  name: 'Set Column Widths',
+  description: 'Set the width (in pixels) of one or more columns.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetName: z.string().optional().describe('Sheet name (default: first sheet)'),
+    columnWidths: z.array(z.object({
+      column: z.string().describe('Column letter(s) or range, e.g. "A" or "A:C"'),
+      width: z.number().describe('Width in pixels'),
+    })).min(1),
+  }),
+};
+
+const setRowHeights: ActionDefinition = {
+  id: 'sheets.set_row_heights',
+  name: 'Set Row Heights',
+  description: 'Set a fixed pixel height for a range of rows.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetName: z.string().optional().describe('Sheet name (default: first sheet)'),
+    rowHeights: z.array(z.object({
+      startRow: z.number().int().describe('Start row (1-based)'),
+      endRow: z.number().int().describe('End row (1-based, inclusive)'),
+      height: z.number().describe('Height in pixels'),
+    })).min(1),
+  }),
+};
+
+const autoResizeColumns: ActionDefinition = {
+  id: 'sheets.auto_resize_columns',
+  name: 'Auto Resize Columns',
+  description: 'Auto-resize columns to fit their content.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetName: z.string().optional().describe('Sheet name'),
+    startColumn: z.string().describe('Start column letter, e.g. "A"'),
+    endColumn: z.string().describe('End column letter, e.g. "D"'),
+  }),
+};
+
+const autoResizeRows: ActionDefinition = {
+  id: 'sheets.auto_resize_rows',
+  name: 'Auto Resize Rows',
+  description: 'Auto-resize rows to fit their content.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetName: z.string().optional().describe('Sheet name'),
+    startRow: z.number().int().describe('Start row (1-based)'),
+    endRow: z.number().int().describe('End row (1-based, inclusive)'),
+  }),
+};
+
+const setCellBorders: ActionDefinition = {
+  id: 'sheets.set_cell_borders',
+  name: 'Set Cell Borders',
+  description: 'Set borders on a range of cells. Each side can be configured independently.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    range: z.string().describe('A1 notation range'),
+    borders: z.object({
+      top: z.object({ style: z.string(), color: z.string().optional() }).optional(),
+      bottom: z.object({ style: z.string(), color: z.string().optional() }).optional(),
+      left: z.object({ style: z.string(), color: z.string().optional() }).optional(),
+      right: z.object({ style: z.string(), color: z.string().optional() }).optional(),
+      innerHorizontal: z.object({ style: z.string(), color: z.string().optional() }).optional(),
+      innerVertical: z.object({ style: z.string(), color: z.string().optional() }).optional(),
+    }).describe('Border styles (style: DOTTED, DASHED, SOLID, SOLID_MEDIUM, SOLID_THICK, DOUBLE, NONE)'),
+  }),
+};
+
+const freezeRowsAndColumnsDef: ActionDefinition = {
+  id: 'sheets.freeze_rows_and_columns',
+  name: 'Freeze Rows and Columns',
+  description: 'Pin rows and/or columns so they stay visible when scrolling.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetName: z.string().optional().describe('Sheet name'),
+    frozenRowCount: z.number().int().min(0).optional().describe('Number of rows to freeze'),
+    frozenColumnCount: z.number().int().min(0).optional().describe('Number of columns to freeze'),
+  }),
+};
+
+// -- Tables (6) --------------------------------------------------------------
+
+const createTable: ActionDefinition = {
+  id: 'sheets.create_table',
+  name: 'Create Table',
+  description: 'Create a new named table with structured columns and optional column types.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetName: z.string().optional().describe('Sheet name (default: first sheet)'),
+    name: z.string().describe('Table name'),
+    range: z.string().describe('A1 notation range for the table'),
+    columns: z.array(z.string()).optional().describe('Column header names'),
+  }),
+};
+
+const getTable: ActionDefinition = {
+  id: 'sheets.get_table',
+  name: 'Get Table',
+  description: 'Get detailed information about a specific table including its columns, range, and properties.',
+  riskLevel: 'low',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    tableIdentifier: z.string().describe('Table ID or name'),
+  }),
+};
+
+const listTablesDef: ActionDefinition = {
+  id: 'sheets.list_tables',
+  name: 'List Tables',
+  description: 'List all tables in a spreadsheet, optionally filtered by sheet.',
+  riskLevel: 'low',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetName: z.string().optional().describe('Filter by sheet name'),
+  }),
+};
+
+const deleteTable: ActionDefinition = {
+  id: 'sheets.delete_table',
+  name: 'Delete Table',
+  description: 'Delete a table from a spreadsheet (table object removed; data preserved unless deleteData is true).',
+  riskLevel: 'high',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    tableId: z.string().describe('Table ID'),
+    deleteData: z.boolean().optional().describe('Also clear cell data in the table range (default: false)'),
+  }),
+};
+
+const updateTableRange: ActionDefinition = {
+  id: 'sheets.update_table_range',
+  name: 'Update Table Range',
+  description: "Modify a table's dimensions by updating its range.",
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    tableId: z.string().describe('Table ID'),
+    range: z.string().describe('New A1 notation range for the table'),
+  }),
+};
+
+const appendTableRows: ActionDefinition = {
+  id: 'sheets.append_table_rows',
+  name: 'Append Table Rows',
+  description: 'Append rows to the end of a table using table-aware insertion.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    tableId: z.string().describe('Table ID'),
+    values: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).describe('2D array of row values'),
+  }),
+};
+
+// -- Advanced (9) ------------------------------------------------------------
+
+const groupRows: ActionDefinition = {
+  id: 'sheets.group_rows',
+  name: 'Group Rows',
+  description: 'Create collapsible row groups.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetName: z.string().optional().describe('Sheet name'),
+    startRow: z.number().int().min(1).describe('Start row (1-based)'),
+    endRow: z.number().int().min(1).describe('End row (1-based, inclusive)'),
+  }),
+};
+
+const ungroupAllRows: ActionDefinition = {
+  id: 'sheets.ungroup_all_rows',
+  name: 'Ungroup All Rows',
+  description: 'Remove all row groupings from a sheet.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetName: z.string().optional().describe('Sheet name'),
+  }),
+};
+
+const insertChart: ActionDefinition = {
+  id: 'sheets.insert_chart',
+  name: 'Insert Chart',
+  description: 'Insert a chart into a Google Sheet. Supports bar, column, line, area, scatter, combo, and pie chart types.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetName: z.string().optional().describe('Sheet name'),
+    chartType: z.enum(['BAR', 'LINE', 'AREA', 'COLUMN', 'SCATTER', 'COMBO', 'PIE']).describe('Chart type'),
+    sourceRange: z.string().describe('A1 notation data range'),
+    title: z.string().optional().describe('Chart title'),
+    position: z.object({
+      anchorCell: z.string().optional().describe('A1 notation anchor cell for chart placement'),
+    }).optional(),
+  }),
+};
+
+const deleteChart: ActionDefinition = {
+  id: 'sheets.delete_chart',
+  name: 'Delete Chart',
+  description: 'Delete a chart from a spreadsheet by its chart ID.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    chartId: z.number().int().describe('Chart ID (from get_spreadsheet_info)'),
+  }),
+};
+
+const addConditionalFormatting: ActionDefinition = {
+  id: 'sheets.add_conditional_formatting',
+  name: 'Add Conditional Formatting',
+  description: 'Add a conditional formatting rule to one or more ranges. Use CUSTOM_FORMULA for complex conditions.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    range: z.string().describe('A1 notation range'),
+    conditionType: z.string().describe('Condition type (e.g. NUMBER_GREATER, TEXT_CONTAINS, CUSTOM_FORMULA, BLANK, NOT_BLANK)'),
+    conditionValues: z.array(z.string()).describe('Condition values'),
+    format: z.object({
+      backgroundColor: z.object({ red: z.number(), green: z.number(), blue: z.number() }).optional(),
+      textFormat: z.object({
+        foregroundColor: z.object({ red: z.number(), green: z.number(), blue: z.number() }).optional(),
+        bold: z.boolean().optional(),
+        italic: z.boolean().optional(),
+      }).optional(),
+    }).describe('Format to apply when condition is met'),
+  }),
+};
+
+const deleteConditionalFormatting: ActionDefinition = {
+  id: 'sheets.delete_conditional_formatting',
+  name: 'Delete Conditional Formatting',
+  description: 'Delete a conditional formatting rule by its index.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetId: z.number().int().describe('Sheet ID'),
+    index: z.number().int().min(0).describe('Rule index (0-based, from get_conditional_formatting)'),
+  }),
+};
+
+const getConditionalFormatting: ActionDefinition = {
+  id: 'sheets.get_conditional_formatting',
+  name: 'Get Conditional Formatting',
+  description: 'List all conditional formatting rules for a sheet.',
+  riskLevel: 'low',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    sheetName: z.string().optional().describe('Sheet name'),
+  }),
+};
+
+const setDropdownValidationDef: ActionDefinition = {
+  id: 'sheets.set_dropdown_validation',
+  name: 'Set Dropdown Validation',
+  description: 'Add or remove a dropdown list on a range of cells.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    range: z.string().describe('A1 notation range'),
+    values: z.array(z.string()).optional().describe('Dropdown values (omit to clear)'),
+    strict: z.boolean().optional().describe('Reject invalid input (default: true)'),
+    inputMessage: z.string().optional().describe('Help text shown on cell selection'),
+  }),
+};
+
+const protectRange: ActionDefinition = {
+  id: 'sheets.protect_range',
+  name: 'Protect Range',
+  description: 'Lock a range or entire sheet to prevent accidental edits.',
+  riskLevel: 'medium',
+  params: z.object({
+    spreadsheetId: z.string().describe('Spreadsheet ID'),
+    range: z.string().describe('A1 notation range to protect'),
+    description: z.string().optional().describe('Protection description'),
+    warningOnly: z.boolean().optional().describe('Show warning instead of blocking (default: false)'),
+  }),
+};
+
+// ─── All Actions ───────────────────────────────────────────────────────────
+
 const allActions: ActionDefinition[] = [
-  getSpreadsheet,
-  readRange,
-  readMultipleRanges,
-  writeRange,
-  appendRows,
-  clearRange,
+  // Core data
+  readSpreadsheet,
+  writeSpreadsheet,
+  appendRowsDef,
   createSpreadsheet,
+  getSpreadsheetInfo,
+  listSpreadsheets,
+  batchWrite,
+  clearRangeDef,
+  // Sheet management
   addSheet,
   deleteSheet,
-  readFormatting,
-  formatCells,
+  renameSheet,
+  duplicateSheet,
+  copySheetTo,
+  // Cell formatting
+  formatCellsDef,
+  readCellFormat,
+  copyFormatting,
+  setColumnWidthsDef,
+  setRowHeights,
+  autoResizeColumns,
+  autoResizeRows,
+  setCellBorders,
+  freezeRowsAndColumnsDef,
+  // Tables
+  createTable,
+  getTable,
+  listTablesDef,
+  deleteTable,
+  updateTableRange,
+  appendTableRows,
+  // Advanced
+  groupRows,
+  ungroupAllRows,
+  insertChart,
+  deleteChart,
+  addConditionalFormatting,
+  deleteConditionalFormatting,
+  getConditionalFormatting,
+  setDropdownValidationDef,
+  protectRange,
 ];
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers for readCellFormat simplification ─────────────────────────────
 
-async function resolveSheetId(spreadsheetId: string, range: string, token: string): Promise<number> {
-  const bangIndex = range.indexOf('!');
-  let sheetName = bangIndex !== -1 ? range.slice(0, bangIndex).replace(/^'|'$/g, '') : '';
+function simplifyFormat(fmt: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!fmt) return null;
+  const result: Record<string, unknown> = {};
 
-  const qs = new URLSearchParams({ fields: 'sheets.properties.sheetId,sheets.properties.title' });
-  const res = await sheetsFetch(`/${encodeURIComponent(spreadsheetId)}?${qs}`, token);
-  if (!res.ok) return 0;
-  const data = await res.json() as { sheets: Array<{ properties: { sheetId: number; title: string } }> };
-
-  if (!sheetName) return data.sheets[0]?.properties?.sheetId ?? 0;
-  const sheet = data.sheets.find((s) => s.properties.title === sheetName);
-  return sheet?.properties?.sheetId ?? 0;
-}
-
-async function findNextEmptyRow(spreadsheetId: string, range: string, token: string): Promise<number> {
-  const res = await sheetsFetch(`/${encodeURIComponent(spreadsheetId)}/values/${range}`, token);
-  if (!res.ok) return 0;
-  const data = await res.json() as { values?: unknown[][] };
-  return data.values?.length ?? 0;
-}
-
-function columnLetterToIndex(col: string): number {
-  let index = 0;
-  for (let i = 0; i < col.length; i++) {
-    index = index * 26 + (col.charCodeAt(i) - 64);
+  if (fmt.textFormat) {
+    const tf = fmt.textFormat as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    if (tf.bold) out.bold = true;
+    if (tf.italic) out.italic = true;
+    if (tf.strikethrough) out.strikethrough = true;
+    if (tf.underline) out.underline = true;
+    if (tf.fontSize != null) out.fontSize = tf.fontSize;
+    if (tf.fontFamily) out.fontFamily = tf.fontFamily;
+    const fgStyle = tf.foregroundColorStyle as { rgbColor?: Record<string, number> } | undefined;
+    if (fgStyle?.rgbColor) {
+      out.foregroundColor = rgbToHex(fgStyle.rgbColor);
+    } else if (tf.foregroundColor) {
+      out.foregroundColor = rgbToHex(tf.foregroundColor as Record<string, number>);
+    }
+    if (Object.keys(out).length > 0) result.textFormat = out;
   }
-  return index - 1;
-}
 
-function extractStartColumnIndex(range: string): number {
-  let rangeOnly = range;
-  const bangIndex = range.indexOf('!');
-  if (bangIndex !== -1) {
-    rangeOnly = range.slice(bangIndex + 1);
+  const bgStyle = (fmt.backgroundColorStyle as { rgbColor?: Record<string, number> }) || undefined;
+  if (bgStyle?.rgbColor) {
+    result.backgroundColor = rgbToHex(bgStyle.rgbColor);
+  } else if (fmt.backgroundColor) {
+    result.backgroundColor = rgbToHex(fmt.backgroundColor as Record<string, number>);
   }
-  const colMatch = rangeOnly.match(/^([A-Z]+)/);
-  return colMatch ? columnLetterToIndex(colMatch[1]) : 0;
+
+  if (fmt.horizontalAlignment) result.horizontalAlignment = fmt.horizontalAlignment;
+  if (fmt.verticalAlignment) result.verticalAlignment = fmt.verticalAlignment;
+  if (fmt.numberFormat) result.numberFormat = fmt.numberFormat;
+
+  if (fmt.borders) {
+    const borders: Record<string, unknown> = {};
+    const b = fmt.borders as Record<string, Record<string, unknown>>;
+    for (const side of ['top', 'bottom', 'left', 'right'] as const) {
+      if (b[side]) {
+        const sideObj: Record<string, unknown> = { style: b[side].style };
+        const cs = b[side].colorStyle as { rgbColor?: Record<string, number> } | undefined;
+        if (cs?.rgbColor) {
+          sideObj.color = rgbToHex(cs.rgbColor);
+        } else if (b[side].color) {
+          sideObj.color = rgbToHex(b[side].color as Record<string, number>);
+        }
+        borders[side] = sideObj;
+      }
+    }
+    if (Object.keys(borders).length > 0) result.borders = borders;
+  }
+
+  if (fmt.wrapStrategy) result.wrapStrategy = fmt.wrapStrategy;
+
+  return Object.keys(result).length > 0 ? result : null;
 }
 
-// ─── Action Execution ────────────────────────────────────────────────────────
+// ─── Action Execution ──────────────────────────────────────────────────────
 
 async function executeAction(
   actionId: string,
@@ -212,170 +644,36 @@ async function executeAction(
 
   try {
     switch (actionId) {
-      case 'sheets.get_spreadsheet': {
-        const { spreadsheetId } = getSpreadsheet.params.parse(params);
-        const qs = new URLSearchParams({
-          fields: 'spreadsheetId,properties,sheets.properties',
-        });
-        const res = await sheetsFetch(`/${encodeURIComponent(spreadsheetId)}?${qs}`, token);
-        if (!res.ok) return sheetsError(res);
-        return { success: true, data: await res.json() };
+      // ── Core Data ──────────────────────────────────────────────────────
+
+      case 'sheets.read_spreadsheet': {
+        const p = readSpreadsheet.params.parse(params);
+        const data = await readRange(token, p.spreadsheetId, p.range, p.valueRenderOption);
+        return { success: true, data };
       }
 
-      case 'sheets.read_range': {
-        const p = readRange.params.parse(params);
-        const qs = new URLSearchParams();
-        if (p.majorDimension) qs.set('majorDimension', p.majorDimension);
-        if (p.valueRenderOption) qs.set('valueRenderOption', p.valueRenderOption);
-        const qsStr = qs.toString() ? `?${qs}` : '';
-        const res = await sheetsFetch(
-          `/${encodeURIComponent(p.spreadsheetId)}/values/${p.range}${qsStr}`,
+      case 'sheets.write_spreadsheet': {
+        const p = writeSpreadsheet.params.parse(params);
+        const data = await writeRange(
           token,
+          p.spreadsheetId,
+          p.range,
+          p.data,
+          p.valueInputOption,
         );
-        if (!res.ok) return sheetsError(res);
-        const data = await res.json() as { range: string; majorDimension: string; values?: string[][] };
-        return {
-          success: true,
-          data: {
-            range: data.range,
-            majorDimension: data.majorDimension,
-            values: data.values || [],
-          },
-        };
-      }
-
-      case 'sheets.read_multiple_ranges': {
-        const p = readMultipleRanges.params.parse(params);
-        const qs = new URLSearchParams();
-        for (const range of p.ranges) qs.append('ranges', range);
-        if (p.majorDimension) qs.set('majorDimension', p.majorDimension);
-        if (p.valueRenderOption) qs.set('valueRenderOption', p.valueRenderOption);
-        const res = await sheetsFetch(
-          `/${encodeURIComponent(p.spreadsheetId)}/values:batchGet?${qs}`,
-          token,
-        );
-        if (!res.ok) return sheetsError(res);
-        const data = await res.json() as {
-          spreadsheetId: string;
-          valueRanges: Array<{ range: string; majorDimension: string; values?: string[][] }>;
-        };
-        return {
-          success: true,
-          data: {
-            spreadsheetId: data.spreadsheetId,
-            valueRanges: (data.valueRanges || []).map((vr) => ({
-              range: vr.range,
-              majorDimension: vr.majorDimension,
-              values: vr.values || [],
-            })),
-          },
-        };
-      }
-
-      case 'sheets.write_range': {
-        const p = writeRange.params.parse(params);
-
-        if (p.format || p.formats) {
-          const sheetId = await resolveSheetId(p.spreadsheetId, p.range, token);
-          const gridRange = parseA1Range(p.range, sheetId);
-
-          let cellFormats: CellFormat[][];
-          if (p.formats) {
-            cellFormats = p.formats;
-          } else {
-            cellFormats = p.values.map((row: unknown[]) => row.map(() => p.format!));
-          }
-
-          const request = buildUpdateCellsRequest(gridRange, cellFormats, p.values);
-          const res = await sheetsFetch(
-            `/${encodeURIComponent(p.spreadsheetId)}:batchUpdate`,
-            token,
-            { method: 'POST', body: JSON.stringify({ requests: [request] }) },
-          );
-          if (!res.ok) return sheetsError(res);
-          return { success: true, data: await res.json() };
-        }
-
-        const inputOption = p.valueInputOption || 'USER_ENTERED';
-        const qs = new URLSearchParams({ valueInputOption: inputOption });
-        const res = await sheetsFetch(
-          `/${encodeURIComponent(p.spreadsheetId)}/values/${p.range}?${qs}`,
-          token,
-          {
-            method: 'PUT',
-            body: JSON.stringify({
-              range: p.range,
-              majorDimension: 'ROWS',
-              values: p.values,
-            }),
-          },
-        );
-        if (!res.ok) return sheetsError(res);
-        return { success: true, data: await res.json() };
+        return { success: true, data };
       }
 
       case 'sheets.append_rows': {
-        const p = appendRows.params.parse(params);
-
-        if (p.format || p.formats) {
-          const sheetId = await resolveSheetId(p.spreadsheetId, p.range, token);
-          const nextRow = await findNextEmptyRow(p.spreadsheetId, p.range, token);
-
-          const startColIndex = extractStartColumnIndex(p.range);
-          const startRange = {
-            sheetId,
-            startRowIndex: nextRow,
-            endRowIndex: nextRow + p.values.length,
-            startColumnIndex: startColIndex,
-            endColumnIndex: startColIndex + (p.values[0]?.length ?? 0),
-          };
-
-          let cellFormats: CellFormat[][];
-          if (p.formats) {
-            cellFormats = p.formats;
-          } else {
-            cellFormats = p.values.map((row: unknown[]) => row.map(() => p.format!));
-          }
-
-          const request = buildUpdateCellsRequest(startRange, cellFormats, p.values);
-          const res = await sheetsFetch(
-            `/${encodeURIComponent(p.spreadsheetId)}:batchUpdate`,
-            token,
-            { method: 'POST', body: JSON.stringify({ requests: [request] }) },
-          );
-          if (!res.ok) return sheetsError(res);
-          return { success: true, data: await res.json() };
-        }
-
-        const inputOption = p.valueInputOption || 'USER_ENTERED';
-        const qs = new URLSearchParams({
-          valueInputOption: inputOption,
-          insertDataOption: 'INSERT_ROWS',
-        });
-        const res = await sheetsFetch(
-          `/${encodeURIComponent(p.spreadsheetId)}/values/${p.range}:append?${qs}`,
+        const p = appendRowsDef.params.parse(params);
+        const data = await appendValues(
           token,
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              majorDimension: 'ROWS',
-              values: p.values,
-            }),
-          },
+          p.spreadsheetId,
+          p.range,
+          p.data,
+          p.valueInputOption,
         );
-        if (!res.ok) return sheetsError(res);
-        return { success: true, data: await res.json() };
-      }
-
-      case 'sheets.clear_range': {
-        const p = clearRange.params.parse(params);
-        const res = await sheetsFetch(
-          `/${encodeURIComponent(p.spreadsheetId)}/values/${p.range}:clear`,
-          token,
-          { method: 'POST', body: JSON.stringify({}) },
-        );
-        if (!res.ok) return sheetsError(res);
-        return { success: true, data: await res.json() };
+        return { success: true, data };
       }
 
       case 'sheets.create_spreadsheet': {
@@ -384,9 +682,7 @@ async function executeAction(
           properties: { title: p.title },
         };
         if (p.sheetTitles?.length) {
-          body.sheets = p.sheetTitles.map((title: string) => ({
-            properties: { title },
-          }));
+          body.sheets = p.sheetTitles.map((t: string) => ({ properties: { title: t } }));
         }
         const res = await sheetsFetch('', token, {
           method: 'POST',
@@ -396,88 +692,830 @@ async function executeAction(
         return { success: true, data: await res.json() };
       }
 
-      case 'sheets.add_sheet': {
-        const p = addSheet.params.parse(params);
+      case 'sheets.get_spreadsheet_info': {
+        const p = getSpreadsheetInfo.params.parse(params);
+        const qs = new URLSearchParams({
+          fields: 'spreadsheetId,properties,sheets.properties',
+        });
+        const res = await sheetsFetch(`/${encodeURIComponent(p.spreadsheetId)}?${qs}`, token);
+        if (!res.ok) return sheetsError(res);
+        const data = await res.json() as {
+          spreadsheetId: string;
+          properties: { title: string };
+          sheets: Array<{
+            properties: {
+              title: string;
+              sheetId: number;
+              gridProperties?: { rowCount: number; columnCount: number };
+              hidden?: boolean;
+            };
+          }>;
+        };
+        return {
+          success: true,
+          data: {
+            title: data.properties?.title || 'Untitled',
+            spreadsheetId: data.spreadsheetId,
+            url: `https://docs.google.com/spreadsheets/d/${data.spreadsheetId}`,
+            sheets: (data.sheets || []).map((s) => ({
+              title: s.properties?.title,
+              sheetId: s.properties?.sheetId,
+              rows: s.properties?.gridProperties?.rowCount || 0,
+              columns: s.properties?.gridProperties?.columnCount || 0,
+              hidden: s.properties?.hidden || false,
+            })),
+          },
+        };
+      }
+
+      case 'sheets.list_spreadsheets': {
+        const p = listSpreadsheets.params.parse(params);
+        let q = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false";
+        if (p.query) {
+          q += ` and fullText contains '${p.query.replace(/'/g, "\\'")}'`;
+        }
+        const qs = new URLSearchParams({
+          q,
+          fields: 'files(id,name,modifiedTime,webViewLink)',
+          pageSize: String(p.maxResults || 20),
+          supportsAllDrives: 'true',
+          includeItemsFromAllDrives: 'true',
+        });
+        const res = await fetch(`https://www.googleapis.com/drive/v3/files?${qs}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        });
+        if (!res.ok) {
+          const detail = await res.text().catch(() => res.statusText);
+          return { success: false, error: `Drive API ${res.status}: ${detail}` };
+        }
+        const data = await res.json() as {
+          files: Array<{ id: string; name: string; modifiedTime: string; webViewLink: string }>;
+        };
+        return {
+          success: true,
+          data: {
+            spreadsheets: (data.files || []).map((f) => ({
+              id: f.id,
+              name: f.name,
+              modifiedTime: f.modifiedTime,
+              url: f.webViewLink,
+            })),
+          },
+        };
+      }
+
+      case 'sheets.batch_write': {
+        const p = batchWrite.params.parse(params);
         const res = await sheetsFetch(
-          `/${encodeURIComponent(p.spreadsheetId)}:batchUpdate`,
+          `/${encodeURIComponent(p.spreadsheetId)}/values:batchUpdate`,
           token,
           {
             method: 'POST',
             body: JSON.stringify({
-              requests: [{ addSheet: { properties: { title: p.title } } }],
+              valueInputOption: p.valueInputOption || 'USER_ENTERED',
+              data: p.data.map((d: { range: string; values: unknown[][] }) => ({ range: d.range, values: d.values })),
             }),
           },
         );
         if (!res.ok) return sheetsError(res);
-        const data = await res.json() as { replies: Array<{ addSheet: { properties: unknown } }> };
-        return { success: true, data: data.replies?.[0]?.addSheet?.properties };
+        return { success: true, data: await res.json() };
+      }
+
+      case 'sheets.clear_range': {
+        const p = clearRangeDef.params.parse(params);
+        const data = await clearRange(token, p.spreadsheetId, p.range);
+        return { success: true, data };
+      }
+
+      // ── Sheet Management ───────────────────────────────────────────────
+
+      case 'sheets.add_sheet': {
+        const p = addSheet.params.parse(params);
+        const data = await sheetsBatchUpdate(token, p.spreadsheetId, [
+          { addSheet: { properties: { title: p.title } } },
+        ]);
+        const replies = (data as { replies?: Array<{ addSheet?: { properties?: unknown } }> }).replies;
+        return { success: true, data: replies?.[0]?.addSheet?.properties };
       }
 
       case 'sheets.delete_sheet': {
         const p = deleteSheet.params.parse(params);
-        const res = await sheetsFetch(
-          `/${encodeURIComponent(p.spreadsheetId)}:batchUpdate`,
-          token,
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              requests: [{ deleteSheet: { sheetId: p.sheetId } }],
-            }),
-          },
-        );
-        if (!res.ok) return sheetsError(res);
+        await sheetsBatchUpdate(token, p.spreadsheetId, [
+          { deleteSheet: { sheetId: p.sheetId } },
+        ]);
         return { success: true };
       }
 
-      case 'sheets.read_formatting': {
-        const p = readFormatting.params.parse(params);
+      case 'sheets.rename_sheet': {
+        const p = renameSheet.params.parse(params);
+        await sheetsBatchUpdate(token, p.spreadsheetId, [
+          {
+            updateSheetProperties: {
+              properties: { sheetId: p.sheetId, title: p.title },
+              fields: 'title',
+            },
+          },
+        ]);
+        return { success: true, data: { sheetId: p.sheetId, title: p.title } };
+      }
+
+      case 'sheets.duplicate_sheet': {
+        const p = duplicateSheet.params.parse(params);
+        const data = await sheetsBatchUpdate(token, p.spreadsheetId, [
+          {
+            duplicateSheet: {
+              sourceSheetId: p.sheetId,
+              ...(p.title ? { newSheetName: p.title } : {}),
+            },
+          },
+        ]);
+        const replies = (data as { replies?: Array<{ duplicateSheet?: { properties?: unknown } }> }).replies;
+        return { success: true, data: replies?.[0]?.duplicateSheet?.properties };
+      }
+
+      case 'sheets.copy_sheet_to': {
+        const p = copySheetTo.params.parse(params);
+        const res = await sheetsFetch(
+          `/${encodeURIComponent(p.sourceSpreadsheetId)}/sheets/${p.sheetId}:copyTo`,
+          token,
+          {
+            method: 'POST',
+            body: JSON.stringify({ destinationSpreadsheetId: p.destinationSpreadsheetId }),
+          },
+        );
+        if (!res.ok) return sheetsError(res);
+        return { success: true, data: await res.json() };
+      }
+
+      // ── Cell Formatting ────────────────────────────────────────────────
+
+      case 'sheets.format_cells': {
+        const p = formatCellsDef.params.parse(params);
+        await formatCells(token, p.spreadsheetId, p.range, p.format);
+        return { success: true, data: { updatedRange: p.range } };
+      }
+
+      case 'sheets.read_cell_format': {
+        const p = readCellFormat.params.parse(params);
         const fields = [
-          'sheets.properties.sheetId',
-          'sheets.properties.title',
           'sheets.data.rowData.values.userEnteredFormat',
-          'sheets.merges',
+          'sheets.data.startRow',
+          'sheets.data.startColumn',
         ].join(',');
-        const qs = new URLSearchParams({ ranges: p.range, fields });
+        const qs = new URLSearchParams({
+          ranges: p.range,
+          includeGridData: 'true',
+          fields,
+        });
         const res = await sheetsFetch(
           `/${encodeURIComponent(p.spreadsheetId)}?${qs}`,
           token,
         );
         if (!res.ok) return sheetsError(res);
-        const data = await res.json();
-        return { success: true, data: normalizeFormatsResponse(data, p.range) };
+
+        const apiData = await res.json() as {
+          sheets?: Array<{
+            data?: Array<{
+              startRow?: number;
+              startColumn?: number;
+              rowData?: Array<{
+                values?: Array<{ userEnteredFormat?: Record<string, unknown> }>;
+              }>;
+            }>;
+          }>;
+        };
+
+        const sheetData = apiData.sheets?.[0]?.data?.[0];
+        if (!sheetData?.rowData) {
+          return { success: true, data: { range: p.range, cells: [] } };
+        }
+
+        const startRow = sheetData.startRow ?? 0;
+        const startCol = sheetData.startColumn ?? 0;
+        const cells: Array<{ cell: string; format: Record<string, unknown> }> = [];
+
+        for (let rowIdx = 0; rowIdx < sheetData.rowData.length; rowIdx++) {
+          const row = sheetData.rowData[rowIdx];
+          if (!row.values) continue;
+          for (let colIdx = 0; colIdx < row.values.length; colIdx++) {
+            const cellData = row.values[colIdx];
+            const fmt = simplifyFormat(cellData?.userEnteredFormat);
+            if (fmt) {
+              cells.push({ cell: rowColToA1(startRow + rowIdx, startCol + colIdx), format: fmt });
+            }
+          }
+        }
+
+        return { success: true, data: { range: p.range, cells } };
       }
 
-      case 'sheets.format_cells': {
-        const p = formatCells.params.parse(params);
-        if (!p.format && !p.formats && !p.merges) {
-          return { success: false, error: 'At least one of format, formats, or merges must be provided' };
-        }
+      case 'sheets.copy_formatting': {
+        const p = copyFormatting.params.parse(params);
+        const srcParsed = parseRange(p.sourceRange);
+        const dstParsed = parseRange(p.destinationRange);
+        const srcSheetId = await resolveSheetId(token, p.spreadsheetId, srcParsed.sheetName);
+        const dstSheetId = await resolveSheetId(token, p.spreadsheetId, dstParsed.sheetName);
+        const srcGrid = parseA1ToGridRange(srcParsed.a1Range, srcSheetId);
+        const dstGrid = parseA1ToGridRange(dstParsed.a1Range, dstSheetId);
 
-        const sheetId = await resolveSheetId(p.spreadsheetId, p.range, token);
-        const gridRange = parseA1Range(p.range, sheetId);
+        await sheetsBatchUpdate(token, p.spreadsheetId, [
+          {
+            copyPaste: {
+              source: srcGrid,
+              destination: dstGrid,
+              pasteType: 'PASTE_FORMAT',
+            },
+          },
+        ]);
+        return { success: true, data: { source: p.sourceRange, destination: p.destinationRange } };
+      }
 
-        const requests: Array<Record<string, unknown>> = [];
+      case 'sheets.set_column_widths': {
+        const p = setColumnWidthsDef.params.parse(params);
+        await setColumnWidths(token, p.spreadsheetId, p.sheetName, p.columnWidths);
+        return { success: true, data: { columnWidths: p.columnWidths } };
+      }
 
-        if (p.format) {
-          requests.push(buildRepeatCellRequest(gridRange, p.format));
-        } else if (p.formats) {
-          requests.push(buildUpdateCellsRequest(gridRange, p.formats));
-        }
+      case 'sheets.set_row_heights': {
+        const p = setRowHeights.params.parse(params);
+        const sheetId = await resolveSheetId(token, p.spreadsheetId, p.sheetName);
+        const requests = p.rowHeights.map((rh: { startRow: number; endRow: number; height: number }) => ({
+          updateDimensionProperties: {
+            range: {
+              sheetId,
+              dimension: 'ROWS',
+              startIndex: rh.startRow - 1,
+              endIndex: rh.endRow,
+            },
+            properties: { pixelSize: rh.height },
+            fields: 'pixelSize',
+          },
+        }));
+        await sheetsBatchUpdate(token, p.spreadsheetId, requests);
+        return { success: true, data: { rowHeights: p.rowHeights } };
+      }
 
-        if (p.merges) {
-          requests.push(...buildMergeRequests(p.merges, p.unmerge ?? false));
-        }
+      case 'sheets.auto_resize_columns': {
+        const p = autoResizeColumns.params.parse(params);
+        const sheetId = await resolveSheetId(token, p.spreadsheetId, p.sheetName);
+        const startIndex = colLettersToIndex(p.startColumn);
+        const endIndex = colLettersToIndex(p.endColumn) + 1;
 
-        const res = await sheetsFetch(
-          `/${encodeURIComponent(p.spreadsheetId)}:batchUpdate`,
+        await sheetsBatchUpdate(token, p.spreadsheetId, [
+          {
+            autoResizeDimensions: {
+              dimensions: { sheetId, dimension: 'COLUMNS', startIndex, endIndex },
+            },
+          },
+        ]);
+        return { success: true, data: { columns: `${p.startColumn}:${p.endColumn}` } };
+      }
+
+      case 'sheets.auto_resize_rows': {
+        const p = autoResizeRows.params.parse(params);
+        const sheetId = await resolveSheetId(token, p.spreadsheetId, p.sheetName);
+        await sheetsBatchUpdate(token, p.spreadsheetId, [
+          {
+            autoResizeDimensions: {
+              dimensions: {
+                sheetId,
+                dimension: 'ROWS',
+                startIndex: p.startRow - 1,
+                endIndex: p.endRow,
+              },
+            },
+          },
+        ]);
+        return { success: true, data: { rows: `${p.startRow}:${p.endRow}` } };
+      }
+
+      case 'sheets.set_cell_borders': {
+        const p = setCellBorders.params.parse(params);
+        const { sheetName, a1Range } = parseRange(p.range);
+        const sheetId = await resolveSheetId(token, p.spreadsheetId, sheetName);
+        const gridRange = parseA1ToGridRange(a1Range, sheetId);
+
+        const buildBorder = (b: { style: string; color?: string } | undefined) => {
+          if (!b) return undefined;
+          const border: Record<string, unknown> = { style: b.style };
+          if (b.color) {
+            const rgb = hexToRgb(b.color);
+            if (rgb) border.colorStyle = { rgbColor: rgb };
+          }
+          return border;
+        };
+
+        const borders: Record<string, unknown> = {};
+        if (p.borders.top !== undefined) borders.top = buildBorder(p.borders.top);
+        if (p.borders.bottom !== undefined) borders.bottom = buildBorder(p.borders.bottom);
+        if (p.borders.left !== undefined) borders.left = buildBorder(p.borders.left);
+        if (p.borders.right !== undefined) borders.right = buildBorder(p.borders.right);
+        if (p.borders.innerHorizontal !== undefined) borders.innerHorizontal = buildBorder(p.borders.innerHorizontal);
+        if (p.borders.innerVertical !== undefined) borders.innerVertical = buildBorder(p.borders.innerVertical);
+
+        await sheetsBatchUpdate(token, p.spreadsheetId, [
+          { updateBorders: { range: gridRange, ...borders } },
+        ]);
+        return { success: true, data: { range: p.range } };
+      }
+
+      case 'sheets.freeze_rows_and_columns': {
+        const p = freezeRowsAndColumnsDef.params.parse(params);
+        await freezeRowsAndColumns(
           token,
-          { method: 'POST', body: JSON.stringify({ requests }) },
+          p.spreadsheetId,
+          p.sheetName,
+          p.frozenRowCount,
+          p.frozenColumnCount,
         );
-        if (!res.ok) return sheetsError(res);
+        return {
+          success: true,
+          data: { frozenRowCount: p.frozenRowCount, frozenColumnCount: p.frozenColumnCount },
+        };
+      }
+
+      // ── Tables ─────────────────────────────────────────────────────────
+
+      case 'sheets.create_table': {
+        const p = createTable.params.parse(params);
+        const { sheetName: rangeSN, a1Range } = parseRange(p.range);
+        const sn = p.sheetName || rangeSN;
+        const sheetId = await resolveSheetId(token, p.spreadsheetId, sn);
+        const gridRange = parseA1ToGridRange(a1Range, sheetId);
+
+        const columnProperties = p.columns?.map((name: string, index: number) => ({
+          columnIndex: index,
+          columnName: name,
+        }));
+
+        const data = await sheetsBatchUpdate(token, p.spreadsheetId, [
+          {
+            addTable: {
+              table: {
+                name: p.name,
+                range: gridRange,
+                ...(columnProperties ? { columnProperties } : {}),
+              },
+            },
+          },
+        ]);
+
+        const replies = (data as { replies?: Array<{ addTable?: { table?: Record<string, unknown> } }> }).replies;
+        const table = replies?.[0]?.addTable?.table;
+        return {
+          success: true,
+          data: {
+            tableId: table?.tableId,
+            name: table?.name || p.name,
+            range: p.range,
+          },
+        };
+      }
+
+      case 'sheets.get_table': {
+        const p = getTable.params.parse(params);
+        const { table, sheetName, sheetId } = await resolveTableIdentifier(
+          token,
+          p.spreadsheetId,
+          p.tableIdentifier,
+        );
+        const tRange = table.range as { startRowIndex?: number; startColumnIndex?: number; endRowIndex?: number; endColumnIndex?: number } | undefined;
+        const columns = (table.columnProperties as Array<{ columnIndex?: number; columnName?: string }> | undefined)?.map(
+          (col) => ({ index: col.columnIndex, name: col.columnName }),
+        ) || [];
+
+        const range = tRange
+          ? `${sheetName}!${rowColToA1(tRange.startRowIndex || 0, tRange.startColumnIndex || 0)}:${rowColToA1((tRange.endRowIndex || 1) - 1, (tRange.endColumnIndex || 1) - 1)}`
+          : 'Unknown';
 
         return {
           success: true,
-          data: { updatedRange: p.range, mergesApplied: p.merges?.length ?? 0 },
+          data: {
+            tableId: table.tableId,
+            name: table.name,
+            sheetName,
+            sheetId,
+            range,
+            columns,
+          },
+        };
+      }
+
+      case 'sheets.list_tables': {
+        const p = listTablesDef.params.parse(params);
+        const tables = await listAllTables(token, p.spreadsheetId, p.sheetName);
+
+        const tableList = tables.map((item) => {
+          const tRange = item.table.range as { startRowIndex?: number; startColumnIndex?: number; endRowIndex?: number; endColumnIndex?: number } | undefined;
+          return {
+            tableId: item.table.tableId,
+            name: item.table.name,
+            sheetName: item.sheetName,
+            range: tRange
+              ? `${item.sheetName}!${rowColToA1(tRange.startRowIndex || 0, tRange.startColumnIndex || 0)}:${rowColToA1((tRange.endRowIndex || 1) - 1, (tRange.endColumnIndex || 1) - 1)}`
+              : 'Unknown',
+          };
+        });
+
+        return {
+          success: true,
+          data: { count: tableList.length, tables: tableList },
+        };
+      }
+
+      case 'sheets.delete_table': {
+        const p = deleteTable.params.parse(params);
+        // Resolve table to get metadata before deletion
+        const { table, sheetName } = await resolveTableIdentifier(token, p.spreadsheetId, p.tableId);
+        const tableId = (table.tableId as string) || p.tableId;
+
+        await sheetsBatchUpdate(token, p.spreadsheetId, [
+          { deleteTable: { tableId } },
+        ]);
+
+        // Clear data if requested
+        if (p.deleteData) {
+          const tRange = table.range as { startRowIndex?: number; startColumnIndex?: number; endRowIndex?: number; endColumnIndex?: number } | undefined;
+          if (tRange) {
+            const a1 = `${sheetName}!${rowColToA1(tRange.startRowIndex || 0, tRange.startColumnIndex || 0)}:${rowColToA1((tRange.endRowIndex || 1) - 1, (tRange.endColumnIndex || 1) - 1)}`;
+            await clearRange(token, p.spreadsheetId, a1);
+          }
+        }
+
+        return {
+          success: true,
+          data: { tableId, deleted: true, dataCleared: p.deleteData || false },
+        };
+      }
+
+      case 'sheets.update_table_range': {
+        const p = updateTableRange.params.parse(params);
+        const { table, sheetName } = await resolveTableIdentifier(token, p.spreadsheetId, p.tableId);
+        const { a1Range } = parseRange(p.range);
+        const sheetId = await resolveSheetId(token, p.spreadsheetId, sheetName || undefined);
+        const newRange = parseA1ToGridRange(a1Range, sheetId);
+
+        await sheetsBatchUpdate(token, p.spreadsheetId, [
+          {
+            updateTable: {
+              table: { tableId: table.tableId || p.tableId, range: newRange },
+              fields: 'range',
+            },
+          },
+        ]);
+
+        // Re-fetch updated table
+        const updated = await resolveTableIdentifier(token, p.spreadsheetId, (table.tableId as string) || p.tableId);
+        return {
+          success: true,
+          data: {
+            tableId: updated.table.tableId,
+            name: updated.table.name,
+            newRange: p.range,
+          },
+        };
+      }
+
+      case 'sheets.append_table_rows': {
+        const p = appendTableRows.params.parse(params);
+        const { table, sheetName } = await resolveTableIdentifier(token, p.spreadsheetId, p.tableId);
+        const tRange = table.range as { startRowIndex?: number; startColumnIndex?: number; endRowIndex?: number; endColumnIndex?: number } | undefined;
+
+        if (!tRange) {
+          return { success: false, error: 'Table does not have a range defined' };
+        }
+
+        const startRow = tRange.endRowIndex || 0;
+        const startCol = tRange.startColumnIndex || 0;
+        const endCol = tRange.endColumnIndex || 0;
+        const range = `${sheetName}!${rowColToA1(startRow, startCol)}:${rowColToA1(startRow + p.values.length - 1, endCol - 1)}`;
+
+        const data = await appendValues(token, p.spreadsheetId, range, p.values);
+        return {
+          success: true,
+          data: {
+            tableId: table.tableId,
+            name: table.name,
+            rowsAppended: p.values.length,
+            updatedRange: (data as { updates?: { updatedRange?: string } }).updates?.updatedRange || range,
+          },
+        };
+      }
+
+      // ── Advanced ───────────────────────────────────────────────────────
+
+      case 'sheets.group_rows': {
+        const p = groupRows.params.parse(params);
+        const sheetId = await resolveSheetId(token, p.spreadsheetId, p.sheetName);
+        await sheetsBatchUpdate(token, p.spreadsheetId, [
+          {
+            addDimensionGroup: {
+              range: {
+                sheetId,
+                dimension: 'ROWS',
+                startIndex: p.startRow - 1,
+                endIndex: p.endRow,
+              },
+            },
+          },
+        ]);
+        return { success: true, data: { rows: `${p.startRow}:${p.endRow}` } };
+      }
+
+      case 'sheets.ungroup_all_rows': {
+        const p = ungroupAllRows.params.parse(params);
+        const sheetId = await resolveSheetId(token, p.spreadsheetId, p.sheetName);
+        let removed = 0;
+
+        // deleteDimensionGroup removes one level at a time; loop until no groups remain
+        for (;;) {
+          try {
+            await sheetsBatchUpdate(token, p.spreadsheetId, [
+              {
+                deleteDimensionGroup: {
+                  range: { sheetId, dimension: 'ROWS', startIndex: 0, endIndex: 500 },
+                },
+              },
+            ]);
+            removed++;
+          } catch {
+            break;
+          }
+        }
+
+        return { success: true, data: { levelsRemoved: removed } };
+      }
+
+      case 'sheets.insert_chart': {
+        const p = insertChart.params.parse(params);
+        const sheetId = await resolveSheetId(token, p.spreadsheetId, p.sheetName);
+        const { a1Range } = parseRange(p.sourceRange);
+        const gridRange = parseA1ToGridRange(a1Range, sheetId);
+
+        const startRow = gridRange.startRowIndex ?? 0;
+        const endRow = gridRange.endRowIndex ?? startRow + 1;
+        const startCol = gridRange.startColumnIndex ?? 0;
+        const endCol = gridRange.endColumnIndex ?? startCol + 1;
+
+        let chartSpec: Record<string, unknown> = {};
+
+        if (p.chartType === 'PIE') {
+          chartSpec.pieChart = {
+            legendPosition: 'LABELED_LEGEND',
+            domain: {
+              data: {
+                sourceRange: {
+                  sources: [{ sheetId, startRowIndex: startRow + 1, endRowIndex: endRow, startColumnIndex: startCol, endColumnIndex: startCol + 1 }],
+                },
+              },
+            },
+            series: {
+              data: {
+                sourceRange: {
+                  sources: [{ sheetId, startRowIndex: startRow + 1, endRowIndex: endRow, startColumnIndex: startCol + 1, endColumnIndex: startCol + 2 }],
+                },
+              },
+            },
+          };
+        } else {
+          const seriesCount = endCol - startCol - 1;
+          const series = Array.from({ length: seriesCount }, (_, i) => ({
+            series: {
+              sourceRange: {
+                sources: [{
+                  sheetId,
+                  startRowIndex: startRow,
+                  endRowIndex: endRow,
+                  startColumnIndex: startCol + 1 + i,
+                  endColumnIndex: startCol + 2 + i,
+                }],
+              },
+            },
+            targetAxis: 'LEFT_AXIS',
+          }));
+
+          chartSpec.basicChart = {
+            chartType: p.chartType,
+            legendPosition: 'BOTTOM_LEGEND',
+            axis: [
+              { position: 'BOTTOM_AXIS', title: '' },
+              { position: 'LEFT_AXIS', title: '' },
+            ],
+            domains: [{
+              domain: {
+                sourceRange: {
+                  sources: [{
+                    sheetId,
+                    startRowIndex: startRow,
+                    endRowIndex: endRow,
+                    startColumnIndex: startCol,
+                    endColumnIndex: startCol + 1,
+                  }],
+                },
+              },
+              reversed: false,
+            }],
+            series,
+            headerCount: 1,
+          };
+        }
+
+        if (p.title) chartSpec.title = p.title;
+
+        // Determine anchor position
+        let anchorRow = 0;
+        let anchorCol = endCol;
+        if (p.position?.anchorCell) {
+          const { row, col } = (() => {
+            const m = p.position.anchorCell.match(/^([A-Z]+)(\d+)$/i);
+            if (!m) return { row: 0, col: endCol };
+            return { row: parseInt(m[2], 10) - 1, col: colLettersToIndex(m[1]) };
+          })();
+          anchorRow = row;
+          anchorCol = col;
+        }
+
+        const data = await sheetsBatchUpdate(token, p.spreadsheetId, [
+          {
+            addChart: {
+              chart: {
+                spec: chartSpec,
+                position: {
+                  overlayPosition: {
+                    anchorCell: { sheetId, rowIndex: anchorRow, columnIndex: anchorCol },
+                    widthPixels: 600,
+                    heightPixels: 400,
+                  },
+                },
+              },
+            },
+          },
+        ]);
+
+        const replies = (data as { replies?: Array<{ addChart?: { chart?: { chartId?: number } } }> }).replies;
+        const chartId = replies?.[0]?.addChart?.chart?.chartId;
+        return { success: true, data: { chartId } };
+      }
+
+      case 'sheets.delete_chart': {
+        const p = deleteChart.params.parse(params);
+        await sheetsBatchUpdate(token, p.spreadsheetId, [
+          { deleteEmbeddedObject: { objectId: p.chartId } },
+        ]);
+        return { success: true, data: { chartId: p.chartId, deleted: true } };
+      }
+
+      case 'sheets.add_conditional_formatting': {
+        const p = addConditionalFormatting.params.parse(params);
+        const { sheetName, a1Range } = parseRange(p.range);
+        const sheetId = await resolveSheetId(token, p.spreadsheetId, sheetName);
+        const gridRanges = [parseA1ToGridRange(a1Range, sheetId)];
+
+        const conditionValues = p.conditionValues.map((v: string) => ({ userEnteredValue: v }));
+        const format: Record<string, unknown> = {};
+        if (p.format.backgroundColor) format.backgroundColor = p.format.backgroundColor;
+        if (p.format.textFormat) format.textFormat = p.format.textFormat;
+
+        await addConditionalFormatRule(
+          token,
+          p.spreadsheetId,
+          gridRanges,
+          p.conditionType,
+          conditionValues,
+          format,
+        );
+        return { success: true, data: { range: p.range } };
+      }
+
+      case 'sheets.delete_conditional_formatting': {
+        const p = deleteConditionalFormatting.params.parse(params);
+        await sheetsBatchUpdate(token, p.spreadsheetId, [
+          { deleteConditionalFormatRule: { sheetId: p.sheetId, index: p.index } },
+        ]);
+        return { success: true, data: { sheetId: p.sheetId, index: p.index, deleted: true } };
+      }
+
+      case 'sheets.get_conditional_formatting': {
+        const p = getConditionalFormatting.params.parse(params);
+        const sheetId = await resolveSheetId(token, p.spreadsheetId, p.sheetName);
+        const qs = new URLSearchParams({
+          fields: 'sheets(properties(sheetId,title),conditionalFormats)',
+        });
+        const res = await sheetsFetch(`/${encodeURIComponent(p.spreadsheetId)}?${qs}`, token);
+        if (!res.ok) return sheetsError(res);
+
+        const apiData = await res.json() as {
+          sheets?: Array<{
+            properties?: { sheetId?: number; title?: string };
+            conditionalFormats?: Array<{
+              booleanRule?: {
+                condition?: { type?: string; values?: Array<{ userEnteredValue?: string }> };
+                format?: Record<string, unknown>;
+              };
+              gradientRule?: unknown;
+              ranges?: Array<{
+                startColumnIndex?: number;
+                endColumnIndex?: number;
+                startRowIndex?: number;
+                endRowIndex?: number;
+              }>;
+            }>;
+          }>;
+        };
+
+        const sheet = apiData.sheets?.find((s) => s.properties?.sheetId === sheetId);
+        const rules = sheet?.conditionalFormats ?? [];
+
+        const ruleSummaries = rules.map((rule, idx) => {
+          const condition = rule.booleanRule?.condition;
+          const fmt = rule.booleanRule?.format ?? {};
+
+          const ranges = (rule.ranges ?? []).map((r) => {
+            const sc = r.startColumnIndex != null ? colIndexToLetters(r.startColumnIndex) : '';
+            const ec = r.endColumnIndex != null ? colIndexToLetters(r.endColumnIndex - 1) : '';
+            const sr = r.startRowIndex != null ? r.startRowIndex + 1 : '';
+            const er = r.endRowIndex != null ? r.endRowIndex : '';
+            return `${sc}${sr}:${ec}${er}`;
+          });
+
+          return {
+            index: idx,
+            kind: rule.gradientRule ? 'GRADIENT' : 'BOOLEAN',
+            ranges,
+            conditionType: condition?.type ?? null,
+            conditionValues: (condition?.values ?? [])
+              .map((v) => v.userEnteredValue)
+              .filter((v): v is string => typeof v === 'string'),
+            backgroundColor: (fmt as Record<string, unknown>).backgroundColor
+              ? rgbToHex((fmt as Record<string, unknown>).backgroundColor as Record<string, number>)
+              : null,
+            textColor: ((fmt as Record<string, unknown>).textFormat as Record<string, unknown> | undefined)?.foregroundColor
+              ? rgbToHex(((fmt as Record<string, unknown>).textFormat as Record<string, unknown>).foregroundColor as Record<string, number>)
+              : null,
+            bold: ((fmt as Record<string, unknown>).textFormat as Record<string, unknown> | undefined)?.bold ?? false,
+            italic: ((fmt as Record<string, unknown>).textFormat as Record<string, unknown> | undefined)?.italic ?? false,
+          };
+        });
+
+        return {
+          success: true,
+          data: {
+            sheetName: sheet?.properties?.title ?? null,
+            count: ruleSummaries.length,
+            rules: ruleSummaries,
+          },
+        };
+      }
+
+      case 'sheets.set_dropdown_validation': {
+        const p = setDropdownValidationDef.params.parse(params);
+        await setDropdownValidation(
+          token,
+          p.spreadsheetId,
+          p.range,
+          p.values,
+          p.strict ?? true,
+          p.inputMessage,
+        );
+        const isClearing = !p.values || p.values.length === 0;
+        return {
+          success: true,
+          data: {
+            range: p.range,
+            action: isClearing ? 'cleared' : 'set',
+            ...(p.values ? { optionCount: p.values.length } : {}),
+          },
+        };
+      }
+
+      case 'sheets.protect_range': {
+        const p = protectRange.params.parse(params);
+        const { sheetName, a1Range } = parseRange(p.range);
+        const sheetId = await resolveSheetId(token, p.spreadsheetId, sheetName);
+
+        const protectedRangeObj: Record<string, unknown> = {
+          description: p.description ?? '',
+          warningOnly: p.warningOnly ?? false,
+          range: parseA1ToGridRange(a1Range, sheetId),
+        };
+
+        const data = await sheetsBatchUpdate(token, p.spreadsheetId, [
+          { addProtectedRange: { protectedRange: protectedRangeObj } },
+        ]);
+
+        const replies = (data as { replies?: Array<{ addProtectedRange?: { protectedRange?: { protectedRangeId?: number } } }> }).replies;
+        const protectionId = replies?.[0]?.addProtectedRange?.protectedRange?.protectedRangeId;
+
+        return {
+          success: true,
+          data: {
+            protectedRangeId: protectionId,
+            range: p.range,
+            warningOnly: p.warningOnly ?? false,
+          },
         };
       }
 
@@ -489,7 +1527,7 @@ async function executeAction(
   }
 }
 
-// ─── Export ──────────────────────────────────────────────────────────────────
+// ─── Export ────────────────────────────────────────────────────────────────
 
 export const sheetsActionDefs: ActionDefinition[] = allActions;
 export { executeAction as executeSheetsAction };

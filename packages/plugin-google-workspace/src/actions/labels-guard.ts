@@ -16,31 +16,32 @@ export type GuardAction = 'list_search' | 'read_get' | 'write_modify' | 'create'
 export const LIST_SEARCH_ACTIONS: string[] = [
   'drive.list_files',
   'drive.search_files',
+  'drive.list_documents',
+  'drive.search_documents',
+  'drive.list_folder_contents',
   'docs.list_tabs',
+  'sheets.list_spreadsheets',
+  'sheets.list_tables',
+  'sheets.get_conditional_formatting',
 ];
 
 export const READ_GET_ACTIONS: string[] = [
-  'drive.read_file',
-  'drive.get_file',
-  'drive.export_file',
+  'drive.get_document_info',
+  'drive.get_folder_info',
+  'drive.download_file',
   'docs.read_document',
   'docs.list_comments',
   'docs.get_comment',
-  'sheets.get_spreadsheet',
-  'sheets.read_range',
-  'sheets.read_multiple_ranges',
-  'sheets.read_formatting',
+  'sheets.read_spreadsheet',
+  'sheets.get_spreadsheet_info',
+  'sheets.read_cell_format',
+  'sheets.get_table',
 ];
 
 export const WRITE_MODIFY_ACTIONS: string[] = [
-  'drive.update_content',
-  'drive.update_metadata',
   'drive.copy_file',
-  'drive.share_file',
-  'drive.list_permissions',
-  'drive.remove_permission',
-  'drive.trash_file',
-  'drive.untrash_file',
+  'drive.move_file',
+  'drive.rename_file',
   'drive.delete_file',
   'docs.insert_text',
   'docs.append_text',
@@ -63,18 +64,42 @@ export const WRITE_MODIFY_ACTIONS: string[] = [
   'docs.reply_to_comment',
   'docs.delete_comment',
   'docs.resolve_comment',
-  'sheets.write_range',
+  'sheets.write_spreadsheet',
   'sheets.append_rows',
+  'sheets.batch_write',
   'sheets.clear_range',
-  'sheets.format_cells',
   'sheets.add_sheet',
   'sheets.delete_sheet',
+  'sheets.rename_sheet',
+  'sheets.duplicate_sheet',
+  'sheets.copy_sheet_to',
+  'sheets.format_cells',
+  'sheets.copy_formatting',
+  'sheets.set_column_widths',
+  'sheets.set_row_heights',
+  'sheets.auto_resize_columns',
+  'sheets.auto_resize_rows',
+  'sheets.set_cell_borders',
+  'sheets.freeze_rows_and_columns',
+  'sheets.delete_table',
+  'sheets.update_table_range',
+  'sheets.append_table_rows',
+  'sheets.group_rows',
+  'sheets.ungroup_all_rows',
+  'sheets.insert_chart',
+  'sheets.delete_chart',
+  'sheets.add_conditional_formatting',
+  'sheets.delete_conditional_formatting',
+  'sheets.set_dropdown_validation',
+  'sheets.protect_range',
 ];
 
 export const CREATE_ACTIONS: string[] = [
-  'drive.create_file',
+  'drive.create_document',
   'drive.create_folder',
+  'drive.create_from_template',
   'sheets.create_spreadsheet',
+  'sheets.create_table',
 ];
 
 // ─── Guard Config Parsing ───────────────────────────────────────────────────
@@ -258,6 +283,12 @@ export function classifyAction(actionId: string): GuardAction {
  * Drive actions use `fileId`, Docs use `documentId`, Sheets use `spreadsheetId`.
  */
 export function extractFileId(actionId: string, params: Record<string, unknown>): string | null {
+  if (actionId === 'drive.get_folder_info') {
+    return typeof params.folderId === 'string' ? params.folderId : null;
+  }
+  if (actionId === 'drive.create_from_template') {
+    return typeof params.templateId === 'string' ? params.templateId : null;
+  }
   if (actionId.startsWith('drive.')) {
     return typeof params.fileId === 'string' ? params.fileId : null;
   }

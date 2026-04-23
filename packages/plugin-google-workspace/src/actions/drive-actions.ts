@@ -1,15 +1,115 @@
 import { z } from 'zod';
 import type { ActionDefinition, ActionContext, ActionResult } from '@valet/sdk';
-import {
-  driveFetch,
-  driveUploadFetch,
-  buildMultipartBody,
-  isGoogleWorkspaceMimeType,
-  isTextMimeType,
-  getExportMimeType,
-  escapeDriveQuery,
-  driveError,
-} from './drive-api.js';
+import { insertMarkdown } from './docs-markdown.js';
+
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+const DRIVE_API = 'https://www.googleapis.com/drive/v3';
+const DOCS_API = 'https://docs.googleapis.com/v1';
+
+const MIME_TYPE_SHORTCUTS: Record<string, string> = {
+  document: 'application/vnd.google-apps.document',
+  spreadsheet: 'application/vnd.google-apps.spreadsheet',
+  presentation: 'application/vnd.google-apps.presentation',
+  folder: 'application/vnd.google-apps.folder',
+  form: 'application/vnd.google-apps.form',
+  pdf: 'application/pdf',
+  zip: 'application/zip',
+};
+
+const WORKSPACE_EXPORT_DEFAULTS: Record<string, string> = {
+  'application/vnd.google-apps.document': 'text/plain',
+  'application/vnd.google-apps.spreadsheet': 'text/csv',
+  'application/vnd.google-apps.presentation': 'text/plain',
+  'application/vnd.google-apps.drawing': 'image/svg+xml',
+  'application/vnd.google-apps.script': 'application/vnd.google-apps.script+json',
+};
+
+const LIST_FILE_FIELDS =
+  'id,name,mimeType,size,modifiedTime,createdTime,webViewLink,owners(displayName,emailAddress)';
+
+// ─── Shared Helpers ─────────────────────────────────────────────────────────
+
+function escapeDriveQuery(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+async function driveFetch(
+  path: string,
+  token: string,
+  init?: RequestInit,
+): Promise<Response> {
+  return fetch(`${DRIVE_API}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      ...init?.headers,
+    },
+  });
+}
+
+async function driveError(res: Response): Promise<{ success: false; error: string }> {
+  let detail = '';
+  try {
+    const body = await res.text();
+    const json = JSON.parse(body);
+    detail = json?.error?.message || body.slice(0, 200);
+  } catch {
+    detail = res.statusText;
+  }
+  return { success: false, error: `Drive API ${res.status}: ${detail}` };
+}
+
+function isGoogleWorkspaceMimeType(mimeType: string): boolean {
+  return mimeType.startsWith('application/vnd.google-apps.');
+}
+
+function isTextMimeType(mimeType: string): boolean {
+  if (mimeType.startsWith('text/')) return true;
+  const textTypes = [
+    'application/json',
+    'application/xml',
+    'application/javascript',
+    'application/typescript',
+    'application/x-yaml',
+    'application/x-sh',
+    'application/sql',
+    'application/graphql',
+    'application/xhtml+xml',
+    'application/ld+json',
+    'application/manifest+json',
+    'application/vnd.google-apps.script+json',
+  ];
+  return textTypes.includes(mimeType);
+}
+
+function getExportMimeType(googleMimeType: string): string | null {
+  return WORKSPACE_EXPORT_DEFAULTS[googleMimeType] || null;
+}
+
+/** Resolve a MIME type shortcut or return the value as-is. */
+function resolveMimeType(mimeType: string): string {
+  return MIME_TYPE_SHORTCUTS[mimeType] ?? mimeType;
+}
+
+/**
+ * Read __labelFilter from raw params for list/search actions.
+ * The labels guard injects this to restrict results to labeled files.
+ */
+function getLabelFilter(params: unknown): string | undefined {
+  return (params as Record<string, unknown> | null)?.__labelFilter as string | undefined;
+}
+
+/**
+ * Compose a user query with an optional label filter clause.
+ * Uses parenthesization to prevent Drive API operator precedence bugs.
+ */
+function composeQuery(userQuery: string, labelFilter: string | undefined): string {
+  if (userQuery && labelFilter) return `(${userQuery}) and ${labelFilter}`;
+  if (labelFilter) return labelFilter;
+  return userQuery;
+}
 
 // ─── Internal Types ──────────────────────────────────────────────────────────
 
@@ -18,268 +118,237 @@ interface DriveFile {
   name: string;
   mimeType: string;
   description?: string;
-  starred?: boolean;
-  trashed?: boolean;
-  parents?: string[];
-  webViewLink?: string;
-  webContentLink?: string;
-  iconLink?: string;
   size?: string;
   createdTime?: string;
   modifiedTime?: string;
+  webViewLink?: string;
   owners?: Array<{ displayName: string; emailAddress: string }>;
   lastModifyingUser?: { displayName: string; emailAddress: string };
   shared?: boolean;
-  capabilities?: Record<string, boolean>;
+  parents?: string[];
 }
-
-interface DrivePermission {
-  id: string;
-  type: string;
-  role: string;
-  emailAddress?: string;
-  domain?: string;
-  displayName?: string;
-}
-
-const FILE_FIELDS =
-  'id,name,mimeType,description,starred,trashed,parents,webViewLink,webContentLink,iconLink,size,createdTime,modifiedTime,owners,lastModifyingUser,shared';
 
 // ─── Action Definitions ──────────────────────────────────────────────────────
 
-// File Discovery
+// Discovery
 
 const listFiles: ActionDefinition = {
   id: 'drive.list_files',
   name: 'List Files',
-  description: 'List files with optional folder, query, and MIME type filtering',
+  description:
+    'Lists files across Google Drive with optional filtering by type, folder, and ownership. ' +
+    'Use mimeType shortcuts: "document", "spreadsheet", "presentation", "folder", "form", "pdf", "zip" ' +
+    'or pass any full MIME type string.',
   riskLevel: 'low',
   params: z.object({
-    folderId: z.string().optional().describe('Folder ID to list contents of (default: root)'),
-    query: z.string().optional().describe('Additional Drive query filter (appended to folder filter)'),
-    mimeType: z.string().optional().describe('Filter by MIME type'),
+    query: z.string().optional().describe('Additional Drive query filter'),
+    folderId: z.string().optional().describe('Folder ID to list contents of (use "root" for top-level)'),
+    mimeType: z.string().optional().describe('Filter by MIME type. Shortcuts: "document", "spreadsheet", "folder", etc.'),
     maxResults: z.number().int().min(1).max(100).optional(),
     pageToken: z.string().optional(),
-    orderBy: z.string().optional().describe('Sort order, e.g. "modifiedTime desc"'),
-    includeTrash: z.boolean().optional().describe('Include trashed files (default: false)'),
+    orderBy: z.enum(['name', 'modifiedTime', 'createdTime', 'quotaBytesUsed']).optional(),
+    sortDirection: z.enum(['asc', 'desc']).optional(),
+    ownedByMe: z.boolean().optional().describe('Only return files owned by the authenticated user'),
+    sharedWithMe: z.boolean().optional().describe('Only return files shared with the authenticated user'),
+    modifiedAfter: z.string().optional().describe('Only return files modified after this date (ISO 8601)'),
   }),
 };
 
 const searchFiles: ActionDefinition = {
   id: 'drive.search_files',
   name: 'Search Files',
-  description: 'Full-text search across file names and content',
+  description:
+    'Searches across all file types in Google Drive by name or content. ' +
+    'Supports filtering by MIME type, scoping to a folder subtree, and pagination.',
   riskLevel: 'low',
   params: z.object({
     query: z.string().describe('Search text (matches file names and content)'),
+    searchIn: z.enum(['name', 'content', 'both']).optional().describe('Where to search: "name", "content", or "both" (default)'),
+    mimeType: z.string().optional().describe('Restrict to a specific file type (shortcuts or full MIME type)'),
+    folderId: z.string().optional().describe('Restrict to files inside this folder'),
+    orderBy: z.enum(['name', 'modifiedTime', 'createdTime']).optional(),
+    sortDirection: z.enum(['asc', 'desc']).optional(),
+    maxResults: z.number().int().min(1).max(100).optional(),
+    modifiedAfter: z.string().optional().describe('Only return files modified after this date (ISO 8601)'),
+    pageToken: z.string().optional(),
+  }),
+};
+
+const listDocuments: ActionDefinition = {
+  id: 'drive.list_documents',
+  name: 'List Google Docs',
+  description: 'Lists Google Documents in your Drive, optionally filtered by name or content.',
+  riskLevel: 'low',
+  params: z.object({
+    query: z.string().optional().describe('Search query to filter documents by name or content'),
+    maxResults: z.number().int().min(1).max(100).optional(),
+    pageToken: z.string().optional(),
+    orderBy: z.enum(['name', 'modifiedTime', 'createdTime']).optional(),
+    modifiedAfter: z.string().optional().describe('Only return documents modified after this date (ISO 8601)'),
+  }),
+};
+
+const searchDocuments: ActionDefinition = {
+  id: 'drive.search_documents',
+  name: 'Search Google Docs',
+  description: 'Searches for Google Documents by name, content, or both.',
+  riskLevel: 'low',
+  params: z.object({
+    query: z.string().describe('Search term to find in document names or content'),
+    searchIn: z.enum(['name', 'content', 'both']).optional().describe('Where to search (default: "both")'),
+    maxResults: z.number().int().min(1).max(100).optional(),
+    pageToken: z.string().optional(),
+    modifiedAfter: z.string().optional().describe('Only return documents modified after this date (ISO 8601)'),
+  }),
+};
+
+const listFolderContents: ActionDefinition = {
+  id: 'drive.list_folder_contents',
+  name: 'List Folder Contents',
+  description: 'Lists files and subfolders within a Drive folder. Use folderId="root" for the top-level.',
+  riskLevel: 'low',
+  params: z.object({
+    folderId: z.string().describe('Folder ID (use "root" for the root Drive folder)'),
     maxResults: z.number().int().min(1).max(100).optional(),
     pageToken: z.string().optional(),
   }),
 };
 
-const getFile: ActionDefinition = {
-  id: 'drive.get_file',
-  name: 'Get File',
-  description: 'Get file metadata by ID',
+const getDocumentInfo: ActionDefinition = {
+  id: 'drive.get_document_info',
+  name: 'Get Document Info',
+  description: 'Gets metadata about a document including name, owner, sharing status, and modification history.',
   riskLevel: 'low',
   params: z.object({
-    fileId: z.string(),
+    fileId: z.string().describe('File ID'),
   }),
 };
 
-const readFile: ActionDefinition = {
-  id: 'drive.read_file',
-  name: 'Read File',
+const getFolderInfo: ActionDefinition = {
+  id: 'drive.get_folder_info',
+  name: 'Get Folder Info',
+  description: 'Gets metadata about a Drive folder including name, owner, sharing status, and child count.',
+  riskLevel: 'low',
+  params: z.object({
+    folderId: z.string().describe('Folder ID'),
+  }),
+};
+
+// File Operations
+
+const createDocument: ActionDefinition = {
+  id: 'drive.create_document',
+  name: 'Create Document',
   description:
-    'Download and return text content of a file. Auto-exports Google Workspace files (Docs→text, Sheets→CSV). Extracts text from PDFs. Rejects other binary files.',
-  riskLevel: 'low',
-  params: z.object({
-    fileId: z.string(),
-    maxSizeBytes: z.number().int().optional().describe('Max bytes to read (default: 1MB)'),
-  }),
-};
-
-const EXPORTABLE_TEXT_MIME_TYPES = [
-  'text/plain',
-  'text/csv',
-  'text/tab-separated-values',
-  'text/html',
-  'application/json',
-  'application/xml',
-  'application/vnd.google-apps.script+json',
-] as const;
-
-const exportFile: ActionDefinition = {
-  id: 'drive.export_file',
-  name: 'Export File',
-  description:
-    'Export a Google Workspace file (Docs, Sheets, Slides) to a text-based format. Only text formats are supported.',
-  riskLevel: 'low',
-  params: z.object({
-    fileId: z.string(),
-    mimeType: z
-      .enum(EXPORTABLE_TEXT_MIME_TYPES)
-      .describe(
-        'Target text MIME type, e.g. "text/plain", "text/csv", "text/html"',
-      ),
-  }),
-};
-
-// File Management
-
-const createFile: ActionDefinition = {
-  id: 'drive.create_file',
-  name: 'Create File',
-  description: 'Create a new file with text content',
+    'Creates a new Google Document. Optionally places it in a folder and adds initial ' +
+    'content (markdown is converted to formatted Google Docs content by default).',
   riskLevel: 'medium',
   params: z.object({
-    name: z.string(),
-    content: z.string().describe('Text content of the file'),
-    mimeType: z.string().optional().describe('MIME type (default: text/plain)'),
+    title: z.string().describe('Document title'),
+    markdown: z.string().optional().describe('Initial content as markdown (converted to formatted Docs content)'),
     folderId: z.string().optional().describe('Parent folder ID'),
-    description: z.string().optional(),
   }),
 };
 
 const createFolder: ActionDefinition = {
   id: 'drive.create_folder',
   name: 'Create Folder',
-  description: 'Create a new folder',
+  description: 'Creates a new folder in Google Drive.',
   riskLevel: 'medium',
   params: z.object({
-    name: z.string(),
+    name: z.string().describe('Folder name'),
     parentFolderId: z.string().optional().describe('Parent folder ID'),
     description: z.string().optional(),
-  }),
-};
-
-const updateMetadata: ActionDefinition = {
-  id: 'drive.update_metadata',
-  name: 'Update Metadata',
-  description: 'Rename, move, or update description of a file or folder',
-  riskLevel: 'medium',
-  params: z.object({
-    fileId: z.string(),
-    name: z.string().optional(),
-    description: z.string().optional(),
-    addParents: z.string().optional().describe('Comma-separated folder IDs to add'),
-    removeParents: z.string().optional().describe('Comma-separated folder IDs to remove'),
-    starred: z.boolean().optional(),
-  }),
-};
-
-const updateContent: ActionDefinition = {
-  id: 'drive.update_content',
-  name: 'Update Content',
-  description: 'Replace the content of an existing file',
-  riskLevel: 'medium',
-  params: z.object({
-    fileId: z.string(),
-    content: z.string().describe('New text content'),
-    mimeType: z.string().optional().describe('MIME type (default: preserves existing)'),
   }),
 };
 
 const copyFile: ActionDefinition = {
   id: 'drive.copy_file',
   name: 'Copy File',
-  description: 'Copy a file, optionally to a different folder with a new name',
+  description: 'Creates a copy of a file in Google Drive.',
   riskLevel: 'medium',
   params: z.object({
-    fileId: z.string(),
+    fileId: z.string().describe('Source file ID'),
     name: z.string().optional().describe('Name for the copy'),
     folderId: z.string().optional().describe('Destination folder ID'),
   }),
 };
 
-// Sharing
-
-const shareFile: ActionDefinition = {
-  id: 'drive.share_file',
-  name: 'Share File',
-  description: 'Share a file or folder with a user, group, domain, or anyone',
-  riskLevel: 'high',
-  params: z.object({
-    fileId: z.string(),
-    role: z.enum(['reader', 'commenter', 'writer', 'organizer']),
-    type: z.enum(['user', 'group', 'domain', 'anyone']),
-    emailAddress: z.string().optional().describe('Required for user/group type'),
-    domain: z.string().optional().describe('Required for domain type'),
-    sendNotificationEmail: z.boolean().optional().describe('Send email notification (default: true)'),
-    emailMessage: z.string().optional().describe('Custom message in the notification email'),
-  }),
-};
-
-const listPermissions: ActionDefinition = {
-  id: 'drive.list_permissions',
-  name: 'List Permissions',
-  description: 'List all permissions on a file or folder',
-  riskLevel: 'low',
-  params: z.object({
-    fileId: z.string(),
-  }),
-};
-
-const removePermission: ActionDefinition = {
-  id: 'drive.remove_permission',
-  name: 'Remove Permission',
-  description: 'Remove a permission from a file or folder',
-  riskLevel: 'high',
-  params: z.object({
-    fileId: z.string(),
-    permissionId: z.string(),
-  }),
-};
-
-// Cleanup
-
-const trashFile: ActionDefinition = {
-  id: 'drive.trash_file',
-  name: 'Trash File',
-  description: 'Move a file or folder to trash (recoverable)',
-  riskLevel: 'high',
-  params: z.object({
-    fileId: z.string(),
-  }),
-};
-
-const untrashFile: ActionDefinition = {
-  id: 'drive.untrash_file',
-  name: 'Untrash File',
-  description: 'Restore a file or folder from trash',
+const moveFile: ActionDefinition = {
+  id: 'drive.move_file',
+  name: 'Move File',
+  description: 'Moves a file or folder to a different Drive folder.',
   riskLevel: 'medium',
   params: z.object({
-    fileId: z.string(),
+    fileId: z.string().describe('File ID'),
+    folderId: z.string().describe('Destination folder ID'),
   }),
 };
 
-const deleteFile: ActionDefinition = {
+const renameFile: ActionDefinition = {
+  id: 'drive.rename_file',
+  name: 'Rename File',
+  description: 'Renames a file or folder in Google Drive.',
+  riskLevel: 'medium',
+  params: z.object({
+    fileId: z.string().describe('File ID'),
+    name: z.string().describe('New file name'),
+  }),
+};
+
+const deleteFileDef: ActionDefinition = {
   id: 'drive.delete_file',
   name: 'Delete File',
-  description: 'Permanently delete a file or folder (cannot be undone)',
+  description: 'Permanently deletes a file or folder (cannot be undone).',
   riskLevel: 'critical',
   params: z.object({
-    fileId: z.string(),
+    fileId: z.string().describe('File ID (PERMANENT deletion)'),
+  }),
+};
+
+const downloadFile: ActionDefinition = {
+  id: 'drive.download_file',
+  name: 'Download File',
+  description:
+    'Downloads text content of a file. Exports Google Workspace files to text format. ' +
+    'Rejects binary files.',
+  riskLevel: 'low',
+  params: z.object({
+    fileId: z.string().describe('File ID'),
+    maxSizeBytes: z.number().int().optional().describe('Max bytes to download (default: 1MB)'),
+  }),
+};
+
+const createFromTemplate: ActionDefinition = {
+  id: 'drive.create_from_template',
+  name: 'Create from Template',
+  description:
+    'Creates a new document by copying a template and optionally replacing placeholder text.',
+  riskLevel: 'medium',
+  params: z.object({
+    templateId: z.string().describe('Template document ID to copy'),
+    title: z.string().describe('Title for the new document'),
+    folderId: z.string().optional().describe('Destination folder ID'),
+    replacements: z.record(z.string()).optional().describe('Key-value pairs for placeholder substitution (e.g. {"{{name}}": "Alice"})'),
   }),
 };
 
 const allActions: ActionDefinition[] = [
   listFiles,
   searchFiles,
-  getFile,
-  readFile,
-  exportFile,
-  createFile,
+  listDocuments,
+  searchDocuments,
+  listFolderContents,
+  getDocumentInfo,
+  getFolderInfo,
+  createDocument,
   createFolder,
-  updateMetadata,
-  updateContent,
   copyFile,
-  shareFile,
-  listPermissions,
-  removePermission,
-  trashFile,
-  untrashFile,
-  deleteFile,
+  moveFile,
+  renameFile,
+  deleteFileDef,
+  downloadFile,
+  createFromTemplate,
 ];
 
 // ─── Action Execution ────────────────────────────────────────────────────────
@@ -294,96 +363,462 @@ async function executeAction(
 
   try {
     switch (actionId) {
-      // ── File Discovery ──
+      // ── Discovery ──
 
       case 'drive.list_files': {
         const p = listFiles.params.parse(params);
-        const queryParts: string[] = [];
-        if (p.folderId) queryParts.push(`'${escapeDriveQuery(p.folderId)}' in parents`);
-        if (p.mimeType) queryParts.push(`mimeType = '${escapeDriveQuery(p.mimeType)}'`);
-        if (!p.includeTrash) queryParts.push('trashed = false');
-        if (p.query) queryParts.push(p.query);
 
-        // Build final query with explicit parenthesization to prevent OR injection
-        const rawParams = params as Record<string, unknown> | null;
-        const labelClause = rawParams?.__labelFilter as string | undefined;
-        const userQuery = queryParts.join(' and ');
-        let finalQuery: string;
-        if (userQuery && labelClause) {
-          finalQuery = `(${userQuery}) and ${labelClause}`;
-        } else if (labelClause) {
-          finalQuery = labelClause;
-        } else {
-          finalQuery = userQuery;
+        if (p.ownedByMe && p.sharedWithMe) {
+          return { success: false, error: 'ownedByMe and sharedWithMe cannot both be true' };
         }
 
+        const queryParts: string[] = ['trashed=false'];
+        if (p.mimeType) queryParts.push(`mimeType='${escapeDriveQuery(resolveMimeType(p.mimeType))}'`);
+        if (p.folderId) queryParts.push(`'${escapeDriveQuery(p.folderId)}' in parents`);
+        if (p.ownedByMe) queryParts.push("'me' in owners");
+        else if (p.sharedWithMe) queryParts.push('sharedWithMe=true');
+        if (p.modifiedAfter) {
+          const cutoff = new Date(p.modifiedAfter).toISOString();
+          queryParts.push(`modifiedTime > '${escapeDriveQuery(cutoff)}'`);
+        }
+        if (p.query) queryParts.push(p.query);
+
+        const labelFilter = getLabelFilter(params);
+        const finalQuery = composeQuery(queryParts.join(' and '), labelFilter);
+
+        const orderByParam = p.orderBy
+          ? (p.sortDirection === 'asc' ? p.orderBy : `${p.orderBy} desc`)
+          : 'modifiedTime desc';
+
         const qs = new URLSearchParams({
-          fields: `nextPageToken,files(${FILE_FIELDS})`,
+          fields: `nextPageToken,files(${LIST_FILE_FIELDS})`,
           pageSize: String(p.maxResults || 20),
           supportsAllDrives: 'true',
           includeItemsFromAllDrives: 'true',
+          orderBy: orderByParam,
         });
         if (finalQuery) qs.set('q', finalQuery);
         if (p.pageToken) qs.set('pageToken', p.pageToken);
-        if (p.orderBy) qs.set('orderBy', p.orderBy);
 
         const res = await driveFetch(`/files?${qs}`, token);
         if (!res.ok) return driveError(res);
         const data = (await res.json()) as { files: DriveFile[]; nextPageToken?: string };
-        return { success: true, data: { files: data.files || [], nextPageToken: data.nextPageToken } };
+        const files = (data.files || []).map((f) => ({
+          id: f.id,
+          name: f.name,
+          mimeType: f.mimeType,
+          size: f.size != null ? Number(f.size) : null,
+          modifiedTime: f.modifiedTime,
+          createdTime: f.createdTime,
+          owner: f.owners?.[0]?.displayName || null,
+          url: f.webViewLink,
+        }));
+        return {
+          success: true,
+          data: { files, total: files.length, nextPageToken: data.nextPageToken },
+        };
       }
 
       case 'drive.search_files': {
         const p = searchFiles.params.parse(params);
-        const queryParts: string[] = [
-          `fullText contains '${escapeDriveQuery(p.query)}'`,
-          'trashed = false',
-        ];
+        const queryParts: string[] = ['trashed=false'];
 
-        // Build final query with explicit parenthesization to prevent OR injection
-        const rawSearchParams = params as Record<string, unknown> | null;
-        const searchLabelClause = rawSearchParams?.__labelFilter as string | undefined;
-        const searchUserQuery = queryParts.join(' and ');
-        let searchFinalQuery: string;
-        if (searchUserQuery && searchLabelClause) {
-          searchFinalQuery = `(${searchUserQuery}) and ${searchLabelClause}`;
-        } else if (searchLabelClause) {
-          searchFinalQuery = searchLabelClause;
+        const searchIn = p.searchIn || 'both';
+        if (searchIn === 'name') {
+          queryParts.push(`name contains '${escapeDriveQuery(p.query)}'`);
+        } else if (searchIn === 'content') {
+          queryParts.push(`fullText contains '${escapeDriveQuery(p.query)}'`);
         } else {
-          searchFinalQuery = searchUserQuery;
+          queryParts.push(
+            `(name contains '${escapeDriveQuery(p.query)}' or fullText contains '${escapeDriveQuery(p.query)}')`,
+          );
         }
 
+        if (p.mimeType) queryParts.push(`mimeType='${escapeDriveQuery(resolveMimeType(p.mimeType))}'`);
+        if (p.folderId) queryParts.push(`'${escapeDriveQuery(p.folderId)}' in parents`);
+        if (p.modifiedAfter) {
+          const cutoff = new Date(p.modifiedAfter).toISOString();
+          queryParts.push(`modifiedTime > '${escapeDriveQuery(cutoff)}'`);
+        }
+
+        const labelFilter = getLabelFilter(params);
+        const finalQuery = composeQuery(queryParts.join(' and '), labelFilter);
+
+        const orderByParam = p.orderBy
+          ? (p.sortDirection === 'asc' ? p.orderBy : `${p.orderBy} desc`)
+          : 'modifiedTime desc';
+
         const qs = new URLSearchParams({
-          q: searchFinalQuery,
-          fields: `nextPageToken,files(${FILE_FIELDS})`,
-          pageSize: String(p.maxResults || 20),
+          q: finalQuery,
+          fields: `nextPageToken,files(${LIST_FILE_FIELDS})`,
+          pageSize: String(p.maxResults || 10),
           supportsAllDrives: 'true',
           includeItemsFromAllDrives: 'true',
+          orderBy: orderByParam,
         });
         if (p.pageToken) qs.set('pageToken', p.pageToken);
 
         const res = await driveFetch(`/files?${qs}`, token);
         if (!res.ok) return driveError(res);
         const data = (await res.json()) as { files: DriveFile[]; nextPageToken?: string };
-        return { success: true, data: { files: data.files || [], nextPageToken: data.nextPageToken } };
+        const files = (data.files || []).map((f) => ({
+          id: f.id,
+          name: f.name,
+          mimeType: f.mimeType,
+          size: f.size != null ? Number(f.size) : null,
+          modifiedTime: f.modifiedTime,
+          createdTime: f.createdTime,
+          owner: f.owners?.[0]?.displayName || null,
+          url: f.webViewLink,
+        }));
+        return {
+          success: true,
+          data: { files, total: files.length, nextPageToken: data.nextPageToken, hasMore: !!data.nextPageToken },
+        };
       }
 
-      case 'drive.get_file': {
-        const { fileId } = getFile.params.parse(params);
+      case 'drive.list_documents': {
+        const p = listDocuments.params.parse(params);
+        const queryParts: string[] = [
+          "mimeType='application/vnd.google-apps.document'",
+          'trashed=false',
+        ];
+        if (p.query) {
+          queryParts.push(
+            `(name contains '${escapeDriveQuery(p.query)}' or fullText contains '${escapeDriveQuery(p.query)}')`,
+          );
+        }
+        if (p.modifiedAfter) {
+          const cutoff = new Date(p.modifiedAfter).toISOString();
+          queryParts.push(`modifiedTime > '${escapeDriveQuery(cutoff)}'`);
+        }
+
+        const labelFilter = getLabelFilter(params);
+        const finalQuery = composeQuery(queryParts.join(' and '), labelFilter);
+
+        const orderByParam = p.orderBy || 'modifiedTime';
+
         const qs = new URLSearchParams({
-          fields: FILE_FIELDS,
+          q: finalQuery,
+          fields: `nextPageToken,files(id,name,modifiedTime,createdTime,webViewLink,owners(displayName,emailAddress))`,
+          pageSize: String(p.maxResults || 20),
+          supportsAllDrives: 'true',
+          includeItemsFromAllDrives: 'true',
+          orderBy: orderByParam,
+        });
+        if (p.pageToken) qs.set('pageToken', p.pageToken);
+
+        const res = await driveFetch(`/files?${qs}`, token);
+        if (!res.ok) return driveError(res);
+        const data = (await res.json()) as { files: DriveFile[]; nextPageToken?: string };
+        const documents = (data.files || []).map((f) => ({
+          id: f.id,
+          name: f.name,
+          modifiedTime: f.modifiedTime,
+          owner: f.owners?.[0]?.displayName || null,
+          url: f.webViewLink,
+        }));
+        return {
+          success: true,
+          data: { documents, total: documents.length, nextPageToken: data.nextPageToken },
+        };
+      }
+
+      case 'drive.search_documents': {
+        const p = searchDocuments.params.parse(params);
+        const queryParts: string[] = [
+          "mimeType='application/vnd.google-apps.document'",
+          'trashed=false',
+        ];
+
+        const searchIn = p.searchIn || 'both';
+        if (searchIn === 'name') {
+          queryParts.push(`name contains '${escapeDriveQuery(p.query)}'`);
+        } else if (searchIn === 'content') {
+          queryParts.push(`fullText contains '${escapeDriveQuery(p.query)}'`);
+        } else {
+          queryParts.push(
+            `(name contains '${escapeDriveQuery(p.query)}' or fullText contains '${escapeDriveQuery(p.query)}')`,
+          );
+        }
+
+        if (p.modifiedAfter) {
+          queryParts.push(`modifiedTime > '${escapeDriveQuery(p.modifiedAfter)}'`);
+        }
+
+        const labelFilter = getLabelFilter(params);
+        const finalQuery = composeQuery(queryParts.join(' and '), labelFilter);
+
+        const qs = new URLSearchParams({
+          q: finalQuery,
+          fields: `nextPageToken,files(id,name,modifiedTime,createdTime,webViewLink,owners(displayName))`,
+          pageSize: String(p.maxResults || 10),
+          supportsAllDrives: 'true',
+          includeItemsFromAllDrives: 'true',
+          orderBy: 'modifiedTime desc',
+        });
+        if (p.pageToken) qs.set('pageToken', p.pageToken);
+
+        const res = await driveFetch(`/files?${qs}`, token);
+        if (!res.ok) return driveError(res);
+        const data = (await res.json()) as { files: DriveFile[]; nextPageToken?: string };
+        const documents = (data.files || []).map((f) => ({
+          id: f.id,
+          name: f.name,
+          modifiedTime: f.modifiedTime,
+          owner: f.owners?.[0]?.displayName || null,
+          url: f.webViewLink,
+        }));
+        return {
+          success: true,
+          data: { documents, total: documents.length, nextPageToken: data.nextPageToken },
+        };
+      }
+
+      case 'drive.list_folder_contents': {
+        const p = listFolderContents.params.parse(params);
+        const queryParts: string[] = [
+          `'${escapeDriveQuery(p.folderId)}' in parents`,
+          'trashed=false',
+        ];
+
+        const labelFilter = getLabelFilter(params);
+        const finalQuery = composeQuery(queryParts.join(' and '), labelFilter);
+
+        const qs = new URLSearchParams({
+          q: finalQuery,
+          fields: 'nextPageToken,files(id,name,mimeType,size,modifiedTime,webViewLink,owners(displayName))',
+          pageSize: String(p.maxResults || 50),
+          supportsAllDrives: 'true',
+          includeItemsFromAllDrives: 'true',
+          orderBy: 'folder,name',
+        });
+        if (p.pageToken) qs.set('pageToken', p.pageToken);
+
+        const res = await driveFetch(`/files?${qs}`, token);
+        if (!res.ok) return driveError(res);
+        const data = (await res.json()) as { files: DriveFile[]; nextPageToken?: string };
+        const items = data.files || [];
+        const folders = items
+          .filter((f) => f.mimeType === 'application/vnd.google-apps.folder')
+          .map((f) => ({ id: f.id, name: f.name, modifiedTime: f.modifiedTime }));
+        const files = items
+          .filter((f) => f.mimeType !== 'application/vnd.google-apps.folder')
+          .map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType, modifiedTime: f.modifiedTime }));
+        return {
+          success: true,
+          data: { folders, files, nextPageToken: data.nextPageToken },
+        };
+      }
+
+      case 'drive.get_document_info': {
+        const { fileId } = getDocumentInfo.params.parse(params);
+        const qs = new URLSearchParams({
+          fields: 'id,name,mimeType,description,size,createdTime,modifiedTime,webViewLink,owners(displayName,emailAddress),lastModifyingUser(displayName,emailAddress),shared,parents',
           supportsAllDrives: 'true',
         });
         const res = await driveFetch(`/files/${encodeURIComponent(fileId)}?${qs}`, token);
         if (!res.ok) return driveError(res);
+        const file = (await res.json()) as DriveFile;
+        return {
+          success: true,
+          data: {
+            id: file.id,
+            name: file.name,
+            mimeType: file.mimeType,
+            createdTime: file.createdTime,
+            modifiedTime: file.modifiedTime,
+            owner: file.owners?.[0]?.displayName || null,
+            lastModifyingUser: file.lastModifyingUser?.displayName || null,
+            shared: file.shared || false,
+            url: file.webViewLink,
+            description: file.description || null,
+          },
+        };
+      }
+
+      case 'drive.get_folder_info': {
+        const { folderId } = getFolderInfo.params.parse(params);
+        const qs = new URLSearchParams({
+          fields: 'id,name,mimeType,description,createdTime,modifiedTime,webViewLink,owners(displayName,emailAddress),lastModifyingUser(displayName),shared,parents',
+          supportsAllDrives: 'true',
+        });
+        const res = await driveFetch(`/files/${encodeURIComponent(folderId)}?${qs}`, token);
+        if (!res.ok) return driveError(res);
+        const file = (await res.json()) as DriveFile;
+
+        if (file.mimeType !== 'application/vnd.google-apps.folder') {
+          return { success: false, error: 'The specified ID does not belong to a folder' };
+        }
+
+        // Count children
+        const childQs = new URLSearchParams({
+          q: `'${escapeDriveQuery(folderId)}' in parents and trashed=false`,
+          fields: 'files(id)',
+          pageSize: '100',
+          supportsAllDrives: 'true',
+          includeItemsFromAllDrives: 'true',
+        });
+        const childRes = await driveFetch(`/files?${childQs}`, token);
+        let childCount: number | null = null;
+        if (childRes.ok) {
+          const childData = (await childRes.json()) as { files: Array<{ id: string }> };
+          childCount = childData.files?.length ?? 0;
+        }
+
+        return {
+          success: true,
+          data: {
+            id: file.id,
+            name: file.name,
+            createdTime: file.createdTime,
+            modifiedTime: file.modifiedTime,
+            owner: file.owners?.[0]?.displayName || null,
+            lastModifyingUser: file.lastModifyingUser?.displayName || null,
+            shared: file.shared || false,
+            url: file.webViewLink,
+            description: file.description || null,
+            parentFolderId: file.parents?.[0] || null,
+            childCount,
+          },
+        };
+      }
+
+      // ── File Operations ──
+
+      case 'drive.create_document': {
+        const p = createDocument.params.parse(params);
+        const metadata: Record<string, unknown> = {
+          name: p.title,
+          mimeType: 'application/vnd.google-apps.document',
+        };
+        if (p.folderId) metadata.parents = [p.folderId];
+
+        const qs = new URLSearchParams({
+          fields: 'id,name,webViewLink',
+          supportsAllDrives: 'true',
+        });
+        const res = await driveFetch(`/files?${qs}`, token, {
+          method: 'POST',
+          body: JSON.stringify(metadata),
+        });
+        if (!res.ok) return driveError(res);
+        const doc = (await res.json()) as { id: string; name: string; webViewLink: string };
+
+        // Insert markdown content if provided
+        if (p.markdown) {
+          try {
+            await insertMarkdown(token, doc.id, p.markdown, {
+              startIndex: 1,
+              firstHeadingAsTitle: true,
+            });
+          } catch {
+            // Document created but content insert failed — return success with warning
+          }
+        }
+
+        return {
+          success: true,
+          data: { id: doc.id, name: doc.name, url: doc.webViewLink },
+        };
+      }
+
+      case 'drive.create_folder': {
+        const p = createFolder.params.parse(params);
+        const metadata: Record<string, unknown> = {
+          name: p.name,
+          mimeType: 'application/vnd.google-apps.folder',
+        };
+        if (p.parentFolderId) metadata.parents = [p.parentFolderId];
+        if (p.description) metadata.description = p.description;
+
+        const qs = new URLSearchParams({
+          fields: 'id,name,webViewLink',
+          supportsAllDrives: 'true',
+        });
+        const res = await driveFetch(`/files?${qs}`, token, {
+          method: 'POST',
+          body: JSON.stringify(metadata),
+        });
+        if (!res.ok) return driveError(res);
         return { success: true, data: await res.json() };
       }
 
-      case 'drive.read_file': {
-        const { fileId, maxSizeBytes } = readFile.params.parse(params);
+      case 'drive.copy_file': {
+        const p = copyFile.params.parse(params);
+        const body: Record<string, unknown> = {};
+        if (p.name) body.name = p.name;
+        if (p.folderId) body.parents = [p.folderId];
+
+        const qs = new URLSearchParams({
+          fields: 'id,name,mimeType,webViewLink',
+          supportsAllDrives: 'true',
+        });
+        const res = await driveFetch(`/files/${encodeURIComponent(p.fileId)}/copy?${qs}`, token, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) return driveError(res);
+        return { success: true, data: await res.json() };
+      }
+
+      case 'drive.move_file': {
+        const p = moveFile.params.parse(params);
+
+        // Get current parents
+        const metaQs = new URLSearchParams({
+          fields: 'name,parents',
+          supportsAllDrives: 'true',
+        });
+        const metaRes = await driveFetch(`/files/${encodeURIComponent(p.fileId)}?${metaQs}`, token);
+        if (!metaRes.ok) return driveError(metaRes);
+        const meta = (await metaRes.json()) as { name: string; parents?: string[] };
+        const currentParents = (meta.parents || []).join(',');
+
+        const moveQs = new URLSearchParams({
+          addParents: p.folderId,
+          fields: 'id,name,parents',
+          supportsAllDrives: 'true',
+        });
+        if (currentParents) moveQs.set('removeParents', currentParents);
+
+        const res = await driveFetch(`/files/${encodeURIComponent(p.fileId)}?${moveQs}`, token, {
+          method: 'PATCH',
+          body: JSON.stringify({}),
+        });
+        if (!res.ok) return driveError(res);
+        return { success: true, data: await res.json() };
+      }
+
+      case 'drive.rename_file': {
+        const p = renameFile.params.parse(params);
+        const qs = new URLSearchParams({
+          fields: 'id,name,webViewLink',
+          supportsAllDrives: 'true',
+        });
+        const res = await driveFetch(`/files/${encodeURIComponent(p.fileId)}?${qs}`, token, {
+          method: 'PATCH',
+          body: JSON.stringify({ name: p.name }),
+        });
+        if (!res.ok) return driveError(res);
+        return { success: true, data: await res.json() };
+      }
+
+      case 'drive.delete_file': {
+        const { fileId } = deleteFileDef.params.parse(params);
+        const qs = new URLSearchParams({ supportsAllDrives: 'true' });
+        const res = await driveFetch(`/files/${encodeURIComponent(fileId)}?${qs}`, token, {
+          method: 'DELETE',
+        });
+        if (!res.ok && res.status !== 404) return driveError(res);
+        return { success: true };
+      }
+
+      case 'drive.download_file': {
+        const { fileId, maxSizeBytes } = downloadFile.params.parse(params);
         const maxBytes = maxSizeBytes || 1_048_576; // 1MB default
 
-        // Get metadata first to check type and size
+        // Get metadata to check type and size
         const metaQs = new URLSearchParams({
           fields: 'id,name,mimeType,size',
           supportsAllDrives: 'true',
@@ -392,13 +827,13 @@ async function executeAction(
         if (!metaRes.ok) return driveError(metaRes);
         const meta = (await metaRes.json()) as DriveFile;
 
-        // Google Workspace files — export as text
+        // Google Workspace files: export as text
         if (isGoogleWorkspaceMimeType(meta.mimeType)) {
           const exportMime = getExportMimeType(meta.mimeType);
           if (!exportMime) {
             return {
               success: false,
-              error: `Cannot read Google Workspace type: ${meta.mimeType}. Use drive.export_file with a specific target format.`,
+              error: `Cannot export Google Workspace type: ${meta.mimeType}`,
             };
           }
           const exportQs = new URLSearchParams({ mimeType: exportMime });
@@ -412,70 +847,32 @@ async function executeAction(
           if (textBytes > maxBytes) {
             return {
               success: false,
-              error: `Exported content is ${textBytes} bytes, exceeds max ${maxBytes} bytes. Increase maxSizeBytes or use drive.export_file directly.`,
+              error: `Exported content is ${textBytes} bytes, exceeds max ${maxBytes} bytes. Increase maxSizeBytes.`,
             };
           }
           return {
             success: true,
-            data: {
-              name: meta.name,
-              mimeType: meta.mimeType,
-              exportedAs: exportMime,
-              content: text,
-            },
+            data: { name: meta.name, mimeType: meta.mimeType, exportedAs: exportMime, content: text },
           };
         }
 
-        // PDF files — extract text
-        if (meta.mimeType === 'application/pdf') {
-          const pdfMaxBytes = maxSizeBytes || 5_242_880; // 5MB default for PDFs
-          const pdfSize = meta.size ? parseInt(meta.size) : 0;
-          if (pdfSize > pdfMaxBytes) {
-            return {
-              success: false,
-              error: `PDF is ${pdfSize} bytes, exceeds max ${pdfMaxBytes} bytes. Increase maxSizeBytes or download externally.`,
-            };
-          }
-
-          const pdfDlQs = new URLSearchParams({
-            alt: 'media',
-            supportsAllDrives: 'true',
-          });
-          const pdfRes = await driveFetch(`/files/${encodeURIComponent(fileId)}?${pdfDlQs}`, token);
-          if (!pdfRes.ok) return driveError(pdfRes);
-
-          const pdfBuffer = new Uint8Array(await pdfRes.arrayBuffer());
-          const { getDocumentProxy, extractText } = await import('unpdf');
-          const doc = await getDocumentProxy(pdfBuffer);
-          const { text, totalPages } = await extractText(doc);
-
-          return {
-            success: true,
-            data: { name: meta.name, mimeType: meta.mimeType, content: text, pageCount: totalPages },
-          };
-        }
-
-        // Regular files — check if text-based
+        // Regular text files: download content
         if (!isTextMimeType(meta.mimeType)) {
           return {
             success: false,
-            error: `Cannot read binary file (${meta.mimeType}). Use drive.get_file for metadata or drive.export_file for Google Workspace files.`,
+            error: `Cannot download binary file (${meta.mimeType}). Only text-based and Google Workspace files are supported.`,
           };
         }
 
-        // Check size
         const fileSize = meta.size ? parseInt(meta.size) : 0;
         if (fileSize > maxBytes) {
           return {
             success: false,
-            error: `File is ${fileSize} bytes, exceeds max ${maxBytes} bytes. Increase maxSizeBytes or download externally.`,
+            error: `File is ${fileSize} bytes, exceeds max ${maxBytes} bytes. Increase maxSizeBytes.`,
           };
         }
 
-        const dlQs = new URLSearchParams({
-          alt: 'media',
-          supportsAllDrives: 'true',
-        });
+        const dlQs = new URLSearchParams({ alt: 'media', supportsAllDrives: 'true' });
         const dlRes = await driveFetch(`/files/${encodeURIComponent(fileId)}?${dlQs}`, token);
         if (!dlRes.ok) return driveError(dlRes);
         const content = await dlRes.text();
@@ -485,231 +882,59 @@ async function executeAction(
         };
       }
 
-      case 'drive.export_file': {
-        const { fileId, mimeType } = exportFile.params.parse(params);
-        const qs = new URLSearchParams({ mimeType });
-        const res = await driveFetch(`/files/${encodeURIComponent(fileId)}/export?${qs}`, token);
-        if (!res.ok) return driveError(res);
-        const content = await res.text();
-        const MAX_EXPORT_BYTES = 10 * 1024 * 1024; // 10MB
-        const contentBytes = new TextEncoder().encode(content).length;
-        if (contentBytes > MAX_EXPORT_BYTES) {
-          return {
-            success: false,
-            error: `Export is ${contentBytes} bytes, exceeds maximum of ${MAX_EXPORT_BYTES} bytes (10MB).`,
-          };
-        }
-        return { success: true, data: { content, exportedAs: mimeType } };
-      }
+      case 'drive.create_from_template': {
+        const p = createFromTemplate.params.parse(params);
 
-      // ── File Management ──
+        // Step 1: Copy template
+        const copyBody: Record<string, unknown> = { name: p.title };
+        if (p.folderId) copyBody.parents = [p.folderId];
 
-      case 'drive.create_file': {
-        const p = createFile.params.parse(params);
-        const requestedMime = p.mimeType || 'text/plain';
-        const isGoogleType = requestedMime.startsWith('application/vnd.google-apps.');
-        // Google Apps MIME types (e.g. application/vnd.google-apps.document) are only
-        // valid as metadata mimeType to trigger conversion — the actual upload content
-        // must use a convertible type like text/plain or text/html.
-        const uploadContentType = isGoogleType ? 'text/plain' : requestedMime;
-        const metadata: Record<string, unknown> = { name: p.name };
-        if (isGoogleType) metadata.mimeType = requestedMime;
-        if (p.folderId) metadata.parents = [p.folderId];
-        if (p.description) metadata.description = p.description;
-
-        const { body, boundary } = buildMultipartBody(metadata, p.content, uploadContentType);
-        const qs = new URLSearchParams({
-          uploadType: 'multipart',
-          fields: FILE_FIELDS,
+        const copyQs = new URLSearchParams({
+          fields: 'id,name,webViewLink',
           supportsAllDrives: 'true',
         });
-        const res = await driveUploadFetch(`/files?${qs}`, token, {
-          method: 'POST',
-          headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
-          body,
-        });
-        if (!res.ok) return driveError(res);
-        return { success: true, data: await res.json() };
-      }
+        const copyRes = await driveFetch(
+          `/files/${encodeURIComponent(p.templateId)}/copy?${copyQs}`,
+          token,
+          { method: 'POST', body: JSON.stringify(copyBody) },
+        );
+        if (!copyRes.ok) return driveError(copyRes);
+        const newDoc = (await copyRes.json()) as { id: string; name: string; webViewLink: string };
 
-      case 'drive.create_folder': {
-        const p = createFolder.params.parse(params);
-        const metadata: Record<string, unknown> = {
-          name: p.name,
-          mimeType: 'application/vnd.google-apps.folder',
+        // Step 2: Apply replacements via Docs batchUpdate
+        if (p.replacements && Object.keys(p.replacements).length > 0) {
+          try {
+            const requests = Object.entries(p.replacements).map(([searchText, replaceText]) => ({
+              replaceAllText: {
+                containsText: { text: searchText, matchCase: true },
+                replaceText,
+              },
+            }));
+
+            const batchRes = await fetch(
+              `${DOCS_API}/documents/${encodeURIComponent(newDoc.id)}:batchUpdate`,
+              {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ requests }),
+              },
+            );
+
+            if (!batchRes.ok) {
+              // Replacements failed but document was created — continue
+            }
+          } catch {
+            // Replacements failed but document was created — continue
+          }
+        }
+
+        return {
+          success: true,
+          data: { id: newDoc.id, name: newDoc.name, url: newDoc.webViewLink },
         };
-        if (p.parentFolderId) metadata.parents = [p.parentFolderId];
-        if (p.description) metadata.description = p.description;
-
-        const qs = new URLSearchParams({
-          fields: FILE_FIELDS,
-          supportsAllDrives: 'true',
-        });
-        const res = await driveFetch(`/files?${qs}`, token, {
-          method: 'POST',
-          body: JSON.stringify(metadata),
-        });
-        if (!res.ok) return driveError(res);
-        return { success: true, data: await res.json() };
-      }
-
-      case 'drive.update_metadata': {
-        const p = updateMetadata.params.parse(params);
-        const body: Record<string, unknown> = {};
-        if (p.name !== undefined) body.name = p.name;
-        if (p.description !== undefined) body.description = p.description;
-        if (p.starred !== undefined) body.starred = p.starred;
-
-        const qs = new URLSearchParams({
-          fields: FILE_FIELDS,
-          supportsAllDrives: 'true',
-        });
-        if (p.addParents) qs.set('addParents', p.addParents);
-        if (p.removeParents) qs.set('removeParents', p.removeParents);
-
-        const res = await driveFetch(`/files/${encodeURIComponent(p.fileId)}?${qs}`, token, {
-          method: 'PATCH',
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) return driveError(res);
-        return { success: true, data: await res.json() };
-      }
-
-      case 'drive.update_content': {
-        const p = updateContent.params.parse(params);
-        let contentType = p.mimeType;
-        if (!contentType) {
-          const metaRes = await driveFetch(
-            `/files/${encodeURIComponent(p.fileId)}?fields=mimeType&supportsAllDrives=true`,
-            token,
-          );
-          const existingMeta = metaRes.ok ? ((await metaRes.json()) as { mimeType: string }) : null;
-          contentType = existingMeta?.mimeType || 'text/plain';
-        }
-        const qs = new URLSearchParams({
-          uploadType: 'media',
-          fields: FILE_FIELDS,
-          supportsAllDrives: 'true',
-        });
-        const res = await driveUploadFetch(
-          `/files/${encodeURIComponent(p.fileId)}?${qs}`,
-          token,
-          {
-            method: 'PATCH',
-            headers: { 'Content-Type': contentType },
-            body: p.content,
-          },
-        );
-        if (!res.ok) return driveError(res);
-        return { success: true, data: await res.json() };
-      }
-
-      case 'drive.copy_file': {
-        const p = copyFile.params.parse(params);
-        const body: Record<string, unknown> = {};
-        if (p.name) body.name = p.name;
-        if (p.folderId) body.parents = [p.folderId];
-
-        const qs = new URLSearchParams({
-          fields: FILE_FIELDS,
-          supportsAllDrives: 'true',
-        });
-        const res = await driveFetch(`/files/${encodeURIComponent(p.fileId)}/copy?${qs}`, token, {
-          method: 'POST',
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) return driveError(res);
-        return { success: true, data: await res.json() };
-      }
-
-      // ── Sharing ──
-
-      case 'drive.share_file': {
-        const p = shareFile.params.parse(params);
-        const body: Record<string, unknown> = { role: p.role, type: p.type };
-        if (p.emailAddress) body.emailAddress = p.emailAddress;
-        if (p.domain) body.domain = p.domain;
-
-        const qs = new URLSearchParams({ supportsAllDrives: 'true' });
-        if (p.sendNotificationEmail !== undefined) {
-          qs.set('sendNotificationEmail', String(p.sendNotificationEmail));
-        }
-        if (p.emailMessage) qs.set('emailMessage', p.emailMessage);
-
-        const res = await driveFetch(
-          `/files/${encodeURIComponent(p.fileId)}/permissions?${qs}`,
-          token,
-          { method: 'POST', body: JSON.stringify(body) },
-        );
-        if (!res.ok) return driveError(res);
-        return { success: true, data: await res.json() };
-      }
-
-      case 'drive.list_permissions': {
-        const { fileId } = listPermissions.params.parse(params);
-        const qs = new URLSearchParams({
-          fields: 'permissions(id,type,role,emailAddress,domain,displayName)',
-          supportsAllDrives: 'true',
-        });
-        const res = await driveFetch(
-          `/files/${encodeURIComponent(fileId)}/permissions?${qs}`,
-          token,
-        );
-        if (!res.ok) return driveError(res);
-        const data = (await res.json()) as { permissions: DrivePermission[] };
-        return { success: true, data: data.permissions || [] };
-      }
-
-      case 'drive.remove_permission': {
-        const { fileId, permissionId } = removePermission.params.parse(params);
-        const qs = new URLSearchParams({ supportsAllDrives: 'true' });
-        const res = await driveFetch(
-          `/files/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(permissionId)}?${qs}`,
-          token,
-          { method: 'DELETE' },
-        );
-        if (!res.ok && res.status !== 404) return driveError(res);
-        return { success: true };
-      }
-
-      // ── Cleanup ──
-
-      case 'drive.trash_file': {
-        const { fileId } = trashFile.params.parse(params);
-        const qs = new URLSearchParams({
-          fields: FILE_FIELDS,
-          supportsAllDrives: 'true',
-        });
-        const res = await driveFetch(`/files/${encodeURIComponent(fileId)}?${qs}`, token, {
-          method: 'PATCH',
-          body: JSON.stringify({ trashed: true }),
-        });
-        if (!res.ok) return driveError(res);
-        return { success: true, data: await res.json() };
-      }
-
-      case 'drive.untrash_file': {
-        const { fileId } = untrashFile.params.parse(params);
-        const qs = new URLSearchParams({
-          fields: FILE_FIELDS,
-          supportsAllDrives: 'true',
-        });
-        const res = await driveFetch(`/files/${encodeURIComponent(fileId)}?${qs}`, token, {
-          method: 'PATCH',
-          body: JSON.stringify({ trashed: false }),
-        });
-        if (!res.ok) return driveError(res);
-        return { success: true, data: await res.json() };
-      }
-
-      case 'drive.delete_file': {
-        const { fileId } = deleteFile.params.parse(params);
-        const qs = new URLSearchParams({ supportsAllDrives: 'true' });
-        const res = await driveFetch(`/files/${encodeURIComponent(fileId)}?${qs}`, token, {
-          method: 'DELETE',
-        });
-        if (!res.ok && res.status !== 404) return driveError(res);
-        return { success: true };
       }
 
       default:
