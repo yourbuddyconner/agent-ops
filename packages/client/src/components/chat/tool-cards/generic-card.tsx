@@ -93,6 +93,44 @@ function selectColumns(rows: Record<string, unknown>[], maxCols: number = 8): { 
 // Value renderers
 // ---------------------------------------------------------------------------
 
+const URL_REGEX = /https?:\/\/[^\s"'<>]+/g;
+
+/** Render a string with URLs as clickable links */
+function Linkify({ text, truncate }: { text: string; truncate?: number }) {
+  const matches = [...text.matchAll(URL_REGEX)];
+  if (matches.length === 0) {
+    const display = truncate && text.length > truncate ? text.slice(0, truncate) + '...' : text;
+    return <>{display}</>;
+  }
+
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  for (const match of matches) {
+    const url = match[0];
+    const start = match.index!;
+    if (start > lastIndex) {
+      parts.push(text.slice(lastIndex, start));
+    }
+    const displayUrl = truncate && url.length > truncate ? url.slice(0, truncate) + '...' : url;
+    parts.push(
+      <a
+        key={start}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-blue-500 hover:text-blue-400 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+      >
+        {displayUrl}
+      </a>,
+    );
+    lastIndex = start + url.length;
+  }
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+  return <>{parts}</>;
+}
+
 const CellValue = memo(function CellValue({ value }: { value: unknown }) {
   if (value === null || value === undefined) {
     return <span className="text-neutral-300 dark:text-neutral-600">&mdash;</span>;
@@ -113,10 +151,7 @@ const CellValue = memo(function CellValue({ value }: { value: unknown }) {
     return <span className="text-neutral-500 dark:text-neutral-500">{display}</span>;
   }
   const str = String(value);
-  if (str.length > 80) {
-    return <span>{str.slice(0, 80)}...</span>;
-  }
-  return <>{str}</>;
+  return <Linkify text={str} truncate={80} />;
 });
 
 /** Format a value as a full string for tooltip display */
