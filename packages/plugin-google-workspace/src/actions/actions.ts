@@ -108,6 +108,13 @@ async function executeAction(
 
   // ── Dispatch for create actions ──
 
+  if (category === 'create') {
+    // Guard active + no required labels: deny creates to prevent orphaned files
+    if (guard.driveRequiredLabelIds.length === 0) {
+      return { success: false, error: 'File not found or access denied' };
+    }
+  }
+
   const result = await dispatchAction(actionId, params, ctx);
 
   // ── Post-dispatch: cleanup partial creates + auto-label ──

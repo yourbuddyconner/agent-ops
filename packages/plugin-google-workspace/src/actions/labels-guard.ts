@@ -150,7 +150,11 @@ export async function checkFileLabel(
     );
 
     if (!res.ok) {
-      // API error — respect failMode
+      if (res.status === 401) {
+        // Surface 401 so session-tools auth-retry can refresh the token
+        return { success: false, error: 'Drive API 401: unauthorized during label check' };
+      }
+      // Other API error — respect failMode
       if (config.driveLabelsFailMode === 'allow') return null;
       return { success: false, error: 'File not found or access denied' };
     }

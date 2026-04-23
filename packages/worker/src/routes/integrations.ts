@@ -277,23 +277,39 @@ integrationsRouter.get('/google_workspace/labels', async (c) => {
   const token = credResult.credential.accessToken;
 
   try {
-    const res = await fetch(
-      'https://drivelabels.googleapis.com/v2/labels?view=LABEL_VIEW_FULL',
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
+    const allLabels: Array<{ id: string; name: string; labelType: string; properties?: { title: string } }> = [];
+    let pageToken: string | undefined;
 
-    if (!res.ok) {
-      return c.json({
-        available: false,
-        reason: 'Drive Labels API not available for this account type',
-      });
-    }
+    do {
+      const params = new URLSearchParams({ view: 'LABEL_VIEW_FULL', pageSize: '200' });
+      if (pageToken) params.set('pageToken', pageToken);
 
-    const data = (await res.json()) as {
-      labels?: Array<{ id: string; name: string; labelType: string; properties?: { title: string } }>;
-    };
+      const res = await fetch(
+        `https://drivelabels.googleapis.com/v2/labels?${params}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
 
-    const labels = (data.labels ?? []).map((l) => ({
+      if (!res.ok) {
+        // If the first page fails, report unavailable. If a subsequent page fails, return what we have.
+        if (allLabels.length === 0) {
+          return c.json({
+            available: false,
+            reason: 'Drive Labels API not available for this account type',
+          });
+        }
+        break;
+      }
+
+      const data = (await res.json()) as {
+        labels?: typeof allLabels;
+        nextPageToken?: string;
+      };
+
+      allLabels.push(...(data.labels ?? []));
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+
+    const labels = allLabels.map((l) => ({
       id: l.id,
       name: l.properties?.title ?? l.name ?? l.id,
       type: l.labelType ?? 'UNKNOWN',
