@@ -499,13 +499,13 @@ export class SessionAgentDO {
 
         switch (effectiveMode) {
           case 'steer':
-            await this.handleInterruptPrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId, body.contextPrefix);
+            await this.handleInterruptPrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId, body.contextPrefix, body.continuationContext);
             break;
           case 'collect':
-            await this.handleCollectPrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId, body.contextPrefix);
+            await this.handleCollectPrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId, body.contextPrefix, body.continuationContext);
             break;
           default:
-            await this.handlePrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId, undefined, body.contextPrefix, body.replyTo);
+            await this.handlePrompt(content, body.model, author, attachments, body.channelType, body.channelId, body.threadId, body.continuationContext, body.contextPrefix, body.replyTo);
             break;
         }
         console.log(`[SessionAgentDO] /prompt HTTP: completed, runnerBusy=${this.promptQueue.runnerBusy}`);
@@ -1285,10 +1285,10 @@ export class SessionAgentDO {
         const wsQueueMode = (msg as any).queueMode || this.promptQueue.queueMode || 'followup';
         switch (wsQueueMode) {
           case 'steer':
-            await this.handleInterruptPrompt(msg.content || '', msg.model, author, attachments, wsChannelType, wsChannelId, wsThreadId);
+            await this.handleInterruptPrompt(msg.content || '', msg.model, author, attachments, wsChannelType, wsChannelId, wsThreadId, undefined, wsContinuationContext);
             break;
           case 'collect':
-            await this.handleCollectPrompt(msg.content || '', msg.model, author, attachments, wsChannelType, wsChannelId, wsThreadId);
+            await this.handleCollectPrompt(msg.content || '', msg.model, author, attachments, wsChannelType, wsChannelId, wsThreadId, undefined, wsContinuationContext);
             break;
           default:
             await this.handlePrompt(msg.content || '', msg.model, author, attachments, wsChannelType, wsChannelId, wsThreadId, wsContinuationContext);
@@ -1859,6 +1859,7 @@ export class SessionAgentDO {
     channelId?: string,
     threadId?: string,
     contextPrefix?: string,
+    continuationContext?: string,
   ) {
     // ─── Pending question check (before abort) ─────────────────────────
     // If the agent is waiting on a question and the user replies in the same
@@ -1879,7 +1880,7 @@ export class SessionAgentDO {
     }
     // Queue the new prompt — when the runner confirms abort, handlePromptComplete
     // will drain the queue and send this prompt to the runner
-    await this.handlePrompt(content, model, author, attachments, channelType, channelId, threadId, undefined, contextPrefix, undefined, true);
+    await this.handlePrompt(content, model, author, attachments, channelType, channelId, threadId, continuationContext, contextPrefix, undefined, true);
   }
 
   // ─── Collect Mode (Phase D) ──────────────────────────────────────────
@@ -1893,6 +1894,7 @@ export class SessionAgentDO {
     channelId?: string,
     threadId?: string,
     contextPrefix?: string,
+    continuationContext?: string,
   ) {
     // ─── Pending question check (before buffering) ─────────────────────
     // If the agent is waiting on a question and the user replies in the same
@@ -1950,7 +1952,7 @@ export class SessionAgentDO {
     const bufferLength = this.promptQueue.appendToCollectBuffer(collectChannelKey, {
       content, model, author,
       attachments: normalizedAttachments.length > 0 ? normalizedAttachments : undefined,
-      channelType, channelId, threadId, contextPrefix,
+      channelType, channelId, threadId, contextPrefix, continuationContext,
     });
 
     // Schedule alarm for collect flush (uses min of flush and existing idle alarm)
@@ -1977,11 +1979,12 @@ export class SessionAgentDO {
       const lastEntry = buffer[buffer.length - 1];
       const allAttachments = buffer.flatMap((b) => b.attachments || []);
       const mergedContextPrefix = buffer.find((b) => b.contextPrefix)?.contextPrefix;
+      const mergedContinuationContext = buffer.find((b) => b.continuationContext)?.continuationContext;
 
       await this.handlePrompt(
         mergedContent, lastEntry.model, lastEntry.author as any, allAttachments as PromptAttachment[],
         lastEntry.channelType, lastEntry.channelId, lastEntry.threadId,
-        undefined, mergedContextPrefix,
+        mergedContinuationContext, mergedContextPrefix,
       );
     }
 
