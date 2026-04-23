@@ -1,370 +1,253 @@
+/**
+ * Google Docs actions — core read/write operations (8 of 25).
+ *
+ * Ported from the reference MCP server tools. Uses raw fetch() via
+ * docs-helpers.ts and markdown conversion via docs-markdown.ts.
+ *
+ * Subsequent tasks will add the remaining 17 actions.
+ */
+
 import { z } from 'zod';
-import { decode as decodeToon } from '@toon-format/toon';
 import type { ActionDefinition, ActionContext, ActionResult } from '@valet/sdk';
-import { docsFetch, driveFetchForDocs, apiError, executeBatchUpdate, normalizeDocumentId } from './docs-helpers.js';
-import { escapeDriveQuery } from './drive-api.js';
-import { docsToMarkdown } from './docs-to-markdown.js';
-import type { DocsBody, DocsLists } from './docs-to-markdown.js';
-import { convertMarkdownToRequests } from './markdown-to-docs.js';
-import { findSection, getBodyEndIndex, getBodyInsertIndex, extractSections } from './sections.js';
 import {
-  parseUpdateOperation,
-  requiresDocumentRead,
-  translateUpdateOperations,
-  type UpdateDocumentOperation,
-} from './operations.js';
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/**
- * Recursively inject `tabId` into location-like objects within batchUpdate requests.
- * Targets: Location (has `index`), Range (has `startIndex`/`endIndex`),
- * EndOfSegmentLocation, and TableCellLocation (has `tableStartLocation`).
- */
-function injectTabId(obj: unknown, tabId: string, parentKey?: string): unknown {
-  if (obj === null || obj === undefined || typeof obj !== 'object') return obj;
-  if (Array.isArray(obj)) return obj.map((item) => injectTabId(item, tabId));
-
-  const record = obj as Record<string, unknown>;
-  const result: Record<string, unknown> = {};
-
-  for (const [key, value] of Object.entries(record)) {
-    result[key] = injectTabId(value, tabId, key);
-  }
-
-  // Inject tabId into location-like objects:
-  // - Location (has `index`), Range (has `startIndex`), objects with `segmentId`
-  // - TableCellLocation (has `tableStartLocation`)
-  // - EndOfSegmentLocation (identified by parent key, since it can be an empty object)
-  const isLocation = 'index' in record || 'startIndex' in record || 'segmentId' in record;
-  const isTableCellLocation = 'tableStartLocation' in record;
-  const isEndOfSegment = parentKey === 'endOfSegmentLocation';
-  if ((isLocation || isTableCellLocation || isEndOfSegment) && !('tabId' in record)) {
-    result.tabId = tabId;
-  }
-
-  return result;
-}
-
-function annotateTables(markdown: string): string {
-  const lines = markdown.split('\n');
-  const output: string[] = [];
-  let tableIndex = 0;
-  let inTable = false;
-
-  for (const line of lines) {
-    const isTableLine = /^\|.*\|$/.test(line.trim());
-
-    if (isTableLine && !inTable) {
-      if (output.length > 0 && output[output.length - 1] !== '') {
-        output.push('');
-      }
-      output.push(`[Table ${tableIndex}]`);
-      tableIndex += 1;
-      inTable = true;
-    } else if (!isTableLine) {
-      inTable = false;
-    }
-
-    output.push(line);
-  }
-
-  return output.join('\n');
-}
-
-function decodeUpdateOperations(params: {
-  operationsToon?: string;
-  operationsJson?: unknown[];
-}): UpdateDocumentOperation[] | { error: string } {
-  let decodedOperations: unknown;
-
-  if (params.operationsJson) {
-    decodedOperations = params.operationsJson;
-  } else if (params.operationsToon) {
-    try {
-      decodedOperations = decodeToon(params.operationsToon);
-    } catch (error) {
-      return { error: `Failed to decode operationsToon: ${String(error)}` };
-    }
-  } else {
-    return { error: 'Provide either operationsToon or operationsJson' };
-  }
-
-  if (!Array.isArray(decodedOperations)) {
-    return { error: 'Update operations must decode to an array of operations' };
-  }
-
-  try {
-    return decodedOperations.map((operation, index) => parseUpdateOperation(operation, index));
-  } catch (error) {
-    return { error: String(error) };
-  }
-}
-
-/** Fetch a full document and return the parsed JSON. */
-async function fetchDocument(
-  documentId: string,
-  token: string,
-): Promise<{ ok: true; doc: Record<string, unknown> } | { ok: false; error: ActionResult }> {
-  const normalizedDocumentId = normalizeDocumentId(documentId);
-  const res = await docsFetch(`/documents/${encodeURIComponent(normalizedDocumentId)}`, token);
-  if (!res.ok) {
-    return { ok: false, error: await apiError(res, 'Docs') };
-  }
-  const doc = (await res.json()) as Record<string, unknown>;
-  return { ok: true, doc };
-}
-
-/**
- * Extract a section from rendered markdown by heading text.
- * Finds the heading line and returns everything until the next heading of
- * equal or higher level (fewer or equal '#' characters).
- */
-function extractMarkdownSection(markdown: string, heading: string): string | null {
-  const lines = markdown.split('\n');
-  const needle = heading.toLowerCase();
-
-  let sectionStart = -1;
-  let sectionLevel = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const match = lines[i].match(/^(#{1,6})\s+(.*)$/);
-    if (!match) continue;
-
-    const level = match[1].length;
-    const text = match[2].trim();
-
-    if (sectionStart === -1) {
-      // Looking for the target heading
-      if (text.toLowerCase().includes(needle)) {
-        sectionStart = i;
-        sectionLevel = level;
-      }
-    } else {
-      // Found start, looking for end
-      if (level <= sectionLevel) {
-        return lines.slice(sectionStart, i).join('\n').trim();
-      }
-    }
-  }
-
-  if (sectionStart !== -1) {
-    return lines.slice(sectionStart).join('\n').trim();
-  }
-
-  return null;
-}
+  docsFetch,
+  apiError,
+  normalizeDocumentId,
+  executeBatchUpdate,
+  findTextRange,
+  findTabById,
+  buildUpdateTextStyleRequest,
+} from './docs-helpers.js';
+import type { DocsRequest } from './docs-markdown.js';
+import {
+  docsJsonToMarkdown,
+  convertMarkdownToRequests,
+  insertMarkdown,
+  formatInsertResult,
+} from './docs-markdown.js';
+import type { DocsBody, DocsLists } from './docs-markdown.js';
 
 // ─── Action Definitions ──────────────────────────────────────────────────────
 
-const searchDocuments: ActionDefinition = {
-  id: 'docs.search_documents',
-  name: 'Search Documents',
-  description: 'Search Google Docs by full-text query',
-  riskLevel: 'low',
-  params: z.object({
-    query: z.string().describe('Search text (matches document names and content)'),
-    maxResults: z.number().int().min(1).max(50).optional().describe('Max results to return (default: 20, max: 50)'),
-  }),
-};
-
-const getDocument: ActionDefinition = {
-  id: 'docs.get_document',
-  name: 'Get Document',
-  description: 'Get document metadata (title, revision ID) by ID',
-  riskLevel: 'low',
-  params: z.object({
-    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
-  }),
-};
-
-const readDocument: ActionDefinition = {
-  id: 'docs.read_document',
-  name: 'Read Document',
-  description: 'Read the full content of a Google Doc as markdown',
-  riskLevel: 'low',
-  params: z.object({
-    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
-    tabId: z.string().optional().describe('Specific tab ID to read (for multi-tab documents)'),
-  }),
-};
-
-const readSection: ActionDefinition = {
-  id: 'docs.read_section',
-  name: 'Read Section',
-  description: 'Read a specific section of a Google Doc by heading text',
-  riskLevel: 'low',
-  params: z.object({
-    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
-    heading: z.string().describe('Heading text to find (case-insensitive substring match)'),
-    tabId: z.string().optional().describe('Specific tab ID (for multi-tab docs)'),
-  }),
-};
-
-const createDocument: ActionDefinition = {
-  id: 'docs.create_document',
-  name: 'Create Document',
-  description: 'Create a new Google Doc with optional markdown content',
-  riskLevel: 'medium',
-  params: z.object({
-    title: z.string().describe('Document title'),
-    markdown: z.string().describe('Markdown content for the document body'),
-    folderId: z.string().optional().describe('Google Drive folder ID to place the document in'),
-  }),
-};
-
-const replaceDocument: ActionDefinition = {
-  id: 'docs.replace_document',
-  name: 'Replace Document',
-  description: 'Replace the entire content of a Google Doc with new markdown',
-  riskLevel: 'high',
-  params: z.object({
-    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
-    markdown: z.string().describe('New markdown content to replace the entire document body'),
-  }),
-};
-
-const appendContent: ActionDefinition = {
-  id: 'docs.append_content',
-  name: 'Append Content',
-  description: 'Append markdown content to the end of a Google Doc',
-  riskLevel: 'medium',
-  params: z.object({
-    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
-    markdown: z.string().describe('Markdown content to append'),
-  }),
-};
-
-const replaceSection: ActionDefinition = {
-  id: 'docs.replace_section',
-  name: 'Replace Section',
-  description: 'Replace a specific section of a Google Doc identified by heading',
-  riskLevel: 'medium',
-  params: z.object({
-    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
-    heading: z.string().describe('Heading text of the section to replace (case-insensitive substring match)'),
-    markdown: z.string().describe('New markdown content to replace the section with'),
-  }),
-};
-
-const insertSection: ActionDefinition = {
-  id: 'docs.insert_section',
-  name: 'Insert Section',
-  description: 'Insert markdown content before or after a specific section',
-  riskLevel: 'medium',
-  params: z.object({
-    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
-    heading: z.string().describe('Heading text of the reference section (case-insensitive substring match)'),
-    position: z.enum(['before', 'after']).describe('Insert before or after the reference section'),
-    markdown: z.string().describe('Markdown content to insert'),
-  }),
-};
-
-const deleteSection: ActionDefinition = {
-  id: 'docs.delete_section',
-  name: 'Delete Section',
-  description: 'Delete a section (heading and all content until next same-level heading) from a Google Doc',
-  riskLevel: 'high',
-  params: z.object({
-    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
-    heading: z.string().describe('Heading text of the section to delete (case-insensitive substring match)'),
-  }),
-};
-
-const updateDocument: ActionDefinition = {
-  id: 'docs.update_document',
-  name: 'Update Document',
-  description:
-    'Apply targeted edits to a Google Doc without replacing the full body. Supports operations: replaceAll (global find-replace), replaceText (replace Nth occurrence of specific text), fillCell (table cell update), and insertText (anchor-based insertion). Accepts TOON-encoded or JSON operations.',
-  riskLevel: 'high',
-  params: z.object({
-    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
-    operationsToon: z.string().optional().describe('TOON-encoded array of operations to apply'),
-    operationsJson: z.array(z.unknown()).optional().describe('JSON array of operations to apply'),
-    tabId: z.string().optional().describe('Tab ID for multi-tab documents'),
-  }).refine((value) => Boolean(value.operationsToon || value.operationsJson), {
-    message: 'Provide either operationsToon or operationsJson',
-    path: ['operationsToon'],
-  }),
-};
-
-const listSections: ActionDefinition = {
-  id: 'docs.list_sections',
-  name: 'List Sections',
-  description: 'List all sections (headings) in a Google Doc with their levels and index ranges. Useful for understanding document structure before making targeted edits.',
-  riskLevel: 'low',
-  params: z.object({
-    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
-    tabId: z.string().optional().describe('Specific tab ID (for multi-tab docs)'),
-  }),
-};
-
-const listComments: ActionDefinition = {
-  id: 'docs.list_comments',
-  name: 'List Comments',
-  description: 'List comments on a Google Doc. Returns unresolved comments by default.',
-  riskLevel: 'low',
-  params: z.object({
-    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
-    includeResolved: z.boolean().optional().describe('Include resolved comments (default: false)'),
-  }),
-};
-
-const createComment: ActionDefinition = {
-  id: 'docs.create_comment',
-  name: 'Create Comment',
-  description: 'Create an unanchored comment on a Google Doc',
-  riskLevel: 'medium',
-  params: z.object({
-    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
-    content: z.string().describe('Comment text'),
-  }),
-};
-
-const replyToComment: ActionDefinition = {
-  id: 'docs.reply_to_comment',
-  name: 'Reply to Comment',
-  description:
-    'Reply to a comment on a Google Doc. Set resolve: true to resolve the comment, or reopen: true to reopen a resolved comment. Resolving is done by posting a reply with action "resolve" — the resolved field on comments is read-only.',
-  riskLevel: 'medium',
-  params: z.object({
-    documentId: z.string().describe('Google Docs document ID or full Google Docs URL'),
-    commentId: z.string().describe('ID of the comment to reply to'),
-    content: z.string().describe('Reply text'),
-    resolve: z.boolean().optional().describe('Resolve the comment with this reply'),
-    reopen: z.boolean().optional().describe('Reopen a resolved comment with this reply'),
-  }),
-};
-
-const updateDocumentRuntimeParams = z.object({
-  documentId: z.string(),
-  operationsToon: z.string().optional(),
-  operationsJson: z.array(z.unknown()).optional(),
-  tabId: z.string().optional(),
-}).refine((value) => Boolean(value.operationsToon || value.operationsJson), {
-  message: 'Provide either operationsToon or operationsJson',
-  path: ['operationsToon'],
-});
-
-// ─── Action List ─────────────────────────────────────────────────────────────
-
 const allActions: ActionDefinition[] = [
-  searchDocuments,
-  getDocument,
-  readDocument,
-  readSection,
-  createDocument,
-  replaceDocument,
-  appendContent,
-  replaceSection,
-  insertSection,
-  deleteSection,
-  updateDocument,
-  listSections,
-  listComments,
-  createComment,
-  replyToComment,
+  {
+    id: 'docs.read_document',
+    name: 'Read Document',
+    description:
+      'Read document content as text, markdown, or JSON (JSON includes character indices for surgical editing)',
+    riskLevel: 'low',
+    params: z.object({
+      documentId: z.string().describe('Document ID or full Google Docs URL'),
+      format: z
+        .enum(['text', 'json', 'markdown'])
+        .optional()
+        .default('text'),
+      maxLength: z
+        .number()
+        .optional()
+        .describe('Maximum character limit for output'),
+      tabId: z.string().optional(),
+    }),
+  },
+  {
+    id: 'docs.insert_text',
+    name: 'Insert Text',
+    description: 'Insert text at a specific 1-based character index',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string(),
+      text: z.string().min(1),
+      index: z.number().int().min(1),
+      tabId: z.string().optional(),
+    }),
+  },
+  {
+    id: 'docs.append_text',
+    name: 'Append Text',
+    description: 'Append plain text to the end of a document',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string(),
+      text: z.string().min(1),
+      addNewlineIfNeeded: z.boolean().optional().default(true),
+      tabId: z.string().optional(),
+    }),
+  },
+  {
+    id: 'docs.modify_text',
+    name: 'Modify Text',
+    description:
+      'Replace, insert, or format text in one atomic operation. Target by character range, text search, or insertion index.',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string(),
+      target: z.union([
+        z.object({
+          startIndex: z.number().int().min(1),
+          endIndex: z.number().int().min(1),
+        }),
+        z.object({
+          textToFind: z.string().min(1),
+          matchInstance: z.number().int().min(1).optional(),
+        }),
+        z.object({
+          insertionIndex: z.number().int().min(1),
+        }),
+      ]),
+      text: z.string().optional(),
+      style: z
+        .object({
+          bold: z.boolean().optional(),
+          italic: z.boolean().optional(),
+          underline: z.boolean().optional(),
+          strikethrough: z.boolean().optional(),
+          fontSize: z.number().optional(),
+          fontFamily: z.string().optional(),
+          foregroundColor: z.string().optional(),
+          backgroundColor: z.string().optional(),
+          linkUrl: z.string().optional(),
+        })
+        .optional(),
+      tabId: z.string().optional(),
+    }),
+  },
+  {
+    id: 'docs.delete_range',
+    name: 'Delete Range',
+    description: 'Delete content within a character range [startIndex, endIndex)',
+    riskLevel: 'high',
+    params: z.object({
+      documentId: z.string(),
+      startIndex: z.number().int().min(1),
+      endIndex: z.number().int().min(1),
+      tabId: z.string().optional(),
+    }),
+  },
+  {
+    id: 'docs.find_and_replace',
+    name: 'Find and Replace',
+    description:
+      'Replace all occurrences of a text string throughout the document',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string(),
+      findText: z.string().min(1),
+      replaceText: z.string(),
+      matchCase: z.boolean().optional(),
+      tabId: z.string().optional(),
+    }),
+  },
+  {
+    id: 'docs.append_markdown',
+    name: 'Append Markdown',
+    description: 'Append formatted markdown content to the end of a document',
+    riskLevel: 'medium',
+    params: z.object({
+      documentId: z.string(),
+      markdown: z.string().min(1),
+      addNewlineIfNeeded: z.boolean().optional().default(true),
+      tabId: z.string().optional(),
+      firstHeadingAsTitle: z.boolean().optional(),
+    }),
+  },
+  {
+    id: 'docs.replace_document_with_markdown',
+    name: 'Replace Document with Markdown',
+    description:
+      'Replace the entire document body with formatted markdown content',
+    riskLevel: 'high',
+    params: z.object({
+      documentId: z.string(),
+      markdown: z.string().min(1),
+      preserveTitle: z.boolean().optional(),
+      tabId: z.string().optional(),
+      firstHeadingAsTitle: z.boolean().optional(),
+    }),
+  },
 ];
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Raw doc JSON from API
+type DocJson = Record<string, any>;
+
+/** Fetch a full document and return the parsed JSON. */
+async function fetchDocument(
+  token: string,
+  documentId: string,
+  options?: { includeTabsContent?: boolean; fields?: string },
+): Promise<{ ok: true; doc: DocJson } | { ok: false; result: ActionResult }> {
+  const qs = new URLSearchParams();
+  if (options?.fields) qs.set('fields', options.fields);
+  if (options?.includeTabsContent) qs.set('includeTabsContent', 'true');
+
+  const qsStr = qs.toString();
+  const path = `/documents/${encodeURIComponent(documentId)}${qsStr ? `?${qsStr}` : ''}`;
+  const res = await docsFetch(path, token);
+  if (!res.ok) {
+    return { ok: false, result: await apiError(res, 'Docs') };
+  }
+  return { ok: true, doc: (await res.json()) as DocJson };
+}
+
+/** Get the body content from a doc response, optionally from a specific tab. */
+function getBodyContent(
+  doc: DocJson,
+  tabId?: string,
+): { body: unknown[]; lists?: DocsLists } | { error: string } {
+  if (tabId) {
+    const tab = findTabById(doc, tabId);
+    if (!tab) return { error: `Tab with ID "${tabId}" not found in document.` };
+    const dt = (tab as DocJson).documentTab as
+      | { body?: { content?: unknown[] }; lists?: DocsLists }
+      | undefined;
+    if (!dt?.body?.content) {
+      return { error: `Tab "${tabId}" does not have content.` };
+    }
+    return { body: dt.body.content, lists: dt.lists };
+  }
+  const body = (doc.body as { content?: unknown[] })?.content;
+  if (!body) return { error: 'Document has no body content.' };
+  return { body, lists: doc.lists as DocsLists | undefined };
+}
+
+/** Get the end index (last element's endIndex) from body content. */
+function getEndIndex(bodyContent: unknown[]): number {
+  if (bodyContent.length === 0) return 1;
+  const lastElement = bodyContent[bodyContent.length - 1] as { endIndex?: number };
+  return lastElement.endIndex ?? 1;
+}
+
+/** Extract plain text from body content elements. */
+function extractPlainText(bodyContent: unknown[]): string {
+  let text = '';
+  for (const element of bodyContent as Record<string, unknown>[]) {
+    const para = element.paragraph as { elements?: Record<string, unknown>[] } | undefined;
+    if (para?.elements) {
+      for (const pe of para.elements) {
+        const textRun = pe.textRun as { content?: string } | undefined;
+        if (textRun?.content) {
+          text += textRun.content;
+        }
+      }
+    }
+    const table = element.table as { tableRows?: Record<string, unknown>[] } | undefined;
+    if (table?.tableRows) {
+      for (const row of table.tableRows) {
+        const cells = (row as { tableCells?: Record<string, unknown>[] }).tableCells;
+        if (cells) {
+          for (const cell of cells) {
+            const content = (cell as { content?: unknown[] }).content;
+            if (content) {
+              text += extractPlainText(content);
+            }
+          }
+        }
+      }
+    }
+  }
+  return text;
+}
 
 // ─── Action Execution ────────────────────────────────────────────────────────
 
@@ -378,500 +261,599 @@ async function executeAction(
 
   try {
     switch (actionId) {
-      case 'docs.search_documents': {
-        const p = searchDocuments.params.parse(params);
-        const maxResults = Math.min(p.maxResults ?? 20, 50);
-        const queryParts: string[] = [
-          `fullText contains '${escapeDriveQuery(p.query)}'`,
-          `mimeType='application/vnd.google-apps.document'`,
-          'trashed = false',
-        ];
+      // ── docs.read_document ──────────────────────────────────────────
+      case 'docs.read_document': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          format: 'text' | 'json' | 'markdown';
+          maxLength?: number;
+          tabId?: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+        const needsTabsContent = !!p.tabId;
 
-        // Build final query with explicit parenthesization to prevent OR injection
-        const rawSearchParams = params as Record<string, unknown> | null;
-        const docsLabelClause = rawSearchParams?.__labelFilter as string | undefined;
-        const docsUserQuery = queryParts.join(' and ');
-        let docsFinalQuery: string;
-        if (docsUserQuery && docsLabelClause) {
-          docsFinalQuery = `(${docsUserQuery}) and ${docsLabelClause}`;
-        } else if (docsLabelClause) {
-          docsFinalQuery = docsLabelClause;
-        } else {
-          docsFinalQuery = docsUserQuery;
-        }
-        const qs = new URLSearchParams({
-          q: docsFinalQuery,
-          fields: 'files(id,name,modifiedTime,webViewLink)',
-          pageSize: String(maxResults),
-          supportsAllDrives: 'true',
-          includeItemsFromAllDrives: 'true',
+        // Determine fields to fetch
+        const fields =
+          p.format === 'json' || p.format === 'markdown'
+            ? '*'
+            : 'body(content(paragraph(elements(textRun(content)))))';
+
+        const fetchResult = await fetchDocument(token, docId, {
+          includeTabsContent: needsTabsContent,
+          fields: needsTabsContent ? '*' : fields,
         });
-        const res = await driveFetchForDocs(`/files?${qs}`, token);
-        if (!res.ok) return await apiError(res, 'Drive');
-        const data = (await res.json()) as { files: unknown[] };
-        return { success: true, data: { files: data.files || [] } };
+        if (!fetchResult.ok) return fetchResult.result;
+        const doc = fetchResult.doc;
+
+        // Resolve content source (tab or root body)
+        let contentSource: DocJson;
+        if (p.tabId) {
+          const tab = findTabById(doc, p.tabId);
+          if (!tab) {
+            return { success: false, error: `Tab with ID "${p.tabId}" not found in document.` };
+          }
+          const dt = (tab as DocJson).documentTab;
+          if (!dt) {
+            return {
+              success: false,
+              error: `Tab "${p.tabId}" does not have content (may not be a document tab).`,
+            };
+          }
+          contentSource = { body: dt.body };
+        } else {
+          contentSource = doc;
+        }
+
+        // JSON format
+        if (p.format === 'json') {
+          const jsonContent = JSON.stringify(contentSource, null, 2);
+          if (p.maxLength && jsonContent.length > p.maxLength) {
+            return {
+              success: true,
+              data: {
+                content:
+                  jsonContent.substring(0, p.maxLength) +
+                  `\n... [JSON truncated: ${jsonContent.length} total chars]`,
+              },
+            };
+          }
+          return { success: true, data: { content: jsonContent } };
+        }
+
+        // Markdown format
+        if (p.format === 'markdown') {
+          const body = (contentSource.body ?? {}) as DocsBody;
+          const lists = contentSource.lists as DocsLists | undefined;
+          const markdownContent = docsJsonToMarkdown(body, lists);
+          const totalLength = markdownContent.length;
+
+          if (p.maxLength && totalLength > p.maxLength) {
+            return {
+              success: true,
+              data: {
+                content:
+                  markdownContent.substring(0, p.maxLength) +
+                  `\n\n... [Markdown truncated to ${p.maxLength} chars of ${totalLength} total.]`,
+              },
+            };
+          }
+          return { success: true, data: { content: markdownContent } };
+        }
+
+        // Text format (default)
+        const bodyContent = (contentSource.body as { content?: unknown[] })?.content;
+        if (!bodyContent) {
+          return { success: true, data: { content: 'Document found, but appears empty.' } };
+        }
+
+        const textContent = extractPlainText(bodyContent);
+        if (!textContent.trim()) {
+          return { success: true, data: { content: 'Document found, but appears empty.' } };
+        }
+
+        const totalLength = textContent.length;
+        if (p.maxLength && totalLength > p.maxLength) {
+          return {
+            success: true,
+            data: {
+              content:
+                `Content (truncated to ${p.maxLength} chars of ${totalLength} total):\n---\n` +
+                textContent.substring(0, p.maxLength) +
+                `\n\n... [Document continues for ${totalLength - p.maxLength} more characters.]`,
+            },
+          };
+        }
+
+        return {
+          success: true,
+          data: { content: `Content (${totalLength} characters):\n---\n${textContent}` },
+        };
       }
 
-      case 'docs.get_document': {
-        const { documentId } = getDocument.params.parse(params);
-        const normalizedDocumentId = normalizeDocumentId(documentId);
-        const result = await fetchDocument(normalizedDocumentId, token);
-        if (!result.ok) return result.error;
-        const doc = result.doc as { documentId?: string; title?: string; revisionId?: string };
+      // ── docs.insert_text ────────────────────────────────────────────
+      case 'docs.insert_text': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          text: string;
+          index: number;
+          tabId?: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        // Verify tab exists if specified
+        if (p.tabId) {
+          const tabCheck = await fetchDocument(token, docId, {
+            includeTabsContent: true,
+            fields: 'tabs(tabProperties,documentTab)',
+          });
+          if (!tabCheck.ok) return tabCheck.result;
+          const tab = findTabById(tabCheck.doc, p.tabId);
+          if (!tab) {
+            return { success: false, error: `Tab with ID "${p.tabId}" not found in document.` };
+          }
+        }
+
+        const location: Record<string, unknown> = { index: p.index };
+        if (p.tabId) location.tabId = p.tabId;
+
+        const request: DocsRequest = {
+          insertText: { location, text: p.text },
+        };
+
+        const batchResult = await executeBatchUpdate(docId, token, [request]);
+        if (!batchResult.success) {
+          return { success: false, error: batchResult.error || 'Failed to insert text' };
+        }
+
         return {
           success: true,
           data: {
-            documentId: doc.documentId,
-            title: doc.title,
-            revisionId: doc.revisionId,
+            message: `Successfully inserted text at index ${p.index}${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
           },
         };
       }
 
-      case 'docs.read_document': {
-        const { documentId, tabId } = readDocument.params.parse(params);
-        const normalizedDocumentId = normalizeDocumentId(documentId);
-        const result = await fetchDocument(normalizedDocumentId, token);
-        if (!result.ok) return result.error;
-        const doc = result.doc;
+      // ── docs.append_text ────────────────────────────────────────────
+      case 'docs.append_text': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          text: string;
+          addNewlineIfNeeded: boolean;
+          tabId?: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
 
-        let body: DocsBody;
-        let lists: DocsLists | undefined;
-
-        if (tabId) {
-          // Find specific tab in includeTabsContent
-          const tabs = (doc as { tabs?: Array<{ tabProperties?: { tabId?: string }; body?: DocsBody; documentTab?: { body?: DocsBody; lists?: DocsLists } }> }).tabs;
-          const tab = tabs?.find((t) => t.tabProperties?.tabId === tabId);
-          if (!tab) {
-            return { success: false, error: `Tab '${tabId}' not found in document` };
-          }
-          body = tab.documentTab?.body ?? tab.body ?? {};
-          lists = tab.documentTab?.lists;
-        } else {
-          body = (doc.body ?? {}) as DocsBody;
-          lists = doc.lists as DocsLists | undefined;
-        }
-
-        const markdown = annotateTables(docsToMarkdown(body, lists));
-        return { success: true, data: { markdown } };
-      }
-
-      case 'docs.read_section': {
-        const { documentId, heading, tabId } = readSection.params.parse(params);
-        const normalizedDocumentId = normalizeDocumentId(documentId);
-        const result = await fetchDocument(normalizedDocumentId, token);
-        if (!result.ok) return result.error;
-        const doc = result.doc;
-
-        let body: DocsBody;
-        let lists: DocsLists | undefined;
-
-        if (tabId) {
-          const tabs = (doc as { tabs?: Array<{ tabProperties?: { tabId?: string }; body?: DocsBody; documentTab?: { body?: DocsBody; lists?: DocsLists } }> }).tabs;
-          const tab = tabs?.find((t) => t.tabProperties?.tabId === tabId);
-          if (!tab) {
-            return { success: false, error: `Tab '${tabId}' not found in document` };
-          }
-          body = tab.documentTab?.body ?? tab.body ?? {};
-          lists = tab.documentTab?.lists;
-        } else {
-          body = (doc.body ?? {}) as DocsBody;
-          lists = doc.lists as DocsLists | undefined;
-        }
-
-        const markdown = docsToMarkdown(body, lists);
-
-        const sectionMarkdown = extractMarkdownSection(markdown, heading);
-        if (sectionMarkdown === null) {
-          return { success: false, error: `Section with heading matching '${heading}' not found` };
-        }
-
-        return { success: true, data: { markdown: sectionMarkdown } };
-      }
-
-      case 'docs.create_document': {
-        const { title, markdown, folderId } = createDocument.params.parse(params);
-
-        // 1. Create empty document
-        const createRes = await docsFetch('/documents', token, {
-          method: 'POST',
-          body: JSON.stringify({ title }),
+        // Get the current document body
+        const fetchResult = await fetchDocument(token, docId, {
+          includeTabsContent: !!p.tabId,
+          fields: p.tabId ? 'tabs' : 'body(content(endIndex))',
         });
-        if (!createRes.ok) return await apiError(createRes, 'Docs');
-        const newDoc = (await createRes.json()) as { documentId: string; title: string };
+        if (!fetchResult.ok) return fetchResult.result;
 
-        // 2. If markdown provided, insert content
-        if (markdown && markdown.trim()) {
-          const createdDocResult = await fetchDocument(newDoc.documentId, token);
-          if (!createdDocResult.ok) return createdDocResult.error;
+        const bodyResult = getBodyContent(fetchResult.doc, p.tabId);
+        if ('error' in bodyResult) return { success: false, error: bodyResult.error };
 
-          const body = (createdDocResult.doc.body ?? {}) as DocsBody;
-          const insertIndex = getBodyInsertIndex(body);
-          const requests = convertMarkdownToRequests(markdown, { startIndex: insertIndex });
-          if (requests.length > 0) {
-            const batchResult = await executeBatchUpdate(newDoc.documentId, token, requests, {
-              preserveOrder: true,
-            });
-            if (!batchResult.success) {
-              return { success: false, error: batchResult.error || 'Failed to insert content' };
+        let endIndex = getEndIndex(bodyResult.body);
+        // Insert before the final newline
+        endIndex = Math.max(1, endIndex - 1);
+
+        const textToInsert = (p.addNewlineIfNeeded && endIndex > 1 ? '\n' : '') + p.text;
+        if (!textToInsert) {
+          return { success: true, data: { message: 'Nothing to append.' } };
+        }
+
+        const location: Record<string, unknown> = { index: endIndex };
+        if (p.tabId) location.tabId = p.tabId;
+
+        const request: DocsRequest = {
+          insertText: { location, text: textToInsert },
+        };
+        const batchResult = await executeBatchUpdate(docId, token, [request]);
+        if (!batchResult.success) {
+          return { success: false, error: batchResult.error || 'Failed to append text' };
+        }
+
+        return {
+          success: true,
+          data: {
+            message: `Successfully appended text to ${p.tabId ? `tab ${p.tabId} in ` : ''}document.`,
+          },
+        };
+      }
+
+      // ── docs.modify_text ────────────────────────────────────────────
+      case 'docs.modify_text': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          target:
+            | { startIndex: number; endIndex: number }
+            | { textToFind: string; matchInstance?: number }
+            | { insertionIndex: number };
+          text?: string;
+          style?: {
+            bold?: boolean;
+            italic?: boolean;
+            underline?: boolean;
+            strikethrough?: boolean;
+            fontSize?: number;
+            fontFamily?: string;
+            foregroundColor?: string;
+            backgroundColor?: string;
+            linkUrl?: string;
+          };
+          tabId?: string;
+        };
+
+        if (p.text === undefined && p.style === undefined) {
+          return { success: false, error: 'At least one of text or style must be provided.' };
+        }
+
+        const docId = normalizeDocumentId(p.documentId);
+
+        // Verify tab exists if specified
+        if (p.tabId) {
+          const tabCheck = await fetchDocument(token, docId, {
+            includeTabsContent: true,
+            fields: 'tabs(tabProperties,documentTab)',
+          });
+          if (!tabCheck.ok) return tabCheck.result;
+          const tab = findTabById(tabCheck.doc, p.tabId);
+          if (!tab) {
+            return { success: false, error: `Tab with ID "${p.tabId}" not found in document.` };
+          }
+        }
+
+        // Resolve target to numeric indices
+        let startIndex: number;
+        let endIndex: number | undefined;
+
+        if ('insertionIndex' in p.target) {
+          if (p.text === undefined) {
+            return {
+              success: false,
+              error: 'text is required when using insertionIndex target (no existing range to format).',
+            };
+          }
+          startIndex = p.target.insertionIndex;
+          endIndex = undefined;
+        } else if ('textToFind' in p.target) {
+          const range = await findTextRange(
+            token,
+            docId,
+            p.target.textToFind,
+            p.target.matchInstance ?? 1,
+            p.tabId,
+          );
+          if (!range) {
+            return {
+              success: false,
+              error: `Could not find instance ${p.target.matchInstance ?? 1} of text "${p.target.textToFind}"${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
+            };
+          }
+          startIndex = range.startIndex;
+          endIndex = range.endIndex;
+        } else {
+          startIndex = p.target.startIndex;
+          endIndex = p.target.endIndex;
+        }
+
+        if (startIndex < 1) startIndex = 1;
+
+        // Build requests
+        const requests: DocsRequest[] = [];
+
+        // 1. Delete existing content (only when replacing, not insert-only)
+        if (endIndex !== undefined && p.text !== undefined) {
+          const range: Record<string, unknown> = { startIndex, endIndex };
+          if (p.tabId) range.tabId = p.tabId;
+          requests.push({ deleteContentRange: { range } });
+        }
+
+        // 2. Insert new text
+        if (p.text !== undefined) {
+          const location: Record<string, unknown> = { index: startIndex };
+          if (p.tabId) location.tabId = p.tabId;
+          requests.push({ insertText: { location, text: p.text } });
+        }
+
+        // 3. Apply formatting
+        if (p.style) {
+          const formatStart = startIndex;
+          const formatEnd =
+            p.text !== undefined
+              ? startIndex + p.text.length
+              : endIndex !== undefined
+                ? endIndex
+                : startIndex;
+
+          if (formatEnd > formatStart) {
+            const requestInfo = buildUpdateTextStyleRequest(
+              formatStart,
+              formatEnd,
+              p.style,
+              p.tabId,
+            );
+            if (requestInfo) {
+              requests.push(requestInfo.request);
             }
           }
         }
 
-        // 3. If folderId, move the document into the folder
-        if (folderId) {
-          const moveRes = await driveFetchForDocs(
-            `/files/${encodeURIComponent(newDoc.documentId)}?addParents=${encodeURIComponent(folderId)}&fields=id`,
-            token,
-            { method: 'PATCH', body: JSON.stringify({}) },
-          );
-          if (!moveRes.ok) {
-            // Document was created but move failed — report partial success
-            return {
-              success: true,
-              data: {
-                documentId: newDoc.documentId,
-                title: newDoc.title,
-                webViewLink: `https://docs.google.com/document/d/${newDoc.documentId}/edit`,
-                warning: `Document created but could not be moved to folder ${folderId}`,
-              },
-            };
-          }
+        if (requests.length === 0) {
+          return { success: true, data: { message: 'No operations to perform.' } };
         }
+
+        const batchResult = await executeBatchUpdate(docId, token, requests, {
+          preserveOrder: true,
+        });
+        if (!batchResult.success) {
+          return { success: false, error: batchResult.error || 'Failed to modify text' };
+        }
+
+        const actions: string[] = [];
+        if (endIndex !== undefined && p.text !== undefined) actions.push('replaced text');
+        else if (p.text !== undefined) actions.push('inserted text');
+        if (p.style) actions.push('applied formatting');
 
         return {
           success: true,
           data: {
-            documentId: newDoc.documentId,
-            title: newDoc.title,
-            webViewLink: `https://docs.google.com/document/d/${newDoc.documentId}/edit`,
+            message: `Successfully ${actions.join(' and ')} at range ${startIndex}-${endIndex ?? startIndex + (p.text?.length ?? 0)}${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
           },
         };
       }
 
-      case 'docs.replace_document': {
-        const { documentId, markdown } = replaceDocument.params.parse(params);
-        const normalizedDocumentId = normalizeDocumentId(documentId);
+      // ── docs.delete_range ───────────────────────────────────────────
+      case 'docs.delete_range': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          startIndex: number;
+          endIndex: number;
+          tabId?: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
 
-        // 1. Get current document body
-        const result = await fetchDocument(normalizedDocumentId, token);
-        if (!result.ok) return result.error;
-        const body = (result.doc.body ?? {}) as DocsBody;
-        const endIndex = getBodyEndIndex(body);
+        if (p.endIndex <= p.startIndex) {
+          return { success: false, error: 'endIndex must be greater than startIndex for deletion.' };
+        }
 
-        const requests = [];
-
-        // 2. Delete existing content (if any beyond the initial newline)
-        if (endIndex > 2) {
-          requests.push({
-            deleteContentRange: {
-              range: { startIndex: 1, endIndex: endIndex - 1 },
-            },
+        // Verify tab exists if specified
+        if (p.tabId) {
+          const tabCheck = await fetchDocument(token, docId, {
+            includeTabsContent: true,
+            fields: 'tabs(tabProperties,documentTab)',
           });
-        }
-
-        // 3. Insert new content
-        const insertRequests = convertMarkdownToRequests(markdown);
-        requests.push(...insertRequests);
-
-        // 4. Execute batch update
-        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests, {
-          preserveOrder: true,
-        });
-        if (!batchResult.success) {
-          return { success: false, error: batchResult.error || 'Failed to replace document content' };
-        }
-
-        return { success: true, data: { documentId: normalizedDocumentId } };
-      }
-
-      case 'docs.append_content': {
-        const { documentId, markdown } = appendContent.params.parse(params);
-        const normalizedDocumentId = normalizeDocumentId(documentId);
-
-        // 1. Get current document body to find end index
-        const result = await fetchDocument(normalizedDocumentId, token);
-        if (!result.ok) return result.error;
-        const body = (result.doc.body ?? {}) as DocsBody;
-        const insertIndex = getBodyInsertIndex(body);
-
-        // 2. Convert markdown to requests starting at end of document
-        const requests = convertMarkdownToRequests(markdown, { startIndex: insertIndex });
-
-        // 3. Execute batch update
-        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests, {
-          preserveOrder: true,
-        });
-        if (!batchResult.success) {
-          return { success: false, error: batchResult.error || 'Failed to append content' };
-        }
-
-        return { success: true, data: { documentId: normalizedDocumentId } };
-      }
-
-      case 'docs.replace_section': {
-        const { documentId, heading, markdown } = replaceSection.params.parse(params);
-        const normalizedDocumentId = normalizeDocumentId(documentId);
-
-        // 1. Get current document body
-        const result = await fetchDocument(normalizedDocumentId, token);
-        if (!result.ok) return result.error;
-        const body = (result.doc.body ?? {}) as DocsBody;
-
-        // 2. Find the section
-        const section = findSection(body, heading);
-        if (!section) {
-          return { success: false, error: `Section with heading matching '${heading}' not found` };
-        }
-
-        const requests = [];
-
-        // 3. Delete section content
-        if (section.endIndex > section.startIndex) {
-          requests.push({
-            deleteContentRange: {
-              range: { startIndex: section.startIndex, endIndex: section.endIndex },
-            },
-          });
-        }
-
-        // 4. Insert new content at section start
-        const insertRequests = convertMarkdownToRequests(markdown, { startIndex: section.startIndex });
-        requests.push(...insertRequests);
-
-        // 5. Execute batch update
-        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests, {
-          preserveOrder: true,
-        });
-        if (!batchResult.success) {
-          return { success: false, error: batchResult.error || 'Failed to replace section' };
-        }
-
-        return { success: true, data: { documentId: normalizedDocumentId } };
-      }
-
-      case 'docs.insert_section': {
-        const { documentId, heading, position, markdown } = insertSection.params.parse(params);
-        const normalizedDocumentId = normalizeDocumentId(documentId);
-
-        // 1. Get current document body
-        const result = await fetchDocument(normalizedDocumentId, token);
-        if (!result.ok) return result.error;
-        const body = (result.doc.body ?? {}) as DocsBody;
-
-        // 2. Find the reference section
-        const section = findSection(body, heading);
-        if (!section) {
-          return { success: false, error: `Section with heading matching '${heading}' not found` };
-        }
-
-        // 3. Determine insert index
-        const insertIndex = position === 'before' ? section.startIndex : section.endIndex;
-
-        // 4. Convert markdown to requests at insert point
-        const requests = convertMarkdownToRequests(markdown, { startIndex: insertIndex });
-
-        // 5. Execute batch update
-        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests, {
-          preserveOrder: true,
-        });
-        if (!batchResult.success) {
-          return { success: false, error: batchResult.error || 'Failed to insert section' };
-        }
-
-        return { success: true, data: { documentId: normalizedDocumentId } };
-      }
-
-      case 'docs.delete_section': {
-        const { documentId, heading } = deleteSection.params.parse(params);
-        const normalizedDocumentId = normalizeDocumentId(documentId);
-
-        // 1. Get current document body
-        const result = await fetchDocument(normalizedDocumentId, token);
-        if (!result.ok) return result.error;
-        const body = (result.doc.body ?? {}) as DocsBody;
-
-        // 2. Find the section
-        const section = findSection(body, heading);
-        if (!section) {
-          return { success: false, error: `Section with heading matching '${heading}' not found` };
-        }
-
-        // 3. Delete the section
-        if (section.endIndex <= section.startIndex) {
-          return { success: true, data: { documentId: normalizedDocumentId } }; // Empty section, nothing to delete
-        }
-
-        const requests = [
-          {
-            deleteContentRange: {
-              range: { startIndex: section.startIndex, endIndex: section.endIndex },
-            },
-          },
-        ];
-
-        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests);
-        if (!batchResult.success) {
-          return { success: false, error: batchResult.error || 'Failed to delete section' };
-        }
-
-        return { success: true, data: { documentId: normalizedDocumentId } };
-      }
-
-      case 'docs.update_document': {
-        const { documentId, operationsToon, operationsJson, tabId } =
-          updateDocumentRuntimeParams.parse(params);
-        const normalizedDocumentId = normalizeDocumentId(documentId);
-        const decoded = decodeUpdateOperations({ operationsToon, operationsJson });
-        if ('error' in decoded) {
-          return { success: false, error: decoded.error };
-        }
-        const operations = decoded;
-
-        let doc: Record<string, unknown> | undefined;
-        if (requiresDocumentRead(operations)) {
-          const result = await fetchDocument(normalizedDocumentId, token);
-          if (!result.ok) return result.error;
-          doc = result.doc;
-        }
-
-        let requests = translateUpdateOperations(operations, doc, tabId);
-
-        if (tabId) {
-          requests = requests.map((request) => injectTabId(request, tabId)) as Record<string, unknown>[];
-        }
-
-        const batchResult = await executeBatchUpdate(normalizedDocumentId, token, requests, {
-          preserveOrder: true,
-        });
-        if (!batchResult.success) {
-          return { success: false, error: batchResult.error || 'Failed to update document' };
-        }
-
-        return { success: true, data: { documentId: normalizedDocumentId } };
-      }
-
-      case 'docs.list_sections': {
-        const { documentId, tabId } = listSections.params.parse(params);
-        const normalizedDocumentId = normalizeDocumentId(documentId);
-        const result = await fetchDocument(normalizedDocumentId, token);
-        if (!result.ok) return result.error;
-
-        let body: DocsBody;
-        if (tabId) {
-          const tabs = (result.doc as { tabs?: Array<{ tabProperties?: { tabId?: string }; body?: DocsBody; documentTab?: { body?: DocsBody } }> }).tabs;
-          const tab = tabs?.find((t) => t.tabProperties?.tabId === tabId);
+          if (!tabCheck.ok) return tabCheck.result;
+          const tab = findTabById(tabCheck.doc, p.tabId);
           if (!tab) {
-            return { success: false, error: `Tab '${tabId}' not found in document` };
+            return { success: false, error: `Tab with ID "${p.tabId}" not found in document.` };
           }
-          body = tab.documentTab?.body ?? tab.body ?? {};
-        } else {
-          body = (result.doc.body ?? {}) as DocsBody;
         }
 
-        const sections = extractSections(body);
+        const range: Record<string, unknown> = {
+          startIndex: p.startIndex,
+          endIndex: p.endIndex,
+        };
+        if (p.tabId) range.tabId = p.tabId;
+
+        const request: DocsRequest = { deleteContentRange: { range } };
+        const batchResult = await executeBatchUpdate(docId, token, [request]);
+        if (!batchResult.success) {
+          return { success: false, error: batchResult.error || 'Failed to delete range' };
+        }
+
         return {
           success: true,
           data: {
-            sections: sections.map((s) => ({
-              heading: s.heading,
-              level: s.level,
-              startIndex: s.startIndex,
-              endIndex: s.endIndex,
-            })),
+            message: `Successfully deleted content in range ${p.startIndex}-${p.endIndex}${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
           },
         };
       }
 
-      case 'docs.list_comments': {
-        const { documentId, includeResolved } = listComments.params.parse(params);
-        const normalizedDocumentId = normalizeDocumentId(documentId);
+      // ── docs.find_and_replace ───────────────────────────────────────
+      case 'docs.find_and_replace': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          findText: string;
+          replaceText: string;
+          matchCase?: boolean;
+          tabId?: string;
+        };
+        const docId = normalizeDocumentId(p.documentId);
 
-        const commentFields = 'comments(id,content,author(displayName,emailAddress),resolved,quotedFileContent,replies(id,content,author(displayName,emailAddress),action)),nextPageToken';
-        const allComments: unknown[] = [];
-        let pageToken: string | undefined;
-
-        const MAX_PAGES = 10;
-        let pages = 0;
-
-        do {
-          const qs = new URLSearchParams({
-            fields: commentFields,
-            pageSize: '100',
-          });
-          if (pageToken) qs.set('pageToken', pageToken);
-
-          const res = await driveFetchForDocs(
-            `/files/${encodeURIComponent(normalizedDocumentId)}/comments?${qs}`,
-            token,
-          );
-          if (!res.ok) return await apiError(res, 'Drive');
-
-          const data = (await res.json()) as {
-            comments?: Array<{ resolved?: boolean }>;
-            nextPageToken?: string;
-          };
-
-          for (const comment of data.comments ?? []) {
-            if (!includeResolved && comment.resolved) continue;
-            allComments.push(comment);
-          }
-
-          pageToken = data.nextPageToken;
-          pages++;
-        } while (pageToken && pages < MAX_PAGES);
-
-        return { success: true, data: { comments: allComments } };
-      }
-
-      case 'docs.create_comment': {
-        const { documentId, content } = createComment.params.parse(params);
-        const normalizedDocumentId = normalizeDocumentId(documentId);
-
-        const qs = new URLSearchParams({
-          fields: 'id,content,author(displayName,emailAddress)',
-        });
-        const res = await driveFetchForDocs(
-          `/files/${encodeURIComponent(normalizedDocumentId)}/comments?${qs}`,
-          token,
-          {
-            method: 'POST',
-            body: JSON.stringify({ content }),
+        const request: DocsRequest = {
+          replaceAllText: {
+            containsText: {
+              text: p.findText,
+              matchCase: p.matchCase ?? false,
+            },
+            replaceText: p.replaceText,
+            ...(p.tabId && { tabsCriteria: { tabIds: [p.tabId] } }),
           },
-        );
-        if (!res.ok) return await apiError(res, 'Drive');
+        };
 
-        const comment = await res.json();
-        return { success: true, data: comment };
-      }
-
-      case 'docs.reply_to_comment': {
-        const { documentId, commentId, content, resolve, reopen } =
-          replyToComment.params.parse(params);
-        if (resolve && reopen) {
-          return { success: false, error: 'Cannot both resolve and reopen a comment in the same reply' };
+        const batchResult = await executeBatchUpdate(docId, token, [request]);
+        if (!batchResult.success) {
+          return { success: false, error: batchResult.error || 'Failed to find and replace' };
         }
-        const normalizedDocumentId = normalizeDocumentId(documentId);
 
-        const replyBody: Record<string, string> = { content };
-        if (resolve) replyBody.action = 'resolve';
-        else if (reopen) replyBody.action = 'reopen';
-
-        const qs = new URLSearchParams({
-          fields: 'id,content,author(displayName,emailAddress),action',
-        });
-        const res = await driveFetchForDocs(
-          `/files/${encodeURIComponent(normalizedDocumentId)}/comments/${encodeURIComponent(commentId)}/replies?${qs}`,
-          token,
-          {
-            method: 'POST',
-            body: JSON.stringify(replyBody),
+        return {
+          success: true,
+          data: {
+            message: `Replaced occurrences of "${p.findText}" with "${p.replaceText}".`,
           },
-        );
-        if (!res.ok) return await apiError(res, 'Drive');
+        };
+      }
 
-        const reply = await res.json();
-        return { success: true, data: reply };
+      // ── docs.append_markdown ────────────────────────────────────────
+      case 'docs.append_markdown': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          markdown: string;
+          addNewlineIfNeeded: boolean;
+          tabId?: string;
+          firstHeadingAsTitle?: boolean;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        // 1. Get document end index
+        const fetchResult = await fetchDocument(token, docId, {
+          includeTabsContent: !!p.tabId,
+          fields: p.tabId ? 'tabs' : 'body(content(endIndex))',
+        });
+        if (!fetchResult.ok) return fetchResult.result;
+
+        const bodyResult = getBodyContent(fetchResult.doc, p.tabId);
+        if ('error' in bodyResult) return { success: false, error: bodyResult.error };
+
+        let startIndex = getEndIndex(bodyResult.body) - 1;
+
+        // 2. Add spacing if needed
+        if (p.addNewlineIfNeeded && startIndex > 1) {
+          const location: Record<string, unknown> = { index: startIndex };
+          if (p.tabId) location.tabId = p.tabId;
+
+          const spacingResult = await executeBatchUpdate(docId, token, [
+            { insertText: { location, text: '\n\n' } },
+          ]);
+          if (!spacingResult.success) {
+            return { success: false, error: spacingResult.error || 'Failed to add spacing' };
+          }
+          startIndex += 2;
+        }
+
+        // 3. Convert and append markdown
+        const result = await insertMarkdown(token, docId, p.markdown, {
+          startIndex,
+          tabId: p.tabId,
+          firstHeadingAsTitle: p.firstHeadingAsTitle,
+        });
+
+        const debugSummary = formatInsertResult(result);
+        return {
+          success: true,
+          data: {
+            message: `Successfully appended ${p.markdown.length} characters of markdown.\n\n${debugSummary}`,
+          },
+        };
+      }
+
+      // ── docs.replace_document_with_markdown ─────────────────────────
+      case 'docs.replace_document_with_markdown': {
+        const p = allActions.find((a) => a.id === actionId)!.params.parse(params) as {
+          documentId: string;
+          markdown: string;
+          preserveTitle?: boolean;
+          tabId?: string;
+          firstHeadingAsTitle?: boolean;
+        };
+        const docId = normalizeDocumentId(p.documentId);
+
+        // 1. Get document structure
+        const fetchResult = await fetchDocument(token, docId, {
+          includeTabsContent: !!p.tabId,
+          fields: p.tabId ? 'tabs' : 'body(content(startIndex,endIndex))',
+        });
+        if (!fetchResult.ok) return fetchResult.result;
+
+        const bodyResult = getBodyContent(fetchResult.doc, p.tabId);
+        if ('error' in bodyResult) return { success: false, error: bodyResult.error };
+
+        // 2. Calculate replacement range
+        let startIndex = 1;
+        let endIndex = getEndIndex(bodyResult.body) - 1;
+
+        if (p.preserveTitle) {
+          // Find first content element that's a heading or paragraph, skip past it
+          for (const element of bodyResult.body as Record<string, unknown>[]) {
+            const elemEnd = (element as { endIndex?: number }).endIndex;
+            if ((element as { paragraph?: unknown }).paragraph && elemEnd) {
+              startIndex = elemEnd;
+              break;
+            }
+          }
+        }
+
+        // 3. Delete existing content
+        if (endIndex > startIndex) {
+          const deleteRange: Record<string, unknown> = { startIndex, endIndex };
+          if (p.tabId) deleteRange.tabId = p.tabId;
+
+          const deleteResult = await executeBatchUpdate(docId, token, [
+            { deleteContentRange: { range: deleteRange } },
+          ]);
+          if (!deleteResult.success) {
+            return { success: false, error: deleteResult.error || 'Failed to delete existing content' };
+          }
+        }
+
+        // 4. Clean the surviving trailing paragraph
+        //    deleteContentRange always leaves one trailing paragraph that cannot
+        //    be deleted. If it has bullet list membership or text formatting from
+        //    the old content, all subsequently inserted text inherits those
+        //    properties. We strip both bullets and text styles from the survivor.
+        {
+          const afterDeleteResult = await fetchDocument(token, docId, {
+            includeTabsContent: !!p.tabId,
+            fields: p.tabId ? 'tabs' : 'body(content(startIndex,endIndex))',
+          });
+          if (!afterDeleteResult.ok) {
+            // Non-fatal: proceed with insert anyway
+          } else {
+            const afterBody = getBodyContent(afterDeleteResult.doc, p.tabId);
+            if (!('error' in afterBody)) {
+              const survivorEnd = getEndIndex(afterBody.body);
+              const survivorRange: Record<string, unknown> = {
+                startIndex,
+                endIndex: survivorEnd,
+              };
+              if (p.tabId) survivorRange.tabId = p.tabId;
+
+              const cleanupRequests: DocsRequest[] = [
+                { deleteParagraphBullets: { range: survivorRange } },
+                {
+                  updateTextStyle: {
+                    range: survivorRange,
+                    textStyle: {
+                      underline: false,
+                      bold: false,
+                      italic: false,
+                      strikethrough: false,
+                      foregroundColor: {},
+                      backgroundColor: {},
+                    },
+                    fields:
+                      'underline,bold,italic,strikethrough,foregroundColor,backgroundColor',
+                  },
+                },
+              ];
+
+              // Non-fatal cleanup
+              try {
+                await executeBatchUpdate(docId, token, cleanupRequests, {
+                  preserveOrder: true,
+                });
+              } catch {
+                // Cleanup is best-effort
+              }
+            }
+          }
+        }
+
+        // 5. Convert markdown and insert
+        const result = await insertMarkdown(token, docId, p.markdown, {
+          startIndex,
+          tabId: p.tabId,
+          firstHeadingAsTitle: p.firstHeadingAsTitle,
+        });
+
+        const debugSummary = formatInsertResult(result);
+        return {
+          success: true,
+          data: {
+            message: `Successfully replaced document content with ${p.markdown.length} characters of markdown.\n\n${debugSummary}`,
+          },
+        };
       }
 
       default:
