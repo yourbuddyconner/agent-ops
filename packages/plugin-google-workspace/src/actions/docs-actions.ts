@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { decode as decodeToon } from '@toon-format/toon';
 import type { ActionDefinition, ActionContext, ActionResult } from '@valet/sdk';
-import { docsFetch, driveFetchForDocs, apiError, executeBatchUpdate } from './docs-api.js';
+import { docsFetch, driveFetchForDocs, apiError, executeBatchUpdate, normalizeDocumentId } from './docs-api.js';
 import { escapeDriveQuery } from './drive-api.js';
 import { docsToMarkdown } from './docs-to-markdown.js';
 import type { DocsBody, DocsLists } from './docs-to-markdown.js';
@@ -44,12 +44,6 @@ function injectTabId(obj: unknown, tabId: string, parentKey?: string): unknown {
   }
 
   return result;
-}
-
-function normalizeDocumentId(input: string): string {
-  const trimmed = input.trim();
-  const match = trimmed.match(/docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]+)/);
-  return match?.[1] ?? trimmed;
 }
 
 function annotateTables(markdown: string): string {
@@ -392,13 +386,21 @@ async function executeAction(
           `mimeType='application/vnd.google-apps.document'`,
           'trashed = false',
         ];
-        // Injected by labels guard to restrict results to labeled files
+
+        // Build final query with explicit parenthesization to prevent OR injection
         const rawSearchParams = params as Record<string, unknown> | null;
-        if (rawSearchParams?.__labelFilter && typeof rawSearchParams.__labelFilter === 'string') {
-          queryParts.push(rawSearchParams.__labelFilter);
+        const docsLabelClause = rawSearchParams?.__labelFilter as string | undefined;
+        const docsUserQuery = queryParts.join(' and ');
+        let docsFinalQuery: string;
+        if (docsUserQuery && docsLabelClause) {
+          docsFinalQuery = `(${docsUserQuery}) and ${docsLabelClause}`;
+        } else if (docsLabelClause) {
+          docsFinalQuery = docsLabelClause;
+        } else {
+          docsFinalQuery = docsUserQuery;
         }
         const qs = new URLSearchParams({
-          q: queryParts.join(' and '),
+          q: docsFinalQuery,
           fields: 'files(id,name,modifiedTime,webViewLink)',
           pageSize: String(maxResults),
           supportsAllDrives: 'true',

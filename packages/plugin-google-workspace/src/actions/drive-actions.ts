@@ -303,10 +303,18 @@ async function executeAction(
         if (p.mimeType) queryParts.push(`mimeType = '${escapeDriveQuery(p.mimeType)}'`);
         if (!p.includeTrash) queryParts.push('trashed = false');
         if (p.query) queryParts.push(p.query);
-        // Injected by labels guard to restrict results to labeled files
+
+        // Build final query with explicit parenthesization to prevent OR injection
         const rawParams = params as Record<string, unknown> | null;
-        if (rawParams?.__labelFilter && typeof rawParams.__labelFilter === 'string') {
-          queryParts.push(rawParams.__labelFilter);
+        const labelClause = rawParams?.__labelFilter as string | undefined;
+        const userQuery = queryParts.join(' and ');
+        let finalQuery: string;
+        if (userQuery && labelClause) {
+          finalQuery = `(${userQuery}) and ${labelClause}`;
+        } else if (labelClause) {
+          finalQuery = labelClause;
+        } else {
+          finalQuery = userQuery;
         }
 
         const qs = new URLSearchParams({
@@ -315,7 +323,7 @@ async function executeAction(
           supportsAllDrives: 'true',
           includeItemsFromAllDrives: 'true',
         });
-        if (queryParts.length) qs.set('q', queryParts.join(' and '));
+        if (finalQuery) qs.set('q', finalQuery);
         if (p.pageToken) qs.set('pageToken', p.pageToken);
         if (p.orderBy) qs.set('orderBy', p.orderBy);
 
@@ -331,14 +339,22 @@ async function executeAction(
           `fullText contains '${escapeDriveQuery(p.query)}'`,
           'trashed = false',
         ];
-        // Injected by labels guard to restrict results to labeled files
+
+        // Build final query with explicit parenthesization to prevent OR injection
         const rawSearchParams = params as Record<string, unknown> | null;
-        if (rawSearchParams?.__labelFilter && typeof rawSearchParams.__labelFilter === 'string') {
-          queryParts.push(rawSearchParams.__labelFilter);
+        const searchLabelClause = rawSearchParams?.__labelFilter as string | undefined;
+        const searchUserQuery = queryParts.join(' and ');
+        let searchFinalQuery: string;
+        if (searchUserQuery && searchLabelClause) {
+          searchFinalQuery = `(${searchUserQuery}) and ${searchLabelClause}`;
+        } else if (searchLabelClause) {
+          searchFinalQuery = searchLabelClause;
+        } else {
+          searchFinalQuery = searchUserQuery;
         }
 
         const qs = new URLSearchParams({
-          q: queryParts.join(' and '),
+          q: searchFinalQuery,
           fields: `nextPageToken,files(${FILE_FIELDS})`,
           pageSize: String(p.maxResults || 20),
           supportsAllDrives: 'true',

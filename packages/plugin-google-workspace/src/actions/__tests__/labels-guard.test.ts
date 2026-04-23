@@ -10,6 +10,7 @@ import {
   classifyAction,
   buildLabelFilterClause,
   resolveGuard,
+  extractFileId,
 } from '../labels-guard.js';
 import type { ActionContext } from '@valet/sdk/integrations';
 
@@ -124,5 +125,34 @@ describe('resolveGuard', () => {
       driveRequiredLabelIds: ['good', '', 42, null, 'also-good'],
     }));
     expect(result?.driveRequiredLabelIds).toEqual(['good', 'also-good']);
+  });
+
+  it('filters out label IDs with special characters (injection defense)', () => {
+    const result = resolveGuard(makeCtx({
+      driveLabelsGuardEnabled: true,
+      driveRequiredLabelIds: ['valid-id', "id'with'quotes", 'id with spaces', 'also_valid_123'],
+    }));
+    expect(result?.driveRequiredLabelIds).toEqual(['valid-id', 'also_valid_123']);
+  });
+});
+
+describe('extractFileId', () => {
+  it('normalizes docs URLs using the shared normalizeDocumentId', () => {
+    const id = extractFileId('docs.read_document', {
+      documentId: 'https://docs.google.com/document/d/abc123/edit',
+    });
+    expect(id).toBe('abc123');
+  });
+
+  it('normalizes docs URLs without the domain prefix', () => {
+    const id = extractFileId('docs.read_document', {
+      documentId: 'https://example.com/document/d/def456/edit',
+    });
+    expect(id).toBe('def456');
+  });
+
+  it('returns bare document ID as-is', () => {
+    const id = extractFileId('docs.read_document', { documentId: 'bare-id-123' });
+    expect(id).toBe('bare-id-123');
   });
 });

@@ -36,11 +36,20 @@ async function executeAction(
   params: unknown,
   ctx: ActionContext,
 ): Promise<ActionResult> {
+  // Strip any agent-supplied __labelFilter — only the guard may set this
+  delete (params as Record<string, unknown>).__labelFilter;
+
   const guard = resolveGuard(ctx);
   if (!guard) return dispatchAction(actionId, params, ctx);
 
   const token = ctx.credentials.access_token || '';
   const category = classifyAction(actionId);
+
+  // Fail-closed: unclassified actions are denied when the guard is active
+  if (category === 'unknown') {
+    return { success: false, error: 'File not found or access denied' };
+  }
+
   const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
 
   // ── Pre-dispatch guards ──
@@ -97,14 +106,23 @@ async function executeAction(
     return dispatchAction(actionId, params, ctx);
   }
 
-  // ── Dispatch for create actions (and unclassified) ──
+  // ── Dispatch for create actions ──
 
   const result = await dispatchAction(actionId, params, ctx);
 
-  // ── Post-dispatch: auto-label created files ──
+  // ── Post-dispatch: cleanup partial creates + auto-label ──
 
   if (category === 'create') {
-    if (result.success && guard.driveRequiredLabelIds.length > 0) {
+    // If dispatch failed but a file was partially created, clean it up
+    if (!result.success) {
+      const partialId = extractCreatedFileId(actionId, result);
+      if (partialId) {
+        await deleteFile(partialId, token);
+      }
+      return result;
+    }
+
+    if (guard.driveRequiredLabelIds.length > 0) {
       const createdId = extractCreatedFileId(actionId, result);
       if (createdId) {
         const labeled = await applyLabel(createdId, token, guard.driveRequiredLabelIds[0]);

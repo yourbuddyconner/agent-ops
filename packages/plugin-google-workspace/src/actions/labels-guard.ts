@@ -1,4 +1,5 @@
 import type { ActionContext, ActionResult } from '@valet/sdk/integrations';
+import { normalizeDocumentId } from './docs-api.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -72,13 +73,18 @@ export const CREATE_ACTIONS: string[] = [
  * Parse guard config from ActionContext. Returns null if the guard is disabled
  * or the config is missing.
  */
+/** Google Drive label IDs are alphanumeric with possible hyphens/underscores. */
+const LABEL_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
 export function resolveGuard(ctx: ActionContext): DriveLabelsGuardConfig | null {
   const cfg = ctx.guardConfig;
   if (!cfg) return null;
   if (!cfg.driveLabelsGuardEnabled) return null;
 
   const labelIds = Array.isArray(cfg.driveRequiredLabelIds)
-    ? (cfg.driveRequiredLabelIds as string[]).filter((id) => typeof id === 'string' && id.length > 0)
+    ? (cfg.driveRequiredLabelIds as string[]).filter(
+        (id) => typeof id === 'string' && id.length > 0 && LABEL_ID_PATTERN.test(id),
+      )
     : [];
 
   const failMode = cfg.driveLabelsFailMode === 'allow' ? 'allow' : 'deny';
@@ -233,13 +239,6 @@ export function classifyAction(actionId: string): GuardAction {
 
 // ─── File ID Extraction Helpers ─────────────────────────────────────────────
 
-/** Normalize a Google Docs URL or bare ID to a document ID. */
-function normalizeDocId(input: string): string {
-  const trimmed = input.trim();
-  const match = trimmed.match(/\/document\/d\/([a-zA-Z0-9_-]+)/);
-  return match?.[1] ?? trimmed;
-}
-
 /**
  * Extract the file ID from action params based on the action prefix.
  * Drive actions use `fileId`, Docs use `documentId`, Sheets use `spreadsheetId`.
@@ -249,7 +248,7 @@ export function extractFileId(actionId: string, params: Record<string, unknown>)
     return typeof params.fileId === 'string' ? params.fileId : null;
   }
   if (actionId.startsWith('docs.')) {
-    return typeof params.documentId === 'string' ? normalizeDocId(params.documentId) : null;
+    return typeof params.documentId === 'string' ? normalizeDocumentId(params.documentId) : null;
   }
   if (actionId.startsWith('sheets.')) {
     return typeof params.spreadsheetId === 'string' ? params.spreadsheetId : null;

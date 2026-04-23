@@ -3,6 +3,17 @@ import type { DocsRequest } from './markdown-to-docs.js';
 const DOCS_API = 'https://docs.googleapis.com/v1';
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 
+/**
+ * Normalize a Google Docs URL or bare ID to a document ID.
+ * Accepts both full URLs (e.g. https://docs.google.com/document/d/ID/edit)
+ * and bare document IDs.
+ */
+export function normalizeDocumentId(input: string): string {
+  const trimmed = input.trim();
+  const match = trimmed.match(/\/document\/d\/([a-zA-Z0-9_-]+)/);
+  return match?.[1] ?? trimmed;
+}
+
 /** Authenticated fetch against Google Docs API v1. */
 export async function docsFetch(
   path: string,

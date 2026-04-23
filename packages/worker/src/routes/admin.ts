@@ -75,8 +75,9 @@ adminRouter.put('/', async (c) => {
     if (!Array.isArray(body.driveRequiredLabelIds)) {
       throw new ValidationError('driveRequiredLabelIds must be an array of strings');
     }
-    if (!body.driveRequiredLabelIds.every((id) => typeof id === 'string' && id.length <= 255)) {
-      throw new ValidationError('Each label ID must be a string (max 255 chars)');
+    const LABEL_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+    if (!body.driveRequiredLabelIds.every((id) => typeof id === 'string' && id.length <= 255 && LABEL_ID_PATTERN.test(id))) {
+      throw new ValidationError('Each label ID must be alphanumeric (with hyphens/underscores, max 255 chars)');
     }
   }
 
