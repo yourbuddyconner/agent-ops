@@ -1,0 +1,11 @@
+node_modules
+.pnpm-store
+.git
+dist
+*.log
+.env
+.env.*
+.wrangler
+.superpowers
+backend/__pycache__
+backend/.venv
