@@ -11,6 +11,7 @@ import {
   rowColToA1,
   hexToRgb,
   rgbToHex,
+  normalizeColor,
   sheetsBatchUpdate,
   readRange,
   writeRange,
@@ -25,6 +26,14 @@ import {
   resolveTableIdentifier,
   listAllTables,
 } from './sheets-helpers.js';
+
+// ─── Shared Schemas ───────────────────────────────────────────────────────
+
+/** Color input: accepts hex string "#FF0000" or RGB object {red, green, blue} with 0-1 values. */
+const colorInput = z.union([
+  z.string().describe('Hex color string, e.g. "#FF0000"'),
+  z.object({ red: z.number(), green: z.number(), blue: z.number() }).describe('RGB object with 0-1 values'),
+]);
 
 // ─── Action Definitions ────────────────────────────────────────────────────
 
@@ -195,15 +204,21 @@ const copySheetTo: ActionDefinition = {
 const formatCellsDef: ActionDefinition = {
   id: 'sheets.format_cells',
   name: 'Format Cells',
-  description: 'Apply formatting to a range. Supports bold, italic, font size, colors, alignment, number format, and wrap strategy.',
+  description: 'Apply formatting to a range. Supports bold, italic, font size, colors, alignment, number format, and wrap strategy. Text properties (bold, italic, fontSize, foregroundColor) can be passed at the top level or nested under textFormat.',
   riskLevel: 'medium',
   params: z.object({
     spreadsheetId: z.string().describe('Spreadsheet ID'),
     range: z.string().describe('A1 notation range'),
     format: z.object({
-      backgroundColor: z.object({ red: z.number(), green: z.number(), blue: z.number() }).optional(),
+      backgroundColor: colorInput.optional(),
+      // Top-level shortcuts for text formatting (auto-nested into textFormat)
+      bold: z.boolean().optional().describe('Shortcut: equivalent to textFormat.bold'),
+      italic: z.boolean().optional().describe('Shortcut: equivalent to textFormat.italic'),
+      fontSize: z.number().optional().describe('Shortcut: equivalent to textFormat.fontSize'),
+      foregroundColor: colorInput.optional().describe('Shortcut: equivalent to textFormat.foregroundColor'),
+      // Nested form still supported
       textFormat: z.object({
-        foregroundColor: z.object({ red: z.number(), green: z.number(), blue: z.number() }).optional(),
+        foregroundColor: colorInput.optional(),
         fontSize: z.number().optional(),
         bold: z.boolean().optional(),
         italic: z.boolean().optional(),
@@ -440,7 +455,9 @@ const insertChart: ActionDefinition = {
     sourceRange: z.string().describe('A1 notation data range'),
     title: z.string().optional().describe('Chart title'),
     position: z.object({
-      anchorCell: z.string().optional().describe('A1 notation anchor cell for chart placement'),
+      anchorCell: z.string().optional().describe('A1 notation anchor cell for chart placement (e.g. "A15")'),
+      rowIndex: z.number().int().min(0).optional().describe('0-based row index for chart placement (alternative to anchorCell)'),
+      columnIndex: z.number().int().min(0).optional().describe('0-based column index for chart placement (alternative to anchorCell)'),
     }).optional(),
   }),
 };
@@ -467,9 +484,9 @@ const addConditionalFormatting: ActionDefinition = {
     conditionType: z.string().describe('Condition type (e.g. NUMBER_GREATER, TEXT_CONTAINS, CUSTOM_FORMULA, BLANK, NOT_BLANK)'),
     conditionValues: z.array(z.string()).describe('Condition values'),
     format: z.object({
-      backgroundColor: z.object({ red: z.number(), green: z.number(), blue: z.number() }).optional(),
+      backgroundColor: colorInput.optional(),
       textFormat: z.object({
-        foregroundColor: z.object({ red: z.number(), green: z.number(), blue: z.number() }).optional(),
+        foregroundColor: colorInput.optional(),
         bold: z.boolean().optional(),
         italic: z.boolean().optional(),
       }).optional(),
@@ -867,7 +884,36 @@ async function executeAction(
 
       case 'sheets.format_cells': {
         const p = formatCellsDef.params.parse(params);
-        await formatCells(token, p.spreadsheetId, p.range, p.format);
+        const fmt = p.format;
+
+        // Merge top-level text shortcuts into textFormat
+        const mergedTextFormat = { ...fmt.textFormat };
+        if (fmt.bold !== undefined && mergedTextFormat.bold === undefined) mergedTextFormat.bold = fmt.bold;
+        if (fmt.italic !== undefined && mergedTextFormat.italic === undefined) mergedTextFormat.italic = fmt.italic;
+        if (fmt.fontSize !== undefined && mergedTextFormat.fontSize === undefined) mergedTextFormat.fontSize = fmt.fontSize;
+        if (fmt.foregroundColor !== undefined && mergedTextFormat.foregroundColor === undefined) {
+          mergedTextFormat.foregroundColor = fmt.foregroundColor;
+        }
+        const hasTextFormat = mergedTextFormat.bold !== undefined || mergedTextFormat.italic !== undefined
+          || mergedTextFormat.fontSize !== undefined || mergedTextFormat.foregroundColor !== undefined;
+
+        // Normalize colors (accept hex strings or RGB objects)
+        const bgColor = fmt.backgroundColor ? normalizeColor(fmt.backgroundColor) : undefined;
+        const fgColor = mergedTextFormat.foregroundColor ? normalizeColor(mergedTextFormat.foregroundColor) : undefined;
+
+        await formatCells(token, p.spreadsheetId, p.range, {
+          backgroundColor: bgColor ?? undefined,
+          textFormat: hasTextFormat ? {
+            bold: mergedTextFormat.bold,
+            italic: mergedTextFormat.italic,
+            fontSize: mergedTextFormat.fontSize,
+            foregroundColor: fgColor ?? undefined,
+          } : undefined,
+          horizontalAlignment: fmt.horizontalAlignment,
+          verticalAlignment: fmt.verticalAlignment,
+          wrapStrategy: fmt.wrapStrategy,
+          numberFormat: fmt.numberFormat,
+        });
         return { success: true, data: { updatedRange: p.range } };
       }
 
@@ -1265,17 +1311,31 @@ async function executeAction(
       case 'sheets.insert_chart': {
         const p = insertChart.params.parse(params);
         const sheetId = await resolveSheetId(token, p.spreadsheetId, p.sheetName);
-        const { a1Range } = parseRange(p.sourceRange);
-        const gridRange = parseA1ToGridRange(a1Range, sheetId);
 
+        // Support comma-separated ranges (e.g. "Sheet1!A1:A13,Sheet1!G1:G13")
+        const rangeParts = p.sourceRange.split(',').map((r: string) => r.trim());
+        const gridRanges = rangeParts.map((part: string) => {
+          const { a1Range: a1 } = parseRange(part);
+          return parseA1ToGridRange(a1, sheetId);
+        });
+
+        // Use the first range for dimension calculations; multi-range uses explicit sources
+        const gridRange = gridRanges[0];
         const startRow = gridRange.startRowIndex ?? 0;
         const endRow = gridRange.endRowIndex ?? startRow + 1;
         const startCol = gridRange.startColumnIndex ?? 0;
         const endCol = gridRange.endColumnIndex ?? startCol + 1;
 
+        const colCount = endCol - startCol;
         let chartSpec: Record<string, unknown> = {};
 
         if (p.chartType === 'PIE') {
+          if (colCount < 2) {
+            return {
+              success: false,
+              error: `PIE chart requires at least 2 columns (labels + numeric values), but the source range "${p.sourceRange}" has only ${colCount} column(s). Provide a range like "Sheet!A1:B10" where the first column has labels and the second has numeric values.`,
+            };
+          }
           chartSpec.pieChart = {
             legendPosition: 'LABELED_LEGEND',
             domain: {
@@ -1293,7 +1353,50 @@ async function executeAction(
               },
             },
           };
+        } else if (gridRanges.length > 1) {
+          // Multi-range mode: first range = domain (labels), rest = series
+          const domainRange = gridRanges[0];
+          const seriesEntries = gridRanges.slice(1).map((gr: { startRowIndex?: number; endRowIndex?: number; startColumnIndex?: number; endColumnIndex?: number }) => ({
+            series: {
+              sourceRange: {
+                sources: [{
+                  sheetId,
+                  startRowIndex: gr.startRowIndex ?? 0,
+                  endRowIndex: gr.endRowIndex ?? (gr.startRowIndex ?? 0) + 1,
+                  startColumnIndex: gr.startColumnIndex ?? 0,
+                  endColumnIndex: gr.endColumnIndex ?? (gr.startColumnIndex ?? 0) + 1,
+                }],
+              },
+            },
+            targetAxis: 'LEFT_AXIS',
+          }));
+
+          chartSpec.basicChart = {
+            chartType: p.chartType,
+            legendPosition: 'BOTTOM_LEGEND',
+            axis: [
+              { position: 'BOTTOM_AXIS', title: '' },
+              { position: 'LEFT_AXIS', title: '' },
+            ],
+            domains: [{
+              domain: {
+                sourceRange: {
+                  sources: [{
+                    sheetId,
+                    startRowIndex: domainRange.startRowIndex ?? 0,
+                    endRowIndex: domainRange.endRowIndex ?? (domainRange.startRowIndex ?? 0) + 1,
+                    startColumnIndex: domainRange.startColumnIndex ?? 0,
+                    endColumnIndex: domainRange.endColumnIndex ?? (domainRange.startColumnIndex ?? 0) + 1,
+                  }],
+                },
+              },
+              reversed: false,
+            }],
+            series: seriesEntries,
+            headerCount: 1,
+          };
         } else {
+          // Single contiguous range: first column = domain, rest = series
           const seriesCount = endCol - startCol - 1;
           const series = Array.from({ length: seriesCount }, (_, i) => ({
             series: {
@@ -1338,17 +1441,18 @@ async function executeAction(
 
         if (p.title) chartSpec.title = p.title;
 
-        // Determine anchor position
+        // Determine anchor position — prefer anchorCell, fall back to rowIndex/columnIndex
         let anchorRow = 0;
         let anchorCol = endCol;
         if (p.position?.anchorCell) {
-          const { row, col } = (() => {
-            const m = p.position.anchorCell.match(/^([A-Z]+)(\d+)$/i);
-            if (!m) return { row: 0, col: endCol };
-            return { row: parseInt(m[2], 10) - 1, col: colLettersToIndex(m[1]) };
-          })();
-          anchorRow = row;
-          anchorCol = col;
+          const m = p.position.anchorCell.match(/^([A-Z]+)(\d+)$/i);
+          if (m) {
+            anchorRow = parseInt(m[2], 10) - 1;
+            anchorCol = colLettersToIndex(m[1]);
+          }
+        } else if (p.position?.rowIndex !== undefined || p.position?.columnIndex !== undefined) {
+          anchorRow = p.position.rowIndex ?? 0;
+          anchorCol = p.position.columnIndex ?? 0;
         }
 
         const data = await sheetsBatchUpdate(token, p.spreadsheetId, [
@@ -1389,8 +1493,20 @@ async function executeAction(
 
         const conditionValues = p.conditionValues.map((v: string) => ({ userEnteredValue: v }));
         const format: Record<string, unknown> = {};
-        if (p.format.backgroundColor) format.backgroundColor = p.format.backgroundColor;
-        if (p.format.textFormat) format.textFormat = p.format.textFormat;
+        if (p.format.backgroundColor) {
+          const bg = normalizeColor(p.format.backgroundColor);
+          if (bg) format.backgroundColor = bg;
+        }
+        if (p.format.textFormat) {
+          const tf: Record<string, unknown> = {};
+          if (p.format.textFormat.foregroundColor) {
+            const fg = normalizeColor(p.format.textFormat.foregroundColor);
+            if (fg) tf.foregroundColor = fg;
+          }
+          if (p.format.textFormat.bold !== undefined) tf.bold = p.format.textFormat.bold;
+          if (p.format.textFormat.italic !== undefined) tf.italic = p.format.textFormat.italic;
+          if (Object.keys(tf).length > 0) format.textFormat = tf;
+        }
 
         await addConditionalFormatRule(
           token,

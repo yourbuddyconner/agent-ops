@@ -186,6 +186,22 @@ export function hexToRgb(hex: string): { red: number; green: number; blue: numbe
   };
 }
 
+/**
+ * Normalize a color value that may be either a hex string or an RGB object.
+ * Returns an RGB object with 0-1 range values, or null if invalid.
+ */
+export function normalizeColor(
+  color: string | { red: number; green: number; blue: number },
+): { red: number; green: number; blue: number } | null {
+  if (typeof color === 'string') {
+    return hexToRgb(color);
+  }
+  if (color && typeof color === 'object' && 'red' in color) {
+    return { red: color.red, green: color.green, blue: color.blue };
+  }
+  return null;
+}
+
 /** Convert RGB (0-1 range) to hex. */
 export function rgbToHex(rgb: { red?: number; green?: number; blue?: number } | null | undefined): string {
   if (!rgb) return '#000000';

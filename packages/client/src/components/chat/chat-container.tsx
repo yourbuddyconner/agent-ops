@@ -479,16 +479,35 @@ export function ChatContainer({ sessionId, routeSessionId, initialThreadId, init
               connectedUsers={connectedUsers}
             />
           </div>
-          {interactivePrompts.map((prompt) => (
-            <Suspense key={prompt.id} fallback={<InteractivePromptCardFallback />}>
-              <InteractivePromptCard
-                prompt={prompt}
-                onAnswer={answerQuestion}
-                onApproveWs={approveActionWs}
-                onDenyWs={denyActionWs}
-              />
-            </Suspense>
-          ))}
+          {(() => {
+            // Show one pending prompt at a time (FIFO) to prevent out-of-order
+            // execution of order-dependent tool calls (e.g. sequential doc edits).
+            // Also show any recently-resolved/expired prompts so the user sees feedback.
+            const pending = interactivePrompts.filter((p) => p.status === 'pending');
+            const resolved = interactivePrompts.filter((p) => p.status !== 'pending');
+            const firstPending = pending[0];
+            const queuedCount = pending.length - (firstPending ? 1 : 0);
+            const visible = firstPending ? [...resolved, firstPending] : resolved;
+            return (
+              <>
+                {visible.map((prompt) => (
+                  <Suspense key={prompt.id} fallback={<InteractivePromptCardFallback />}>
+                    <InteractivePromptCard
+                      prompt={prompt}
+                      onAnswer={answerQuestion}
+                      onApproveWs={approveActionWs}
+                      onDenyWs={denyActionWs}
+                    />
+                  </Suspense>
+                ))}
+                {queuedCount > 0 && (
+                  <div className="text-center text-xs text-neutral-500 py-1">
+                    {queuedCount} more approval{queuedCount > 1 ? 's' : ''} queued
+                  </div>
+                )}
+              </>
+            );
+          })()}
           {integrationAuthErrors.length > 0 && (
             <IntegrationReauthBanner
               errors={integrationAuthErrors}

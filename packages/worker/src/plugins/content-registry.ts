@@ -399,8 +399,223 @@ call_tool github:github.read_repo_file \\
     version: "0.0.1",
     description: "Gmail integration for reading and sending emails",
     icon: "📧",
-    capabilities: ["actions"],
-    artifacts: [],
+    capabilities: ["actions","skills"],
+    artifacts: [
+      { type: "skill", filename: "gmail.md", content: `# Gmail Skill
+
+Use these actions to read, compose, and manage Gmail messages and drafts on behalf of the authenticated user.
+
+## Messages
+
+### \`gmail.send_email\`
+Send a plain-text email. Supports \`cc\`, \`bcc\`, and threading via \`replyToMessageId\` (which sets \`In-Reply-To\`/\`References\` and places the reply in the original thread).
+
+\`\`\`json
+{
+  "to": "alice@example.com",
+  "subject": "Hello",
+  "body": "Hi Alice, ...",
+  "cc": ["bob@example.com"],
+  "replyToMessageId": "<optional gmail message id>"
+}
+\`\`\`
+
+Risk: **high** (sends immediately).
+
+---
+
+### \`gmail.list_messages\`
+List messages matching a Gmail search query. Returns sender, subject, date, snippet, and label IDs for each result.
+
+\`\`\`json
+{
+  "maxResults": 10,
+  "q": "is:unread from:boss@acme.com",
+  "labelIds": ["INBOX"],
+  "includeSpamTrash": false
+}
+\`\`\`
+
+Risk: **low**.
+
+---
+
+### \`gmail.get_message\`
+Fetch a single message with full headers, decoded plain-text and HTML body, and attachment metadata.
+
+\`\`\`json
+{
+  "messageId": "18e1a2b3c4d5e6f7",
+  "format": "full"
+}
+\`\`\`
+
+\`format\` options: \`full\` (default) | \`metadata\` (headers only) | \`minimal\` (labels + snippet).
+
+Risk: **low**.
+
+---
+
+### \`gmail.modify_labels\`
+Add or remove labels on a message. Common patterns:
+- Archive: \`removeLabelIds: ["INBOX"]\`
+- Star: \`addLabelIds: ["STARRED"]\`
+- Mark read: \`removeLabelIds: ["UNREAD"]\`
+- Apply custom label: \`addLabelIds: ["<label id from list_labels>"]\`
+
+\`\`\`json
+{
+  "messageId": "18e1a2b3c4d5e6f7",
+  "addLabelIds": ["STARRED"],
+  "removeLabelIds": ["UNREAD"]
+}
+\`\`\`
+
+At least one of \`addLabelIds\` or \`removeLabelIds\` must be provided.
+
+Risk: **medium**.
+
+---
+
+### \`gmail.trash_message\`
+Move a message to Trash (reversible for 30 days — not a permanent delete).
+
+\`\`\`json
+{ "messageId": "18e1a2b3c4d5e6f7" }
+\`\`\`
+
+Risk: **high**.
+
+---
+
+## Drafts
+
+### \`gmail.create_draft\`
+Create a draft without sending. Prefer this over \`send_email\` when the user should review before sending. Supports threading via \`replyToMessageId\`.
+
+\`\`\`json
+{
+  "to": "alice@example.com",
+  "subject": "Proposal",
+  "body": "Dear Alice, ...",
+  "replyToMessageId": "<optional>"
+}
+\`\`\`
+
+Risk: **medium**.
+
+---
+
+### \`gmail.list_drafts\`
+List drafts with subject, recipient, snippet, and date. Use the returned \`draftId\` with \`send_draft\`, \`update_draft\`, or \`delete_draft\`.
+
+\`\`\`json
+{ "maxResults": 25, "q": "subject:proposal" }
+\`\`\`
+
+Risk: **low**.
+
+---
+
+### \`gmail.get_draft\`
+Fetch a single draft with full headers and decoded body.
+
+\`\`\`json
+{ "draftId": "r8765432109" }
+\`\`\`
+
+Risk: **low**.
+
+---
+
+### \`gmail.update_draft\`
+Fully replace a draft's contents (subject, body, recipients). This is a full overwrite, not a patch.
+
+\`\`\`json
+{
+  "draftId": "r8765432109",
+  "to": "alice@example.com",
+  "subject": "Updated Proposal",
+  "body": "Dear Alice, revised text..."
+}
+\`\`\`
+
+Risk: **medium**.
+
+---
+
+### \`gmail.send_draft\`
+Send an existing draft. The draft is removed after sending and the message appears in Sent.
+
+\`\`\`json
+{ "draftId": "r8765432109" }
+\`\`\`
+
+Risk: **high**.
+
+---
+
+### \`gmail.delete_draft\`
+Permanently delete a draft. Irreversible — not moved to Trash.
+
+\`\`\`json
+{ "draftId": "r8765432109" }
+\`\`\`
+
+Risk: **high**.
+
+---
+
+## Labels + Triage
+
+### \`gmail.list_labels\`
+List all labels (system and user-created) with their IDs and visibility settings. Use returned IDs with \`modify_labels\` or \`list_messages\`.
+
+\`\`\`json
+{}
+\`\`\`
+
+Risk: **low**.
+
+---
+
+### \`gmail.triage_inbox\`
+Composite action: fetch recent unread messages with heuristic categorization in a single call. Each message is tagged with signals: \`isNewsletter\`, \`containsMeetingReference\`, \`containsQuestion\`, \`actionRequested\`. Also returns aggregate stats: total unread count, top senders, and counts per category.
+
+Use the returned data to decide which messages need a reply, can be archived, or warrant a draft response.
+
+\`\`\`json
+{
+  "maxResults": 20,
+  "additionalQuery": "newer_than:2d",
+  "bodyExcerptLength": 400
+}
+\`\`\`
+
+Pairs naturally with \`create_draft\`, \`modify_labels\`, and \`trash_message\`.
+
+Risk: **medium**.
+
+---
+
+## Common workflows
+
+**Triage and respond:**
+1. \`gmail.triage_inbox\` — get overview of unread messages with signals
+2. For action-required messages: \`gmail.create_draft\` to compose a reply
+3. User reviews draft, then \`gmail.send_draft\` or \`gmail.delete_draft\`
+4. For newsletters/noise: \`gmail.modify_labels\` with \`removeLabelIds: ["INBOX"]\` to archive
+
+**Reply to a specific thread:**
+1. \`gmail.list_messages\` with \`q: "from:alice@example.com"\` to find the message
+2. \`gmail.get_message\` to read the full content
+3. \`gmail.send_email\` with \`replyToMessageId\` set to thread correctly
+
+**Manage labels:**
+1. \`gmail.list_labels\` to discover label IDs
+2. \`gmail.modify_labels\` to apply/remove labels on messages
+`, sortOrder: 0 },
+    ],
   },
   {
     name: "google-auth",
@@ -419,34 +634,24 @@ call_tool github:github.read_repo_file \\
     artifacts: [
       { type: "skill", filename: "google-calendar.md", content: `---
 name: google-calendar
-description: How to use Google Calendar tools effectively — managing events, checking availability, scheduling, and working with multiple calendars.
+description: How to use Google Calendar tools effectively — listing events, creating, updating, deleting, and quick-adding events.
 ---
 
 # Google Calendar
 
-You have full access to Google Calendar through the \`google-calendar\` plugin.
+You have access to Google Calendar through the \`google-calendar\` plugin.
 
 ## Available Tools
 
-### Reading
+- **\`calendar.list_events\`** — List or search events on a calendar. Supports free-text search (\`q\`), time bounds (\`timeMin\`/\`timeMax\`), and expanding recurring events (\`singleEvents\`). Returns event IDs needed for \`update_event\` and \`delete_event\`.
 
-- **\`calendar.list_calendars\`** — List all calendars the user has access to (with IDs, names, and access roles).
-- **\`calendar.get_calendar\`** — Get details for a specific calendar.
-- **\`calendar.list_events\`** — List events in a time range. Supports filtering by calendar, time bounds, search text, and single events expansion.
-- **\`calendar.get_event\`** — Get full details of a specific event.
+- **\`calendar.create_event\`** — Create a new timed or all-day event. Supports attendees, location, description, and automatic Google Meet links (\`conferenceData: true\`).
 
-### Scheduling
+- **\`calendar.update_event\`** — Patch an existing event. Only the fields you provide are changed; everything else stays the same. Attendees array fully replaces the existing list.
 
-- **\`calendar.create_event\`** — Create an event with title, times, attendees, location, description, and recurrence.
-- **\`calendar.update_event\`** — Update any field of an existing event.
-- **\`calendar.delete_event\`** — Delete an event.
-- **\`calendar.quick_add\`** — Create an event from natural language (e.g., "Lunch with Alice tomorrow at noon").
+- **\`calendar.delete_event\`** — Permanently delete an event. Optionally email cancellation notices to attendees via \`sendUpdates\`.
 
-### Availability
-
-- **\`calendar.respond_to_event\`** — Accept, decline, or tentatively accept an event invitation.
-- **\`calendar.query_free_busy\`** — Check busy/free status for one or more people over a time range.
-- **\`calendar.find_available_slots\`** — Find open time slots when all specified attendees are available.
+- **\`calendar.quick_add\`** — Create an event from a natural-language string. Google's parser extracts the title and time automatically.
 
 ## Common Patterns
 
@@ -454,41 +659,60 @@ You have full access to Google Calendar through the \`google-calendar\` plugin.
 
 \`\`\`
 calendar.list_events({
-  calendarId: "primary",
-  timeMin: "2026-03-15T00:00:00Z",
-  timeMax: "2026-03-16T00:00:00Z",
-  singleEvents: true,
-  orderBy: "startTime"
+  timeMin: "2026-04-21T00:00:00-07:00",
+  timeMax: "2026-04-22T00:00:00-07:00"
 })
 \`\`\`
 
-Always use \`singleEvents: true\` and \`orderBy: "startTime"\` when listing a day's events — this expands recurring events and sorts chronologically.
+\`singleEvents\` defaults to \`true\` and \`orderBy\` is set to \`startTime\` automatically when \`singleEvents\` is true — recurring events are expanded and sorted chronologically.
 
-### Scheduling a Meeting
+### Creating a Timed Event
 
 \`\`\`
 calendar.create_event({
-  calendarId: "primary",
   summary: "Architecture Review",
-  start: "2026-03-20T14:00:00-07:00",
-  end: "2026-03-20T15:00:00-07:00",
-  attendees: ["alice@example.com", "bob@example.com"],
+  start: { dateTime: "2026-04-22T14:00:00-07:00" },
+  end: { dateTime: "2026-04-22T15:00:00-07:00" },
+  attendees: [{ email: "alice@example.com" }, { email: "bob@example.com" }],
   description: "Review the new API design",
-  location: "Conference Room B"
+  location: "Conference Room B",
+  sendUpdates: "all"
 })
 \`\`\`
 
-### Finding a Time That Works
-
-Use \`find_available_slots\` to find open times for a group:
+### Creating an All-Day Event
 
 \`\`\`
-calendar.find_available_slots({
-  attendees: ["alice@example.com", "bob@example.com"],
-  timeMin: "2026-03-17T09:00:00-07:00",
-  timeMax: "2026-03-21T17:00:00-07:00",
-  durationMinutes: 30,
-  maxResults: 5
+calendar.create_event({
+  summary: "Company Holiday",
+  start: { date: "2026-04-25" },
+  end: { date: "2026-04-26" }
+})
+\`\`\`
+
+The end date is exclusive — a single all-day event on April 25 uses \`end.date: "2026-04-26"\`.
+
+### Adding a Google Meet Link
+
+\`\`\`
+calendar.create_event({
+  summary: "Remote Standup",
+  start: { dateTime: "2026-04-22T09:00:00-07:00" },
+  end: { dateTime: "2026-04-22T09:30:00-07:00" },
+  conferenceData: true
+})
+\`\`\`
+
+### Rescheduling an Event
+
+First get the event ID with \`list_events\`, then:
+
+\`\`\`
+calendar.update_event({
+  eventId: "abc123",
+  start: { dateTime: "2026-04-23T15:00:00-07:00" },
+  end: { dateTime: "2026-04-23T16:00:00-07:00" },
+  sendUpdates: "all"
 })
 \`\`\`
 
@@ -497,55 +721,27 @@ calendar.find_available_slots({
 For simple events, \`quick_add\` parses natural language:
 
 \`\`\`
-calendar.quick_add({
-  calendarId: "primary",
-  text: "Team standup every weekday at 9:30am"
+calendar.quick_add({ text: "Team standup every weekday at 9:30am" })
+calendar.quick_add({ text: "Lunch with Alice tomorrow at noon" })
+calendar.quick_add({ text: "Dentist appointment next Tuesday 3-4pm" })
+\`\`\`
+
+### Deleting an Event
+
+\`\`\`
+calendar.delete_event({
+  eventId: "abc123",
+  sendUpdates: "all"
 })
 \`\`\`
-
-### Recurring Events
-
-Use RFC 5545 RRULE format for recurrence:
-
-\`\`\`
-calendar.create_event({
-  calendarId: "primary",
-  summary: "Weekly Sync",
-  start: "2026-03-16T10:00:00-07:00",
-  end: "2026-03-16T10:30:00-07:00",
-  recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=12"]
-})
-\`\`\`
-
-Common RRULE patterns:
-- \`RRULE:FREQ=DAILY\` — every day
-- \`RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR\` — Mon/Wed/Fri
-- \`RRULE:FREQ=MONTHLY;BYMONTHDAY=1\` — first of each month
-- \`RRULE:FREQ=WEEKLY;COUNT=10\` — weekly for 10 occurrences
-- \`RRULE:FREQ=WEEKLY;UNTIL=20261231T000000Z\` — weekly until end of year
-
-### All-Day Events
-
-Use date strings (no time component) for all-day events:
-
-\`\`\`
-calendar.create_event({
-  calendarId: "primary",
-  summary: "Company Holiday",
-  start: "2026-03-20",
-  end: "2026-03-21"
-})
-\`\`\`
-
-Note: the end date is exclusive — a single all-day event on March 20 uses \`end: "2026-03-21"\`.
 
 ## Tips
 
-- **Calendar ID**: Use \`"primary"\` for the user's main calendar. Use \`list_calendars\` to discover other calendar IDs.
-- **Timezones**: Always include timezone offsets in datetime strings (e.g., \`-07:00\`). The user's local timezone is preferred.
-- **Single events**: When listing, set \`singleEvents: true\` to expand recurring events into individual instances. Without this, you get the recurring event template, not the individual occurrences.
-- **Attendees**: Pass email addresses as strings. The API handles sending invitations.
-- **Updates**: Only pass the fields you want to change to \`update_event\`. Omitted fields are preserved.
+- **Calendar ID**: All actions default \`calendarId\` to \`"primary"\` (the user's main calendar). Pass a specific calendar ID if needed.
+- **Timezones**: Include timezone offsets in \`dateTime\` strings (e.g., \`-07:00\`). Alternatively, pass a \`timeZone\` field with an IANA name like \`"America/Los_Angeles"\`.
+- **Finding event IDs**: Use \`list_events\` first — each event in the response has an \`id\` field used by \`update_event\` and \`delete_event\`.
+- **PATCH semantics**: \`update_event\` only sends the fields you provide. Omitting a field leaves it unchanged. Exception: \`attendees\` fully replaces the existing list.
+- **sendUpdates**: Defaults to \`"none"\` for all mutation actions. Set to \`"all"\` to email attendees about changes or cancellations.
 `, sortOrder: 0 },
     ],
   },

@@ -323,7 +323,10 @@ const allActions: ActionDefinition[] = [
         }),
         z.object({
           textToFind: z.string().min(1),
-          matchInstance: z.number().int().min(1).optional(),
+          matchInstance: z.number().int().min(1).optional()
+            .describe('Which occurrence to match (default: 1). Ignored when allOccurrences is true.'),
+          allOccurrences: z.boolean().optional()
+            .describe('Apply style to ALL occurrences of textToFind (default: false)'),
         }),
       ]),
       style: z.object({
@@ -1568,54 +1571,75 @@ async function executeAction(
           documentId: string;
           target:
             | { startIndex: number; endIndex: number }
-            | { textToFind: string; matchInstance?: number };
+            | { textToFind: string; matchInstance?: number; allOccurrences?: boolean };
           style: TextStyleArgs;
           tabId?: string;
         };
         const docId = normalizeDocumentId(p.documentId);
 
-        let startIndex: number;
-        let endIndex: number;
+        // Collect all ranges to style
+        const ranges: Array<{ startIndex: number; endIndex: number }> = [];
 
         if ('textToFind' in p.target) {
-          const range = await findTextRange(
-            token,
-            docId,
-            p.target.textToFind,
-            p.target.matchInstance ?? 1,
-            p.tabId,
-          );
-          if (!range) {
-            return {
-              success: false,
-              error: `Could not find instance ${p.target.matchInstance ?? 1} of text "${p.target.textToFind}"${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
-            };
+          if (p.target.allOccurrences) {
+            // Find ALL occurrences and batch-style them
+            let instance = 1;
+            while (true) {
+              const range = await findTextRange(token, docId, p.target.textToFind, instance, p.tabId);
+              if (!range) break;
+              ranges.push(range);
+              instance++;
+            }
+            if (ranges.length === 0) {
+              return {
+                success: false,
+                error: `Could not find any occurrences of text "${p.target.textToFind}"${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
+              };
+            }
+          } else {
+            const range = await findTextRange(
+              token, docId, p.target.textToFind, p.target.matchInstance ?? 1, p.tabId,
+            );
+            if (!range) {
+              return {
+                success: false,
+                error: `Could not find instance ${p.target.matchInstance ?? 1} of text "${p.target.textToFind}"${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
+              };
+            }
+            ranges.push(range);
           }
-          startIndex = range.startIndex;
-          endIndex = range.endIndex;
         } else {
-          startIndex = p.target.startIndex;
-          endIndex = p.target.endIndex;
+          ranges.push({ startIndex: p.target.startIndex, endIndex: p.target.endIndex });
         }
 
-        if (endIndex <= startIndex) {
-          return { success: false, error: 'End index must be greater than start index.' };
+        // Build batch update requests for all ranges
+        const requests: DocsRequest[] = [];
+        let fields: string[] = [];
+        for (const range of ranges) {
+          if (range.endIndex <= range.startIndex) continue;
+          const requestInfo = buildUpdateTextStyleRequest(range.startIndex, range.endIndex, p.style, p.tabId);
+          if (requestInfo) {
+            requests.push(requestInfo.request);
+            fields = requestInfo.fields; // all have the same fields
+          }
         }
 
-        const requestInfo = buildUpdateTextStyleRequest(startIndex, endIndex, p.style, p.tabId);
-        if (!requestInfo) {
+        if (requests.length === 0) {
           return { success: true, data: { message: 'No valid text styling options were provided.' } };
         }
 
-        const batchResult = await executeBatchUpdate(docId, token, [requestInfo.request]);
+        const batchResult = await executeBatchUpdate(docId, token, requests);
         if (!batchResult.success) {
           return { success: false, error: batchResult.error || 'Failed to apply text style' };
         }
 
+        const rangeDesc = ranges.length === 1
+          ? `range ${ranges[0].startIndex}-${ranges[0].endIndex}`
+          : `${ranges.length} occurrences`;
         return {
           success: true,
           data: {
-            message: `Successfully applied text style (${requestInfo.fields.join(', ')}) to range ${startIndex}-${endIndex}${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
+            message: `Successfully applied text style (${fields.join(', ')}) to ${rangeDesc}${p.tabId ? ` in tab ${p.tabId}` : ''}.`,
           },
         };
       }
@@ -1808,16 +1832,29 @@ async function executeAction(
         };
         const docId = normalizeDocumentId(p.documentId);
 
-        const res = await driveFetchForDocs(
-          `/files/${encodeURIComponent(docId)}/comments?fields=comments(id,content,quotedFileContent,author,createdTime,resolved)&includeDeleted=false&pageSize=100`,
-          token,
-        );
-        if (!res.ok) return await apiError(res, 'Drive comments');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const allComments: any[] = [];
+        let pageToken: string | undefined;
+        do {
+          const qs = new URLSearchParams({
+            fields: 'nextPageToken,comments(id,content,quotedFileContent,author,createdTime,resolved,replies)',
+            includeDeleted: 'false',
+            pageSize: '100',
+          });
+          if (pageToken) qs.set('pageToken', pageToken);
+          const res = await driveFetchForDocs(
+            `/files/${encodeURIComponent(docId)}/comments?${qs}`,
+            token,
+          );
+          if (!res.ok) return await apiError(res, 'Drive comments');
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const data = (await res.json()) as any;
+          allComments.push(...(data.comments ?? []));
+          pageToken = data.nextPageToken;
+        } while (pageToken);
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const body = (await res.json()) as any;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const comments = ((body.comments || []) as any[]).map((c) => ({
+        const comments = allComments.map((c: any) => ({
           id: c.id,
           author: c.author?.displayName || null,
           content: c.content,
@@ -1995,51 +2032,20 @@ async function executeAction(
         };
         const docId = normalizeDocumentId(p.documentId);
 
-        // Get current comment content (required for the update)
-        const getRes = await driveFetchForDocs(
-          `/files/${encodeURIComponent(docId)}/comments/${encodeURIComponent(p.commentId)}?fields=content`,
-          token,
-        );
-        if (!getRes.ok) return await apiError(getRes, 'Drive comments');
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const currentComment = (await getRes.json()) as any;
-
-        // Update with resolved status
-        const updateRes = await driveFetchForDocs(
-          `/files/${encodeURIComponent(docId)}/comments/${encodeURIComponent(p.commentId)}?fields=id,resolved`,
+        // Resolve by creating a reply with action: 'resolve'
+        const res = await driveFetchForDocs(
+          `/files/${encodeURIComponent(docId)}/comments/${encodeURIComponent(p.commentId)}/replies?fields=id`,
           token,
           {
-            method: 'PATCH',
-            body: JSON.stringify({
-              content: currentComment.content,
-              resolved: true,
-            }),
+            method: 'POST',
+            body: JSON.stringify({ content: '', action: 'resolve' }),
           },
         );
-        if (!updateRes.ok) return await apiError(updateRes, 'Drive comments');
-
-        // Verify
-        const verifyRes = await driveFetchForDocs(
-          `/files/${encodeURIComponent(docId)}/comments/${encodeURIComponent(p.commentId)}?fields=resolved`,
-          token,
-        );
-        if (verifyRes.ok) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const verified = (await verifyRes.json()) as any;
-          if (verified.resolved) {
-            return {
-              success: true,
-              data: { message: `Comment ${p.commentId} has been marked as resolved.` },
-            };
-          }
-        }
+        if (!res.ok) return await apiError(res, 'Drive comments');
 
         return {
           success: true,
-          data: {
-            message: `Attempted to resolve comment ${p.commentId}, but the resolved status may not persist in the Google Docs UI due to API limitations.`,
-          },
+          data: { message: `Comment ${p.commentId} has been marked as resolved.` },
         };
       }
 

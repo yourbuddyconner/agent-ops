@@ -95,6 +95,50 @@ async function executeAction(
     return result;
   }
 
+  // ── drive.create_from_template: template label check + dispatch + auto-label ──
+
+  if (actionId === 'drive.create_from_template') {
+    const templateId = typeof p.templateId === 'string' ? p.templateId : null;
+    if (!templateId) {
+      if (guard.driveLabelsFailMode === 'allow') return dispatchAction(actionId, params, ctx);
+      return { success: false, error: 'File not found or access denied' };
+    }
+    const denial = await checkFileLabel(templateId, token, guard);
+    if (denial) return denial;
+
+    const result = await dispatchAction(actionId, params, ctx);
+    if (result.success && guard.driveRequiredLabelIds.length > 0) {
+      const createdId = extractCreatedFileId(actionId, result);
+      if (createdId) {
+        const labeled = await applyLabel(createdId, token, guard.driveRequiredLabelIds[0]);
+        if (!labeled) {
+          await deleteFile(createdId, token);
+          return {
+            success: false,
+            error: 'Failed to create file: could not apply required Drive label',
+          };
+        }
+      }
+    }
+    return result;
+  }
+
+  // ── sheets.copy_sheet_to: check both source and destination spreadsheets ──
+
+  if (actionId === 'sheets.copy_sheet_to') {
+    const sourceId = typeof p.sourceSpreadsheetId === 'string' ? p.sourceSpreadsheetId : null;
+    const destId = typeof p.destinationSpreadsheetId === 'string' ? p.destinationSpreadsheetId : null;
+    if (!sourceId || !destId) {
+      if (guard.driveLabelsFailMode === 'allow') return dispatchAction(actionId, params, ctx);
+      return { success: false, error: 'File not found or access denied' };
+    }
+    const sourceDenial = await checkFileLabel(sourceId, token, guard);
+    if (sourceDenial) return sourceDenial;
+    const destDenial = await checkFileLabel(destId, token, guard);
+    if (destDenial) return destDenial;
+    return dispatchAction(actionId, params, ctx);
+  }
+
   if (category === 'read_get' || category === 'write_modify') {
     const fileId = extractFileId(actionId, p);
     if (!fileId) {
