@@ -1532,10 +1532,10 @@ async function executeAction(
         };
         const docId = normalizeDocumentId(p.documentId);
 
-        // Verify tab exists and get old title
+        // Verify tab exists and get old title — include childTabs for nested tab lookup
         const tabCheck = await fetchDocument(token, docId, {
           includeTabsContent: true,
-          fields: 'tabs(tabProperties,documentTab)',
+          fields: 'tabs(tabProperties,childTabs(tabProperties,childTabs(tabProperties,childTabs(tabProperties))))',
         });
         if (!tabCheck.ok) return tabCheck.result;
         const targetTab = findTabById(tabCheck.doc, p.tabId);

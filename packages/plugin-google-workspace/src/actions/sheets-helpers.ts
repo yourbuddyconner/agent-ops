@@ -341,7 +341,16 @@ export async function sheetsBatchUpdate(
       body: JSON.stringify({ requests }),
     },
   );
-  if (!res.ok) throw new Error(`Batch update failed: ${res.status}`);
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const body = await res.json() as { error?: { message?: string; status?: string } };
+      detail = body.error?.message || JSON.stringify(body);
+    } catch {
+      detail = await res.text().catch(() => '');
+    }
+    throw new Error(`Batch update failed: ${res.status}${detail ? ` — ${detail}` : ''}`);
+  }
   return (await res.json()) as Record<string, unknown>;
 }
 

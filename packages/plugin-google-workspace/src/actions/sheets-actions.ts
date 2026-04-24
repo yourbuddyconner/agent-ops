@@ -320,12 +320,12 @@ const setCellBorders: ActionDefinition = {
     spreadsheetId: z.string().describe('Spreadsheet ID'),
     range: z.string().describe('A1 notation range'),
     borders: z.object({
-      top: z.object({ style: z.string(), color: z.string().optional() }).optional(),
-      bottom: z.object({ style: z.string(), color: z.string().optional() }).optional(),
-      left: z.object({ style: z.string(), color: z.string().optional() }).optional(),
-      right: z.object({ style: z.string(), color: z.string().optional() }).optional(),
-      innerHorizontal: z.object({ style: z.string(), color: z.string().optional() }).optional(),
-      innerVertical: z.object({ style: z.string(), color: z.string().optional() }).optional(),
+      top: z.object({ style: z.string(), color: colorInput.optional() }).optional(),
+      bottom: z.object({ style: z.string(), color: colorInput.optional() }).optional(),
+      left: z.object({ style: z.string(), color: colorInput.optional() }).optional(),
+      right: z.object({ style: z.string(), color: colorInput.optional() }).optional(),
+      innerHorizontal: z.object({ style: z.string(), color: colorInput.optional() }).optional(),
+      innerVertical: z.object({ style: z.string(), color: colorInput.optional() }).optional(),
     }).describe('Border styles (style: DOTTED, DASHED, SOLID, SOLID_MEDIUM, SOLID_THICK, DOUBLE, NONE)'),
   }),
 };
@@ -485,6 +485,8 @@ const addConditionalFormatting: ActionDefinition = {
     conditionValues: z.array(z.string()).describe('Condition values'),
     format: z.object({
       backgroundColor: colorInput.optional(),
+      bold: z.boolean().optional(),
+      italic: z.boolean().optional(),
       textFormat: z.object({
         foregroundColor: colorInput.optional(),
         bold: z.boolean().optional(),
@@ -1057,11 +1059,11 @@ async function executeAction(
         const sheetId = await resolveSheetId(token, p.spreadsheetId, sheetName);
         const gridRange = parseA1ToGridRange(a1Range, sheetId);
 
-        const buildBorder = (b: { style: string; color?: string } | undefined) => {
+        const buildBorder = (b: { style: string; color?: string | { red: number; green: number; blue: number } } | undefined) => {
           if (!b) return undefined;
           const border: Record<string, unknown> = { style: b.style };
           if (b.color) {
-            const rgb = hexToRgb(b.color);
+            const rgb = normalizeColor(b.color);
             if (rgb) border.colorStyle = { rgbColor: rgb };
           }
           return border;
@@ -1190,18 +1192,33 @@ async function executeAction(
         // Resolve table to get metadata before deletion
         const { table, sheetName } = await resolveTableIdentifier(token, p.spreadsheetId, p.tableId);
         const tableId = (table.tableId as string) || p.tableId;
+        const tRange = table.range as { startRowIndex?: number; startColumnIndex?: number; endRowIndex?: number; endColumnIndex?: number } | undefined;
+
+        // The Sheets API deleteTable clears underlying cell data as a side effect.
+        // When deleteData=false, save the data first so we can restore it after deletion.
+        let savedData: unknown[][] | undefined;
+        if (!p.deleteData && tRange) {
+          const a1 = `${sheetName}!${rowColToA1(tRange.startRowIndex || 0, tRange.startColumnIndex || 0)}:${rowColToA1((tRange.endRowIndex || 1) - 1, (tRange.endColumnIndex || 1) - 1)}`;
+          const readResult = await readRange(token, p.spreadsheetId, a1);
+          if (readResult.values && readResult.values.length > 0) {
+            savedData = readResult.values;
+          }
+        }
 
         await sheetsBatchUpdate(token, p.spreadsheetId, [
           { deleteTable: { tableId } },
         ]);
 
-        // Clear data if requested
-        if (p.deleteData) {
-          const tRange = table.range as { startRowIndex?: number; startColumnIndex?: number; endRowIndex?: number; endColumnIndex?: number } | undefined;
-          if (tRange) {
-            const a1 = `${sheetName}!${rowColToA1(tRange.startRowIndex || 0, tRange.startColumnIndex || 0)}:${rowColToA1((tRange.endRowIndex || 1) - 1, (tRange.endColumnIndex || 1) - 1)}`;
-            await clearRange(token, p.spreadsheetId, a1);
-          }
+        // Restore cell data if we saved it (deleteData=false)
+        if (savedData && tRange) {
+          const a1 = `${sheetName}!${rowColToA1(tRange.startRowIndex || 0, tRange.startColumnIndex || 0)}:${rowColToA1((tRange.endRowIndex || 1) - 1, (tRange.endColumnIndex || 1) - 1)}`;
+          await writeRange(token, p.spreadsheetId, a1, savedData);
+        }
+
+        // Clear data if explicitly requested (and deleteTable didn't already clear it)
+        if (p.deleteData && tRange) {
+          const a1 = `${sheetName}!${rowColToA1(tRange.startRowIndex || 0, tRange.startColumnIndex || 0)}:${rowColToA1((tRange.endRowIndex || 1) - 1, (tRange.endColumnIndex || 1) - 1)}`;
+          await clearRange(token, p.spreadsheetId, a1);
         }
 
         return {
@@ -1253,6 +1270,33 @@ async function executeAction(
         const range = `${sheetName}!${rowColToA1(startRow, startCol)}:${rowColToA1(startRow + p.values.length - 1, endCol - 1)}`;
 
         const data = await appendValues(token, p.spreadsheetId, range, p.values);
+
+        // Auto-expand table range to include the newly appended rows
+        const tableIdStr = (table.tableId as string) || p.tableId;
+        const sheetId = await resolveSheetId(token, p.spreadsheetId, sheetName || undefined);
+        const newEndRow = (tRange.endRowIndex || 0) + p.values.length;
+        try {
+          await sheetsBatchUpdate(token, p.spreadsheetId, [
+            {
+              updateTable: {
+                table: {
+                  tableId: tableIdStr,
+                  range: {
+                    sheetId,
+                    startRowIndex: tRange.startRowIndex || 0,
+                    startColumnIndex: tRange.startColumnIndex || 0,
+                    endRowIndex: newEndRow,
+                    endColumnIndex: tRange.endColumnIndex || 0,
+                  },
+                },
+                fields: 'range',
+              },
+            },
+          ]);
+        } catch {
+          // Table range expansion is best-effort — data is already written
+        }
+
         return {
           success: true,
           data: {
@@ -1339,17 +1383,13 @@ async function executeAction(
           chartSpec.pieChart = {
             legendPosition: 'LABELED_LEGEND',
             domain: {
-              data: {
-                sourceRange: {
-                  sources: [{ sheetId, startRowIndex: startRow + 1, endRowIndex: endRow, startColumnIndex: startCol, endColumnIndex: startCol + 1 }],
-                },
+              sourceRange: {
+                sources: [{ sheetId, startRowIndex: startRow + 1, endRowIndex: endRow, startColumnIndex: startCol, endColumnIndex: startCol + 1 }],
               },
             },
             series: {
-              data: {
-                sourceRange: {
-                  sources: [{ sheetId, startRowIndex: startRow + 1, endRowIndex: endRow, startColumnIndex: startCol + 1, endColumnIndex: startCol + 2 }],
-                },
+              sourceRange: {
+                sources: [{ sheetId, startRowIndex: startRow + 1, endRowIndex: endRow, startColumnIndex: startCol + 1, endColumnIndex: startCol + 2 }],
               },
             },
           };
@@ -1398,6 +1438,8 @@ async function executeAction(
         } else {
           // Single contiguous range: first column = domain, rest = series
           const seriesCount = endCol - startCol - 1;
+          // BAR charts are horizontal — series values go on BOTTOM_AXIS, not LEFT_AXIS
+          const seriesAxis = p.chartType === 'BAR' ? 'BOTTOM_AXIS' : 'LEFT_AXIS';
           const series = Array.from({ length: seriesCount }, (_, i) => ({
             series: {
               sourceRange: {
@@ -1410,7 +1452,9 @@ async function executeAction(
                 }],
               },
             },
-            targetAxis: 'LEFT_AXIS',
+            targetAxis: seriesAxis,
+            // COMBO charts need per-series type — default first series to COLUMN, rest to LINE
+            ...(p.chartType === 'COMBO' ? { type: i === 0 ? 'COLUMN' : 'LINE' } : {}),
           }));
 
           chartSpec.basicChart = {
@@ -1497,14 +1541,25 @@ async function executeAction(
           const bg = normalizeColor(p.format.backgroundColor);
           if (bg) format.backgroundColor = bg;
         }
-        if (p.format.textFormat) {
+
+        // Merge top-level bold/italic into textFormat (same pattern as format_cells)
+        const mergedTF = { ...p.format.textFormat };
+        if ((p.format as Record<string, unknown>).bold !== undefined && mergedTF.bold === undefined) {
+          mergedTF.bold = (p.format as Record<string, unknown>).bold as boolean;
+        }
+        if ((p.format as Record<string, unknown>).italic !== undefined && mergedTF.italic === undefined) {
+          mergedTF.italic = (p.format as Record<string, unknown>).italic as boolean;
+        }
+        const hasTF = mergedTF.foregroundColor !== undefined || mergedTF.bold !== undefined || mergedTF.italic !== undefined;
+
+        if (hasTF) {
           const tf: Record<string, unknown> = {};
-          if (p.format.textFormat.foregroundColor) {
-            const fg = normalizeColor(p.format.textFormat.foregroundColor);
+          if (mergedTF.foregroundColor) {
+            const fg = normalizeColor(mergedTF.foregroundColor);
             if (fg) tf.foregroundColor = fg;
           }
-          if (p.format.textFormat.bold !== undefined) tf.bold = p.format.textFormat.bold;
-          if (p.format.textFormat.italic !== undefined) tf.italic = p.format.textFormat.italic;
+          if (mergedTF.bold !== undefined) tf.bold = mergedTF.bold;
+          if (mergedTF.italic !== undefined) tf.italic = mergedTF.italic;
           if (Object.keys(tf).length > 0) format.textFormat = tf;
         }
 
